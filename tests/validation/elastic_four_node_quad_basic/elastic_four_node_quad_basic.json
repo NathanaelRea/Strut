@@ -1,0 +1,120 @@
+{
+  "schema_version": "1.0",
+  "enabled": false,
+  "status": "todo",
+  "metadata": {
+    "name": "elastic_four_node_quad_basic",
+    "units": "kips-in"
+  },
+  "source_doc": "docs/agent-reference/OpenSeesDocs/simply_supported_beam_solid_elements.html",
+  "source_example": "docs/agent-reference/OpenSeesExamples/simply_supported_beam_modeled_with_two_dimensional_solid_elements/Example6_4.tcl",
+  "notes": "Simplified 1x1 quad derived from the simply supported beam with 2D solid elements.",
+  "model": {
+    "ndm": 2,
+    "ndf": 2
+  },
+  "opensees": {
+    "model_builder": {
+      "type": "BasicBuilder",
+      "ndm": 2,
+      "ndf": 2
+    },
+    "analysis": {
+      "constraints": "Plain",
+      "numberer": "RCM",
+      "system": "ProfileSPD",
+      "algorithm": "Linear",
+      "integrator": "LoadControl 1.0",
+      "analysis": "Static"
+    }
+  },
+  "nodes": [
+    {
+      "id": 1,
+      "x": 0.0,
+      "y": 0.0,
+      "constraints": [
+        1,
+        2
+      ]
+    },
+    {
+      "id": 2,
+      "x": 40.0,
+      "y": 0.0,
+      "constraints": [
+        2
+      ]
+    },
+    {
+      "id": 3,
+      "x": 40.0,
+      "y": 10.0
+    },
+    {
+      "id": 4,
+      "x": 0.0,
+      "y": 10.0,
+      "constraints": [
+        2
+      ]
+    }
+  ],
+  "materials": [
+    {
+      "id": 1,
+      "type": "ElasticIsotropic",
+      "params": {
+        "E": 1000.0,
+        "nu": 0.25,
+        "rho": 3.0
+      }
+    }
+  ],
+  "sections": [],
+  "elements": [
+    {
+      "id": 1,
+      "type": "fourNodeQuad",
+      "nodes": [
+        1,
+        2,
+        3,
+        4
+      ],
+      "material": 1,
+      "thickness": 1.0,
+      "formulation": "PlaneStress"
+    }
+  ],
+  "loads": [
+    {
+      "node": 2,
+      "dof": 2,
+      "value": -1.0
+    },
+    {
+      "node": 3,
+      "dof": 2,
+      "value": -1.0
+    }
+  ],
+  "analysis": {
+    "type": "static_linear",
+    "steps": 1
+  },
+  "recorders": [
+    {
+      "type": "node_displacement",
+      "nodes": [
+        2,
+        3
+      ],
+      "dofs": [
+        1,
+        2
+      ],
+      "output": "node_disp"
+    }
+  ]
+}

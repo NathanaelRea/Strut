@@ -16,6 +16,20 @@ python scripts/run_benchmarks.py --cases tests/validation/elastic_frame_two_stor
 python scripts/run_benchmarks.py --engine mojo
 ```
 
+Upcoming element benchmarks (disabled until element support lands):
+
+- `elastic_truss_basic`
+- `elastic_two_node_link_basic`
+- `elastic_zero_length_basic`
+- `elastic_four_node_quad_basic`
+- `elastic_shell_basic`
+
+Run these explicitly once enabled:
+
+```bash
+python scripts/run_benchmarks.py --cases elastic_truss_basic,elastic_four_node_quad_basic --include-disabled
+```
+
 ## Results
 
 - `benchmark/results/` contains the latest run (summary plus last-run outputs).

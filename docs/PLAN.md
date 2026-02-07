@@ -40,7 +40,7 @@ This document is a living roadmap for Strut (Mojo rewrite of OpenSees). It captu
 
 ### A. More Elements (Elastic)
 
-- [ ] `truss`
+- [x] `truss`
 - [ ] `twoNodeLink`
 - [ ] `zeroLength`
 - [ ] `fourNodeQuad` (elastic plane stress)

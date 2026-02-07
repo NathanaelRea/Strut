@@ -50,7 +50,8 @@ def main():
 
     nodes = _require_field(data, "nodes")
     elements = _require_field(data, "elements")
-    sections = {sec["id"]: sec for sec in _require_field(data, "sections")}
+    sections = {sec["id"]: sec for sec in data.get("sections", [])}
+    materials = {mat["id"]: mat for mat in data.get("materials", [])}
 
     recorders = data.get("recorders", [])
 
@@ -74,6 +75,14 @@ def main():
             if fix is not None:
                 f.write(f"fix {node_id} {' '.join(str(v) for v in fix)}\n")
 
+        # Materials (Elastic uniaxial only for now)
+        for mat in materials.values():
+            if mat["type"] != "Elastic":
+                raise ValueError(f"unsupported material type: {mat['type']}")
+            params = mat["params"]
+            E = params["E"]
+            f.write(f"uniaxialMaterial Elastic {mat['id']} {E}\n")
+
         # Sections (ElasticSection2d only for now)
         for sec in sections.values():
             if sec["type"] != "ElasticSection2d":
@@ -84,30 +93,38 @@ def main():
             I = params["I"]
             f.write(f"section Elastic {sec['id']} {E} {A} {I}\n")
 
-        # Geometric transformations
+        # Geometric transformations (only for beam-column elements)
         transf_tags = {}
         next_tag = 1
         for elem in elements:
+            if elem["type"] != "elasticBeamColumn2d":
+                continue
             name = elem.get("geomTransf", "Linear")
             if name not in transf_tags:
                 transf_tags[name] = next_tag
                 f.write(f"geomTransf {name} {next_tag}\n")
                 next_tag += 1
 
-        # Elements (elasticBeamColumn2d only for now)
+        # Elements (elasticBeamColumn2d, truss only for now)
         for elem in elements:
-            if elem["type"] != "elasticBeamColumn2d":
+            if elem["type"] == "elasticBeamColumn2d":
+                sec = sections[elem["section"]]
+                params = sec["params"]
+                A = params["A"]
+                E = params["E"]
+                I = params["I"]
+                n1, n2 = elem["nodes"]
+                transf_tag = transf_tags[elem.get("geomTransf", "Linear")]
+                f.write(
+                    f"element elasticBeamColumn {elem['id']} {n1} {n2} {A} {E} {I} {transf_tag}\n"
+                )
+            elif elem["type"] == "truss":
+                n1, n2 = elem["nodes"]
+                area = elem["area"]
+                mat_id = elem["material"]
+                f.write(f"element truss {elem['id']} {n1} {n2} {area} {mat_id}\n")
+            else:
                 raise ValueError(f"unsupported element type: {elem['type']}")
-            sec = sections[elem["section"]]
-            params = sec["params"]
-            A = params["A"]
-            E = params["E"]
-            I = params["I"]
-            n1, n2 = elem["nodes"]
-            transf_tag = transf_tags[elem.get("geomTransf", "Linear")]
-            f.write(
-                f"element elasticBeamColumn {elem['id']} {n1} {n2} {A} {E} {I} {transf_tag}\n"
-            )
 
         # Loads
         loads = data.get("loads", [])

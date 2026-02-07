@@ -1,0 +1,104 @@
+{
+  "schema_version": "1.0",
+  "enabled": false,
+  "status": "todo",
+  "metadata": {
+    "name": "elastic_two_node_link_basic",
+    "units": "SI"
+  },
+  "notes": "Single twoNodeLink element with an elastic uniaxial material in the X direction.",
+  "model": {
+    "ndm": 2,
+    "ndf": 2
+  },
+  "opensees": {
+    "model_builder": {
+      "type": "BasicBuilder",
+      "ndm": 2,
+      "ndf": 2
+    },
+    "time_series": {
+      "type": "Linear",
+      "tag": 1
+    },
+    "pattern": {
+      "type": "Plain",
+      "tag": 1,
+      "time_series": 1
+    },
+    "analysis": {
+      "constraints": "Plain",
+      "numberer": "RCM",
+      "system": "BandSPD",
+      "algorithm": "Linear",
+      "integrator": "LoadControl 1.0",
+      "analysis": "Static"
+    }
+  },
+  "nodes": [
+    {
+      "id": 1,
+      "x": 0.0,
+      "y": 0.0,
+      "constraints": [
+        1,
+        2
+      ]
+    },
+    {
+      "id": 2,
+      "x": 10.0,
+      "y": 0.0
+    }
+  ],
+  "materials": [
+    {
+      "id": 1,
+      "type": "Elastic",
+      "params": {
+        "E": 1000000.0
+      }
+    }
+  ],
+  "sections": [],
+  "elements": [
+    {
+      "id": 1,
+      "type": "twoNodeLink",
+      "nodes": [
+        1,
+        2
+      ],
+      "materials": [
+        1
+      ],
+      "dirs": [
+        1
+      ]
+    }
+  ],
+  "loads": [
+    {
+      "node": 2,
+      "dof": 1,
+      "value": 1.0
+    }
+  ],
+  "analysis": {
+    "type": "static_linear",
+    "steps": 1
+  },
+  "recorders": [
+    {
+      "type": "node_displacement",
+      "nodes": [
+        2
+      ],
+      "dofs": [
+        1,
+        2
+      ],
+      "output": "node_disp"
+    }
+  ]
+}

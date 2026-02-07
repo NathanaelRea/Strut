@@ -1,0 +1,129 @@
+{
+  "schema_version": "1.0",
+  "enabled": false,
+  "status": "todo",
+  "metadata": {
+    "name": "elastic_shell_basic",
+    "units": "SI"
+  },
+  "notes": "Minimal 4-node elastic shell patch for future shell element support.",
+  "model": {
+    "ndm": 3,
+    "ndf": 6
+  },
+  "opensees": {
+    "model_builder": {
+      "type": "BasicBuilder",
+      "ndm": 3,
+      "ndf": 6
+    },
+    "analysis": {
+      "constraints": "Plain",
+      "numberer": "RCM",
+      "system": "BandGeneral",
+      "algorithm": "Linear",
+      "integrator": "LoadControl 1.0",
+      "analysis": "Static"
+    }
+  },
+  "nodes": [
+    {
+      "id": 1,
+      "x": 0.0,
+      "y": 0.0,
+      "z": 0.0,
+      "constraints": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6
+      ]
+    },
+    {
+      "id": 2,
+      "x": 1.0,
+      "y": 0.0,
+      "z": 0.0,
+      "constraints": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6
+      ]
+    },
+    {
+      "id": 3,
+      "x": 1.0,
+      "y": 1.0,
+      "z": 0.0
+    },
+    {
+      "id": 4,
+      "x": 0.0,
+      "y": 1.0,
+      "z": 0.0,
+      "constraints": [
+        2,
+        3,
+        4,
+        5,
+        6
+      ]
+    }
+  ],
+  "materials": [],
+  "sections": [
+    {
+      "id": 1,
+      "type": "ElasticMembranePlateSection",
+      "params": {
+        "E": 200000000000.0,
+        "nu": 0.3,
+        "h": 0.1,
+        "rho": 0.0
+      }
+    }
+  ],
+  "elements": [
+    {
+      "id": 1,
+      "type": "shell",
+      "nodes": [
+        1,
+        2,
+        3,
+        4
+      ],
+      "section": 1
+    }
+  ],
+  "loads": [
+    {
+      "node": 3,
+      "dof": 3,
+      "value": -1000.0
+    }
+  ],
+  "analysis": {
+    "type": "static_linear",
+    "steps": 1
+  },
+  "recorders": [
+    {
+      "type": "node_displacement",
+      "nodes": [
+        3
+      ],
+      "dofs": [
+        1,
+        2,
+        3
+      ],
+      "output": "node_disp"
+    }
+  ]
+}

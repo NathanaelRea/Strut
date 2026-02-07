@@ -127,18 +127,36 @@ def _beam_global_stiffness(E, A, I, x1, y1, x2, y2):
     return _matmul(_transpose(T), _matmul(k_local, T))
 
 
+def _truss_global_stiffness(E, A, x1, y1, x2, y2):
+    dx = x2 - x1
+    dy = y2 - y1
+    L = math.hypot(dx, dy)
+    if L == 0.0:
+        raise ValueError("zero-length element")
+    c = dx / L
+    s = dy / L
+    k = E * A / L
+    return [
+        [k * c * c, k * c * s, -k * c * c, -k * c * s],
+        [k * c * s, k * s * s, -k * c * s, -k * s * s],
+        [-k * c * c, -k * c * s, k * c * c, k * c * s],
+        [-k * c * s, -k * s * s, k * c * s, k * s * s],
+    ]
+
+
 def run_case(case_data, output_dir: Path):
     model = case_data["model"]
     ndm = model["ndm"]
     ndf = model["ndf"]
-    if ndm != 2 or ndf != 3:
-        raise ValueError("only 2D frame (ndm=2, ndf=3) supported in phase 1")
+    if ndm != 2 or ndf not in (2, 3):
+        raise ValueError("only 2D cases supported (ndm=2, ndf=2/3)")
 
     nodes = case_data["nodes"]
     node_ids = [n["id"] for n in nodes]
     id_to_index = {nid: i for i, nid in enumerate(node_ids)}
 
-    sections = {sec["id"]: sec for sec in case_data["sections"]}
+    sections = {sec["id"]: sec for sec in case_data.get("sections", [])}
+    materials = {mat["id"]: mat for mat in case_data.get("materials", [])}
     elements = case_data["elements"]
 
     total_dofs = len(nodes) * ndf
@@ -146,34 +164,66 @@ def run_case(case_data, output_dir: Path):
     F = [0.0 for _ in range(total_dofs)]
 
     for elem in elements:
-        if elem["type"] != "elasticBeamColumn2d":
-            raise ValueError(f"unsupported element type: {elem['type']}")
-        n1, n2 = elem["nodes"]
-        i1 = id_to_index[n1]
-        i2 = id_to_index[n2]
-        node1 = nodes[i1]
-        node2 = nodes[i2]
+        elem_type = elem["type"]
+        if elem_type == "elasticBeamColumn2d":
+            if ndf != 3:
+                raise ValueError("elasticBeamColumn2d requires ndf=3")
+            n1, n2 = elem["nodes"]
+            i1 = id_to_index[n1]
+            i2 = id_to_index[n2]
+            node1 = nodes[i1]
+            node2 = nodes[i2]
 
-        sec = sections[elem["section"]]
-        params = sec["params"]
-        E = params["E"]
-        A = params["A"]
-        I = params["I"]
+            sec = sections[elem["section"]]
+            params = sec["params"]
+            E = params["E"]
+            A = params["A"]
+            I = params["I"]
 
-        k_global = _beam_global_stiffness(E, A, I, node1["x"], node1["y"], node2["x"], node2["y"])
-        dof_map = [
-            _node_dof_index(i1, 1, ndf),
-            _node_dof_index(i1, 2, ndf),
-            _node_dof_index(i1, 3, ndf),
-            _node_dof_index(i2, 1, ndf),
-            _node_dof_index(i2, 2, ndf),
-            _node_dof_index(i2, 3, ndf),
-        ]
-        for a in range(6):
-            Aidx = dof_map[a]
-            for b in range(6):
-                Bidx = dof_map[b]
-                K[Aidx][Bidx] += k_global[a][b]
+            k_global = _beam_global_stiffness(
+                E, A, I, node1["x"], node1["y"], node2["x"], node2["y"]
+            )
+            dof_map = [
+                _node_dof_index(i1, 1, ndf),
+                _node_dof_index(i1, 2, ndf),
+                _node_dof_index(i1, 3, ndf),
+                _node_dof_index(i2, 1, ndf),
+                _node_dof_index(i2, 2, ndf),
+                _node_dof_index(i2, 3, ndf),
+            ]
+            for a in range(6):
+                Aidx = dof_map[a]
+                for b in range(6):
+                    Bidx = dof_map[b]
+                    K[Aidx][Bidx] += k_global[a][b]
+        elif elem_type == "truss":
+            if ndf != 2:
+                raise ValueError("truss requires ndf=2")
+            n1, n2 = elem["nodes"]
+            i1 = id_to_index[n1]
+            i2 = id_to_index[n2]
+            node1 = nodes[i1]
+            node2 = nodes[i2]
+
+            mat = materials[elem["material"]]
+            E = mat["params"]["E"]
+            A = elem["area"]
+            k_global = _truss_global_stiffness(
+                E, A, node1["x"], node1["y"], node2["x"], node2["y"]
+            )
+            dof_map = [
+                _node_dof_index(i1, 1, ndf),
+                _node_dof_index(i1, 2, ndf),
+                _node_dof_index(i2, 1, ndf),
+                _node_dof_index(i2, 2, ndf),
+            ]
+            for a in range(4):
+                Aidx = dof_map[a]
+                for b in range(4):
+                    Bidx = dof_map[b]
+                    K[Aidx][Bidx] += k_global[a][b]
+        else:
+            raise ValueError(f"unsupported element type: {elem_type}")
 
     for load in case_data.get("loads", []):
         node_id = load["node"]

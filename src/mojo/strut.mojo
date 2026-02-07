@@ -128,6 +128,31 @@ fn _beam_global_stiffness(
     return _matmul(_transpose(T), _matmul(k_local, T))
 
 
+fn _truss_global_stiffness(
+    E: Float64,
+    A: Float64,
+    x1: Float64,
+    y1: Float64,
+    x2: Float64,
+    y2: Float64,
+) -> List[List[Float64]]:
+    var dx = x2 - x1
+    var dy = y2 - y1
+    var L = hypot(dx, dy)
+    if L == 0.0:
+        abort("zero-length element")
+    var c = dx / L
+    var s = dy / L
+    var k = E * A / L
+
+    return [
+        [k * c * c, k * c * s, -k * c * c, -k * c * s],
+        [k * c * s, k * s * s, -k * c * s, -k * s * s],
+        [-k * c * c, -k * c * s, k * c * c, k * c * s],
+        [-k * c * s, -k * s * s, k * c * s, k * s * s],
+    ]
+
+
 fn _gaussian_elimination(
     mut A: List[List[Float64]], mut b: List[Float64]
 ) -> List[Float64]:
@@ -189,8 +214,8 @@ def main() raises:
     var model = data["model"]
     var ndm = Int(py=model["ndm"])
     var ndf = Int(py=model["ndf"])
-    if ndm != 2 or ndf != 3:
-        abort("only ndm=2, ndf=3 supported in phase 1")
+    if ndm != 2 or (ndf != 2 and ndf != 3):
+        abort("only ndm=2, ndf=2/3 supported in phase 1")
 
     var nodes = data["nodes"]
     var node_count = _py_len(nodes)
@@ -209,7 +234,8 @@ def main() raises:
             id_to_index.resize(nid + 1, -1)
         id_to_index[nid] = i
 
-    var sections = data["sections"]
+    var sections = data.get("sections", [])
+    var materials = data.get("materials", [])
     var elements = data["elements"]
 
     var total_dofs = node_count * ndf
@@ -223,52 +249,99 @@ def main() raises:
 
     for e in range(_py_len(elements)):
         var elem = elements[e]
-        if String(py=elem["type"]) != "elasticBeamColumn2d":
+        var elem_type = String(py=elem["type"])
+        if elem_type == "elasticBeamColumn2d":
+            if ndf != 3:
+                abort("elasticBeamColumn2d requires ndf=3")
+            var n1 = Int(py=elem["nodes"][0])
+            var n2 = Int(py=elem["nodes"][1])
+            var i1 = id_to_index[n1]
+            var i2 = id_to_index[n2]
+            var node1 = nodes[i1]
+            var node2 = nodes[i2]
+
+            var sec_id = Int(py=elem["section"])
+            var sec: PythonObject = None
+            for sidx in range(_py_len(sections)):
+                var candidate = sections[sidx]
+                if Int(py=candidate["id"]) == sec_id:
+                    sec = candidate
+                    break
+            if sec is None:
+                abort("section not found")
+
+            var params = sec["params"]
+            var E = Float64(py=params["E"])
+            var A = Float64(py=params["A"])
+            var I = Float64(py=params["I"])
+
+            var k_global = _beam_global_stiffness(
+                E,
+                A,
+                I,
+                Float64(py=node1["x"]),
+                Float64(py=node1["y"]),
+                Float64(py=node2["x"]),
+                Float64(py=node2["y"]),
+            )
+            var dof_map = [
+                _node_dof_index(i1, 1, ndf),
+                _node_dof_index(i1, 2, ndf),
+                _node_dof_index(i1, 3, ndf),
+                _node_dof_index(i2, 1, ndf),
+                _node_dof_index(i2, 2, ndf),
+                _node_dof_index(i2, 3, ndf),
+            ]
+            for a in range(6):
+                var Aidx = dof_map[a]
+                for b in range(6):
+                    var Bidx = dof_map[b]
+                    K[Aidx][Bidx] += k_global[a][b]
+        elif elem_type == "truss":
+            if ndf != 2:
+                abort("truss requires ndf=2")
+            var n1 = Int(py=elem["nodes"][0])
+            var n2 = Int(py=elem["nodes"][1])
+            var i1 = id_to_index[n1]
+            var i2 = id_to_index[n2]
+            var node1 = nodes[i1]
+            var node2 = nodes[i2]
+
+            var mat_id = Int(py=elem["material"])
+            var mat: PythonObject = None
+            for midx in range(_py_len(materials)):
+                var candidate = materials[midx]
+                if Int(py=candidate["id"]) == mat_id:
+                    mat = candidate
+                    break
+            if mat is None:
+                abort("material not found")
+
+            var params = mat["params"]
+            var E = Float64(py=params["E"])
+            var A = Float64(py=elem["area"])
+
+            var k_global = _truss_global_stiffness(
+                E,
+                A,
+                Float64(py=node1["x"]),
+                Float64(py=node1["y"]),
+                Float64(py=node2["x"]),
+                Float64(py=node2["y"]),
+            )
+            var dof_map = [
+                _node_dof_index(i1, 1, ndf),
+                _node_dof_index(i1, 2, ndf),
+                _node_dof_index(i2, 1, ndf),
+                _node_dof_index(i2, 2, ndf),
+            ]
+            for a in range(4):
+                var Aidx = dof_map[a]
+                for b in range(4):
+                    var Bidx = dof_map[b]
+                    K[Aidx][Bidx] += k_global[a][b]
+        else:
             abort("unsupported element type")
-        var n1 = Int(py=elem["nodes"][0])
-        var n2 = Int(py=elem["nodes"][1])
-        var i1 = id_to_index[n1]
-        var i2 = id_to_index[n2]
-        var node1 = nodes[i1]
-        var node2 = nodes[i2]
-
-        var sec_id = Int(py=elem["section"])
-        var sec: PythonObject = None
-        for sidx in range(_py_len(sections)):
-            var candidate = sections[sidx]
-            if Int(py=candidate["id"]) == sec_id:
-                sec = candidate
-                break
-        if sec is None:
-            abort("section not found")
-
-        var params = sec["params"]
-        var E = Float64(py=params["E"])
-        var A = Float64(py=params["A"])
-        var I = Float64(py=params["I"])
-
-        var k_global = _beam_global_stiffness(
-            E,
-            A,
-            I,
-            Float64(py=node1["x"]),
-            Float64(py=node1["y"]),
-            Float64(py=node2["x"]),
-            Float64(py=node2["y"]),
-        )
-        var dof_map = [
-            _node_dof_index(i1, 1, ndf),
-            _node_dof_index(i1, 2, ndf),
-            _node_dof_index(i1, 3, ndf),
-            _node_dof_index(i2, 1, ndf),
-            _node_dof_index(i2, 2, ndf),
-            _node_dof_index(i2, 3, ndf),
-        ]
-        for a in range(6):
-            var Aidx = dof_map[a]
-            for b in range(6):
-                var Bidx = dof_map[b]
-                K[Aidx][Bidx] += k_global[a][b]
 
     var loads = data.get("loads", [])
     for i in range(_py_len(loads)):
