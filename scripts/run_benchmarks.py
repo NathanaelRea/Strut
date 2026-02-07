@@ -30,6 +30,15 @@ def run(cmd: List[str], env=None, verbose=False) -> None:
 def log(msg: str) -> None:
     print(msg, flush=True)
 
+def _color(text: str, code: str) -> str:
+    return f"\033[{code}m{text}\033[0m"
+
+def log_ok(msg: str) -> None:
+    log(_color(msg, "32"))
+
+def log_err(msg: str) -> None:
+    log(_color(msg, "31"))
+
 
 def load_case_enabled(path: Path) -> bool:
     data = json.loads(path.read_text())
@@ -505,6 +514,7 @@ def main() -> None:
             args.repeat,
             args.warmup,
         )
+        log_ok("OpenSees batch pass OK.")
         batch_analysis = _load_case_metric(
             results_root / "opensees", case_entries, "analysis_time_us.txt"
         )
@@ -557,6 +567,7 @@ def main() -> None:
                 args.repeat,
                 args.warmup,
             )
+            log_ok("OpenSees batch compute-only pass OK.")
             compute_stats = {
                 "times_s": opensees_compute,
                 "mean_s": mean(opensees_compute),
@@ -688,6 +699,7 @@ def main() -> None:
                 args.repeat,
                 args.warmup,
             )
+            log_ok(f"[{case_name}] OpenSees total pass OK.")
             stats = {
                 "times_s": opensees_times,
                 "mean_s": mean(opensees_times),
@@ -726,6 +738,7 @@ def main() -> None:
                     args.repeat,
                     args.warmup,
                 )
+                log_ok(f"[{case_name}] OpenSees compute-only pass OK.")
                 compute_stats = {
                     "times_s": opensees_compute,
                     "mean_s": mean(opensees_compute),
@@ -755,6 +768,7 @@ def main() -> None:
                 args.repeat,
                 args.warmup,
             )
+            log_ok(f"[{case_name}] Mojo total pass OK.")
             stats = {
                 "times_s": mojo_times,
                 "mean_s": mean(mojo_times),
@@ -785,6 +799,7 @@ def main() -> None:
                     args.repeat,
                     args.warmup,
                 )
+                log_ok(f"[{case_name}] Mojo compute-only pass OK.")
                 compute_stats = {
                     "times_s": mojo_compute,
                     "mean_s": mean(mojo_compute),
@@ -817,31 +832,87 @@ def main() -> None:
             rtol = tol.get("rtol", REL_TOL)
             atol = tol.get("atol", ABS_TOL)
             for rec in recorders:
-                if rec.get("type") != "node_displacement":
+                rec_type = rec.get("type")
+                if rec_type == "node_displacement":
+                    output = rec.get("output", "node_disp")
+                    for node_id in rec.get("nodes", []):
+                        ref_file = (
+                            results_root
+                            / "opensees"
+                            / case_name
+                            / f"{output}_node{node_id}.out"
+                        )
+                        mojo_file = (
+                            results_root
+                            / "mojo"
+                            / case_name
+                            / f"{output}_node{node_id}.out"
+                        )
+                        if not ref_file.exists():
+                            parity_failures.append(
+                                f"{case_name}: missing OpenSees output: {ref_file}"
+                            )
+                            continue
+                        if not mojo_file.exists():
+                            parity_failures.append(
+                                f"{case_name}: missing Mojo output: {mojo_file}"
+                            )
+                            continue
+                        try:
+                            ref_vals = _load_last_values(ref_file)
+                            mojo_vals = _load_last_values(mojo_file)
+                        except ValueError as exc:
+                            parity_failures.append(f"{case_name}: {exc}")
+                            continue
+                        ok, errors = _compare_vectors(
+                            ref_vals, mojo_vals, rtol=rtol, atol=atol
+                        )
+                        if not ok:
+                            parity_failures.append(f"{case_name}: node {node_id} mismatch")
+                            parity_failures.extend([f"  {err}" for err in errors])
+                elif rec_type == "element_force":
+                    output = rec.get("output", "element_force")
+                    for elem_id in rec.get("elements", []):
+                        ref_file = (
+                            results_root
+                            / "opensees"
+                            / case_name
+                            / f"{output}_ele{elem_id}.out"
+                        )
+                        mojo_file = (
+                            results_root
+                            / "mojo"
+                            / case_name
+                            / f"{output}_ele{elem_id}.out"
+                        )
+                        if not ref_file.exists():
+                            parity_failures.append(
+                                f"{case_name}: missing OpenSees output: {ref_file}"
+                            )
+                            continue
+                        if not mojo_file.exists():
+                            parity_failures.append(
+                                f"{case_name}: missing Mojo output: {mojo_file}"
+                            )
+                            continue
+                        try:
+                            ref_vals = _load_last_values(ref_file)
+                            mojo_vals = _load_last_values(mojo_file)
+                        except ValueError as exc:
+                            parity_failures.append(f"{case_name}: {exc}")
+                            continue
+                        ok, errors = _compare_vectors(
+                            ref_vals, mojo_vals, rtol=rtol, atol=atol
+                        )
+                        if not ok:
+                            parity_failures.append(
+                                f"{case_name}: element {elem_id} mismatch"
+                            )
+                            parity_failures.extend([f"  {err}" for err in errors])
+                else:
                     parity_failures.append(
-                        f"{case_name}: unsupported recorder type: {rec.get('type')}"
+                        f"{case_name}: unsupported recorder type: {rec_type}"
                     )
-                    continue
-                output = rec.get("output", "node_disp")
-                for node_id in rec.get("nodes", []):
-                    ref_file = results_root / "opensees" / case_name / f"{output}_node{node_id}.out"
-                    mojo_file = results_root / "mojo" / case_name / f"{output}_node{node_id}.out"
-                    if not ref_file.exists():
-                        parity_failures.append(f"{case_name}: missing OpenSees output: {ref_file}")
-                        continue
-                    if not mojo_file.exists():
-                        parity_failures.append(f"{case_name}: missing Mojo output: {mojo_file}")
-                        continue
-                    try:
-                        ref_vals = _load_last_values(ref_file)
-                        mojo_vals = _load_last_values(mojo_file)
-                    except ValueError as exc:
-                        parity_failures.append(f"{case_name}: {exc}")
-                        continue
-                    ok, errors = _compare_vectors(ref_vals, mojo_vals, rtol=rtol, atol=atol)
-                    if not ok:
-                        parity_failures.append(f"{case_name}: node {node_id} mismatch")
-                        parity_failures.extend([f"  {err}" for err in errors])
 
         summary_cases.append(case_entry)
 
@@ -868,11 +939,20 @@ def main() -> None:
     print(f"Wrote {summary_json}")
     print(f"Wrote {summary_csv}")
     if parity_failures:
-        print("PARITY FAILED")
+        log_err("PARITY FAILED")
         for failure in parity_failures:
-            print(failure)
+            log_err(failure)
         raise SystemExit(1)
+    log_ok("PARITY OK")
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except SystemExit as exc:
+        if exc.code not in (0, None):
+            log_err(f"BENCHMARK ERROR (exit {exc.code})")
+        raise
+    except Exception as exc:
+        log_err(f"BENCHMARK ERROR: {exc}")
+        raise

@@ -66,24 +66,43 @@ def main():
 
     failures = []
     for rec in recorders:
-        if rec["type"] != "node_displacement":
-            raise ValueError(f"unsupported recorder type: {rec['type']}")
-        output = rec.get("output", "node_disp")
-        for node_id in rec["nodes"]:
-            ref_file = ref_dir / f"{output}_node{node_id}.out"
-            mojo_file = mojo_dir / f"{output}_node{node_id}.out"
-            if not ref_file.exists():
-                failures.append(f"missing reference output: {ref_file}")
-                continue
-            if not mojo_file.exists():
-                failures.append(f"missing mojo output: {mojo_file}")
-                continue
-            ref_vals = _load_last_values(ref_file)
-            mojo_vals = _load_last_values(mojo_file)
-            ok, errors = _compare_vectors(ref_vals, mojo_vals, rtol=rtol, atol=atol)
-            if not ok:
-                failures.append(f"node {node_id} mismatch")
-                failures.extend([f"  {err}" for err in errors])
+        rec_type = rec["type"]
+        if rec_type == "node_displacement":
+            output = rec.get("output", "node_disp")
+            for node_id in rec["nodes"]:
+                ref_file = ref_dir / f"{output}_node{node_id}.out"
+                mojo_file = mojo_dir / f"{output}_node{node_id}.out"
+                if not ref_file.exists():
+                    failures.append(f"missing reference output: {ref_file}")
+                    continue
+                if not mojo_file.exists():
+                    failures.append(f"missing mojo output: {mojo_file}")
+                    continue
+                ref_vals = _load_last_values(ref_file)
+                mojo_vals = _load_last_values(mojo_file)
+                ok, errors = _compare_vectors(ref_vals, mojo_vals, rtol=rtol, atol=atol)
+                if not ok:
+                    failures.append(f"node {node_id} mismatch")
+                    failures.extend([f"  {err}" for err in errors])
+        elif rec_type == "element_force":
+            output = rec.get("output", "element_force")
+            for elem_id in rec["elements"]:
+                ref_file = ref_dir / f"{output}_ele{elem_id}.out"
+                mojo_file = mojo_dir / f"{output}_ele{elem_id}.out"
+                if not ref_file.exists():
+                    failures.append(f"missing reference output: {ref_file}")
+                    continue
+                if not mojo_file.exists():
+                    failures.append(f"missing mojo output: {mojo_file}")
+                    continue
+                ref_vals = _load_last_values(ref_file)
+                mojo_vals = _load_last_values(mojo_file)
+                ok, errors = _compare_vectors(ref_vals, mojo_vals, rtol=rtol, atol=atol)
+                if not ok:
+                    failures.append(f"element {elem_id} mismatch")
+                    failures.extend([f"  {err}" for err in errors])
+        else:
+            raise ValueError(f"unsupported recorder type: {rec_type}")
 
     if failures:
         print("PARITY FAILED")

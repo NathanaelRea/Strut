@@ -114,6 +114,13 @@
         3
       ],
       "output": "node_disp"
+    },
+    {
+      "type": "element_force",
+      "elements": [
+        1
+      ],
+      "output": "element_force"
     }
   ]
 }

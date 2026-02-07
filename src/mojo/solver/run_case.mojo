@@ -2,7 +2,12 @@ from collections import List
 from os import abort
 from python import Python, PythonObject
 
-from elements import beam_uniform_load_global
+from elements import (
+    beam2d_corotational_global_internal_force,
+    beam2d_pdelta_global_stiffness,
+    beam_global_stiffness,
+    beam_uniform_load_global,
+)
 from linalg import gaussian_elimination
 from solver.assembly import (
     assemble_global_stiffness,
@@ -16,6 +21,96 @@ from solver.profile import (
     _write_speedscope,
 )
 from strut_io import py_len
+
+
+fn _beam2d_element_force_global(
+    elem: PythonObject,
+    nodes: PythonObject,
+    sections_by_id: List[PythonObject],
+    id_to_index: List[Int],
+    ndf: Int,
+    u: List[Float64],
+) raises -> List[Float64]:
+    if ndf != 3:
+        abort("elasticBeamColumn2d requires ndf=3")
+    var n1 = Int(elem["nodes"][0])
+    var n2 = Int(elem["nodes"][1])
+    var i1 = id_to_index[n1]
+    var i2 = id_to_index[n2]
+    var node1 = nodes[i1]
+    var node2 = nodes[i2]
+
+    var sec_id = Int(elem["section"])
+    if sec_id >= len(sections_by_id):
+        abort("section not found")
+    var sec = sections_by_id[sec_id]
+    if sec is None:
+        abort("section not found")
+
+    var params = sec["params"]
+    var E = Float64(params["E"])
+    var A = Float64(params["A"])
+    var I = Float64(params["I"])
+
+    var dof_map = [
+        node_dof_index(i1, 1, ndf),
+        node_dof_index(i1, 2, ndf),
+        node_dof_index(i1, 3, ndf),
+        node_dof_index(i2, 1, ndf),
+        node_dof_index(i2, 2, ndf),
+        node_dof_index(i2, 3, ndf),
+    ]
+    var u_elem: List[Float64] = []
+    u_elem.resize(6, 0.0)
+    for i in range(6):
+        u_elem[i] = u[dof_map[i]]
+
+    var geom = String(elem.get("geomTransf", "Linear"))
+    if geom == "Corotational":
+        return beam2d_corotational_global_internal_force(
+            E,
+            A,
+            I,
+            Float64(node1["x"]),
+            Float64(node1["y"]),
+            Float64(node2["x"]),
+            Float64(node2["y"]),
+            u_elem,
+        )
+
+    var k_global: List[List[Float64]] = []
+    if geom == "Linear":
+        k_global = beam_global_stiffness(
+            E,
+            A,
+            I,
+            Float64(node1["x"]),
+            Float64(node1["y"]),
+            Float64(node2["x"]),
+            Float64(node2["y"]),
+        )
+    elif geom == "PDelta":
+        k_global = beam2d_pdelta_global_stiffness(
+            E,
+            A,
+            I,
+            Float64(node1["x"]),
+            Float64(node1["y"]),
+            Float64(node2["x"]),
+            Float64(node2["y"]),
+            u_elem,
+        )
+    else:
+        abort("unsupported geomTransf: " + geom)
+
+    var f_elem: List[Float64] = []
+    f_elem.resize(6, 0.0)
+    for i in range(6):
+        var sum = 0.0
+        for j in range(6):
+            sum += k_global[i][j] * u_elem[j]
+        f_elem[i] = sum
+    return f_elem^
 
 
 def run_case(data: PythonObject, output_path: String, profile_path: String):
@@ -444,26 +539,55 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
     var recorders = data.get("recorders", [])
     for r in range(py_len(recorders)):
         var rec = recorders[r]
-        if String(rec["type"]) != "node_displacement":
+        var rec_type = String(rec["type"])
+        if rec_type == "node_displacement":
+            var dofs = rec["dofs"]
+            var output = String(rec.get("output", "node_disp"))
+            var nodes_out = rec["nodes"]
+            for nidx in range(py_len(nodes_out)):
+                var node_id = Int(nodes_out[nidx])
+                var i = id_to_index[node_id]
+                var line = String()
+                for j in range(py_len(dofs)):
+                    var dof = Int(dofs[j])
+                    require_dof_in_range(dof, ndf, "recorder")
+                    var value = u[node_dof_index(i, dof, ndf)]
+                    if j > 0:
+                        line += " "
+                    line += String(value)
+                line += "\n"
+                var filename = output + "_node" + String(node_id) + ".out"
+                var file_path = out_dir.joinpath(filename)
+                file_path.write_text(PythonObject(line))
+        elif rec_type == "element_force":
+            var output = String(rec.get("output", "element_force"))
+            var elements_out = rec["elements"]
+            for eidx in range(py_len(elements_out)):
+                var elem_id = Int(elements_out[eidx])
+                if elem_id >= len(elem_id_to_index) or elem_id_to_index[elem_id] < 0:
+                    abort("recorder element not found")
+                var elem = elements[elem_id_to_index[elem_id]]
+                if String(elem["type"]) != "elasticBeamColumn2d":
+                    abort("element_force recorder supports elasticBeamColumn2d only")
+                var f_elem = _beam2d_element_force_global(
+                    elem,
+                    nodes,
+                    sections_by_id,
+                    id_to_index,
+                    ndf,
+                    u,
+                )
+                var line = String()
+                for j in range(6):
+                    if j > 0:
+                        line += " "
+                    line += String(f_elem[j])
+                line += "\n"
+                var filename = output + "_ele" + String(elem_id) + ".out"
+                var file_path = out_dir.joinpath(filename)
+                file_path.write_text(PythonObject(line))
+        else:
             abort("unsupported recorder type")
-        var dofs = rec["dofs"]
-        var output = String(rec.get("output", "node_disp"))
-        var nodes_out = rec["nodes"]
-        for nidx in range(py_len(nodes_out)):
-            var node_id = Int(nodes_out[nidx])
-            var i = id_to_index[node_id]
-            var line = String()
-            for j in range(py_len(dofs)):
-                var dof = Int(dofs[j])
-                require_dof_in_range(dof, ndf, "recorder")
-                var value = u[node_dof_index(i, dof, ndf)]
-                if j > 0:
-                    line += " "
-                line += String(value)
-            line += "\n"
-            var filename = output + "_node" + String(node_id) + ".out"
-            var file_path = out_dir.joinpath(filename)
-            file_path.write_text(PythonObject(line))
 
     var t2 = Int(time.perf_counter_ns())
     if do_profile:

@@ -28,7 +28,9 @@ Minimum required fields (v1.0):
 - `loads`: list of `{ node, dof, value }` (`dof` must be in `1..ndf`)
 - `element_loads`: list of `{ element, type, w }` (optional, `type: "beamUniform"` only)
 - `analysis`: `{ type: "static_linear" | "static_nonlinear", steps: 1, max_iters?, tol?, rel_tol? }`
-- `recorders`: list of `{ type: "node_displacement", nodes, dofs, output }` (`dofs` in `1..ndf`)
+- `recorders`: list of
+  - `{ type: "node_displacement", nodes, dofs, output }` (`dofs` in `1..ndf`)
+  - `{ type: "element_force", elements, output }` (currently `elasticBeamColumn2d` only)
 
 ## Harness Workflow
 
@@ -47,6 +49,9 @@ Node displacement outputs are written as space-separated values with one row per
 ```
 
 For OpenSees, the Tcl recorder writes a space-separated vector per line. The comparator reads the last line for each node.
+
+Element force outputs are written as space-separated values with one row per analysis step. For `elasticBeamColumn2d`,
+the vector contains 6 global end forces (3 at node 1, 3 at node 2) in the OpenSees "force" recorder ordering.
 
 ## Tolerances (Phase 1)
 

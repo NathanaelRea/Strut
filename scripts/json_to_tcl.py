@@ -270,15 +270,22 @@ def main():
 
         # Recorders
         for rec in recorders:
-            if rec["type"] != "node_displacement":
-                raise ValueError(f"unsupported recorder type: {rec['type']}")
-            dofs = rec["dofs"]
-            output = rec.get("output", "node_disp")
-            for node_id in rec["nodes"]:
-                filename = f"{output}_node{node_id}.out"
-                f.write(
-                    f"recorder Node -file {filename} -node {node_id} -dof {' '.join(str(d) for d in dofs)} disp\n"
-                )
+            rec_type = rec["type"]
+            if rec_type == "node_displacement":
+                dofs = rec["dofs"]
+                output = rec.get("output", "node_disp")
+                for node_id in rec["nodes"]:
+                    filename = f"{output}_node{node_id}.out"
+                    f.write(
+                        f"recorder Node -file {filename} -node {node_id} -dof {' '.join(str(d) for d in dofs)} disp\n"
+                    )
+            elif rec_type == "element_force":
+                output = rec.get("output", "element_force")
+                for elem_id in rec["elements"]:
+                    filename = f"{output}_ele{elem_id}.out"
+                    f.write(f"recorder Element -file {filename} -ele {elem_id} force\n")
+            else:
+                raise ValueError(f"unsupported recorder type: {rec_type}")
 
         f.write(f"analyze {steps}\n")
 
