@@ -8,6 +8,7 @@ This document is a living roadmap for Strut (Mojo rewrite of OpenSees). It captu
 - Harness converts JSON -> Tcl -> OpenSees and compares results with a Strut solver output.
 - Phase-1 solver is implemented in Mojo (Python is only used for the harness).
 - Current focus: 2D linear `elasticBeamColumn` with static linear analysis and nodal displacement comparisons.
+- Solver and element implementations are split into `src/mojo/solver/` and `src/mojo/elements/` for maintainability.
 
 ## Phase 1 (Now / Next)
 

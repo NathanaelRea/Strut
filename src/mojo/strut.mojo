@@ -1,7 +1,7 @@
 from os import abort
 from python import Python, PythonObject
 
-from solver import run_case
+from solver.run_case import run_case
 from strut_io import load_json, parse_args, py_len
 
 
