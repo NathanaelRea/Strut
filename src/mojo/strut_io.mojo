@@ -12,7 +12,7 @@ fn arg_value(
 
 
 fn py_len(obj: PythonObject) raises -> Int:
-    return Int(py=obj.__len__())
+    return Int(obj.__len__())
 
 
 fn load_json(path: String) raises -> PythonObject:

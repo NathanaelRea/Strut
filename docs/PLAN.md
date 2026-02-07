@@ -6,7 +6,7 @@ This document is a living roadmap for Strut (Mojo rewrite of OpenSees). It captu
 
 - Canonical model format is JSON (`schema_version: 1.0`).
 - Harness converts JSON -> Tcl -> OpenSees and compares results with a Strut solver output.
-- Phase-1 solver is implemented in Python to validate math and harness. Mojo implementation is still TODO.
+- Phase-1 solver is implemented in Mojo (Python is only used for the harness).
 - Current focus: 2D linear `elasticBeamColumn` with static linear analysis and nodal displacement comparisons.
 
 ## Phase 1 (Now / Next)

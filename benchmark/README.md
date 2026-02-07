@@ -5,7 +5,8 @@ Tools for comparing OpenSees (Wine) and Strut (Mojo) runtime performance.
 ## Runner
 
 Use `scripts/run_benchmarks.py` to run the default elastic cases or a custom
-case list from `tests/validation/`.
+case list from `tests/validation/`. The Mojo solver is precompiled before
+timing (cached at `build/mojo/strut`).
 
 Examples:
 

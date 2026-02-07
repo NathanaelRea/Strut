@@ -11,10 +11,10 @@ fn node_dof_index(node_index: Int, dof: Int, ndf: Int) -> Int:
     return node_index * ndf + (dof - 1)
 
 
-fn run_case(data: PythonObject, output_path: String) raises:
+def run_case(data: PythonObject, output_path: String):
     var model = data["model"]
-    var ndm = Int(py=model["ndm"])
-    var ndf = Int(py=model["ndf"])
+    var ndm = Int(model["ndm"])
+    var ndf = Int(model["ndf"])
     if ndm != 2 or (ndf != 2 and ndf != 3):
         abort("only ndm=2, ndf=2/3 supported in phase 1")
 
@@ -25,7 +25,7 @@ fn run_case(data: PythonObject, output_path: String) raises:
 
     for i in range(node_count):
         var node = nodes[i]
-        node_ids[i] = Int(py=node["id"])
+        node_ids[i] = Int(node["id"])
 
     var id_to_index: List[Int] = []
     id_to_index.resize(10000, -1)
@@ -50,40 +50,40 @@ fn run_case(data: PythonObject, output_path: String) raises:
 
     for e in range(py_len(elements)):
         var elem = elements[e]
-        var elem_type = String(py=elem["type"])
+        var elem_type = String(elem["type"])
         if elem_type == "elasticBeamColumn2d":
             if ndf != 3:
                 abort("elasticBeamColumn2d requires ndf=3")
-            var n1 = Int(py=elem["nodes"][0])
-            var n2 = Int(py=elem["nodes"][1])
+            var n1 = Int(elem["nodes"][0])
+            var n2 = Int(elem["nodes"][1])
             var i1 = id_to_index[n1]
             var i2 = id_to_index[n2]
             var node1 = nodes[i1]
             var node2 = nodes[i2]
 
-            var sec_id = Int(py=elem["section"])
+            var sec_id = Int(elem["section"])
             var sec: PythonObject = None
             for sidx in range(py_len(sections)):
                 var candidate = sections[sidx]
-                if Int(py=candidate["id"]) == sec_id:
+                if Int(candidate["id"]) == sec_id:
                     sec = candidate
                     break
             if sec is None:
                 abort("section not found")
 
             var params = sec["params"]
-            var E = Float64(py=params["E"])
-            var A = Float64(py=params["A"])
-            var I = Float64(py=params["I"])
+            var E = Float64(params["E"])
+            var A = Float64(params["A"])
+            var I = Float64(params["I"])
 
             var k_global = beam_global_stiffness(
                 E,
                 A,
                 I,
-                Float64(py=node1["x"]),
-                Float64(py=node1["y"]),
-                Float64(py=node2["x"]),
-                Float64(py=node2["y"]),
+                Float64(node1["x"]),
+                Float64(node1["y"]),
+                Float64(node2["x"]),
+                Float64(node2["y"]),
             )
             var dof_map = [
                 node_dof_index(i1, 1, ndf),
@@ -101,34 +101,34 @@ fn run_case(data: PythonObject, output_path: String) raises:
         elif elem_type == "truss":
             if ndf != 2:
                 abort("truss requires ndf=2")
-            var n1 = Int(py=elem["nodes"][0])
-            var n2 = Int(py=elem["nodes"][1])
+            var n1 = Int(elem["nodes"][0])
+            var n2 = Int(elem["nodes"][1])
             var i1 = id_to_index[n1]
             var i2 = id_to_index[n2]
             var node1 = nodes[i1]
             var node2 = nodes[i2]
 
-            var mat_id = Int(py=elem["material"])
+            var mat_id = Int(elem["material"])
             var mat: PythonObject = None
             for midx in range(py_len(materials)):
                 var candidate = materials[midx]
-                if Int(py=candidate["id"]) == mat_id:
+                if Int(candidate["id"]) == mat_id:
                     mat = candidate
                     break
             if mat is None:
                 abort("material not found")
 
             var params = mat["params"]
-            var E = Float64(py=params["E"])
-            var A = Float64(py=elem["area"])
+            var E = Float64(params["E"])
+            var A = Float64(elem["area"])
 
             var k_global = truss_global_stiffness(
                 E,
                 A,
-                Float64(py=node1["x"]),
-                Float64(py=node1["y"]),
-                Float64(py=node2["x"]),
-                Float64(py=node2["y"]),
+                Float64(node1["x"]),
+                Float64(node1["y"]),
+                Float64(node2["x"]),
+                Float64(node2["y"]),
             )
             var dof_map = [
                 node_dof_index(i1, 1, ndf),
@@ -147,10 +147,10 @@ fn run_case(data: PythonObject, output_path: String) raises:
     var loads = data.get("loads", [])
     for i in range(py_len(loads)):
         var load = loads[i]
-        var node_id = Int(py=load["node"])
-        var dof = Int(py=load["dof"])
+        var node_id = Int(load["node"])
+        var dof = Int(load["dof"])
         var idx = node_dof_index(id_to_index[node_id], dof, ndf)
-        F[idx] += Float64(py=load["value"])
+        F[idx] += Float64(load["value"])
 
     var constrained: List[Bool] = []
     constrained.resize(total_dofs, False)
@@ -160,7 +160,7 @@ fn run_case(data: PythonObject, output_path: String) raises:
             continue
         var constraints = node["constraints"]
         for j in range(py_len(constraints)):
-            var dof = Int(py=constraints[j])
+            var dof = Int(constraints[j])
             if dof <= 0:
                 continue
             var idx = node_dof_index(i, dof, ndf)
@@ -199,17 +199,17 @@ fn run_case(data: PythonObject, output_path: String) raises:
     var recorders = data.get("recorders", [])
     for r in range(py_len(recorders)):
         var rec = recorders[r]
-        if String(py=rec["type"]) != "node_displacement":
+        if String(rec["type"]) != "node_displacement":
             abort("unsupported recorder type")
         var dofs = rec["dofs"]
-        var output = String(py=rec.get("output", "node_disp"))
+        var output = String(rec.get("output", "node_disp"))
         var nodes_out = rec["nodes"]
         for nidx in range(py_len(nodes_out)):
-            var node_id = Int(py=nodes_out[nidx])
+            var node_id = Int(nodes_out[nidx])
             var i = id_to_index[node_id]
             var line = String()
             for j in range(py_len(dofs)):
-                var dof = Int(py=dofs[j])
+                var dof = Int(dofs[j])
                 var value = u[node_dof_index(i, dof, ndf)]
                 if j > 0:
                     line += " "

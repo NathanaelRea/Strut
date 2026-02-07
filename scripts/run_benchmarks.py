@@ -132,6 +132,24 @@ def run_engine(
     return times
 
 
+def ensure_mojo_solver(repo_root: Path, verbose: bool) -> Path:
+    mojo = shutil.which("mojo")
+    if mojo is None:
+        raise SystemExit("mojo executable not found on PATH; required to run benchmarks.")
+    solver_path = os.getenv("STRUT_MOJO_BIN")
+    if solver_path:
+        return Path(solver_path)
+    solver_path = repo_root / "build" / "mojo" / "strut"
+    if solver_path.exists():
+        return solver_path
+    solver_path.parent.mkdir(parents=True, exist_ok=True)
+    run(
+        [mojo, "build", str(repo_root / "src" / "mojo" / "strut.mojo"), "-o", str(solver_path)],
+        verbose=verbose,
+    )
+    return solver_path
+
+
 def _parse_line(line: str) -> List[float]:
     line = line.strip()
     if not line:
@@ -289,6 +307,9 @@ def main() -> None:
 
     run_opensees = args.engine in ("both", "opensees")
     run_mojo = args.engine in ("both", "mojo")
+    mojo_solver = None
+    if run_mojo:
+        mojo_solver = ensure_mojo_solver(repo_root, verbose)
 
     if not run_opensees and not run_mojo:
         raise SystemExit("No engines selected. Use --engine opensees|mojo|both.")
@@ -373,10 +394,11 @@ def main() -> None:
                 tmp_dir = results_root / ".tmp" / "mojo" / case_name
                 ensure_clean_dir(tmp_dir)
                 target_dir = tmp_dir
+            if mojo_solver is None:
+                raise SystemExit("Mojo solver not initialized.")
             run(
                 [
-                    "python",
-                    str(repo_root / "scripts" / "run_mojo_case.py"),
+                    str(mojo_solver),
                     "--input",
                     str(case.json_path),
                     "--output",

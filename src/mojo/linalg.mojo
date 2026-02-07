@@ -51,7 +51,7 @@ fn gaussian_elimination(
         if pivot != i:
             var tmp = A[i].copy()
             A[i] = A[pivot].copy()
-            A[pivot] = tmp
+            A[pivot] = tmp^
             var tb = b[i]
             b[i] = b[pivot]
             b[pivot] = tb

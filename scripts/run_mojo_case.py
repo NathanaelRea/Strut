@@ -20,29 +20,32 @@ def main():
 
     repo_root = Path(__file__).resolve().parents[1]
     mojo = shutil.which("mojo")
+    if mojo is None:
+        raise SystemExit("mojo executable not found on PATH; required to run solver.")
 
     verbose = os.getenv("STRUT_VERBOSE") == "1"
+    solver_bin = os.getenv("STRUT_MOJO_BIN")
+    if solver_bin:
+        solver_path = Path(solver_bin)
+    else:
+        solver_path = repo_root / "build" / "mojo" / "strut"
 
-    if os.getenv("STRUT_MOJO_SOLVER") != "1" or mojo is None:
+    if not solver_path.exists():
+        solver_path.parent.mkdir(parents=True, exist_ok=True)
         run(
             [
-                "python",
-                str(repo_root / "scripts" / "run_mojo_case_py.py"),
-                "--input",
-                args.input,
-                "--output",
-                args.output,
+                mojo,
+                "build",
+                str(repo_root / "src" / "mojo" / "strut.mojo"),
+                "-o",
+                str(solver_path),
             ],
             verbose=verbose,
         )
-        return
 
     run(
         [
-            "mojo",
-            "run",
-            str(repo_root / "src" / "mojo" / "strut.mojo"),
-            "--",
+            str(solver_path),
             "--input",
             args.input,
             "--output",

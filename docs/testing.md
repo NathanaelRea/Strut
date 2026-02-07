@@ -8,6 +8,12 @@ This document describes how Strut compares outputs and how tolerances are applie
 - `uv run run_tests.py --all`
 - `uv run run_tests.py --case tests/validation/elastic_beam_cantilever/elastic_beam_cantilever.json`
 
+Mojo is compiled on first run and cached at `build/mojo/strut`. To precompile:
+
+```bash
+scripts/build_mojo_solver.sh
+```
+
 ## Comparison Strategy
 
 Strut uses an `isclose`-style comparison, equivalent to NumPy's `numpy.isclose`:

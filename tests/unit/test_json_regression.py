@@ -1,12 +1,29 @@
 import json
 import tempfile
 from pathlib import Path
+import subprocess
 import sys
 
 repo_root = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(repo_root))
 
-from scripts.run_mojo_case_py import run_case
+def _run_mojo_case(case_data, out_dir: Path):
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as tmp:
+        tmp.write(json.dumps(case_data))
+        tmp_path = Path(tmp.name)
+    try:
+        subprocess.check_call(
+            [
+                sys.executable,
+                str(repo_root / "scripts" / "run_mojo_case.py"),
+                "--input",
+                str(tmp_path),
+                "--output",
+                str(out_dir),
+            ]
+        )
+    finally:
+        tmp_path.unlink(missing_ok=True)
 
 ABS_TOL = 1e-8
 REL_TOL = 1e-5
@@ -64,7 +81,7 @@ def test_json_case_regressions():
 
         with tempfile.TemporaryDirectory() as tmp:
             out_dir = Path(tmp)
-            run_case(case_data, out_dir)
+            _run_mojo_case(case_data, out_dir)
 
             for rec in case_data.get("recorders", []):
                 if rec["type"] != "node_displacement":

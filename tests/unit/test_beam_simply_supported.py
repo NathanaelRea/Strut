@@ -1,12 +1,30 @@
 import math
 import tempfile
 from pathlib import Path
+import json
+import subprocess
 import sys
 
 repo_root = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(repo_root))
 
-from scripts.run_mojo_case_py import run_case
+def _run_mojo_case(case_data, out_dir: Path):
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as tmp:
+        tmp.write(json.dumps(case_data))
+        tmp_path = Path(tmp.name)
+    try:
+        subprocess.check_call(
+            [
+                sys.executable,
+                str(repo_root / "scripts" / "run_mojo_case.py"),
+                "--input",
+                str(tmp_path),
+                "--output",
+                str(out_dir),
+            ]
+        )
+    finally:
+        tmp_path.unlink(missing_ok=True)
 
 
 def test_simply_supported_midspan_point_load():
@@ -42,7 +60,7 @@ def test_simply_supported_midspan_point_load():
 
     with tempfile.TemporaryDirectory() as tmp:
         out_dir = Path(tmp)
-        run_case(case_data, out_dir)
+        _run_mojo_case(case_data, out_dir)
         disp_file = out_dir / "node_disp_node2.out"
         values = [float(v) for v in disp_file.read_text().split()]
 
