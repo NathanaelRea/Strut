@@ -140,9 +140,8 @@ def ensure_mojo_solver(repo_root: Path, verbose: bool) -> Path:
     if solver_path:
         return Path(solver_path)
     solver_path = repo_root / "build" / "mojo" / "strut"
-    if solver_path.exists():
-        return solver_path
     solver_path.parent.mkdir(parents=True, exist_ok=True)
+    log("Building Mojo solver...")
     run(
         [mojo, "build", str(repo_root / "src" / "mojo" / "strut.mojo"), "-o", str(solver_path)],
         verbose=verbose,
@@ -221,11 +220,11 @@ def _load_case_metric(output_root: Path, entries: List[dict], filename: str) -> 
     return times
 
 
-def _read_analysis_us(path: Path) -> Optional[int]:
+def _read_analysis_us(path: Path) -> Optional[float]:
     if not path.exists():
         return None
     try:
-        return int(path.read_text().strip())
+        return float(path.read_text().strip())
     except ValueError:
         return None
 

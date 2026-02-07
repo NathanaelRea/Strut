@@ -220,7 +220,7 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
 
     var t_output_start = t_solve_end
     var t1 = Int(time.perf_counter_ns())
-    var analysis_us = (t_output_start - t0) / 1000
+    var analysis_us = (t_output_start - t0) // 1000
 
     var pathlib = Python.import_module("pathlib")
     var out_dir = pathlib.Path(output_path)
