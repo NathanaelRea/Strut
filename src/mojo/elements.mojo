@@ -143,6 +143,50 @@ fn beam_global_stiffness(
     return matmul(transpose(T), matmul(k_local, T))
 
 
+fn beam_uniform_load_global(
+    x1: Float64,
+    y1: Float64,
+    x2: Float64,
+    y2: Float64,
+    w: Float64,
+) -> List[Float64]:
+    var dx = x2 - x1
+    var dy = y2 - y1
+    var L = hypot(dx, dy)
+    if L == 0.0:
+        abort("zero-length element")
+    var c = dx / L
+    var s = dy / L
+
+    var f_local: List[Float64] = [
+        0.0,
+        w * L / 2.0,
+        w * L * L / 12.0,
+        0.0,
+        w * L / 2.0,
+        -w * L * L / 12.0,
+    ]
+
+    var T: List[List[Float64]] = [
+        [c, s, 0.0, 0.0, 0.0, 0.0],
+        [-s, c, 0.0, 0.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
+        [0.0, 0.0, 0.0, c, s, 0.0],
+        [0.0, 0.0, 0.0, -s, c, 0.0],
+        [0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+    ]
+
+    var f_global: List[Float64] = []
+    f_global.resize(6, 0.0)
+    for i in range(6):
+        var sum = 0.0
+        for j in range(6):
+            sum += T[j][i] * f_local[j]
+        f_global[i] = sum
+
+    return f_global^
+
+
 fn truss_global_stiffness(
     E: Float64,
     A: Float64,

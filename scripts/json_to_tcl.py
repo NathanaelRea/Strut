@@ -165,19 +165,27 @@ def main():
 
         # Loads
         loads = data.get("loads", [])
-        if loads:
+        element_loads = data.get("element_loads", [])
+        if loads or element_loads:
             f.write("timeSeries Linear 1\n")
             f.write("pattern Plain 1 1 {\n")
-            load_map = {}
-            for load in loads:
-                node_id = load["node"]
-                vec = load_map.setdefault(node_id, [0.0] * ndf)
-                dof = load["dof"]
-                if dof < 1 or dof > ndf:
-                    raise ValueError(f"load dof {dof} out of range 1..{ndf}")
-                vec[dof - 1] += load["value"]
-            for node_id, vec in load_map.items():
-                f.write(f"  load {node_id} {' '.join(str(v) for v in vec)}\n")
+            if loads:
+                load_map = {}
+                for load in loads:
+                    node_id = load["node"]
+                    vec = load_map.setdefault(node_id, [0.0] * ndf)
+                    dof = load["dof"]
+                    if dof < 1 or dof > ndf:
+                        raise ValueError(f"load dof {dof} out of range 1..{ndf}")
+                    vec[dof - 1] += load["value"]
+                for node_id, vec in load_map.items():
+                    f.write(f"  load {node_id} {' '.join(str(v) for v in vec)}\n")
+            for elem_load in element_loads:
+                if elem_load["type"] != "beamUniform":
+                    raise ValueError(f"unsupported element load type: {elem_load['type']}")
+                elem_id = elem_load["element"]
+                w = elem_load["w"]
+                f.write(f"  eleLoad -ele {elem_id} -type -beamUniform {w}\n")
             f.write("}\n")
 
         # Analysis setup

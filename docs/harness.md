@@ -23,6 +23,7 @@ Minimum required fields (v1.0):
 - `sections`: list of `{ id, type, params }` (elastic section only in v1)
 - `elements`: list of `{ id, type, nodes, section, geomTransf }`
 - `loads`: list of `{ node, dof, value }`
+- `element_loads`: list of `{ element, type, w }` (optional, `type: "beamUniform"` only)
 - `analysis`: `{ type: "static_linear", steps: 1 }`
 - `recorders`: list of `{ type: "node_displacement", nodes, dofs, output }`
 

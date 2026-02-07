@@ -4,6 +4,7 @@ from python import Python, PythonObject
 
 from elements import (
     beam_global_stiffness,
+    beam_uniform_load_global,
     link_global_stiffness,
     quad4_plane_stress_stiffness,
     shell4_mindlin_stiffness,
@@ -69,6 +70,18 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
     var sections = data.get("sections", [])
     var materials = data.get("materials", [])
     var elements = data["elements"]
+    var elem_count = py_len(elements)
+    var elem_ids: List[Int] = []
+    elem_ids.resize(elem_count, 0)
+    var elem_id_to_index: List[Int] = []
+    elem_id_to_index.resize(10000, -1)
+    for i in range(elem_count):
+        var elem = elements[i]
+        var eid = Int(elem["id"])
+        elem_ids[i] = eid
+        if eid >= len(elem_id_to_index):
+            elem_id_to_index.resize(eid + 1, -1)
+        elem_id_to_index[eid] = i
 
     var total_dofs = node_count * ndf
     var K: List[List[Float64]] = []
@@ -79,7 +92,7 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
     var F: List[Float64] = []
     F.resize(total_dofs, 0.0)
 
-    for e in range(py_len(elements)):
+    for e in range(elem_count):
         var elem = elements[e]
         var elem_type = String(elem["type"])
         if elem_type == "elasticBeamColumn2d":
@@ -366,6 +379,47 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
                     K[Aidx][Bidx] += k_global[a][b]
         else:
             abort("unsupported element type")
+
+    var element_loads = data.get("element_loads", [])
+    for i in range(py_len(element_loads)):
+        var load = element_loads[i]
+        var elem_id = Int(load["element"])
+        if elem_id >= len(elem_id_to_index) or elem_id_to_index[elem_id] < 0:
+            abort("element load refers to unknown element")
+        var elem = elements[elem_id_to_index[elem_id]]
+        var elem_type = String(elem["type"])
+        var load_type = String(load["type"])
+        if load_type == "beamUniform":
+            if elem_type != "elasticBeamColumn2d":
+                abort("beamUniform requires elasticBeamColumn2d")
+            if ndf != 3:
+                abort("beamUniform requires ndf=3")
+            var n1 = Int(elem["nodes"][0])
+            var n2 = Int(elem["nodes"][1])
+            var i1 = id_to_index[n1]
+            var i2 = id_to_index[n2]
+            var node1 = nodes[i1]
+            var node2 = nodes[i2]
+            var w = Float64(load["w"])
+            var f_global = beam_uniform_load_global(
+                Float64(node1["x"]),
+                Float64(node1["y"]),
+                Float64(node2["x"]),
+                Float64(node2["y"]),
+                w,
+            )
+            var dof_map = [
+                node_dof_index(i1, 1, ndf),
+                node_dof_index(i1, 2, ndf),
+                node_dof_index(i1, 3, ndf),
+                node_dof_index(i2, 1, ndf),
+                node_dof_index(i2, 2, ndf),
+                node_dof_index(i2, 3, ndf),
+            ]
+            for a in range(6):
+                F[dof_map[a]] += f_global[a]
+        else:
+            abort("unsupported element load type")
 
     var loads = data.get("loads", [])
     for i in range(py_len(loads)):
