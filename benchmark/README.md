@@ -52,3 +52,10 @@ The plot helper requires matplotlib:
 ```bash
 python scripts/plot_benchmarks.py --output benchmark/results/plots.pdf
 ```
+
+Group and order cases in the bar chart (default is prefix grouping, disable with `--group-by none`):
+
+```bash
+python scripts/plot_benchmarks.py --group-by prefix
+python scripts/plot_benchmarks.py --group-by config --group-config benchmark/groups.json
+```

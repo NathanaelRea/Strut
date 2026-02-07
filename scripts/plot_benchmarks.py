@@ -7,7 +7,7 @@ import webbrowser
 from datetime import datetime
 from pathlib import Path
 from statistics import median, stdev
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 try:
     import matplotlib.pyplot as plt
@@ -107,13 +107,151 @@ def collect_archive_trend(archive_dir: Path) -> Tuple[List[datetime], Dict[str, 
 MOJO_COLOR = "#FF5A1F"
 
 
+def _group_label_from_prefix(name: str) -> str:
+    parts = name.split("_")
+    if len(parts) >= 2:
+        return f"{parts[0]}_{parts[1]}"
+    if parts:
+        return parts[0]
+    return "other"
+
+
+def _match_group(name: str, matchers: List[str]) -> bool:
+    for matcher in matchers:
+        if matcher == "*":
+            return True
+        if matcher.startswith("re:"):
+            pattern = matcher[3:]
+            try:
+                if __import__("re").search(pattern, name):
+                    return True
+            except Exception:
+                continue
+        else:
+            if name.startswith(matcher):
+                return True
+    return False
+
+
+def _load_group_config(path: Path) -> dict:
+    data = json.loads(path.read_text())
+    if not isinstance(data, dict):
+        raise SystemExit(f"Invalid group config: {path}")
+    groups = data.get("groups")
+    if not isinstance(groups, list):
+        raise SystemExit(f"Group config missing 'groups' list: {path}")
+    return data
+
+
+def group_cases(
+    names: List[str],
+    engines: Dict[str, List[float]],
+    errors: Dict[str, List[Tuple[float, float]]],
+    group_by: str,
+    group_config: Optional[Path],
+) -> Tuple[List[str], Dict[str, List[float]], Dict[str, List[Tuple[float, float]]], List[Tuple[str, int, int]]]:
+    if group_by == "none":
+        return names, engines, errors, []
+
+    grouped: Dict[str, List[int]] = {}
+    group_order: List[str] = []
+
+    if group_by == "config":
+        if not group_config:
+            raise SystemExit("--group-config is required when --group-by=config")
+        cfg = _load_group_config(group_config)
+        cfg_groups = cfg.get("groups", [])
+        for idx, name in enumerate(names):
+            assigned = False
+            for group in cfg_groups:
+                label = group.get("label")
+                matchers = group.get("match", [])
+                if not isinstance(label, str) or not isinstance(matchers, list):
+                    continue
+                if _match_group(name, matchers):
+                    grouped.setdefault(label, []).append(idx)
+                    if label not in group_order:
+                        group_order.append(label)
+                    assigned = True
+                    break
+            if not assigned:
+                grouped.setdefault("Other", []).append(idx)
+                if "Other" not in group_order:
+                    group_order.append("Other")
+    else:
+        for idx, name in enumerate(names):
+            label = _group_label_from_prefix(name)
+            grouped.setdefault(label, []).append(idx)
+            if label not in group_order:
+                group_order.append(label)
+
+    ordered_indices: List[int] = []
+    spans: List[Tuple[str, int, int]] = []
+    cursor = 0
+    for label in group_order:
+        indices = grouped.get(label, [])
+        if not indices:
+            continue
+        ordered_indices.extend(indices)
+        span_start = cursor
+        span_end = cursor + len(indices) - 1
+        spans.append((label, span_start, span_end))
+        cursor += len(indices)
+
+    ordered_names = [names[i] for i in ordered_indices]
+    ordered_engines = {
+        engine: [values[i] for i in ordered_indices] for engine, values in engines.items()
+    }
+    ordered_errors = {
+        engine: [errs[i] for i in ordered_indices] for engine, errs in errors.items()
+    }
+    return ordered_names, ordered_engines, ordered_errors, spans
+
+
 def plot_recent_bar(
     names: List[str],
     engines: Dict[str, List[float]],
     errors: Dict[str, List[Tuple[float, float]]],
+    group_spans: Optional[List[Tuple[str, int, int]]] = None,
+    group_gap: float = 0.6,
 ):
     fig, ax = plt.subplots(figsize=(10, 5))
-    x = range(len(names))
+    if group_spans:
+        gap_slots = max(0, int(round(group_gap)))
+        expanded_names: List[str] = []
+        expanded_engines: Dict[str, List[float]] = {
+            engine: [] for engine in engines
+        }
+        expanded_errors: Dict[str, List[Tuple[float, float]]] = {
+            engine: [] for engine in errors
+        }
+        group_centers: List[Tuple[str, float]] = []
+        for group_idx, (label, start, end) in enumerate(group_spans):
+            group_len = end - start + 1
+            group_start_pos = len(expanded_names)
+            for idx in range(start, end + 1):
+                expanded_names.append(names[idx])
+                for engine, values in engines.items():
+                    expanded_engines[engine].append(values[idx])
+                for engine, errs in errors.items():
+                    expanded_errors[engine].append(errs[idx])
+            center = group_start_pos + (group_len - 1) / 2
+            group_centers.append((label, center))
+            if gap_slots and group_idx < len(group_spans) - 1:
+                for _ in range(gap_slots):
+                    expanded_names.append("")
+                    for engine in expanded_engines:
+                        expanded_engines[engine].append(float("nan"))
+                    for engine in expanded_errors:
+                        expanded_errors[engine].append((0.0, 0.0))
+
+        names = expanded_names
+        engines = expanded_engines
+        errors = expanded_errors
+        x = list(range(len(names)))
+    else:
+        x = list(range(len(names)))
+        group_centers = []
     width = 0.38
     opensees_vals = engines.get("opensees", [])
     mojo_vals = engines.get("mojo", [])
@@ -142,10 +280,24 @@ def plot_recent_bar(
     ax.set_title("Recent benchmark (analysis time per case)")
     ax.set_xticks(list(x))
     ax.set_xticklabels(names, rotation=45, ha="right")
+    ax.tick_params(axis="x", pad=2)
     ax.legend()
     ax.grid(axis="y", linestyle=":", alpha=0.5)
 
-    fig.tight_layout()
+    if group_spans:
+        group_axis = ax.secondary_xaxis("bottom")
+        group_axis.set_xticks([c for _, c in group_centers])
+        group_axis.set_xticklabels(
+            [label.replace("_", " ").title() for label, _ in group_centers]
+        )
+        group_axis.spines["bottom"].set_position(("axes", -0.32))
+        group_axis.spines["bottom"].set_visible(False)
+        group_axis.tick_params(axis="x", length=0, pad=2, labelsize=9, colors="#555555")
+
+    if group_spans:
+        fig.tight_layout(rect=[0, 0.12, 1, 0.95])
+    else:
+        fig.tight_layout()
     return fig
 
 
@@ -188,6 +340,23 @@ def main() -> None:
         help="Output PDF path (default: benchmark/results/plots.pdf)",
     )
     parser.add_argument(
+        "--group-by",
+        choices=("prefix", "config", "none"),
+        default="prefix",
+        help="How to group and order cases in the bar chart (default: prefix).",
+    )
+    parser.add_argument(
+        "--group-config",
+        default=None,
+        help="Path to grouping config JSON (required for --group-by=config).",
+    )
+    parser.add_argument(
+        "--group-gap",
+        type=float,
+        default=0.6,
+        help="Number of empty slots between case groups (default: 0.6 -> 1 slot).",
+    )
+    parser.add_argument(
         "--open",
         action="store_true",
         help="Open the output after writing (best effort).",
@@ -214,6 +383,13 @@ def main() -> None:
 
     summary = load_summary(results_path)
     names, engines, errors = collect_recent_cases(summary)
+    names, engines, errors, group_spans = group_cases(
+        names,
+        engines,
+        errors,
+        args.group_by,
+        Path(args.group_config) if args.group_config else None,
+    )
     for engine, values in engines.items():
         if values and all(isinstance(v, float) and v != v for v in values):
             print(
@@ -222,7 +398,9 @@ def main() -> None:
             )
 
     with PdfPages(output_path) as pdf:
-        fig = plot_recent_bar(names, engines, errors)
+        fig = plot_recent_bar(
+            names, engines, errors, group_spans, group_gap=args.group_gap
+        )
         pdf.savefig(fig)
         plt.close(fig)
 
