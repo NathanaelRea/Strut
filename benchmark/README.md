@@ -35,7 +35,8 @@ python scripts/run_benchmarks.py --cases elastic_truss_basic,elastic_four_node_q
 ## Results
 
 - `benchmark/results/` contains the latest run (summary plus last-run outputs).
-- Compute-only outputs are written to `benchmark/results/opensees_compute/` and `benchmark/results/mojo_compute/`.
+- Runs with `--profile` write to `benchmark/results-profile/` and default to `--no-archive`.
+- Compute-only outputs are written to `benchmark/results/opensees_compute/` and `benchmark/results/mojo_compute/` (or the `results-profile` equivalents when profiling).
 - `benchmark/archive/` contains timestamped summary snapshots.
 - When running both engines, the runner compares outputs and fails on mismatch.
 - The runner performs a second pass without recorders to estimate compute-only time.

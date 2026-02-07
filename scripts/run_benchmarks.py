@@ -273,7 +273,7 @@ def main() -> None:
     parser.add_argument(
         "--output-root",
         default=None,
-        help="Results root (default: benchmark/results).",
+        help="Results root (default: benchmark/results or benchmark/results-profile with --profile).",
     )
     parser.add_argument(
         "--archive-root",
@@ -337,7 +337,15 @@ def main() -> None:
     if not case_specs:
         raise SystemExit("All selected cases are disabled. Use --include-disabled to run.")
 
-    results_root = Path(args.output_root) if args.output_root else repo_root / "benchmark" / "results"
+    if args.profile and not args.no_archive:
+        args.no_archive = True
+
+    if args.output_root:
+        results_root = Path(args.output_root)
+    elif args.profile:
+        results_root = repo_root / "benchmark" / "results-profile"
+    else:
+        results_root = repo_root / "benchmark" / "results"
     archive_root = (
         Path(args.archive_root) if args.archive_root else repo_root / "benchmark" / "archive"
     )
