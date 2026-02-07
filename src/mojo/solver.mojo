@@ -11,7 +11,27 @@ fn node_dof_index(node_index: Int, dof: Int, ndf: Int) -> Int:
     return node_index * ndf + (dof - 1)
 
 
-def run_case(data: PythonObject, output_path: String):
+def _write_speedscope(profile_path: String, frames: String, events: String, total_us: Int):
+    var json = String()
+    json += "{"
+    json += "\"$schema\":\"https://www.speedscope.app/file-format-schema.json\","
+    json += "\"shared\":{\"frames\":[" + frames + "]},"
+    json += "\"profiles\":[{"
+    json += "\"type\":\"evented\","
+    json += "\"name\":\"strut\","
+    json += "\"unit\":\"microseconds\","
+    json += "\"startValue\":0,"
+    json += "\"endValue\":" + String(total_us) + ","
+    json += "\"events\":[" + events + "]"
+    json += "}]}"+ "\n"
+
+    var pathlib = Python.import_module("pathlib")
+    var out_path = pathlib.Path(profile_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(PythonObject(json))
+
+
+def run_case(data: PythonObject, output_path: String, profile_path: String):
     var model = data["model"]
     var ndm = Int(model["ndm"])
     var ndf = Int(model["ndf"])
@@ -190,14 +210,17 @@ def run_case(data: PythonObject, output_path: String):
         for j in range(len(free)):
             K_ff[i][j] = K[free[i]][free[j]]
 
+    var t_solve_start = Int(time.perf_counter_ns())
     var u_f = gaussian_elimination(K_ff, F_f)
+    var t_solve_end = Int(time.perf_counter_ns())
     var u: List[Float64] = []
     u.resize(total_dofs, 0.0)
     for i in range(len(free)):
         u[free[i]] = u_f[i]
 
+    var t_output_start = t_solve_end
     var t1 = Int(time.perf_counter_ns())
-    var analysis_us = (t1 - t0) / 1000
+    var analysis_us = (t_output_start - t0) / 1000
 
     var pathlib = Python.import_module("pathlib")
     var out_dir = pathlib.Path(output_path)
@@ -226,3 +249,27 @@ def run_case(data: PythonObject, output_path: String):
             var filename = output + "_node" + String(node_id) + ".out"
             var file_path = out_dir.joinpath(filename)
             file_path.write_text(PythonObject(line))
+
+    var t2 = Int(time.perf_counter_ns())
+    if profile_path != "":
+        var total_us = (t2 - t0) // 1000
+        var assemble_end = (t_solve_start - t0) // 1000
+        var solve_end = (t_solve_end - t0) // 1000
+        var output_end = total_us
+        var frames = (
+            "{\"name\":\"total\"},"
+            "{\"name\":\"assemble\"},"
+            "{\"name\":\"solve\"},"
+            "{\"name\":\"output\"}"
+        )
+        var events = (
+            "{\"type\":\"O\",\"frame\":0,\"at\":0},"
+            "{\"type\":\"O\",\"frame\":1,\"at\":0},"
+            "{\"type\":\"C\",\"frame\":1,\"at\":" + String(assemble_end) + "},"
+            "{\"type\":\"O\",\"frame\":2,\"at\":" + String(assemble_end) + "},"
+            "{\"type\":\"C\",\"frame\":2,\"at\":" + String(solve_end) + "},"
+            "{\"type\":\"O\",\"frame\":3,\"at\":" + String(solve_end) + "},"
+            "{\"type\":\"C\",\"frame\":3,\"at\":" + String(output_end) + "},"
+            "{\"type\":\"C\",\"frame\":0,\"at\":" + String(output_end) + "}"
+        )
+        _write_speedscope(profile_path, frames, events, total_us)

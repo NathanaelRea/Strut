@@ -23,9 +23,10 @@ fn load_json(path: String) raises -> PythonObject:
     return json.loads(text)
 
 
-fn parse_args() -> (String, String, String):
+fn parse_args() -> (String, String, String, String):
     var args = argv()
     var input_path = arg_value(args, "--input")
     var output_path = arg_value(args, "--output")
     var batch_path = arg_value(args, "--batch")
-    return (input_path, output_path, batch_path)
+    var profile_path = arg_value(args, "--profile")
+    return (input_path, output_path, batch_path, profile_path)
