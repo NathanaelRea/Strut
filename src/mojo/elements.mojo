@@ -14,6 +14,17 @@ fn _zero_matrix(rows: Int, cols: Int) -> List[List[Float64]]:
     return out^
 
 
+fn _matvec(mat: List[List[Float64]], vec: List[Float64]) -> List[Float64]:
+    var out: List[Float64] = []
+    out.resize(len(vec), 0.0)
+    for i in range(len(mat)):
+        var sum = 0.0
+        for j in range(len(vec)):
+            sum += mat[i][j] * vec[j]
+        out[i] = sum
+    return out^
+
+
 fn _dot(
     ax: Float64,
     ay: Float64,
@@ -185,6 +196,47 @@ fn beam_uniform_load_global(
         f_global[i] = sum
 
     return f_global^
+
+
+fn beam2d_pdelta_global_stiffness(
+    E: Float64,
+    A: Float64,
+    I: Float64,
+    x1: Float64,
+    y1: Float64,
+    x2: Float64,
+    y2: Float64,
+    u_elem_global: List[Float64],
+) -> List[List[Float64]]:
+    var dx = x2 - x1
+    var dy = y2 - y1
+    var L = hypot(dx, dy)
+    if L == 0.0:
+        abort("zero-length element")
+    var c = dx / L
+    var s = dy / L
+
+    var T: List[List[Float64]] = [
+        [c, s, 0.0, 0.0, 0.0, 0.0],
+        [-s, c, 0.0, 0.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
+        [0.0, 0.0, 0.0, c, s, 0.0],
+        [0.0, 0.0, 0.0, -s, c, 0.0],
+        [0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+    ]
+
+    var u_local = _matvec(T, u_elem_global)
+    var du = u_local[3] - u_local[0]
+    var N = (E * A / L) * du
+    var N_over_L = N / L
+
+    var k_local = beam_local_stiffness(E, A, I, L)
+    k_local[1][1] += N_over_L
+    k_local[4][4] += N_over_L
+    k_local[1][4] -= N_over_L
+    k_local[4][1] -= N_over_L
+
+    return matmul(transpose(T), matmul(k_local, T))
 
 
 fn beam3d_local_stiffness(

@@ -7,6 +7,7 @@ This document describes how Strut compares outputs and how tolerances are applie
 - `uv run run_tests.py`
 - `uv run run_tests.py --all`
 - `uv run run_tests.py --case tests/validation/elastic_beam_cantilever/elastic_beam_cantilever.json`
+- When iterating on benchmarks, always include `--no-archive` to avoid polluting `benchmark/archive`.
 
 Mojo is compiled on first run and cached at `build/mojo/strut`. To precompile:
 

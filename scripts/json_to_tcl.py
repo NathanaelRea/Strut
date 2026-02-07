@@ -246,16 +246,27 @@ def main():
 
         # Analysis setup
         analysis = data.get("analysis", {"type": "static_linear", "steps": 1})
-        if analysis["type"] != "static_linear":
-            raise ValueError(f"unsupported analysis type: {analysis['type']}")
+        analysis_type = analysis.get("type", "static_linear")
         steps = analysis.get("steps", 1)
+        if steps < 1:
+            raise ValueError("analysis steps must be >= 1")
         f.write("constraints Plain\n")
         f.write("numberer RCM\n")
         f.write("system BandGeneral\n")
-        f.write("test NormUnbalance 1.0e-12 10\n")
-        f.write("algorithm Linear\n")
-        f.write("integrator LoadControl 1.0\n")
-        f.write("analysis Static\n")
+        if analysis_type == "static_linear":
+            f.write("test NormUnbalance 1.0e-12 10\n")
+            f.write("algorithm Linear\n")
+            f.write("integrator LoadControl 1.0\n")
+            f.write("analysis Static\n")
+        elif analysis_type == "static_nonlinear":
+            tol = analysis.get("tol", 1.0e-10)
+            max_iters = analysis.get("max_iters", 20)
+            f.write(f"test NormUnbalance {tol} {max_iters}\n")
+            f.write("algorithm Newton\n")
+            f.write(f"integrator LoadControl {1.0/steps}\n")
+            f.write("analysis Static\n")
+        else:
+            raise ValueError(f"unsupported analysis type: {analysis_type}")
 
         # Recorders
         for rec in recorders:

@@ -27,7 +27,7 @@ Minimum required fields (v1.0):
 - `elements`: list of `{ id, type, nodes, section, geomTransf }`
 - `loads`: list of `{ node, dof, value }` (`dof` must be in `1..ndf`)
 - `element_loads`: list of `{ element, type, w }` (optional, `type: "beamUniform"` only)
-- `analysis`: `{ type: "static_linear", steps: 1 }`
+- `analysis`: `{ type: "static_linear" | "static_nonlinear", steps: 1, max_iters?, tol?, rel_tol? }`
 - `recorders`: list of `{ type: "node_displacement", nodes, dofs, output }` (`dofs` in `1..ndf`)
 
 ## Harness Workflow

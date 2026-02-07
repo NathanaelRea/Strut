@@ -54,7 +54,7 @@ This document is a living roadmap for Strut (Mojo rewrite of OpenSees). It captu
 
 ### C. Geometric Nonlinearity (P-Delta / Corotational)
 
-- [ ] Add `geomTransf PDelta`.
+- [x] Add `geomTransf PDelta`.
 - [ ] Add `geomTransf Corotational`.
 - [ ] Compare element forces and displacements under second-order effects.
 

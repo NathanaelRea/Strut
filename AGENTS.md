@@ -37,6 +37,10 @@ OpenSees Examples:
 ## In depth
 
 - [testing.md](./docs/testing.md)
+  - `uv run run_tests.py`
+  - `uv run scripts/run_benchmarks.py --cases CASES`
+  - `uv run scripts/run_benchmarks.py --batch`
+  - Always add `--no-archive` while iterating to avoid polluting `benchmark/archive`.
 - [packages.md](./docs/packages.md)
 
 ## A note to the Agent
