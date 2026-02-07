@@ -20,6 +20,7 @@ from solver.profile import (
     _profile_enabled,
     _write_speedscope,
 )
+from solver.time_series import eval_time_series, find_time_series, parse_time_series
 from strut_io import py_len
 
 
@@ -288,6 +289,27 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
     if steps < 1:
         abort("analysis steps must be >= 1")
 
+    var time_series = parse_time_series(data)
+    var ts_index = -1
+    if py_len(time_series) > 0:
+        var ts_tag = -1
+        var pattern = data.get("pattern", None)
+        if pattern is None:
+            if py_len(time_series) == 1:
+                ts_tag = Int(time_series[0]["tag"])
+            else:
+                abort("pattern missing for multiple time_series")
+        else:
+            var pattern_type = String(pattern.get("type", "Plain"))
+            if pattern_type != "Plain":
+                abort("unsupported pattern type: " + pattern_type)
+            if not pattern.__contains__("time_series"):
+                abort("pattern missing time_series")
+            ts_tag = Int(pattern["time_series"])
+        ts_index = find_time_series(time_series, ts_tag)
+        if ts_index < 0:
+            abort("time_series tag not found")
+
     var u: List[Float64] = []
     u.resize(total_dofs, 0.0)
 
@@ -297,6 +319,10 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
         _append_event(events, events_need_comma, "C", frame_assemble, assemble_end)
         _append_event(events, events_need_comma, "O", frame_solve, assemble_end)
     if analysis_type == "static_linear":
+        if ts_index >= 0:
+            var factor = eval_time_series(time_series[ts_index], 1.0)
+            for i in range(total_dofs):
+                F_total[i] *= factor
         if do_profile:
             var t_asm_start = Int(time.perf_counter_ns())
             var asm_start_us = (t_asm_start - t0) // 1000
@@ -391,6 +417,8 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
                     events, events_need_comma, "O", frame_nonlinear_step, step_start_us
                 )
             var scale = Float64(step + 1) / Float64(steps)
+            if ts_index >= 0:
+                scale = eval_time_series(time_series[ts_index], scale)
             var converged = False
             for _ in range(max_iters):
                 if do_profile:

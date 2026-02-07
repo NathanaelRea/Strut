@@ -25,6 +25,12 @@ Minimum required fields (v1.0):
 - `materials`: list of `{ id, type, params }` (elastic only in v1)
 - `sections`: list of `{ id, type, params }` (elastic section only in v1)
 - `elements`: list of `{ id, type, nodes, section, geomTransf }`
+- `time_series`: list of `{ type, tag, ... }` (optional; top-level)
+  - `Constant`: `{ tag, factor? }`
+  - `Linear`: `{ tag, factor? }`
+  - `Path`: `{ tag, values, dt? | time?, factor?, use_last? }`
+  - `Trig`: `{ tag, t_start, t_finish, period, phase_shift?, factor?, zero_shift? }`
+- `pattern`: `{ type: "Plain", tag, time_series }` (optional; top-level)
 - `loads`: list of `{ node, dof, value }` (`dof` must be in `1..ndf`)
 - `element_loads`: list of `{ element, type, w }` (optional, `type: "beamUniform"` only)
 - `analysis`: `{ type: "static_linear" | "static_nonlinear", steps: 1, max_iters?, tol?, rel_tol? }`
@@ -63,6 +69,7 @@ the vector contains 6 global end forces (3 at node 1, 3 at node 2) in the OpenSe
 - Phase 1 targets 2D linear `elasticBeamColumn` with static linear analysis.
 - The current phase-1 solver is implemented in Python for harness validation. Replace with Mojo and wire `strut.mojo` into the harness once the Mojo implementation is ready.
 - Expand schema and harness only after parity is stable.
+- For static analyses with time series, Strut uses normalized pseudoTime `t = (step + 1) / steps` (static_linear uses `t = 1.0`).
 - Validation cases can be marked with `"enabled": false` in JSON. `STRUT_RUN_ALL_CASES=1` runs all cases in tests, and `STRUT_FORCE_CASE=1` forces a disabled case in `scripts/run_case.py`.
 - `scripts/run_mojo_case.py` runs the Python solver by default and only uses Mojo when `STRUT_MOJO_SOLVER=1` and `mojo` is on `PATH`.
 - OpenSees reference outputs are cached by JSON content hash in `tests/validation/<case>/reference/.ref_hash`. Set `STRUT_REFRESH_REFERENCE=1` to regenerate.

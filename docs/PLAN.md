@@ -63,10 +63,10 @@ This document is a living roadmap for Strut (Mojo rewrite of OpenSees). It captu
 
 ### D. Time Series + Loading
 
-- [ ] Implement time series: `Constant`.
-- [ ] Implement time series: `Linear`.
-- [ ] Implement time series: `Path`.
-- [ ] Implement time series: `Trig`.
+- [x] Implement time series: `Constant`.
+- [x] Implement time series: `Linear`.
+- [x] Implement time series: `Path`.
+- [x] Implement time series: `Trig`.
 - [x] Add element loads: `beamUniform` for `elasticBeamColumn2d`.
 - [ ] Support transient analysis workflow in JSON.
 

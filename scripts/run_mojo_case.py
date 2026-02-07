@@ -33,7 +33,10 @@ def main():
     rebuild = not solver_path.exists()
     if not rebuild and not solver_bin:
         src_dir = repo_root / "src" / "mojo"
-        latest_src = max((p.stat().st_mtime for p in src_dir.glob("*.mojo")), default=0.0)
+        latest_src = max(
+            (p.stat().st_mtime for p in src_dir.rglob("*.mojo")),
+            default=0.0,
+        )
         if solver_path.stat().st_mtime < latest_src:
             rebuild = True
 

@@ -53,6 +53,63 @@ def _choose_vecxz(n1, n2):
     return (1.0, 0.0, 0.0)
 
 
+def _normalize_time_series(ts):
+    if ts is None:
+        return []
+    if isinstance(ts, dict):
+        return [ts]
+    if isinstance(ts, list):
+        return ts
+    raise ValueError("time_series must be a list or object")
+
+
+def _format_list(values):
+    return " ".join(str(v) for v in values)
+
+
+def _emit_time_series(f, ts):
+    ts_type = ts.get("type")
+    tag = ts.get("tag")
+    if ts_type is None or tag is None:
+        raise ValueError("time_series requires type and tag")
+    factor = ts.get("factor", 1.0)
+
+    if ts_type == "Constant":
+        f.write(f"timeSeries Constant {tag} -factor {factor}\n")
+    elif ts_type == "Linear":
+        f.write(f"timeSeries Linear {tag} -factor {factor}\n")
+    elif ts_type == "Path":
+        if "dt" in ts and "time" in ts:
+            raise ValueError("Path time_series cannot specify both dt and time")
+        values = ts.get("values")
+        if values is None:
+            raise ValueError("Path time_series missing values")
+        line = f"timeSeries Path {tag} "
+        if "dt" in ts:
+            line += f"-dt {ts['dt']} "
+        elif "time" in ts:
+            line += f"-time {{{_format_list(ts['time'])}}} "
+        else:
+            raise ValueError("Path time_series requires dt or time")
+        line += f"-values {{{_format_list(values)}}} -factor {factor}"
+        if ts.get("use_last", False):
+            line += " -useLast"
+        f.write(line + "\n")
+    elif ts_type == "Trig":
+        for key in ("t_start", "t_finish", "period"):
+            if key not in ts:
+                raise ValueError(f"Trig time_series missing {key}")
+        line = (
+            f"timeSeries Trig {tag} {ts['t_start']} {ts['t_finish']} {ts['period']}"
+            f" -phaseShift {ts.get('phase_shift', 0.0)}"
+            f" -factor {factor}"
+            f" -zeroShift {ts.get('zero_shift', 0.0)}"
+        )
+        f.write(line + "\n")
+    else:
+        raise ValueError(f"unsupported time_series type: {ts_type}")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("json_file")
@@ -223,8 +280,34 @@ def main():
         loads = data.get("loads", [])
         element_loads = data.get("element_loads", [])
         if loads or element_loads:
-            f.write("timeSeries Linear 1\n")
-            f.write("pattern Plain 1 1 {\n")
+            ts_list = _normalize_time_series(data.get("time_series"))
+            pattern = data.get("pattern")
+            if ts_list:
+                for ts in ts_list:
+                    _emit_time_series(f, ts)
+                if pattern is None:
+                    if len(ts_list) == 1:
+                        pattern = {"type": "Plain", "tag": 1, "time_series": ts_list[0]["tag"]}
+                    else:
+                        raise ValueError("pattern required when multiple time_series are defined")
+            else:
+                _emit_time_series(f, {"type": "Linear", "tag": 1, "factor": 1.0})
+                if pattern is None:
+                    pattern = {"type": "Plain", "tag": 1, "time_series": 1}
+
+            if pattern is None:
+                raise ValueError("pattern required when loads are present")
+            if pattern.get("type", "Plain") != "Plain":
+                raise ValueError(f"unsupported pattern type: {pattern.get('type')}")
+            pattern_tag = pattern.get("tag", 1)
+            ts_tag = pattern.get("time_series")
+            if ts_tag is None:
+                raise ValueError("pattern missing time_series tag")
+            ts_tags = {ts["tag"] for ts in ts_list} if ts_list else {1}
+            if ts_tag not in ts_tags:
+                raise ValueError(f"pattern time_series tag {ts_tag} not found")
+
+            f.write(f"pattern Plain {pattern_tag} {ts_tag} {{\n")
             if loads:
                 load_map = {}
                 for load in loads:
