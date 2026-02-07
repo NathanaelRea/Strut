@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import json
+import math
 from pathlib import Path
 
 def _constraints_to_fix(ndf, constraints):
@@ -33,6 +34,25 @@ def _require_field(obj, key):
     return obj[key]
 
 
+def _choose_vecxz(n1, n2):
+    dx = n2["x"] - n1["x"]
+    dy = n2["y"] - n1["y"]
+    dz = n2["z"] - n1["z"]
+    length = math.sqrt(dx * dx + dy * dy + dz * dz)
+    if length == 0.0:
+        raise ValueError("zero-length element")
+    ax = dx / length
+    ay = dy / length
+    az = dz / length
+
+    candidates = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
+    for vx, vy, vz in candidates:
+        dot = abs(ax * vx + ay * vy + az * vz)
+        if dot < 0.9:
+            return (vx, vy, vz)
+    return (1.0, 0.0, 0.0)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("json_file")
@@ -52,6 +72,7 @@ def main():
     elements = _require_field(data, "elements")
     sections = {sec["id"]: sec for sec in data.get("sections", [])}
     materials = {mat["id"]: mat for mat in data.get("materials", [])}
+    node_by_id = {node["id"]: node for node in nodes}
 
     recorders = data.get("recorders", [])
 
@@ -67,6 +88,8 @@ def main():
             if ndm == 2:
                 f.write(f"node {node_id} {node['x']} {node['y']}\n")
             elif ndm == 3:
+                if "z" not in node:
+                    raise ValueError(f"ndm=3 node {node_id} missing z coordinate")
                 f.write(f"node {node_id} {node['x']} {node['y']} {node['z']}\n")
             else:
                 raise ValueError("ndm must be 2 or 3")
@@ -89,7 +112,7 @@ def main():
             else:
                 raise ValueError(f"unsupported material type: {mat['type']}")
 
-        # Sections (ElasticSection2d or ElasticMembranePlateSection)
+        # Sections (ElasticSection2d, ElasticSection3d, or ElasticMembranePlateSection)
         for sec in sections.values():
             params = sec["params"]
             if sec["type"] == "ElasticSection2d":
@@ -97,6 +120,14 @@ def main():
                 A = params["A"]
                 I = params["I"]
                 f.write(f"section Elastic {sec['id']} {E} {A} {I}\n")
+            elif sec["type"] == "ElasticSection3d":
+                E = params["E"]
+                A = params["A"]
+                Iz = params["Iz"]
+                Iy = params["Iy"]
+                G = params["G"]
+                J = params["J"]
+                f.write(f"section Elastic {sec['id']} {E} {A} {Iz} {Iy} {G} {J}\n")
             elif sec["type"] == "ElasticMembranePlateSection":
                 E = params["E"]
                 nu = params["nu"]
@@ -112,12 +143,22 @@ def main():
         transf_tags = {}
         next_tag = 1
         for elem in elements:
-            if elem["type"] != "elasticBeamColumn2d":
+            if elem["type"] not in ("elasticBeamColumn2d", "elasticBeamColumn3d"):
                 continue
             name = elem.get("geomTransf", "Linear")
-            if name not in transf_tags:
-                transf_tags[name] = next_tag
-                f.write(f"geomTransf {name} {next_tag}\n")
+            if elem["type"] == "elasticBeamColumn3d":
+                n1_id, n2_id = elem["nodes"]
+                vecxz = _choose_vecxz(node_by_id[n1_id], node_by_id[n2_id])
+                key = (name, vecxz)
+            else:
+                key = (name, None)
+            if key not in transf_tags:
+                transf_tags[key] = next_tag
+                if key[1] is None:
+                    f.write(f"geomTransf {name} {next_tag}\n")
+                else:
+                    vx, vy, vz = key[1]
+                    f.write(f"geomTransf {name} {next_tag} {vx} {vy} {vz}\n")
                 next_tag += 1
 
         # Elements (elasticBeamColumn2d, truss, zeroLength, twoNodeLink, fourNodeQuad, shell)
@@ -129,9 +170,24 @@ def main():
                 E = params["E"]
                 I = params["I"]
                 n1, n2 = elem["nodes"]
-                transf_tag = transf_tags[elem.get("geomTransf", "Linear")]
+                transf_tag = transf_tags[(elem.get("geomTransf", "Linear"), None)]
                 f.write(
                     f"element elasticBeamColumn {elem['id']} {n1} {n2} {A} {E} {I} {transf_tag}\n"
+                )
+            elif elem["type"] == "elasticBeamColumn3d":
+                sec = sections[elem["section"]]
+                params = sec["params"]
+                A = params["A"]
+                E = params["E"]
+                G = params["G"]
+                J = params["J"]
+                Iy = params["Iy"]
+                Iz = params["Iz"]
+                n1, n2 = elem["nodes"]
+                vecxz = _choose_vecxz(node_by_id[n1], node_by_id[n2])
+                transf_tag = transf_tags[(elem.get("geomTransf", "Linear"), vecxz)]
+                f.write(
+                    f"element elasticBeamColumn {elem['id']} {n1} {n2} {A} {E} {G} {J} {Iy} {Iz} {transf_tag}\n"
                 )
             elif elem["type"] == "truss":
                 n1, n2 = elem["nodes"]

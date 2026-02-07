@@ -4,6 +4,7 @@ from python import Python, PythonObject
 
 from elements import (
     beam_global_stiffness,
+    beam3d_global_stiffness,
     beam_uniform_load_global,
     link_global_stiffness,
     quad4_plane_stress_stiffness,
@@ -16,6 +17,11 @@ from strut_io import py_len
 
 fn node_dof_index(node_index: Int, dof: Int, ndf: Int) -> Int:
     return node_index * ndf + (dof - 1)
+
+
+fn require_dof_in_range(dof: Int, ndf: Int, context: String):
+    if dof < 1 or dof > ndf:
+        abort(context + " dof out of range 1.." + String(ndf))
 
 
 def _write_speedscope(profile_path: String, frames: String, events: String, total_us: Int):
@@ -57,6 +63,8 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
 
     for i in range(node_count):
         var node = nodes[i]
+        if ndm == 3 and not node.__contains__("z"):
+            abort("ndm=3 requires node z coordinate")
         node_ids[i] = Int(node["id"])
 
     var id_to_index: List[Int] = []
@@ -140,6 +148,69 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
             for a in range(6):
                 var Aidx = dof_map[a]
                 for b in range(6):
+                    var Bidx = dof_map[b]
+                    K[Aidx][Bidx] += k_global[a][b]
+        elif elem_type == "elasticBeamColumn3d":
+            if ndm != 3 or ndf != 6:
+                abort("elasticBeamColumn3d requires ndm=3, ndf=6")
+            var n1 = Int(elem["nodes"][0])
+            var n2 = Int(elem["nodes"][1])
+            var i1 = id_to_index[n1]
+            var i2 = id_to_index[n2]
+            var node1 = nodes[i1]
+            var node2 = nodes[i2]
+
+            var sec_id = Int(elem["section"])
+            var sec: PythonObject = None
+            for sidx in range(py_len(sections)):
+                var candidate = sections[sidx]
+                if Int(candidate["id"]) == sec_id:
+                    sec = candidate
+                    break
+            if sec is None:
+                abort("section not found")
+            if String(sec["type"]) != "ElasticSection3d":
+                abort("elasticBeamColumn3d requires ElasticSection3d")
+
+            var params = sec["params"]
+            var E = Float64(params["E"])
+            var A = Float64(params["A"])
+            var Iz = Float64(params["Iz"])
+            var Iy = Float64(params["Iy"])
+            var G = Float64(params["G"])
+            var J = Float64(params["J"])
+
+            var k_global = beam3d_global_stiffness(
+                E,
+                A,
+                Iy,
+                Iz,
+                G,
+                J,
+                Float64(node1["x"]),
+                Float64(node1["y"]),
+                Float64(node1["z"]),
+                Float64(node2["x"]),
+                Float64(node2["y"]),
+                Float64(node2["z"]),
+            )
+            var dof_map = [
+                node_dof_index(i1, 1, ndf),
+                node_dof_index(i1, 2, ndf),
+                node_dof_index(i1, 3, ndf),
+                node_dof_index(i1, 4, ndf),
+                node_dof_index(i1, 5, ndf),
+                node_dof_index(i1, 6, ndf),
+                node_dof_index(i2, 1, ndf),
+                node_dof_index(i2, 2, ndf),
+                node_dof_index(i2, 3, ndf),
+                node_dof_index(i2, 4, ndf),
+                node_dof_index(i2, 5, ndf),
+                node_dof_index(i2, 6, ndf),
+            ]
+            for a in range(12):
+                var Aidx = dof_map[a]
+                for b in range(12):
                     var Bidx = dof_map[b]
                     K[Aidx][Bidx] += k_global[a][b]
         elif elem_type == "truss":
@@ -334,16 +405,16 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
             z.resize(4, 0.0)
             x[0] = Float64(node1["x"])
             y[0] = Float64(node1["y"])
-            z[0] = Float64(node1.get("z", 0.0))
+            z[0] = Float64(node1["z"])
             x[1] = Float64(node2["x"])
             y[1] = Float64(node2["y"])
-            z[1] = Float64(node2.get("z", 0.0))
+            z[1] = Float64(node2["z"])
             x[2] = Float64(node3["x"])
             y[2] = Float64(node3["y"])
-            z[2] = Float64(node3.get("z", 0.0))
+            z[2] = Float64(node3["z"])
             x[3] = Float64(node4["x"])
             y[3] = Float64(node4["y"])
-            z[3] = Float64(node4.get("z", 0.0))
+            z[3] = Float64(node4["z"])
 
             var k_global = shell4_mindlin_stiffness(E, nu, h, x, y, z)
             var dof_map = [
@@ -426,6 +497,7 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
         var load = loads[i]
         var node_id = Int(load["node"])
         var dof = Int(load["dof"])
+        require_dof_in_range(dof, ndf, "load")
         var idx = node_dof_index(id_to_index[node_id], dof, ndf)
         F[idx] += Float64(load["value"])
 
@@ -438,8 +510,7 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
         var constraints = node["constraints"]
         for j in range(py_len(constraints)):
             var dof = Int(constraints[j])
-            if dof <= 0:
-                continue
+            require_dof_in_range(dof, ndf, "constraint")
             var idx = node_dof_index(i, dof, ndf)
             constrained[idx] = True
 
@@ -495,6 +566,7 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
             var line = String()
             for j in range(py_len(dofs)):
                 var dof = Int(dofs[j])
+                require_dof_in_range(dof, ndf, "recorder")
                 var value = u[node_dof_index(i, dof, ndf)]
                 if j > 0:
                     line += " "

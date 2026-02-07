@@ -18,14 +18,17 @@ Minimum required fields (v1.0):
 - `schema_version`: string, e.g. `"1.0"`
 - `metadata`: `{ name, units }`
 - `model`: `{ ndm, ndf }`
-- `nodes`: list of `{ id, x, y, constraints? }`
+  - DOF order for `ndf=6`: `1..6 = ux, uy, uz, rx, ry, rz` (OpenSees standard).
+- `nodes`: list of `{ id, x, y, z?, constraints? }`
+  - `z` is required when `ndm=3`.
+  - `constraints` DOF indices must be in `1..ndf`.
 - `materials`: list of `{ id, type, params }` (elastic only in v1)
 - `sections`: list of `{ id, type, params }` (elastic section only in v1)
 - `elements`: list of `{ id, type, nodes, section, geomTransf }`
-- `loads`: list of `{ node, dof, value }`
+- `loads`: list of `{ node, dof, value }` (`dof` must be in `1..ndf`)
 - `element_loads`: list of `{ element, type, w }` (optional, `type: "beamUniform"` only)
 - `analysis`: `{ type: "static_linear", steps: 1 }`
-- `recorders`: list of `{ type: "node_displacement", nodes, dofs, output }`
+- `recorders`: list of `{ type: "node_displacement", nodes, dofs, output }` (`dofs` in `1..ndf`)
 
 ## Harness Workflow
 

@@ -104,6 +104,9 @@ def collect_archive_trend(archive_dir: Path) -> Tuple[List[datetime], Dict[str, 
     return timestamps, engine_series
 
 
+MOJO_COLOR = "#FF5A1F"
+
+
 def plot_recent_bar(
     names: List[str],
     engines: Dict[str, List[float]],
@@ -130,6 +133,7 @@ def plot_recent_bar(
         mojo_vals,
         width,
         label="Mojo",
+        color=MOJO_COLOR,
         yerr=list(zip(*mojo_err)) if mojo_err else None,
         capsize=3,
     )
@@ -149,7 +153,13 @@ def plot_archive_trend(timestamps: List[datetime], series: Dict[str, List[float]
     fig, ax = plt.subplots(figsize=(10, 4))
     if timestamps:
         ax.plot(timestamps, series.get("opensees", []), marker="o", label="OpenSees")
-        ax.plot(timestamps, series.get("mojo", []), marker="o", label="Mojo")
+        ax.plot(
+            timestamps,
+            series.get("mojo", []),
+            marker="o",
+            label="Mojo",
+            color=MOJO_COLOR,
+        )
 
     ax.set_ylabel("Median analysis time across cases (us)")
     ax.set_title("Archive trend (median analysis across cases)")

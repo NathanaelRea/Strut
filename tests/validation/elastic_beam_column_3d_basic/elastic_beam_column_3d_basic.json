@@ -1,12 +1,11 @@
 {
   "schema_version": "1.0",
   "enabled": true,
-  "status": "implemented",
+  "status": "active",
   "metadata": {
-    "name": "elastic_shell_basic",
+    "name": "elastic_beam_column_3d_basic",
     "units": "SI"
   },
-  "notes": "Minimal 4-node elastic shell patch for future shell element support.",
   "model": {
     "ndm": 3,
     "ndf": 6
@@ -43,89 +42,54 @@
     },
     {
       "id": 2,
-      "x": 1.0,
-      "y": 0.0,
-      "z": 0.0,
-      "constraints": [
-        1,
-        2,
-        3,
-        4,
-        5,
-        6
-      ]
-    },
-    {
-      "id": 3,
-      "x": 1.0,
-      "y": 1.0,
-      "z": 0.0
-    },
-    {
-      "id": 4,
       "x": 0.0,
-      "y": 1.0,
-      "z": 0.0,
-      "constraints": [
-        2,
-        3,
-        4,
-        5,
-        6
-      ]
+      "y": 0.0,
+      "z": 3.0
     }
   ],
   "materials": [],
   "sections": [
     {
       "id": 1,
-      "type": "ElasticMembranePlateSection",
+      "type": "ElasticSection3d",
       "params": {
         "E": 200000000000.0,
-        "nu": 0.3,
-        "h": 0.1,
-        "rho": 0.0
+        "A": 0.01,
+        "Iy": 1.0e-5,
+        "Iz": 1.0e-5,
+        "G": 80000000000.0,
+        "J": 2.0e-5
       }
     }
   ],
   "elements": [
     {
       "id": 1,
-      "type": "shell",
+      "type": "elasticBeamColumn3d",
       "nodes": [
         1,
-        2,
-        3,
-        4
+        2
       ],
-      "section": 1
+      "section": 1,
+      "geomTransf": "Linear"
     }
   ],
   "loads": [
     {
-      "node": 3,
+      "node": 2,
       "dof": 1,
       "value": 1000.0
-    },
-    {
-      "node": 3,
-      "dof": 4,
-      "value": 50.0
     }
   ],
   "analysis": {
     "type": "static_linear",
     "steps": 1
   },
-  "parity_tolerance": {
-    "rtol": 0.25,
-    "atol": 5.0e-8
-  },
   "recorders": [
     {
       "type": "node_displacement",
       "nodes": [
-        3
+        2
       ],
       "dofs": [
         1,

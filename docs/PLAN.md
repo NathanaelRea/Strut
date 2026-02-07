@@ -48,8 +48,8 @@ This document is a living roadmap for Strut (Mojo rewrite of OpenSees). It captu
 
 ### B. 3D Expansion
 
-- [ ] Enable `ndm=3`, `ndf=6`.
-- [ ] Add `elasticBeamColumn` 3D.
+- [x] Enable `ndm=3`, `ndf=6`.
+- [x] Add `elasticBeamColumn` 3D.
 - [ ] Add 3D truss and frame examples.
 
 ### C. Geometric Nonlinearity (P-Delta / Corotational)
