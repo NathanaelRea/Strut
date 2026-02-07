@@ -1,0 +1,114 @@
+{
+  "schema_version": "1.0",
+  "enabled": false,
+  "status": "todo",
+  "metadata": {
+    "name": "basic_elastic_frame_example",
+    "units": "SI"
+  },
+  "source_doc": "docs/agent-reference/OpenSeesDocs/elastic_frame_example.html",
+  "notes": "Elastic frame example with linear static analysis.",
+  "model": {
+    "ndm": 2,
+    "ndf": 3
+  },
+  "opensees": {
+    "model_builder": {
+      "type": "BasicBuilder",
+      "ndm": 2,
+      "ndf": 3
+    },
+    "time_series": {
+      "type": "Linear",
+      "tag": 2
+    },
+    "pattern": {
+      "type": "Plain",
+      "tag": 1,
+      "time_series": 1
+    },
+    "analysis": {
+      "constraints": "Plain",
+      "numberer": "RCM",
+      "system": "BandGeneral",
+      "algorithm": "Linear",
+      "integrator": "LoadControl 1.0",
+      "analysis": "Static"
+    }
+  },
+  "nodes": [
+    {
+      "id": 1,
+      "x": 0.0,
+      "y": 0.0,
+      "constraints": [
+        1,
+        2,
+        3
+      ]
+    },
+    {
+      "id": 2,
+      "x": 1.0,
+      "y": 0.0
+    }
+  ],
+  "materials": [
+    {
+      "id": 1,
+      "type": "Elastic",
+      "params": {
+        "E": 200000000000.0
+      }
+    }
+  ],
+  "sections": [
+    {
+      "id": 1,
+      "type": "ElasticSection2d",
+      "params": {
+        "E": 200000000000.0,
+        "A": 0.02,
+        "I": 0.0001
+      }
+    }
+  ],
+  "elements": [
+    {
+      "id": 1,
+      "type": "elasticBeamColumn2d",
+      "nodes": [
+        1,
+        2
+      ],
+      "section": 1,
+      "geomTransf": "Linear"
+    }
+  ],
+  "loads": [
+    {
+      "node": 2,
+      "dof": 2,
+      "value": -1000.0
+    }
+  ],
+  "analysis": {
+    "type": "static_linear",
+    "steps": 1
+  },
+  "recorders": [
+    {
+      "type": "node_displacement",
+      "nodes": [
+        1,
+        2
+      ],
+      "dofs": [
+        1,
+        2,
+        3
+      ],
+      "output": "node_disp"
+    }
+  ]
+}

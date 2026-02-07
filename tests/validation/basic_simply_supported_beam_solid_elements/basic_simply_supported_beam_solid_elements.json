@@ -1,0 +1,103 @@
+{
+  "schema_version": "1.0",
+  "enabled": false,
+  "status": "todo",
+  "metadata": {
+    "name": "basic_simply_supported_beam_solid_elements",
+    "units": "SI"
+  },
+  "source_doc": "docs/agent-reference/OpenSeesDocs/simply_supported_beam_solid_elements.html",
+  "notes": "Simply supported beam modeled with 2D solid elements.",
+  "model": {
+    "ndm": 2,
+    "ndf": 2
+  },
+  "opensees": {
+    "model_builder": {
+      "type": "BasicBuilder",
+      "ndm": 2,
+      "ndf": 2
+    },
+    "analysis": {
+      "constraints": "Plain",
+      "numberer": "RCM",
+      "system": "ProfileSPD",
+      "algorithm": "Linear",
+      "integrator": "LoadControl 1.0",
+      "analysis": "Static"
+    }
+  },
+  "nodes": [
+    {
+      "id": 1,
+      "x": 0.0,
+      "y": 0.0,
+      "constraints": [
+        1,
+        2
+      ]
+    },
+    {
+      "id": 2,
+      "x": 1.0,
+      "y": 0.0
+    }
+  ],
+  "materials": [
+    {
+      "id": 1,
+      "type": "Elastic",
+      "params": {
+        "E": 200000000000.0
+      }
+    }
+  ],
+  "sections": [
+    {
+      "id": 1,
+      "type": "ElasticSection2d",
+      "params": {
+        "E": 200000000000.0,
+        "A": 0.02,
+        "I": 0.0001
+      }
+    }
+  ],
+  "elements": [
+    {
+      "id": 1,
+      "type": "elasticBeamColumn2d",
+      "nodes": [
+        1,
+        2
+      ],
+      "section": 1,
+      "geomTransf": "Linear"
+    }
+  ],
+  "loads": [
+    {
+      "node": 2,
+      "dof": 2,
+      "value": -1000.0
+    }
+  ],
+  "analysis": {
+    "type": "static_linear",
+    "steps": 1
+  },
+  "recorders": [
+    {
+      "type": "node_displacement",
+      "nodes": [
+        1,
+        2
+      ],
+      "dofs": [
+        1,
+        2
+      ],
+      "output": "node_disp"
+    }
+  ]
+}

@@ -13,10 +13,10 @@ This document is a living roadmap for Strut (Mojo rewrite of OpenSees). It captu
 
 ### A. Harness and Validation (Immediate)
 
-- [ ] Stabilize JSON schema v1.0 (2D frame, linear elastic).
-- [ ] Keep JSON -> Tcl converter deterministic.
-- [ ] Keep comparator strict, report detailed mismatch vectors.
-- [ ] Add 3-5 validation cases for simple frames.
+- [x] Stabilize JSON schema v1.0 (2D frame, linear elastic).
+- [x] Keep JSON -> Tcl converter deterministic.
+- [x] Keep comparator strict, report detailed mismatch vectors.
+- [x] Add 3-5 validation cases for simple frames.
 
 ### B. Mojo Solver (Immediate)
 

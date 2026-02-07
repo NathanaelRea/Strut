@@ -1,0 +1,56 @@
+{
+  "schema_version": "1.0",
+  "enabled": true,
+  "status": "active",
+  "metadata": {
+    "name": "elastic_frame_two_bay",
+    "units": "SI"
+  },
+  "opensees": {
+    "model_builder": {"type": "BasicBuilder", "ndm": 2, "ndf": 3},
+    "time_series": {"type": "Linear", "tag": 1},
+    "pattern": {"type": "Plain", "tag": 1, "time_series": 1},
+    "analysis": {
+      "constraints": "Plain",
+      "numberer": "RCM",
+      "system": "BandGeneral",
+      "algorithm": "Linear",
+      "integrator": "LoadControl 1.0",
+      "analysis": "Static"
+    }
+  },
+  "model": {
+    "ndm": 2,
+    "ndf": 3
+  },
+  "nodes": [
+    {"id": 1, "x": 0.0, "y": 0.0, "constraints": [1, 2, 3]},
+    {"id": 2, "x": 4.0, "y": 0.0, "constraints": [1, 2, 3]},
+    {"id": 3, "x": 8.0, "y": 0.0, "constraints": [1, 2, 3]},
+    {"id": 4, "x": 0.0, "y": 3.0},
+    {"id": 5, "x": 4.0, "y": 3.0},
+    {"id": 6, "x": 8.0, "y": 3.0}
+  ],
+  "materials": [
+    {"id": 1, "type": "Elastic", "params": {"E": 200000000000.0}}
+  ],
+  "sections": [
+    {"id": 1, "type": "ElasticSection2d", "params": {"E": 200000000000.0, "A": 0.02, "I": 0.00008}}
+  ],
+  "elements": [
+    {"id": 1, "type": "elasticBeamColumn2d", "nodes": [1, 4], "section": 1, "geomTransf": "Linear"},
+    {"id": 2, "type": "elasticBeamColumn2d", "nodes": [2, 5], "section": 1, "geomTransf": "Linear"},
+    {"id": 3, "type": "elasticBeamColumn2d", "nodes": [3, 6], "section": 1, "geomTransf": "Linear"},
+    {"id": 4, "type": "elasticBeamColumn2d", "nodes": [4, 5], "section": 1, "geomTransf": "Linear"},
+    {"id": 5, "type": "elasticBeamColumn2d", "nodes": [5, 6], "section": 1, "geomTransf": "Linear"}
+  ],
+  "loads": [
+    {"node": 4, "dof": 1, "value": 6000.0},
+    {"node": 5, "dof": 1, "value": 6000.0},
+    {"node": 6, "dof": 1, "value": 6000.0}
+  ],
+  "analysis": {"type": "static_linear", "steps": 1},
+  "recorders": [
+    {"type": "node_displacement", "nodes": [4, 5, 6], "dofs": [1, 2, 3], "output": "node_disp"}
+  ]
+}
