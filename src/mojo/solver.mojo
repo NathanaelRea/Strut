@@ -10,6 +10,7 @@ from elements import (
     quad4_plane_stress_stiffness,
     shell4_mindlin_stiffness,
     truss_global_stiffness,
+    truss3d_global_stiffness,
 )
 from linalg import gaussian_elimination
 from strut_io import py_len
@@ -49,9 +50,10 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
     var ndm = Int(model["ndm"])
     var ndf = Int(model["ndf"])
     var is_2d = ndm == 2 and (ndf == 2 or ndf == 3)
+    var is_3d_truss = ndm == 3 and ndf == 3
     var is_3d_shell = ndm == 3 and ndf == 6
-    if not is_2d and not is_3d_shell:
-        abort("only ndm=2 ndf=2/3 and ndm=3 ndf=6 supported")
+    if not is_2d and not is_3d_truss and not is_3d_shell:
+        abort("only ndm=2 ndf=2/3 and ndm=3 ndf=3/6 supported")
 
     var time = Python.import_module("time")
     var t0 = Int(time.perf_counter_ns())
@@ -214,8 +216,8 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
                     var Bidx = dof_map[b]
                     K[Aidx][Bidx] += k_global[a][b]
         elif elem_type == "truss":
-            if ndf != 2:
-                abort("truss requires ndf=2")
+            if ndf != 2 and ndf != 3:
+                abort("truss requires ndf=2 or ndf=3")
             var n1 = Int(elem["nodes"][0])
             var n2 = Int(elem["nodes"][1])
             var i1 = id_to_index[n1]
@@ -237,25 +239,50 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
             var E = Float64(params["E"])
             var A = Float64(elem["area"])
 
-            var k_global = truss_global_stiffness(
-                E,
-                A,
-                Float64(node1["x"]),
-                Float64(node1["y"]),
-                Float64(node2["x"]),
-                Float64(node2["y"]),
-            )
-            var dof_map = [
-                node_dof_index(i1, 1, ndf),
-                node_dof_index(i1, 2, ndf),
-                node_dof_index(i2, 1, ndf),
-                node_dof_index(i2, 2, ndf),
-            ]
-            for a in range(4):
-                var Aidx = dof_map[a]
-                for b in range(4):
-                    var Bidx = dof_map[b]
-                    K[Aidx][Bidx] += k_global[a][b]
+            if ndf == 2:
+                var k_global = truss_global_stiffness(
+                    E,
+                    A,
+                    Float64(node1["x"]),
+                    Float64(node1["y"]),
+                    Float64(node2["x"]),
+                    Float64(node2["y"]),
+                )
+                var dof_map = [
+                    node_dof_index(i1, 1, ndf),
+                    node_dof_index(i1, 2, ndf),
+                    node_dof_index(i2, 1, ndf),
+                    node_dof_index(i2, 2, ndf),
+                ]
+                for a in range(4):
+                    var Aidx = dof_map[a]
+                    for b in range(4):
+                        var Bidx = dof_map[b]
+                        K[Aidx][Bidx] += k_global[a][b]
+            else:
+                var k_global = truss3d_global_stiffness(
+                    E,
+                    A,
+                    Float64(node1["x"]),
+                    Float64(node1["y"]),
+                    Float64(node1["z"]),
+                    Float64(node2["x"]),
+                    Float64(node2["y"]),
+                    Float64(node2["z"]),
+                )
+                var dof_map = [
+                    node_dof_index(i1, 1, ndf),
+                    node_dof_index(i1, 2, ndf),
+                    node_dof_index(i1, 3, ndf),
+                    node_dof_index(i2, 1, ndf),
+                    node_dof_index(i2, 2, ndf),
+                    node_dof_index(i2, 3, ndf),
+                ]
+                for a in range(6):
+                    var Aidx = dof_map[a]
+                    for b in range(6):
+                        var Bidx = dof_map[b]
+                        K[Aidx][Bidx] += k_global[a][b]
         elif elem_type == "zeroLength" or elem_type == "twoNodeLink":
             if ndf != 2:
                 abort("zeroLength/twoNodeLink requires ndf=2")
