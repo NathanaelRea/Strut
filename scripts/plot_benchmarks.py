@@ -6,7 +6,7 @@ import sys
 import webbrowser
 from datetime import datetime
 from pathlib import Path
-from statistics import median
+from statistics import median, stdev
 from typing import Dict, List, Tuple
 
 try:
@@ -38,20 +38,60 @@ def parse_timestamp(path: Path, data: dict) -> datetime:
         return datetime.fromtimestamp(path.stat().st_mtime)
 
 
-def collect_recent_cases(summary: dict) -> Tuple[List[str], Dict[str, List[float]]]:
+def _case_time_seconds(case: dict, engine: str) -> float:
+    stats = case.get(engine)
+    if isinstance(stats, dict):
+        median_s = stats.get("median_s")
+        if isinstance(median_s, (int, float)):
+            return float(median_s)
+    if engine == "opensees":
+        batch = case.get("opensees_batch")
+        if isinstance(batch, dict):
+            total_us = batch.get("total_us")
+            if isinstance(total_us, (int, float)):
+                return float(total_us) / 1e6
+            analysis_us = batch.get("analysis_us")
+            if isinstance(analysis_us, (int, float)):
+                return float(analysis_us) / 1e6
+    return float("nan")
+
+
+def _case_mean_std_seconds(case: dict, engine: str) -> Tuple[float, float]:
+    stats = case.get(engine)
+    if isinstance(stats, dict):
+        times = stats.get("times_s")
+        if isinstance(times, list) and times:
+            times = [t for t in times if isinstance(t, (int, float))]
+            if times:
+                mean_s = sum(times) / len(times)
+                if len(times) > 1:
+                    return (mean_s, stdev(times))
+                return (mean_s, 0.0)
+    return (float("nan"), 0.0)
+
+
+def collect_recent_cases(
+    summary: dict,
+) -> Tuple[List[str], Dict[str, List[float]], Dict[str, List[Tuple[float, float]]]]:
     cases = summary.get("cases", [])
     names = [case["name"] for case in cases]
     engines = {}
+    errors = {}
     for engine in ("opensees", "mojo"):
-        values = []
+        values_ms = []
+        errs_ms = []
         for case in cases:
-            stats = case.get(engine)
-            if not stats:
-                values.append(float("nan"))
-            else:
-                values.append(stats.get("median_s"))
-        engines[engine] = values
-    return names, engines
+            mean_s, std_s = _case_mean_std_seconds(case, engine)
+            if isinstance(mean_s, float) and mean_s == mean_s:
+                values_ms.append(mean_s * 1000)
+                errs_ms.append((std_s * 1000, std_s * 1000))
+                continue
+            fallback_s = _case_time_seconds(case, engine)
+            values_ms.append(fallback_s * 1000 if isinstance(fallback_s, (int, float)) else fallback_s)
+            errs_ms.append((0.0, 0.0))
+        engines[engine] = values_ms
+        errors[engine] = errs_ms
+    return names, engines, errors
 
 
 def collect_archive_trend(archive_dir: Path) -> Tuple[List[datetime], Dict[str, List[float]]]:
@@ -62,28 +102,48 @@ def collect_archive_trend(archive_dir: Path) -> Tuple[List[datetime], Dict[str, 
         data = load_summary(path)
         cases = data.get("cases", [])
         for engine in ("opensees", "mojo"):
-            medians = [case.get(engine, {}).get("median_s") for case in cases]
+            medians = [_case_time_seconds(case, engine) for case in cases]
             medians = [m for m in medians if isinstance(m, (int, float))]
             if medians:
-                engine_series[engine].append(median(medians))
+                engine_series[engine].append(median(medians) * 1000)
             else:
                 engine_series[engine].append(float("nan"))
         timestamps.append(parse_timestamp(path, data))
     return timestamps, engine_series
 
 
-def plot_recent_bar(names: List[str], engines: Dict[str, List[float]]):
+def plot_recent_bar(
+    names: List[str],
+    engines: Dict[str, List[float]],
+    errors: Dict[str, List[Tuple[float, float]]],
+):
     fig, ax = plt.subplots(figsize=(10, 5))
     x = range(len(names))
     width = 0.38
     opensees_vals = engines.get("opensees", [])
     mojo_vals = engines.get("mojo", [])
+    opensees_err = errors.get("opensees", [])
+    mojo_err = errors.get("mojo", [])
 
-    ax.bar([i - width / 2 for i in x], opensees_vals, width, label="OpenSees")
-    ax.bar([i + width / 2 for i in x], mojo_vals, width, label="Mojo")
+    ax.bar(
+        [i - width / 2 for i in x],
+        opensees_vals,
+        width,
+        label="OpenSees",
+        yerr=list(zip(*opensees_err)) if opensees_err else None,
+        capsize=3,
+    )
+    ax.bar(
+        [i + width / 2 for i in x],
+        mojo_vals,
+        width,
+        label="Mojo",
+        yerr=list(zip(*mojo_err)) if mojo_err else None,
+        capsize=3,
+    )
 
-    ax.set_ylabel("Median time (s)")
-    ax.set_title("Recent benchmark (median time per case)")
+    ax.set_ylabel("Mean time (ms)")
+    ax.set_title("Recent benchmark (mean time per case)")
     ax.set_xticks(list(x))
     ax.set_xticklabels(names, rotation=45, ha="right")
     ax.legend()
@@ -99,7 +159,7 @@ def plot_archive_trend(timestamps: List[datetime], series: Dict[str, List[float]
         ax.plot(timestamps, series.get("opensees", []), marker="o", label="OpenSees")
         ax.plot(timestamps, series.get("mojo", []), marker="o", label="Mojo")
 
-    ax.set_ylabel("Median time across cases (s)")
+    ax.set_ylabel("Median time across cases (ms)")
     ax.set_title("Archive trend (median across cases)")
     ax.grid(axis="y", linestyle=":", alpha=0.5)
     ax.legend()
@@ -151,10 +211,10 @@ def main() -> None:
         raise SystemExit(f"Missing results summary: {results_path}")
 
     summary = load_summary(results_path)
-    names, engines = collect_recent_cases(summary)
+    names, engines, errors = collect_recent_cases(summary)
 
     with PdfPages(output_path) as pdf:
-        fig = plot_recent_bar(names, engines)
+        fig = plot_recent_bar(names, engines, errors)
         pdf.savefig(fig)
         plt.close(fig)
 

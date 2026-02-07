@@ -15,6 +15,7 @@ python scripts/run_benchmarks.py
 python scripts/run_benchmarks.py --cases elastic_beam_cantilever,elastic_frame_portal
 python scripts/run_benchmarks.py --cases tests/validation/elastic_frame_two_story/elastic_frame_two_story.json
 python scripts/run_benchmarks.py --engine mojo
+python scripts/run_benchmarks.py --batch-opensees
 ```
 
 Upcoming element benchmarks (disabled until element support lands):

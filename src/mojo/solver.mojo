@@ -18,6 +18,9 @@ def run_case(data: PythonObject, output_path: String):
     if ndm != 2 or (ndf != 2 and ndf != 3):
         abort("only ndm=2, ndf=2/3 supported in phase 1")
 
+    var time = Python.import_module("time")
+    var t0 = Int(time.perf_counter_ns())
+
     var nodes = data["nodes"]
     var node_count = py_len(nodes)
     var node_ids: List[Int] = []
@@ -193,9 +196,14 @@ def run_case(data: PythonObject, output_path: String):
     for i in range(len(free)):
         u[free[i]] = u_f[i]
 
+    var t1 = Int(time.perf_counter_ns())
+    var analysis_us = (t1 - t0) / 1000
+
     var pathlib = Python.import_module("pathlib")
     var out_dir = pathlib.Path(output_path)
     out_dir.mkdir(parents=True, exist_ok=True)
+    var analysis_path = out_dir.joinpath("analysis_time_us.txt")
+    analysis_path.write_text(PythonObject(String(analysis_us) + "\n"))
     var recorders = data.get("recorders", [])
     for r in range(py_len(recorders)):
         var rec = recorders[r]
