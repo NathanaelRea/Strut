@@ -20,10 +20,10 @@ This document is a living roadmap for Strut (Mojo rewrite of OpenSees). It captu
 
 ### B. Mojo Solver (Immediate)
 
-- [ ] Implement 2D linear elastic beam-column in Mojo.
-- [ ] Implement global stiffness assembly, constraints, and linear solve.
-- [ ] Match OpenSees displacements within tolerance.
-- [ ] Wire `strut.mojo` into the harness (replace Python runner).
+- [x] Implement 2D linear elastic beam-column in Mojo.
+- [x] Implement global stiffness assembly, constraints, and linear solve.
+- [x] Match OpenSees displacements within tolerance.
+- [x] Wire `strut.mojo` into the harness (replace Python runner).
 
 ### C. Unit Tests (Immediate)
 

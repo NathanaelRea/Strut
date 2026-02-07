@@ -26,6 +26,10 @@ Cloned repos:
 - [mojo-gpu-puzzles](./docs/agent-reference/mojo-gpu-puzzles/)
   - some possible useful examples for using the gpu with mojo, if needed look through the [solutions](./docs/agent-reference/mojo-gpu-puzzles/solutions/)
 
+## Testing
+
+- [testing.md](./docs/testing.md)
+
 ## A note to the Agent
 
 This is a living document, and so if something takes a long time to figure out, write a very short summary here or in a nested md file inside [docs/](./docs/) so we can develop faster in the future. This also includes when researching the documentation or cloned repos above.

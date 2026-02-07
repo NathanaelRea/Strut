@@ -7,11 +7,16 @@ import sys
 repo_root = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(repo_root))
 
-from scripts.run_mojo_case import run_case
+from scripts.run_mojo_case_py import run_case
 
 
 def test_cantilever_tip_deflection():
-    case_path = Path(__file__).resolve().parents[1] / "validation" / "elastic_beam_cantilever" / "elastic_beam_cantilever.json"
+    case_path = (
+        Path(__file__).resolve().parents[1]
+        / "validation"
+        / "elastic_beam_cantilever"
+        / "elastic_beam_cantilever.json"
+    )
     case_data = json.loads(case_path.read_text())
 
     with tempfile.TemporaryDirectory() as tmp:

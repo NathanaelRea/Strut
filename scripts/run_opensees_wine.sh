@@ -150,7 +150,6 @@ run_script() {
 
   pushd "$analysis_dir" >/dev/null
   {
-    echo "Running ${run_script_name} for example '${example_name}' (output -> ${analysis_dir}/Data)..."
     env TCL_LIBRARY="$tcl_dir_win" wine "$opensees_exe" "$run_script_name" >/dev/null 2>&1
   }
   popd >/dev/null

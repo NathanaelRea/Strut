@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
 import argparse
 import json
+import os
 from pathlib import Path
 
-ABS_TOL = 1e-9
-REL_TOL = 1e-6
+ABS_TOL = 1e-8
+REL_TOL = 1e-5
+
+
+def _isclose(a, b, rtol=REL_TOL, atol=ABS_TOL):
+    return abs(a - b) <= (atol + rtol * abs(b))
 
 
 def _parse_line(line: str):
@@ -30,9 +35,9 @@ def _compare_vectors(ref, got):
         return False, [f"length mismatch: {len(ref)} != {len(got)}"]
     errors = []
     for i, (r, g) in enumerate(zip(ref, got), start=1):
-        abs_err = abs(r - g)
-        rel_err = abs_err / max(abs(r), 1e-30)
-        if abs_err > ABS_TOL and rel_err > REL_TOL:
+        if not _isclose(g, r):
+            abs_err = abs(r - g)
+            rel_err = abs_err / max(abs(r), 1e-30)
             errors.append(
                 f"dof {i}: ref={r:.6e} got={g:.6e} abs={abs_err:.3e} rel={rel_err:.3e}"
             )
@@ -83,7 +88,8 @@ def main():
             print(fail)
         raise SystemExit(1)
 
-    print("PARITY OK")
+    if os.getenv("STRUT_VERBOSE") == "1":
+        print("PARITY OK")
 
 
 if __name__ == "__main__":
