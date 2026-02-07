@@ -21,6 +21,18 @@ if [[ "$(realpath "$case_json")" != "$(realpath "$tgt_json")" ]]; then
   cp "$case_json" "$tgt_json"
 fi
 
+enabled="$(python - <<'PY' "$tgt_json"
+import json, sys
+path = sys.argv[1]
+data = json.loads(open(path).read())
+print(str(data.get("enabled", True)).lower())
+PY
+)"
+if [[ "${enabled}" != "true" && "${STRUT_FORCE_CASE:-}" != "1" ]]; then
+  echo "Case '${case_name}' is disabled (set STRUT_FORCE_CASE=1 to run anyway)."
+  exit 0
+fi
+
 tcl_out="${case_root}/generated/model.tcl"
 "${json_to_tcl}" "$tgt_json" "$tcl_out"
 

@@ -1,8 +1,23 @@
 {
   "schema_version": "1.0",
+  "enabled": true,
+  "status": "active",
   "metadata": {
     "name": "elastic_beam_cantilever",
     "units": "SI"
+  },
+  "opensees": {
+    "model_builder": {"type": "BasicBuilder", "ndm": 2, "ndf": 3},
+    "time_series": {"type": "Linear", "tag": 1},
+    "pattern": {"type": "Plain", "tag": 1, "time_series": 1},
+    "analysis": {
+      "constraints": "Plain",
+      "numberer": "RCM",
+      "system": "BandGeneral",
+      "algorithm": "Linear",
+      "integrator": "LoadControl 1.0",
+      "analysis": "Static"
+    }
   },
   "model": {
     "ndm": 2,

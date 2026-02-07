@@ -32,6 +32,7 @@ Minimum required fields (v1.0):
 2. `scripts/run_case.sh` runs OpenSees (Wine) to produce reference outputs.
 3. `scripts/run_mojo_case.py` runs the current Strut implementation and writes outputs.
 4. `scripts/compare_case.py` compares displacement outputs with tolerances.
+5. `scripts/run_tests.py` provides a unified test runner for unit, schema, and parity checks.
 
 ## Output Format
 
@@ -53,3 +54,4 @@ For OpenSees, the Tcl recorder writes a space-separated vector per line. The com
 - Phase 1 targets 2D linear `elasticBeamColumn` with static linear analysis.
 - The current phase-1 solver is implemented in Python for harness validation. Replace with Mojo and wire `strut.mojo` into the harness once the Mojo implementation is ready.
 - Expand schema and harness only after parity is stable.
+- Validation cases can be marked with `"enabled": false` in JSON. `STRUT_RUN_ALL_CASES=1` runs all cases in tests, and `STRUT_FORCE_CASE=1` forces a disabled case in `scripts/run_case.sh`.

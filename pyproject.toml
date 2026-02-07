@@ -4,4 +4,7 @@ version = "0.1.0"
 description = "GPU-first Mojo finite element analysis benchmarking sandbox"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
-dependencies = ["mojo>=0.25.6.1"]
+dependencies = [
+    "mojo>=0.25.6.1",
+    "pytest>=9.0.2",
+]
