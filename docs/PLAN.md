@@ -27,8 +27,8 @@ This document is a living roadmap for Strut (Mojo rewrite of OpenSees). It captu
 
 ### C. Unit Tests (Immediate)
 
-- [ ] Add analytic unit tests for beam deflection.
-- [ ] Add numerical regression tests for JSON cases.
+- [x] Add analytic unit tests for beam deflection.
+- [x] Add numerical regression tests for JSON cases.
 
 ### D. Benchmarking (Immediate)
 

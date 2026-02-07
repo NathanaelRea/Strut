@@ -4,9 +4,9 @@ This document describes how Strut compares outputs and how tolerances are applie
 
 ## Running Tests
 
-- `uv run scripts/run_tests.py`
-- `uv run scripts/run_tests.py --all`
-- `uv run scripts/run_tests.py --case tests/validation/elastic_beam_cantilever/elastic_beam_cantilever.json`
+- `uv run run_tests.py`
+- `uv run run_tests.py --all`
+- `uv run run_tests.py --case tests/validation/elastic_beam_cantilever/elastic_beam_cantilever.json`
 
 ## Comparison Strategy
 
