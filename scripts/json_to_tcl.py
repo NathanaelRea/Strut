@@ -75,23 +75,38 @@ def main():
             if fix is not None:
                 f.write(f"fix {node_id} {' '.join(str(v) for v in fix)}\n")
 
-        # Materials (Elastic uniaxial only for now)
+        # Materials (Elastic uniaxial or ElasticIsotropic)
         for mat in materials.values():
-            if mat["type"] != "Elastic":
-                raise ValueError(f"unsupported material type: {mat['type']}")
             params = mat["params"]
-            E = params["E"]
-            f.write(f"uniaxialMaterial Elastic {mat['id']} {E}\n")
+            if mat["type"] == "Elastic":
+                E = params["E"]
+                f.write(f"uniaxialMaterial Elastic {mat['id']} {E}\n")
+            elif mat["type"] == "ElasticIsotropic":
+                E = params["E"]
+                nu = params["nu"]
+                rho = params.get("rho", 0.0)
+                f.write(f"nDMaterial ElasticIsotropic {mat['id']} {E} {nu} {rho}\n")
+            else:
+                raise ValueError(f"unsupported material type: {mat['type']}")
 
-        # Sections (ElasticSection2d only for now)
+        # Sections (ElasticSection2d or ElasticMembranePlateSection)
         for sec in sections.values():
-            if sec["type"] != "ElasticSection2d":
-                raise ValueError(f"unsupported section type: {sec['type']}")
             params = sec["params"]
-            E = params["E"]
-            A = params["A"]
-            I = params["I"]
-            f.write(f"section Elastic {sec['id']} {E} {A} {I}\n")
+            if sec["type"] == "ElasticSection2d":
+                E = params["E"]
+                A = params["A"]
+                I = params["I"]
+                f.write(f"section Elastic {sec['id']} {E} {A} {I}\n")
+            elif sec["type"] == "ElasticMembranePlateSection":
+                E = params["E"]
+                nu = params["nu"]
+                h = params["h"]
+                rho = params.get("rho", 0.0)
+                f.write(
+                    f"section ElasticMembranePlateSection {sec['id']} {E} {nu} {h} {rho}\n"
+                )
+            else:
+                raise ValueError(f"unsupported section type: {sec['type']}")
 
         # Geometric transformations (only for beam-column elements)
         transf_tags = {}
@@ -105,7 +120,7 @@ def main():
                 f.write(f"geomTransf {name} {next_tag}\n")
                 next_tag += 1
 
-        # Elements (elasticBeamColumn2d, truss, zeroLength, twoNodeLink)
+        # Elements (elasticBeamColumn2d, truss, zeroLength, twoNodeLink, fourNodeQuad, shell)
         for elem in elements:
             if elem["type"] == "elasticBeamColumn2d":
                 sec = sections[elem["section"]]
@@ -133,6 +148,18 @@ def main():
                 mats = " ".join(str(mid) for mid in elem["materials"])
                 dirs = " ".join(str(d) for d in elem["dirs"])
                 f.write(f"element twoNodeLink {elem['id']} {n1} {n2} -mat {mats} -dir {dirs}\n")
+            elif elem["type"] == "fourNodeQuad":
+                n1, n2, n3, n4 = elem["nodes"]
+                t = elem["thickness"]
+                mat_id = elem["material"]
+                formulation = elem.get("formulation", "PlaneStress")
+                f.write(
+                    f"element quad {elem['id']} {n1} {n2} {n3} {n4} {t} \"{formulation}\" {mat_id}\n"
+                )
+            elif elem["type"] == "shell":
+                n1, n2, n3, n4 = elem["nodes"]
+                sec_id = elem["section"]
+                f.write(f"element shell {elem['id']} {n1} {n2} {n3} {n4} {sec_id}\n")
             else:
                 raise ValueError(f"unsupported element type: {elem['type']}")
 

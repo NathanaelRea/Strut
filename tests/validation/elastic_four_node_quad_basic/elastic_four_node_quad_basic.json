@@ -1,7 +1,7 @@
 {
   "schema_version": "1.0",
-  "enabled": false,
-  "status": "todo",
+  "enabled": true,
+  "status": "implemented",
   "metadata": {
     "name": "elastic_four_node_quad_basic",
     "units": "kips-in"

@@ -30,12 +30,12 @@ def _load_last_values(path: Path):
     return _parse_line(lines[-1])
 
 
-def _compare_vectors(ref, got):
+def _compare_vectors(ref, got, rtol=REL_TOL, atol=ABS_TOL):
     if len(ref) != len(got):
         return False, [f"length mismatch: {len(ref)} != {len(got)}"]
     errors = []
     for i, (r, g) in enumerate(zip(ref, got), start=1):
-        if not _isclose(g, r):
+        if not _isclose(g, r, rtol=rtol, atol=atol):
             abs_err = abs(r - g)
             rel_err = abs_err / max(abs(r), 1e-30)
             errors.append(
@@ -57,6 +57,9 @@ def main():
 
     data = json.loads(case_json.read_text())
     recorders = data.get("recorders", [])
+    tol = data.get("parity_tolerance", {})
+    rtol = tol.get("rtol", REL_TOL)
+    atol = tol.get("atol", ABS_TOL)
 
     ref_dir = case_root / "reference"
     mojo_dir = case_root / "mojo"
@@ -77,7 +80,7 @@ def main():
                 continue
             ref_vals = _load_last_values(ref_file)
             mojo_vals = _load_last_values(mojo_file)
-            ok, errors = _compare_vectors(ref_vals, mojo_vals)
+            ok, errors = _compare_vectors(ref_vals, mojo_vals, rtol=rtol, atol=atol)
             if not ok:
                 failures.append(f"node {node_id} mismatch")
                 failures.extend([f"  {err}" for err in errors])

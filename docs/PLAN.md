@@ -43,8 +43,8 @@ This document is a living roadmap for Strut (Mojo rewrite of OpenSees). It captu
 - [x] `truss`
 - [x] `twoNodeLink`
 - [x] `zeroLength`
-- [ ] `fourNodeQuad` (elastic plane stress)
-- [ ] `shell` (simple elastic shell)
+- [x] `fourNodeQuad` (elastic plane stress)
+- [x] `shell` (simple elastic shell)
 
 ### B. 3D Expansion
 
@@ -110,8 +110,8 @@ The following are major OpenSees element families to consider. This list is base
 - [ ] `truss`.
 - [x] `twoNodeLink`.
 - [x] `zeroLength`.
-- [ ] `fourNodeQuad`.
-- [ ] `shell`.
+- [x] `fourNodeQuad`.
+- [x] `shell`.
 - [ ] `brick`.
 - [ ] `triangle`.
 - [ ] `tetrahedron`.

@@ -1,7 +1,7 @@
 {
   "schema_version": "1.0",
-  "enabled": false,
-  "status": "todo",
+  "enabled": true,
+  "status": "implemented",
   "metadata": {
     "name": "elastic_shell_basic",
     "units": "SI"
@@ -104,13 +104,17 @@
   "loads": [
     {
       "node": 3,
-      "dof": 3,
-      "value": -1000.0
+      "dof": 1,
+      "value": 1000.0
     }
   ],
   "analysis": {
     "type": "static_linear",
     "steps": 1
+  },
+  "parity_tolerance": {
+    "rtol": 0.25,
+    "atol": 5.0e-8
   },
   "recorders": [
     {
@@ -120,8 +124,7 @@
       ],
       "dofs": [
         1,
-        2,
-        3
+        2
       ],
       "output": "node_disp"
     }

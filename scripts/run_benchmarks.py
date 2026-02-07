@@ -171,12 +171,17 @@ def _isclose(a: float, b: float, rtol: float = REL_TOL, atol: float = ABS_TOL) -
     return abs(a - b) <= (atol + rtol * abs(b))
 
 
-def _compare_vectors(ref: List[float], got: List[float]):
+def _compare_vectors(
+    ref: List[float],
+    got: List[float],
+    rtol: float = REL_TOL,
+    atol: float = ABS_TOL,
+):
     if len(ref) != len(got):
         return False, [f"length mismatch: {len(ref)} != {len(got)}"]
     errors = []
     for i, (r, g) in enumerate(zip(ref, got), start=1):
-        if not _isclose(g, r):
+        if not _isclose(g, r, rtol=rtol, atol=atol):
             abs_err = abs(r - g)
             rel_err = abs_err / max(abs(r), 1e-30)
             errors.append(
@@ -772,7 +777,11 @@ def main() -> None:
                 )
 
         if run_opensees and run_mojo:
-            recorders = json.loads(Path(case_entry["json"]).read_text()).get("recorders", [])
+            case_data = json.loads(Path(case_entry["json"]).read_text())
+            recorders = case_data.get("recorders", [])
+            tol = case_data.get("parity_tolerance", {})
+            rtol = tol.get("rtol", REL_TOL)
+            atol = tol.get("atol", ABS_TOL)
             for rec in recorders:
                 if rec.get("type") != "node_displacement":
                     parity_failures.append(
@@ -795,7 +804,7 @@ def main() -> None:
                     except ValueError as exc:
                         parity_failures.append(f"{case_name}: {exc}")
                         continue
-                    ok, errors = _compare_vectors(ref_vals, mojo_vals)
+                    ok, errors = _compare_vectors(ref_vals, mojo_vals, rtol=rtol, atol=atol)
                     if not ok:
                         parity_failures.append(f"{case_name}: node {node_id} mismatch")
                         parity_failures.extend([f"  {err}" for err in errors])

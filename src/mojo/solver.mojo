@@ -2,7 +2,13 @@ from collections import List
 from os import abort
 from python import Python, PythonObject
 
-from elements import beam_global_stiffness, link_global_stiffness, truss_global_stiffness
+from elements import (
+    beam_global_stiffness,
+    link_global_stiffness,
+    quad4_plane_stress_stiffness,
+    shell4_mindlin_stiffness,
+    truss_global_stiffness,
+)
 from linalg import gaussian_elimination
 from strut_io import py_len
 
@@ -35,8 +41,10 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
     var model = data["model"]
     var ndm = Int(model["ndm"])
     var ndf = Int(model["ndf"])
-    if ndm != 2 or (ndf != 2 and ndf != 3):
-        abort("only ndm=2, ndf=2/3 supported in phase 1")
+    var is_2d = ndm == 2 and (ndf == 2 or ndf == 3)
+    var is_3d_shell = ndm == 3 and ndf == 6
+    if not is_2d and not is_3d_shell:
+        abort("only ndm=2 ndf=2/3 and ndm=3 ndf=6 supported")
 
     var time = Python.import_module("time")
     var t0 = Int(time.perf_counter_ns())
@@ -208,6 +216,152 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
             for a in range(4):
                 var Aidx = dof_map[a]
                 for b in range(4):
+                    var Bidx = dof_map[b]
+                    K[Aidx][Bidx] += k_global[a][b]
+        elif elem_type == "fourNodeQuad":
+            if ndm != 2 or ndf != 2:
+                abort("fourNodeQuad requires ndm=2, ndf=2")
+            if String(elem.get("formulation", "PlaneStress")) != "PlaneStress":
+                abort("fourNodeQuad only supports PlaneStress formulation")
+            var n1 = Int(elem["nodes"][0])
+            var n2 = Int(elem["nodes"][1])
+            var n3 = Int(elem["nodes"][2])
+            var n4 = Int(elem["nodes"][3])
+            var i1 = id_to_index[n1]
+            var i2 = id_to_index[n2]
+            var i3 = id_to_index[n3]
+            var i4 = id_to_index[n4]
+            var node1 = nodes[i1]
+            var node2 = nodes[i2]
+            var node3 = nodes[i3]
+            var node4 = nodes[i4]
+
+            var mat_id = Int(elem["material"])
+            var mat: PythonObject = None
+            for midx in range(py_len(materials)):
+                var candidate = materials[midx]
+                if Int(candidate["id"]) == mat_id:
+                    mat = candidate
+                    break
+            if mat is None:
+                abort("material not found")
+            if String(mat["type"]) != "ElasticIsotropic":
+                abort("fourNodeQuad requires ElasticIsotropic material")
+            var params = mat["params"]
+            var E = Float64(params["E"])
+            var nu = Float64(params["nu"])
+            var t = Float64(elem["thickness"])
+
+            var x: List[Float64] = []
+            var y: List[Float64] = []
+            x.resize(4, 0.0)
+            y.resize(4, 0.0)
+            x[0] = Float64(node1["x"])
+            y[0] = Float64(node1["y"])
+            x[1] = Float64(node2["x"])
+            y[1] = Float64(node2["y"])
+            x[2] = Float64(node3["x"])
+            y[2] = Float64(node3["y"])
+            x[3] = Float64(node4["x"])
+            y[3] = Float64(node4["y"])
+
+            var k_global = quad4_plane_stress_stiffness(E, nu, t, x, y)
+            var dof_map = [
+                node_dof_index(i1, 1, ndf),
+                node_dof_index(i1, 2, ndf),
+                node_dof_index(i2, 1, ndf),
+                node_dof_index(i2, 2, ndf),
+                node_dof_index(i3, 1, ndf),
+                node_dof_index(i3, 2, ndf),
+                node_dof_index(i4, 1, ndf),
+                node_dof_index(i4, 2, ndf),
+            ]
+            for a in range(8):
+                var Aidx = dof_map[a]
+                for b in range(8):
+                    var Bidx = dof_map[b]
+                    K[Aidx][Bidx] += k_global[a][b]
+        elif elem_type == "shell":
+            if ndm != 3 or ndf != 6:
+                abort("shell requires ndm=3, ndf=6")
+            var n1 = Int(elem["nodes"][0])
+            var n2 = Int(elem["nodes"][1])
+            var n3 = Int(elem["nodes"][2])
+            var n4 = Int(elem["nodes"][3])
+            var i1 = id_to_index[n1]
+            var i2 = id_to_index[n2]
+            var i3 = id_to_index[n3]
+            var i4 = id_to_index[n4]
+            var node1 = nodes[i1]
+            var node2 = nodes[i2]
+            var node3 = nodes[i3]
+            var node4 = nodes[i4]
+
+            var sec_id = Int(elem["section"])
+            var sec: PythonObject = None
+            for sidx in range(py_len(sections)):
+                var candidate = sections[sidx]
+                if Int(candidate["id"]) == sec_id:
+                    sec = candidate
+                    break
+            if sec is None:
+                abort("section not found")
+            if String(sec["type"]) != "ElasticMembranePlateSection":
+                abort("shell requires ElasticMembranePlateSection")
+            var params = sec["params"]
+            var E = Float64(params["E"])
+            var nu = Float64(params["nu"])
+            var h = Float64(params["h"])
+
+            var x: List[Float64] = []
+            var y: List[Float64] = []
+            var z: List[Float64] = []
+            x.resize(4, 0.0)
+            y.resize(4, 0.0)
+            z.resize(4, 0.0)
+            x[0] = Float64(node1["x"])
+            y[0] = Float64(node1["y"])
+            z[0] = Float64(node1.get("z", 0.0))
+            x[1] = Float64(node2["x"])
+            y[1] = Float64(node2["y"])
+            z[1] = Float64(node2.get("z", 0.0))
+            x[2] = Float64(node3["x"])
+            y[2] = Float64(node3["y"])
+            z[2] = Float64(node3.get("z", 0.0))
+            x[3] = Float64(node4["x"])
+            y[3] = Float64(node4["y"])
+            z[3] = Float64(node4.get("z", 0.0))
+
+            var k_global = shell4_mindlin_stiffness(E, nu, h, x, y, z)
+            var dof_map = [
+                node_dof_index(i1, 1, ndf),
+                node_dof_index(i1, 2, ndf),
+                node_dof_index(i1, 3, ndf),
+                node_dof_index(i1, 4, ndf),
+                node_dof_index(i1, 5, ndf),
+                node_dof_index(i1, 6, ndf),
+                node_dof_index(i2, 1, ndf),
+                node_dof_index(i2, 2, ndf),
+                node_dof_index(i2, 3, ndf),
+                node_dof_index(i2, 4, ndf),
+                node_dof_index(i2, 5, ndf),
+                node_dof_index(i2, 6, ndf),
+                node_dof_index(i3, 1, ndf),
+                node_dof_index(i3, 2, ndf),
+                node_dof_index(i3, 3, ndf),
+                node_dof_index(i3, 4, ndf),
+                node_dof_index(i3, 5, ndf),
+                node_dof_index(i3, 6, ndf),
+                node_dof_index(i4, 1, ndf),
+                node_dof_index(i4, 2, ndf),
+                node_dof_index(i4, 3, ndf),
+                node_dof_index(i4, 4, ndf),
+                node_dof_index(i4, 5, ndf),
+                node_dof_index(i4, 6, ndf),
+            ]
+            for a in range(24):
+                var Aidx = dof_map[a]
+                for b in range(24):
                     var Bidx = dof_map[b]
                     K[Aidx][Bidx] += k_global[a][b]
         else:
