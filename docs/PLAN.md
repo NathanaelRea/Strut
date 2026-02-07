@@ -57,7 +57,8 @@ This document is a living roadmap for Strut (Mojo rewrite of OpenSees). It captu
 - [x] Add `geomTransf PDelta`.
 - [ ] Add `geomTransf Corotational`.
 - [ ] Compare element forces and displacements under second-order effects.
-- [ ] Optimize P-Delta and shell assembly performance (reduce allocations, cache element data).
+- [x] Optimize P-Delta and shell assembly performance (reduce allocations, cache element data).
+- [x] Fuse nonlinear stiffness/internal assembly and reuse buffers (static_nonlinear).
 
 ### D. Time Series + Loading
 
