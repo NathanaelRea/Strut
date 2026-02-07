@@ -714,26 +714,73 @@ fn shell4_mindlin_stiffness(
     var sg = [-1.0 / sqrt(3.0), 1.0 / sqrt(3.0), 1.0 / sqrt(3.0), -1.0 / sqrt(3.0)]
     var tg = [-1.0 / sqrt(3.0), -1.0 / sqrt(3.0), 1.0 / sqrt(3.0), 1.0 / sqrt(3.0)]
     var wg = [1.0, 1.0, 1.0, 1.0]
+    var s = [-0.5, 0.5, 0.5, -0.5]
+    var t = [-0.5, -0.5, 0.5, 0.5]
 
     var K_local = _zero_matrix(24, 24)
+
+    var shp = _zero_matrix(3, 4)
+    var xs = _zero_matrix(2, 2)
+    var Ms = _zero_matrix(2, 4)
+    var Bsv = _zero_matrix(2, 12)
+    var Bs = _zero_matrix(2, 12)
+
+    var saveB: List[List[List[Float64]]] = []
+    for _ in range(4):
+        var nodeB = _zero_matrix(8, 6)
+        saveB.append(nodeB^)
+
+    var Bdrill_all: List[List[Float64]] = []
+    for _ in range(4):
+        var row: List[Float64] = []
+        row.resize(6, 0.0)
+        Bdrill_all.append(row^)
+
+    var Bmem = _zero_matrix(3, 2)
+    var Bb = _zero_matrix(3, 2)
+    var Bshear = _zero_matrix(2, 3)
+
+    var Gmem = _zero_matrix(2, 3)
+    Gmem[0][0] = g1x
+    Gmem[0][1] = g1y
+    Gmem[0][2] = g1z
+    Gmem[1][0] = g2x
+    Gmem[1][1] = g2y
+    Gmem[1][2] = g2z
+
+    var BmemShell = _zero_matrix(3, 3)
+    var BbendShell = _zero_matrix(3, 3)
+
+    var Gshear = _zero_matrix(3, 6)
+    Gshear[0][0] = g3x
+    Gshear[0][1] = g3y
+    Gshear[0][2] = g3z
+    Gshear[1][3] = g1x
+    Gshear[1][4] = g1y
+    Gshear[1][5] = g1z
+    Gshear[2][3] = g2x
+    Gshear[2][4] = g2y
+    Gshear[2][5] = g2z
+
+    var BshearShell = _zero_matrix(2, 6)
+    var BJ = _zero_matrix(8, 6)
+    var BJtranD = _zero_matrix(6, 8)
+    var BdrillJ: List[Float64] = []
+    BdrillJ.resize(6, 0.0)
+    var stiffJK = _zero_matrix(6, 6)
+
     for gp in range(4):
         var ss = sg[gp]
         var tt = tg[gp]
 
-        var shp: List[List[Float64]] = []
-        for _ in range(3):
-            var row: List[Float64] = []
-            row.resize(4, 0.0)
-            shp.append(row^)
-
-        var s = [-0.5, 0.5, 0.5, -0.5]
-        var t = [-0.5, -0.5, 0.5, 0.5]
         for i in range(4):
             shp[2][i] = (0.5 + s[i] * ss) * (0.5 + t[i] * tt)
             shp[0][i] = s[i] * (0.5 + t[i] * tt)
             shp[1][i] = t[i] * (0.5 + s[i] * ss)
 
-        var xs = _zero_matrix(2, 2)
+        for i in range(2):
+            for j in range(2):
+                xs[i][j] = 0.0
         for i in range(2):
             for j in range(2):
                 for k in range(4):
@@ -755,13 +802,14 @@ fn shell4_mindlin_stiffness(
 
         var dvol = wg[gp] * xsj
 
-        var Ms = _zero_matrix(2, 4)
+        for i in range(2):
+            for j in range(4):
+                Ms[i][j] = 0.0
         Ms[1][0] = 1.0 - ss
         Ms[0][1] = 1.0 - tt
         Ms[1][2] = 1.0 + ss
         Ms[0][3] = 1.0 + tt
 
-        var Bsv = _zero_matrix(2, 12)
         for i in range(2):
             for j in range(12):
                 var sum = 0.0
@@ -780,54 +828,30 @@ fn shell4_mindlin_stiffness(
             Bsv[0][j] = Bsv[0][j] * r1 / (8.0 * xsj)
             Bsv[1][j] = Bsv[1][j] * r2 / (8.0 * xsj)
 
-        var Bs = _zero_matrix(2, 12)
         for j in range(12):
             Bs[0][j] = Rot[0][0] * Bsv[0][j] + Rot[0][1] * Bsv[1][j]
             Bs[1][j] = Rot[1][0] * Bsv[0][j] + Rot[1][1] * Bsv[1][j]
 
-        var saveB: List[List[List[Float64]]] = []
-        for _ in range(4):
-            var nodeB: List[List[Float64]] = []
-            for _ in range(8):
-                var row: List[Float64] = []
-                row.resize(6, 0.0)
-                nodeB.append(row^)
-            saveB.append(nodeB^)
-
-        var Bdrill_all: List[List[Float64]] = []
-        for _ in range(4):
-            var row: List[Float64] = []
-            row.resize(6, 0.0)
-            Bdrill_all.append(row^)
-
         for j in range(4):
-            var Bmem = _zero_matrix(3, 2)
+            for p in range(3):
+                for q in range(2):
+                    Bmem[p][q] = 0.0
             Bmem[0][0] = shp[0][j]
             Bmem[1][1] = shp[1][j]
             Bmem[2][0] = shp[1][j]
             Bmem[2][1] = shp[0][j]
 
-            var Bb = _zero_matrix(3, 2)
+            for p in range(3):
+                for q in range(2):
+                    Bb[p][q] = 0.0
             Bb[0][1] = -shp[0][j]
             Bb[1][0] = shp[1][j]
             Bb[2][0] = shp[0][j]
             Bb[2][1] = -shp[1][j]
 
-            var Bshear = _zero_matrix(2, 3)
             for p in range(3):
                 Bshear[0][p] = Bs[0][j * 3 + p]
                 Bshear[1][p] = Bs[1][j * 3 + p]
-
-            var Gmem = _zero_matrix(2, 3)
-            Gmem[0][0] = g1x
-            Gmem[0][1] = g1y
-            Gmem[0][2] = g1z
-            Gmem[1][0] = g2x
-            Gmem[1][1] = g2y
-            Gmem[1][2] = g2z
-
-            var BmemShell = _zero_matrix(3, 3)
-            var BbendShell = _zero_matrix(3, 3)
             for p in range(3):
                 for q in range(3):
                     var sum_m = 0.0
@@ -838,18 +862,6 @@ fn shell4_mindlin_stiffness(
                     BmemShell[p][q] = sum_m
                     BbendShell[p][q] = sum_b
 
-            var Gshear = _zero_matrix(3, 6)
-            Gshear[0][0] = g3x
-            Gshear[0][1] = g3y
-            Gshear[0][2] = g3z
-            Gshear[1][3] = g1x
-            Gshear[1][4] = g1y
-            Gshear[1][5] = g1z
-            Gshear[2][3] = g2x
-            Gshear[2][4] = g2y
-            Gshear[2][5] = g2z
-
-            var BshearShell = _zero_matrix(2, 6)
             for p in range(2):
                 for q in range(6):
                     var sum_s = 0.0
@@ -857,18 +869,18 @@ fn shell4_mindlin_stiffness(
                         sum_s += Bshear[p][r] * Gshear[r][q]
                     BshearShell[p][q] = sum_s
 
-            var B = _zero_matrix(8, 6)
+            for p in range(8):
+                for q in range(6):
+                    saveB[j][p][q] = 0.0
             for p in range(3):
                 for q in range(3):
-                    B[p][q] = BmemShell[p][q]
+                    saveB[j][p][q] = BmemShell[p][q]
             for p in range(3):
                 for q in range(3):
-                    B[p + 3][q + 3] = BbendShell[p][q]
+                    saveB[j][p + 3][q + 3] = BbendShell[p][q]
             for p in range(2):
                 for q in range(6):
-                    B[p + 6][q] = BshearShell[p][q]
-
-            saveB[j] = B^
+                    saveB[j][p + 6][q] = BshearShell[p][q]
 
             var B1 = -0.5 * shp[1][j]
             var B2 = 0.5 * shp[0][j]
@@ -881,14 +893,15 @@ fn shell4_mindlin_stiffness(
             Bdrill_all[j][5] = B6 * g3z
 
         for j in range(4):
-            var BJ = _zero_matrix(8, 6)
             for p in range(8):
                 for q in range(6):
                     BJ[p][q] = saveB[j][p][q]
             for p in range(3, 6):
                 for q in range(3, 6):
                     BJ[p][q] *= -1.0
-            var BJtranD = _zero_matrix(6, 8)
+            for p in range(6):
+                for q in range(8):
+                    BJtranD[p][q] = 0.0
             for p in range(6):
                 for q in range(8):
                     var sum = 0.0
@@ -896,15 +909,15 @@ fn shell4_mindlin_stiffness(
                         sum += BJ[r][p] * dd[r][q]
                     BJtranD[p][q] = sum * dvol
 
-            var BdrillJ: List[Float64] = []
-            BdrillJ.resize(6, 0.0)
             for p in range(6):
                 BdrillJ[p] = Bdrill_all[j][p]
             for p in range(6):
                 BdrillJ[p] *= (Ktt * dvol)
 
             for k in range(4):
-                var stiffJK = _zero_matrix(6, 6)
+                for p in range(6):
+                    for q in range(6):
+                        stiffJK[p][q] = 0.0
                 for p in range(6):
                     for q in range(6):
                         var sum = 0.0

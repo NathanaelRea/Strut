@@ -132,7 +132,7 @@ def run_engine(
     return times
 
 
-def ensure_mojo_solver(repo_root: Path, verbose: bool) -> Path:
+def ensure_mojo_solver(repo_root: Path, verbose: bool, profile: bool) -> Path:
     mojo = shutil.which("mojo")
     if mojo is None:
         raise SystemExit("mojo executable not found on PATH; required to run benchmarks.")
@@ -142,8 +142,12 @@ def ensure_mojo_solver(repo_root: Path, verbose: bool) -> Path:
     solver_path = repo_root / "build" / "mojo" / "strut"
     solver_path.parent.mkdir(parents=True, exist_ok=True)
     log("Building Mojo solver...")
+    build_cmd = [mojo, "build", str(repo_root / "src" / "mojo" / "strut.mojo")]
+    if profile:
+        build_cmd += ["-D", "STRUT_PROFILE=1"]
+    build_cmd += ["-o", str(solver_path)]
     run(
-        [mojo, "build", str(repo_root / "src" / "mojo" / "strut.mojo"), "-o", str(solver_path)],
+        build_cmd,
         verbose=verbose,
     )
     return solver_path
@@ -287,6 +291,16 @@ def main() -> None:
         help="Skip the second pass that runs without recorders.",
     )
     parser.add_argument(
+        "--profile",
+        action="store_true",
+        help="Emit speedscope profiles for Mojo runs (last repetition only).",
+    )
+    parser.add_argument(
+        "--profile-dir",
+        default=None,
+        help="Directory for speedscope output (default: benchmark/speedscope).",
+    )
+    parser.add_argument(
         "--include-disabled",
         action="store_true",
         help="Include JSON cases marked enabled=false.",
@@ -327,6 +341,14 @@ def main() -> None:
     archive_root = (
         Path(args.archive_root) if args.archive_root else repo_root / "benchmark" / "archive"
     )
+    profile_root = None
+    if args.profile:
+        profile_root = (
+            Path(args.profile_dir)
+            if args.profile_dir
+            else repo_root / "benchmark" / "speedscope"
+        )
+        ensure_clean_dir(profile_root)
 
     for sub in ("opensees", "mojo", "opensees_compute", "mojo_compute", "tcl", ".tmp"):
         ensure_clean_dir(results_root / sub)
@@ -344,7 +366,7 @@ def main() -> None:
     run_mojo = args.engine in ("both", "mojo")
     mojo_solver = None
     if run_mojo:
-        mojo_solver = ensure_mojo_solver(repo_root, verbose)
+        mojo_solver = ensure_mojo_solver(repo_root, verbose, args.profile)
 
     if not run_opensees and not run_mojo:
         raise SystemExit("No engines selected. Use --engine opensees|mojo|both.")
@@ -606,14 +628,18 @@ def main() -> None:
                 target_dir = tmp_dir
             if mojo_solver is None:
                 raise SystemExit("Mojo solver not initialized.")
+            cmd = [
+                str(mojo_solver),
+                "--input",
+                str(case_entry["json"]),
+                "--output",
+                str(target_dir),
+            ]
+            if args.profile and last_run and profile_root is not None:
+                profile_path = profile_root / f"{case_name}.speedscope.json"
+                cmd += ["--profile", str(profile_path)]
             run(
-                [
-                    str(mojo_solver),
-                    "--input",
-                    str(case_entry["json"]),
-                    "--output",
-                    str(target_dir),
-                ],
+                cmd,
                 env=env,
                 verbose=verbose,
             )

@@ -1,6 +1,7 @@
 from collections import List
 from os import abort
 from python import Python, PythonObject
+from sys import is_defined
 
 from elements import (
     beam_global_stiffness,
@@ -26,11 +27,19 @@ fn require_dof_in_range(dof: Int, ndf: Int, context: String):
         abort(context + " dof out of range 1.." + String(ndf))
 
 
+fn _profile_enabled(profile_path: String) -> Bool:
+    @parameter
+    if is_defined["STRUT_PROFILE"]():
+        return profile_path != ""
+    else:
+        return False
+
+
 fn assemble_global_stiffness(
     nodes: PythonObject,
     elements: PythonObject,
-    sections: PythonObject,
-    materials: PythonObject,
+    sections_by_id: List[PythonObject],
+    materials_by_id: List[PythonObject],
     id_to_index: List[Int],
     node_count: Int,
     ndf: Int,
@@ -59,12 +68,9 @@ fn assemble_global_stiffness(
             var node2 = nodes[i2]
 
             var sec_id = Int(elem["section"])
-            var sec: PythonObject = None
-            for sidx in range(py_len(sections)):
-                var candidate = sections[sidx]
-                if Int(candidate["id"]) == sec_id:
-                    sec = candidate
-                    break
+            if sec_id >= len(sections_by_id):
+                abort("section not found")
+            var sec = sections_by_id[sec_id]
             if sec is None:
                 abort("section not found")
 
@@ -128,12 +134,9 @@ fn assemble_global_stiffness(
             var node2 = nodes[i2]
 
             var sec_id = Int(elem["section"])
-            var sec: PythonObject = None
-            for sidx in range(py_len(sections)):
-                var candidate = sections[sidx]
-                if Int(candidate["id"]) == sec_id:
-                    sec = candidate
-                    break
+            if sec_id >= len(sections_by_id):
+                abort("section not found")
+            var sec = sections_by_id[sec_id]
             if sec is None:
                 abort("section not found")
             if String(sec["type"]) != "ElasticSection3d":
@@ -191,12 +194,9 @@ fn assemble_global_stiffness(
             var node2 = nodes[i2]
 
             var mat_id = Int(elem["material"])
-            var mat: PythonObject = None
-            for midx in range(py_len(materials)):
-                var candidate = materials[midx]
-                if Int(candidate["id"]) == mat_id:
-                    mat = candidate
-                    break
+            if mat_id >= len(materials_by_id):
+                abort("material not found")
+            var mat = materials_by_id[mat_id]
             if mat is None:
                 abort("material not found")
 
@@ -268,12 +268,9 @@ fn assemble_global_stiffness(
 
             for m in range(py_len(elem_mats)):
                 var mat_id = Int(elem_mats[m])
-                var mat: PythonObject = None
-                for midx in range(py_len(materials)):
-                    var candidate = materials[midx]
-                    if Int(candidate["id"]) == mat_id:
-                        mat = candidate
-                        break
+                if mat_id >= len(materials_by_id):
+                    abort("material not found")
+                var mat = materials_by_id[mat_id]
                 if mat is None:
                     abort("material not found")
                 if String(mat["type"]) != "Elastic":
@@ -313,12 +310,9 @@ fn assemble_global_stiffness(
             var node4 = nodes[i4]
 
             var mat_id = Int(elem["material"])
-            var mat: PythonObject = None
-            for midx in range(py_len(materials)):
-                var candidate = materials[midx]
-                if Int(candidate["id"]) == mat_id:
-                    mat = candidate
-                    break
+            if mat_id >= len(materials_by_id):
+                abort("material not found")
+            var mat = materials_by_id[mat_id]
             if mat is None:
                 abort("material not found")
             if String(mat["type"]) != "ElasticIsotropic":
@@ -374,12 +368,9 @@ fn assemble_global_stiffness(
             var node4 = nodes[i4]
 
             var sec_id = Int(elem["section"])
-            var sec: PythonObject = None
-            for sidx in range(py_len(sections)):
-                var candidate = sections[sidx]
-                if Int(candidate["id"]) == sec_id:
-                    sec = candidate
-                    break
+            if sec_id >= len(sections_by_id):
+                abort("section not found")
+            var sec = sections_by_id[sec_id]
             if sec is None:
                 abort("section not found")
             if String(sec["type"]) != "ElasticMembranePlateSection":
@@ -449,8 +440,8 @@ fn assemble_global_stiffness(
 fn assemble_internal_forces(
     nodes: PythonObject,
     elements: PythonObject,
-    sections: PythonObject,
-    materials: PythonObject,
+    sections_by_id: List[PythonObject],
+    materials_by_id: List[PythonObject],
     id_to_index: List[Int],
     node_count: Int,
     ndf: Int,
@@ -476,12 +467,9 @@ fn assemble_internal_forces(
             var node2 = nodes[i2]
 
             var sec_id = Int(elem["section"])
-            var sec: PythonObject = None
-            for sidx in range(py_len(sections)):
-                var candidate = sections[sidx]
-                if Int(candidate["id"]) == sec_id:
-                    sec = candidate
-                    break
+            if sec_id >= len(sections_by_id):
+                abort("section not found")
+            var sec = sections_by_id[sec_id]
             if sec is None:
                 abort("section not found")
 
@@ -543,12 +531,9 @@ fn assemble_internal_forces(
             var node2 = nodes[i2]
 
             var sec_id = Int(elem["section"])
-            var sec: PythonObject = None
-            for sidx in range(py_len(sections)):
-                var candidate = sections[sidx]
-                if Int(candidate["id"]) == sec_id:
-                    sec = candidate
-                    break
+            if sec_id >= len(sections_by_id):
+                abort("section not found")
+            var sec = sections_by_id[sec_id]
             if sec is None:
                 abort("section not found")
             if String(sec["type"]) != "ElasticSection3d":
@@ -606,12 +591,9 @@ fn assemble_internal_forces(
             var node2 = nodes[i2]
 
             var mat_id = Int(elem["material"])
-            var mat: PythonObject = None
-            for midx in range(py_len(materials)):
-                var candidate = materials[midx]
-                if Int(candidate["id"]) == mat_id:
-                    mat = candidate
-                    break
+            if mat_id >= len(materials_by_id):
+                abort("material not found")
+            var mat = materials_by_id[mat_id]
             if mat is None:
                 abort("material not found")
 
@@ -683,12 +665,9 @@ fn assemble_internal_forces(
 
             for m in range(py_len(elem_mats)):
                 var mat_id = Int(elem_mats[m])
-                var mat: PythonObject = None
-                for midx in range(py_len(materials)):
-                    var candidate = materials[midx]
-                    if Int(candidate["id"]) == mat_id:
-                        mat = candidate
-                        break
+                if mat_id >= len(materials_by_id):
+                    abort("material not found")
+                var mat = materials_by_id[mat_id]
                 if mat is None:
                     abort("material not found")
                 if String(mat["type"]) != "Elastic":
@@ -728,12 +707,9 @@ fn assemble_internal_forces(
             var node4 = nodes[i4]
 
             var mat_id = Int(elem["material"])
-            var mat: PythonObject = None
-            for midx in range(py_len(materials)):
-                var candidate = materials[midx]
-                if Int(candidate["id"]) == mat_id:
-                    mat = candidate
-                    break
+            if mat_id >= len(materials_by_id):
+                abort("material not found")
+            var mat = materials_by_id[mat_id]
             if mat is None:
                 abort("material not found")
             if String(mat["type"]) != "ElasticIsotropic":
@@ -789,12 +765,9 @@ fn assemble_internal_forces(
             var node4 = nodes[i4]
 
             var sec_id = Int(elem["section"])
-            var sec: PythonObject = None
-            for sidx in range(py_len(sections)):
-                var candidate = sections[sidx]
-                if Int(candidate["id"]) == sec_id:
-                    sec = candidate
-                    break
+            if sec_id >= len(sections_by_id):
+                abort("section not found")
+            var sec = sections_by_id[sec_id]
             if sec is None:
                 abort("section not found")
             if String(sec["type"]) != "ElasticMembranePlateSection":
@@ -860,6 +833,29 @@ fn assemble_internal_forces(
 
     return F_int^
 
+fn _append_frame(mut frames: String, mut need_comma: Bool, name: String):
+    if need_comma:
+        frames += ","
+    frames += "{\"name\":\"" + name + "\"}"
+    need_comma = True
+
+
+fn _append_event(
+    mut events: String, mut need_comma: Bool, event_type: String, frame: Int, at_us: Int
+):
+    if need_comma:
+        events += ","
+    events += (
+        "{\"type\":\""
+        + event_type
+        + "\",\"frame\":"
+        + String(frame)
+        + ",\"at\":"
+        + String(at_us)
+        + "}"
+    )
+    need_comma = True
+
 def _write_speedscope(profile_path: String, frames: String, events: String, total_us: Int):
     var json = String()
     json += "{"
@@ -892,6 +888,38 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
 
     var time = Python.import_module("time")
     var t0 = Int(time.perf_counter_ns())
+    var do_profile = _profile_enabled(profile_path)
+
+    var frame_total = 0
+    var frame_assemble = 1
+    var frame_solve = 2
+    var frame_output = 3
+    var frame_assemble_stiffness = 4
+    var frame_assemble_internal = 5
+    var frame_kff_extract = 6
+    var frame_solve_linear = 7
+    var frame_solve_nonlinear = 8
+    var frame_nonlinear_step = 9
+    var frame_nonlinear_iter = 10
+
+    var frames = String()
+    var events = String()
+    var frames_need_comma = False
+    var events_need_comma = False
+    if do_profile:
+        _append_frame(frames, frames_need_comma, "total")
+        _append_frame(frames, frames_need_comma, "assemble")
+        _append_frame(frames, frames_need_comma, "solve")
+        _append_frame(frames, frames_need_comma, "output")
+        _append_frame(frames, frames_need_comma, "assemble_stiffness")
+        _append_frame(frames, frames_need_comma, "assemble_internal")
+        _append_frame(frames, frames_need_comma, "kff_extract")
+        _append_frame(frames, frames_need_comma, "solve_linear")
+        _append_frame(frames, frames_need_comma, "solve_nonlinear")
+        _append_frame(frames, frames_need_comma, "nonlinear_step")
+        _append_frame(frames, frames_need_comma, "nonlinear_iter")
+        _append_event(events, events_need_comma, "O", frame_total, 0)
+        _append_event(events, events_need_comma, "O", frame_assemble, 0)
 
     var nodes = data["nodes"]
     var node_count = py_len(nodes)
@@ -914,6 +942,22 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
 
     var sections = data.get("sections", [])
     var materials = data.get("materials", [])
+    var sections_by_id: List[PythonObject] = []
+    sections_by_id.resize(0, None)
+    for i in range(py_len(sections)):
+        var sec = sections[i]
+        var sid = Int(sec["id"])
+        if sid >= len(sections_by_id):
+            sections_by_id.resize(sid + 1, None)
+        sections_by_id[sid] = sec
+    var materials_by_id: List[PythonObject] = []
+    materials_by_id.resize(0, None)
+    for i in range(py_len(materials)):
+        var mat = materials[i]
+        var mid = Int(mat["id"])
+        if mid >= len(materials_by_id):
+            materials_by_id.resize(mid + 1, None)
+        materials_by_id[mid] = mat
     var elements = data["elements"]
     var elem_count = py_len(elements)
     var elem_ids: List[Int] = []
@@ -1013,21 +1057,43 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
     u.resize(total_dofs, 0.0)
 
     var t_solve_start = Int(time.perf_counter_ns())
+    if do_profile:
+        var assemble_end = (t_solve_start - t0) // 1000
+        _append_event(events, events_need_comma, "C", frame_assemble, assemble_end)
+        _append_event(events, events_need_comma, "O", frame_solve, assemble_end)
     if analysis_type == "static_linear":
+        if do_profile:
+            var t_asm_start = Int(time.perf_counter_ns())
+            var asm_start_us = (t_asm_start - t0) // 1000
+            _append_event(
+                events, events_need_comma, "O", frame_assemble_stiffness, asm_start_us
+            )
         var K = assemble_global_stiffness(
             nodes,
             elements,
-            sections,
-            materials,
+            sections_by_id,
+            materials_by_id,
             id_to_index,
             node_count,
             ndf,
             ndm,
             u,
         )
+        if do_profile:
+            var t_asm_end = Int(time.perf_counter_ns())
+            var asm_end_us = (t_asm_end - t0) // 1000
+            _append_event(
+                events, events_need_comma, "C", frame_assemble_stiffness, asm_end_us
+            )
         var K_ff: List[List[Float64]] = []
         var F_f: List[Float64] = []
         F_f.resize(len(free), 0.0)
+        if do_profile:
+            var t_kff_start = Int(time.perf_counter_ns())
+            var kff_start_us = (t_kff_start - t0) // 1000
+            _append_event(
+                events, events_need_comma, "O", frame_kff_extract, kff_start_us
+            )
         for i in range(len(free)):
             var row: List[Float64] = []
             row.resize(len(free), 0.0)
@@ -1036,7 +1102,23 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
         for i in range(len(free)):
             for j in range(len(free)):
                 K_ff[i][j] = K[free[i]][free[j]]
+        if do_profile:
+            var t_kff_end = Int(time.perf_counter_ns())
+            var kff_end_us = (t_kff_end - t0) // 1000
+            _append_event(events, events_need_comma, "C", frame_kff_extract, kff_end_us)
+        if do_profile:
+            var t_solve_lin_start = Int(time.perf_counter_ns())
+            var solve_lin_start_us = (t_solve_lin_start - t0) // 1000
+            _append_event(
+                events, events_need_comma, "O", frame_solve_linear, solve_lin_start_us
+            )
         var u_f = gaussian_elimination(K_ff, F_f)
+        if do_profile:
+            var t_solve_lin_end = Int(time.perf_counter_ns())
+            var solve_lin_end_us = (t_solve_lin_end - t0) // 1000
+            _append_event(
+                events, events_need_comma, "C", frame_solve_linear, solve_lin_end_us
+            )
         for i in range(len(free)):
             u[free[i]] = u_f[i]
     elif analysis_type == "static_nonlinear":
@@ -1046,6 +1128,12 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
         if max_iters < 1:
             abort("max_iters must be >= 1")
         for step in range(steps):
+            if do_profile:
+                var t_step_start = Int(time.perf_counter_ns())
+                var step_start_us = (t_step_start - t0) // 1000
+                _append_event(
+                    events, events_need_comma, "O", frame_nonlinear_step, step_start_us
+                )
             var scale = Float64(step + 1) / Float64(steps)
             var F_step: List[Float64] = []
             F_step.resize(total_dofs, 0.0)
@@ -1053,31 +1141,87 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
                 F_step[i] = F_total[i] * scale
             var converged = False
             for _ in range(max_iters):
+                if do_profile:
+                    var t_iter_start = Int(time.perf_counter_ns())
+                    var iter_start_us = (t_iter_start - t0) // 1000
+                    _append_event(
+                        events,
+                        events_need_comma,
+                        "O",
+                        frame_nonlinear_iter,
+                        iter_start_us,
+                    )
+                if do_profile:
+                    var t_int_start = Int(time.perf_counter_ns())
+                    var int_start_us = (t_int_start - t0) // 1000
+                    _append_event(
+                        events,
+                        events_need_comma,
+                        "O",
+                        frame_assemble_internal,
+                        int_start_us,
+                    )
                 var F_int = assemble_internal_forces(
                     nodes,
                     elements,
-                    sections,
-                    materials,
+                    sections_by_id,
+                    materials_by_id,
                     id_to_index,
                     node_count,
                     ndf,
                     ndm,
                     u,
                 )
+                if do_profile:
+                    var t_int_end = Int(time.perf_counter_ns())
+                    var int_end_us = (t_int_end - t0) // 1000
+                    _append_event(
+                        events,
+                        events_need_comma,
+                        "C",
+                        frame_assemble_internal,
+                        int_end_us,
+                    )
+                if do_profile:
+                    var t_asm_start = Int(time.perf_counter_ns())
+                    var asm_start_us = (t_asm_start - t0) // 1000
+                    _append_event(
+                        events,
+                        events_need_comma,
+                        "O",
+                        frame_assemble_stiffness,
+                        asm_start_us,
+                    )
                 var K = assemble_global_stiffness(
                     nodes,
                     elements,
-                    sections,
-                    materials,
+                    sections_by_id,
+                    materials_by_id,
                     id_to_index,
                     node_count,
                     ndf,
                     ndm,
                     u,
                 )
+                if do_profile:
+                    var t_asm_end = Int(time.perf_counter_ns())
+                    var asm_end_us = (t_asm_end - t0) // 1000
+                    _append_event(
+                        events,
+                        events_need_comma,
+                        "C",
+                        frame_assemble_stiffness,
+                        asm_end_us,
+                    )
                 var K_ff: List[List[Float64]] = []
                 var F_f: List[Float64] = []
                 F_f.resize(len(free), 0.0)
+                if do_profile:
+                    var t_kff_start = Int(time.perf_counter_ns())
+                    var kff_start_us = (t_kff_start - t0) // 1000
+                    _append_event(
+                        events, events_need_comma, "O", frame_kff_extract, kff_start_us
+                    )
                 for i in range(len(free)):
                     var row: List[Float64] = []
                     row.resize(len(free), 0.0)
@@ -1086,7 +1230,33 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
                 for i in range(len(free)):
                     for j in range(len(free)):
                         K_ff[i][j] = K[free[i]][free[j]]
+                if do_profile:
+                    var t_kff_end = Int(time.perf_counter_ns())
+                    var kff_end_us = (t_kff_end - t0) // 1000
+                    _append_event(
+                        events, events_need_comma, "C", frame_kff_extract, kff_end_us
+                    )
+                if do_profile:
+                    var t_solve_nl_start = Int(time.perf_counter_ns())
+                    var solve_nl_start_us = (t_solve_nl_start - t0) // 1000
+                    _append_event(
+                        events,
+                        events_need_comma,
+                        "O",
+                        frame_solve_nonlinear,
+                        solve_nl_start_us,
+                    )
                 var u_f = gaussian_elimination(K_ff, F_f)
+                if do_profile:
+                    var t_solve_nl_end = Int(time.perf_counter_ns())
+                    var solve_nl_end_us = (t_solve_nl_end - t0) // 1000
+                    _append_event(
+                        events,
+                        events_need_comma,
+                        "C",
+                        frame_solve_nonlinear,
+                        solve_nl_end_us,
+                    )
                 var max_diff = 0.0
                 var max_u = 0.0
                 for i in range(len(free)):
@@ -1106,18 +1276,39 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
                 var scale_tol = rel_tol * max_u
                 if scale_tol < rel_tol:
                     scale_tol = rel_tol
+                var converged_iter = False
                 if max_diff <= tol or max_diff <= scale_tol:
                     converged = True
-                    for i in range(len(free)):
-                        u[free[i]] += u_f[i]
-                    break
+                    converged_iter = True
                 for i in range(len(free)):
                     u[free[i]] += u_f[i]
+                if do_profile:
+                    var t_iter_end = Int(time.perf_counter_ns())
+                    var iter_end_us = (t_iter_end - t0) // 1000
+                    _append_event(
+                        events,
+                        events_need_comma,
+                        "C",
+                        frame_nonlinear_iter,
+                        iter_end_us,
+                    )
+                if converged_iter:
+                    break
+            if do_profile:
+                var t_step_end = Int(time.perf_counter_ns())
+                var step_end_us = (t_step_end - t0) // 1000
+                _append_event(
+                    events, events_need_comma, "C", frame_nonlinear_step, step_end_us
+                )
             if not converged:
                 abort("static_nonlinear did not converge")
     else:
         abort("unsupported analysis type: " + analysis_type)
     var t_solve_end = Int(time.perf_counter_ns())
+    if do_profile:
+        var solve_end_us = (t_solve_end - t0) // 1000
+        _append_event(events, events_need_comma, "C", frame_solve, solve_end_us)
+        _append_event(events, events_need_comma, "O", frame_output, solve_end_us)
 
     var t_output_start = t_solve_end
     var t1 = Int(time.perf_counter_ns())
@@ -1153,25 +1344,8 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
             file_path.write_text(PythonObject(line))
 
     var t2 = Int(time.perf_counter_ns())
-    if profile_path != "":
+    if do_profile:
         var total_us = (t2 - t0) // 1000
-        var assemble_end = (t_solve_start - t0) // 1000
-        var solve_end = (t_solve_end - t0) // 1000
-        var output_end = total_us
-        var frames = (
-            "{\"name\":\"total\"},"
-            "{\"name\":\"assemble\"},"
-            "{\"name\":\"solve\"},"
-            "{\"name\":\"output\"}"
-        )
-        var events = (
-            "{\"type\":\"O\",\"frame\":0,\"at\":0},"
-            "{\"type\":\"O\",\"frame\":1,\"at\":0},"
-            "{\"type\":\"C\",\"frame\":1,\"at\":" + String(assemble_end) + "},"
-            "{\"type\":\"O\",\"frame\":2,\"at\":" + String(assemble_end) + "},"
-            "{\"type\":\"C\",\"frame\":2,\"at\":" + String(solve_end) + "},"
-            "{\"type\":\"O\",\"frame\":3,\"at\":" + String(solve_end) + "},"
-            "{\"type\":\"C\",\"frame\":3,\"at\":" + String(output_end) + "},"
-            "{\"type\":\"C\",\"frame\":0,\"at\":" + String(output_end) + "}"
-        )
+        _append_event(events, events_need_comma, "C", frame_output, total_us)
+        _append_event(events, events_need_comma, "C", frame_total, total_us)
         _write_speedscope(profile_path, frames, events, total_us)

@@ -19,6 +19,7 @@ wheels/
 # Benchmark artifacts
 benches/results/
 benchmark/results/
+benchmark/speedscope/
 benchmark/archive/
 modular/
 notes/
