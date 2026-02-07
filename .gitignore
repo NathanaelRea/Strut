@@ -1,0 +1,26 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+.mypy_cache/
+.local_data/
+
+# Virtual environments
+.venv
+
+# Local tool caches
+.uv-cache/
+.modular/
+
+# Benchmark artifacts
+benches/results/
+modular/
+notes/
+tests/validation/*/reference/*
+
+# Temporary files
+ignore/
