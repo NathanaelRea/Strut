@@ -2,6 +2,10 @@
 
 A adaptation of the popular finite element and earthquake analysis tool `OpenSees` into the high performance, gpu-enhanced programming language mojo.
 
+## Current progress
+
+Read and updated progress / goals in the plan, [PLAN.md](./docs/PLAN.md). If anything seems hard, you can always break it down into sub-tasks. Keep track of progress and update the checkboxes.
+
 ## `docs/agent-reference/` resources
 
 The `docs/agent-reference/` directory is collection of documents for development in mojo.
@@ -26,9 +30,14 @@ Cloned repos:
 - [mojo-gpu-puzzles](./docs/agent-reference/mojo-gpu-puzzles/)
   - some possible useful examples for using the gpu with mojo, if needed look through the [solutions](./docs/agent-reference/mojo-gpu-puzzles/solutions/)
 
-## Testing
+OpenSees Examples:
+
+- There are many downloaded [OpenSeesExamples](./docs/agent-reference/OpenSeesExamples/) of tcl files and models
+
+## In depth
 
 - [testing.md](./docs/testing.md)
+- [packages.md](./docs/packages.md)
 
 ## A note to the Agent
 
