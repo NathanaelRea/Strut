@@ -21,6 +21,8 @@ benches/results/
 modular/
 notes/
 tests/validation/*/reference/*
+tests/validation/*/generated/*
+tests/validation/**/*.out
 
 # Temporary files
 ignore/

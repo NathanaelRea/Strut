@@ -10,7 +10,7 @@ if [[ ! -x "$runner" ]]; then
 fi
 
 cases=(
-  "ex1a|OpenSees/examples/ex1a/Ex1a.Canti2D.Push.tcl|tests/validation/ex1a/reference"
+  "ex1a|benchmark/OpenSees/examples/ex1a/Ex1a.Canti2D.Push.tcl|tests/validation/ex1a/reference"
 )
 
 usage() {
@@ -26,7 +26,7 @@ Available cases:
   pushover_concentrated
   pushover_distributed
 
-Set OPENSEES_EXE/OPENSEES_WORKDIR/etc. before invoking to override defaults.
+Set OPENSEES_WORKDIR/etc. before invoking to override defaults.
 HELP
 }
 

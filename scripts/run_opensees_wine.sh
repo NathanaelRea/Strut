@@ -5,11 +5,9 @@ set -euo pipefail
 # matching tests/validation/<example>/reference/ directory
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-examples_root="${repo_root}/OpenSees/examples"
+examples_root="${repo_root}/benchmark/OpenSees/examples"
 validation_root="${repo_root}/tests/validation"
-default_exe="${repo_root}/OpenSees/OpenSees.exe"
-
-opensees_exe="${OPENSEES_EXE:-$default_exe}"
+opensees_exe="${repo_root}/benchmark/OpenSees/OpenSees.exe"
 intel_runtime_env="${OPENSEES_INTEL_RUNTIME:-}"
 intel_runtime_name="libiomp5md.dll"
 tcl_dir_env="${OPENSEES_TCL_DIR:-}"
@@ -72,10 +70,7 @@ prepare_runtime() {
   require_binary winepath
 
   if [[ ! -f "$opensees_exe" ]]; then
-    {
-      echo "error: OpenSees executable not found at '$opensees_exe'."
-      echo "       Set OPENSEES_EXE to point at OpenSees.exe."
-    } >&2
+    echo "error: OpenSees executable not found at '$opensees_exe'." >&2
     exit 1
   fi
 
