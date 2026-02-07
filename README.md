@@ -1,4 +1,4 @@
-# Strut
+# 🔥 Strut 🔥
 
 GPU-first finite element analysis (FEA) research sandbox written in Mojo. The project focuses on structural mechanics workloads and aims to squeeze as much performance as possible from modern accelerators while remaining easy to validate against analytical solutions and other state of the art solvers.
 
