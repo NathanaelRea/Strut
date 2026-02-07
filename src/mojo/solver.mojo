@@ -2,7 +2,7 @@ from collections import List
 from os import abort
 from python import Python, PythonObject
 
-from elements import beam_global_stiffness, truss_global_stiffness
+from elements import beam_global_stiffness, link_global_stiffness, truss_global_stiffness
 from linalg import gaussian_elimination
 from strut_io import py_len
 
@@ -153,6 +153,52 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
                 Float64(node2["x"]),
                 Float64(node2["y"]),
             )
+            var dof_map = [
+                node_dof_index(i1, 1, ndf),
+                node_dof_index(i1, 2, ndf),
+                node_dof_index(i2, 1, ndf),
+                node_dof_index(i2, 2, ndf),
+            ]
+            for a in range(4):
+                var Aidx = dof_map[a]
+                for b in range(4):
+                    var Bidx = dof_map[b]
+                    K[Aidx][Bidx] += k_global[a][b]
+        elif elem_type == "zeroLength" or elem_type == "twoNodeLink":
+            if ndf != 2:
+                abort("zeroLength/twoNodeLink requires ndf=2")
+            var n1 = Int(elem["nodes"][0])
+            var n2 = Int(elem["nodes"][1])
+            var i1 = id_to_index[n1]
+            var i2 = id_to_index[n2]
+
+            var elem_mats = elem["materials"]
+            var elem_dirs = elem["dirs"]
+            if py_len(elem_mats) != py_len(elem_dirs):
+                abort("zeroLength/twoNodeLink materials/dirs mismatch")
+
+            var ks: List[Float64] = []
+            ks.resize(py_len(elem_mats), 0.0)
+            var dirs: List[Int] = []
+            dirs.resize(py_len(elem_dirs), 0)
+
+            for m in range(py_len(elem_mats)):
+                var mat_id = Int(elem_mats[m])
+                var mat: PythonObject = None
+                for midx in range(py_len(materials)):
+                    var candidate = materials[midx]
+                    if Int(candidate["id"]) == mat_id:
+                        mat = candidate
+                        break
+                if mat is None:
+                    abort("material not found")
+                if String(mat["type"]) != "Elastic":
+                    abort("only Elastic uniaxial material supported")
+                var params = mat["params"]
+                ks[m] = Float64(params["E"])
+                dirs[m] = Int(elem_dirs[m])
+
+            var k_global = link_global_stiffness(dirs, ks)
             var dof_map = [
                 node_dof_index(i1, 1, ndf),
                 node_dof_index(i1, 2, ndf),

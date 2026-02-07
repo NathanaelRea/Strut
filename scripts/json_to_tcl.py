@@ -105,7 +105,7 @@ def main():
                 f.write(f"geomTransf {name} {next_tag}\n")
                 next_tag += 1
 
-        # Elements (elasticBeamColumn2d, truss only for now)
+        # Elements (elasticBeamColumn2d, truss, zeroLength, twoNodeLink)
         for elem in elements:
             if elem["type"] == "elasticBeamColumn2d":
                 sec = sections[elem["section"]]
@@ -123,6 +123,16 @@ def main():
                 area = elem["area"]
                 mat_id = elem["material"]
                 f.write(f"element truss {elem['id']} {n1} {n2} {area} {mat_id}\n")
+            elif elem["type"] == "zeroLength":
+                n1, n2 = elem["nodes"]
+                mats = " ".join(str(mid) for mid in elem["materials"])
+                dirs = " ".join(str(d) for d in elem["dirs"])
+                f.write(f"element zeroLength {elem['id']} {n1} {n2} -mat {mats} -dir {dirs}\n")
+            elif elem["type"] == "twoNodeLink":
+                n1, n2 = elem["nodes"]
+                mats = " ".join(str(mid) for mid in elem["materials"])
+                dirs = " ".join(str(d) for d in elem["dirs"])
+                f.write(f"element twoNodeLink {elem['id']} {n1} {n2} -mat {mats} -dir {dirs}\n")
             else:
                 raise ValueError(f"unsupported element type: {elem['type']}")
 

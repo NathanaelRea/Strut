@@ -25,6 +25,7 @@ notes/
 tests/validation/*/reference/*
 tests/validation/*/generated/*
 tests/validation/**/*.out
+tests/validation/**/*.txt
 
 # Temporary files
 ignore/

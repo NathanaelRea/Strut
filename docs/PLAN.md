@@ -41,8 +41,8 @@ This document is a living roadmap for Strut (Mojo rewrite of OpenSees). It captu
 ### A. More Elements (Elastic)
 
 - [x] `truss`
-- [ ] `twoNodeLink`
-- [ ] `zeroLength`
+- [x] `twoNodeLink`
+- [x] `zeroLength`
 - [ ] `fourNodeQuad` (elastic plane stress)
 - [ ] `shell` (simple elastic shell)
 
@@ -108,8 +108,8 @@ The following are major OpenSees element families to consider. This list is base
 - [ ] `gradientInelasticBeamColumn`.
 - [ ] `beamWithHinges`.
 - [ ] `truss`.
-- [ ] `twoNodeLink`.
-- [ ] `zeroLength`.
+- [x] `twoNodeLink`.
+- [x] `zeroLength`.
 - [ ] `fourNodeQuad`.
 - [ ] `shell`.
 - [ ] `brick`.

@@ -1,7 +1,7 @@
 {
   "schema_version": "1.0",
-  "enabled": false,
-  "status": "todo",
+  "enabled": true,
+  "status": "active",
   "metadata": {
     "name": "elastic_two_node_link_basic",
     "units": "SI"
@@ -48,7 +48,10 @@
     {
       "id": 2,
       "x": 10.0,
-      "y": 0.0
+      "y": 0.0,
+      "constraints": [
+        2
+      ]
     }
   ],
   "materials": [
