@@ -57,3 +57,4 @@ For OpenSees, the Tcl recorder writes a space-separated vector per line. The com
 - Validation cases can be marked with `"enabled": false` in JSON. `STRUT_RUN_ALL_CASES=1` runs all cases in tests, and `STRUT_FORCE_CASE=1` forces a disabled case in `scripts/run_case.py`.
 - `scripts/run_mojo_case.py` runs the Python solver by default and only uses Mojo when `STRUT_MOJO_SOLVER=1` and `mojo` is on `PATH`.
 - OpenSees reference outputs are cached by JSON content hash in `tests/validation/<case>/reference/.ref_hash`. Set `STRUT_REFRESH_REFERENCE=1` to regenerate.
+- Benchmarks use `scripts/run_benchmarks.py`. The latest run is written to `benchmark/results/` and summary snapshots are archived in `benchmark/archive/` (both ignored by git).

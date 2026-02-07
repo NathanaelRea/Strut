@@ -18,6 +18,8 @@ wheels/
 
 # Benchmark artifacts
 benches/results/
+benchmark/results/
+benchmark/archive/
 modular/
 notes/
 tests/validation/*/reference/*

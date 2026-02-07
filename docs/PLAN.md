@@ -32,9 +32,9 @@ This document is a living roadmap for Strut (Mojo rewrite of OpenSees). It captu
 
 ### D. Benchmarking (Immediate)
 
-- [ ] Benchmark runner for OpenSees (Wine) vs Mojo.
-- [ ] Store benchmark results in `benchmark/results/`.
-- [ ] Track performance regressions across commits.
+- [x] Benchmark runner for OpenSees (Wine) vs Mojo.
+- [x] Store latest benchmark results in `benchmark/results/` (ignored for now).
+- [x] Store archival benchmark summaries in `benchmark/archive/` (ignored for now).
 
 ## Phase 2 (Near-Term)
 

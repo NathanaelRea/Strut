@@ -3,3 +3,5 @@
 *.zip
 lib/
 bin/
+results/
+archive/

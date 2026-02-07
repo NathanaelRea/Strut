@@ -1,3 +1,37 @@
 # Benchmark
 
-Directory for directly comparing results and runtimes
+Tools for comparing OpenSees (Wine) and Strut (Mojo) runtime performance.
+
+## Runner
+
+Use `scripts/run_benchmarks.py` to run the default elastic cases or a custom
+case list from `tests/validation/`.
+
+Examples:
+
+```bash
+python scripts/run_benchmarks.py
+python scripts/run_benchmarks.py --cases elastic_beam_cantilever,elastic_frame_portal
+python scripts/run_benchmarks.py --cases tests/validation/elastic_frame_two_story/elastic_frame_two_story.json
+python scripts/run_benchmarks.py --engine mojo
+```
+
+## Results
+
+- `benchmark/results/` contains the latest run (summary plus last-run outputs).
+- Compute-only outputs are written to `benchmark/results/opensees_compute/` and `benchmark/results/mojo_compute/`.
+- `benchmark/archive/` contains timestamped summary snapshots.
+- When running both engines, the runner compares outputs and fails on mismatch.
+- The runner performs a second pass without recorders to estimate compute-only time.
+- The runner prints progress per case and pass while running.
+- The OpenSees total pass writes `analysis_time_us.txt` in each case output directory.
+
+Both directories are ignored by git.
+
+## Plots
+
+The plot helper requires matplotlib:
+
+```bash
+python scripts/plot_benchmarks.py --output benchmark/results/plots.pdf
+```

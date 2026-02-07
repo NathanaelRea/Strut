@@ -8,3 +8,8 @@ dependencies = [
     "mojo>=0.25.6.1",
     "pytest>=9.0.2",
 ]
+
+[dependency-groups]
+dev = [
+    "matplotlib>=3.10.8",
+]
