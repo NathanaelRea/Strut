@@ -465,6 +465,8 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
     u.resize(total_dofs, 0.0)
     var transient_output_files: List[String] = []
     var transient_output_buffers: List[String] = []
+    var static_output_files: List[String] = []
+    var static_output_buffers: List[String] = []
 
     var t_solve_start = Int(time.perf_counter_ns())
     if do_profile:
@@ -745,6 +747,62 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
                 )
             if converged:
                 uniaxial_commit_all(uniaxial_states)
+                for r in range(py_len(recorders)):
+                    var rec = recorders[r]
+                    var rec_type = String(rec["type"])
+                    if rec_type == "node_displacement":
+                        var dofs = rec["dofs"]
+                        var output = String(rec.get("output", "node_disp"))
+                        var nodes_out = rec["nodes"]
+                        for nidx in range(py_len(nodes_out)):
+                            var node_id = Int(nodes_out[nidx])
+                            var i = id_to_index[node_id]
+                            var line = String()
+                            for j in range(py_len(dofs)):
+                                var dof = Int(dofs[j])
+                                require_dof_in_range(dof, ndf, "recorder")
+                                var value = u[node_dof_index(i, dof, ndf)]
+                                if j > 0:
+                                    line += " "
+                                line += String(value)
+                            line += "\n"
+                            var filename = output + "_node" + String(node_id) + ".out"
+                            _append_output(
+                                static_output_files, static_output_buffers, filename, line
+                            )
+                    elif rec_type == "element_force":
+                        var output = String(rec.get("output", "element_force"))
+                        var elements_out = rec["elements"]
+                        for eidx in range(py_len(elements_out)):
+                            var elem_id = Int(elements_out[eidx])
+                            if (
+                                elem_id >= len(elem_id_to_index)
+                                or elem_id_to_index[elem_id] < 0
+                            ):
+                                abort("recorder element not found")
+                            var elem = elements[elem_id_to_index[elem_id]]
+                            if String(elem["type"]) != "elasticBeamColumn2d":
+                                abort("element_force recorder supports elasticBeamColumn2d only")
+                            var f_elem = _beam2d_element_force_global(
+                                elem,
+                                nodes,
+                                sections_by_id,
+                                id_to_index,
+                                ndf,
+                                u,
+                            )
+                            var line = String()
+                            for j in range(6):
+                                if j > 0:
+                                    line += " "
+                                line += String(f_elem[j])
+                            line += "\n"
+                            var filename = output + "_ele" + String(elem_id) + ".out"
+                            _append_output(
+                                static_output_files, static_output_buffers, filename, line
+                            )
+                    else:
+                        abort("unsupported recorder type")
             if not converged:
                 abort("static_nonlinear did not converge")
     elif analysis_type == "transient_linear":
@@ -925,6 +983,11 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
             var filename = transient_output_files[i]
             var file_path = out_dir.joinpath(filename)
             file_path.write_text(PythonObject(transient_output_buffers[i]))
+    elif analysis_type == "static_nonlinear" and len(static_output_files) > 0:
+        for i in range(len(static_output_files)):
+            var filename = static_output_files[i]
+            var file_path = out_dir.joinpath(filename)
+            file_path.write_text(PythonObject(static_output_buffers[i]))
     else:
         for r in range(py_len(recorders)):
             var rec = recorders[r]

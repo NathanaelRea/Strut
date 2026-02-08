@@ -80,6 +80,7 @@ This document is a living roadmap for Strut (Mojo rewrite of OpenSees). It captu
 ### A. Material Nonlinearity
 
 - [x] Add nonlinear uniaxial material: Steel (bilinear).
+- [x] Add stress-strain plotting script for nonlinear materials.
 - [ ] Add nonlinear uniaxial material: Concrete (unconfined).
 - [ ] Add nonlinear uniaxial material: Gap / hook / elastic-plastic.
 - [ ] Section aggregation (fiber sections).
