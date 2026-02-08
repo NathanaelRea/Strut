@@ -395,6 +395,7 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
     elem_uniaxial_offsets.resize(elem_count, 0)
     elem_uniaxial_counts.resize(elem_count, 0)
     var used_nonelastic_uniaxial = False
+    var force_beam_has_nonelastic = False
     for e in range(elem_count):
         var elem = elements[e]
         var elem_type = String(elem["type"])
@@ -451,6 +452,7 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
                     elem_uniaxial_state_ids.append(state_index)
                     if not uni_mat_is_elastic(mat_def):
                         used_nonelastic_uniaxial = True
+                        force_beam_has_nonelastic = True
         else:
             elem_uniaxial_offsets[e] = len(elem_uniaxial_state_ids)
             elem_uniaxial_counts[e] = 0
@@ -527,8 +529,34 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
     var steps = Int(analysis.get("steps", 1))
     if steps < 1:
         abort("analysis steps must be >= 1")
-    if has_force_beam_column2d and analysis_type != "static_nonlinear":
-        abort("forceBeamColumn2d currently requires static_nonlinear analysis")
+    var force_beam_mode = String(analysis.get("force_beam_mode", "auto"))
+    if (
+        force_beam_mode != "auto"
+        and force_beam_mode != "linear_if_elastic"
+        and force_beam_mode != "nonlinear"
+    ):
+        abort(
+            "unsupported force_beam_mode: "
+            + force_beam_mode
+            + " (expected auto|linear_if_elastic|nonlinear)"
+        )
+    if has_force_beam_column2d:
+        if analysis_type != "static_linear" and analysis_type != "static_nonlinear":
+            abort("forceBeamColumn2d requires static_linear or static_nonlinear analysis")
+        if force_beam_mode == "nonlinear":
+            if analysis_type != "static_nonlinear":
+                abort("force_beam_mode=nonlinear requires static_nonlinear analysis")
+        elif force_beam_mode == "linear_if_elastic":
+            if force_beam_has_nonelastic:
+                if analysis_type != "static_nonlinear":
+                    abort("forceBeamColumn2d with non-elastic fibers requires static_nonlinear analysis")
+            elif analysis_type != "static_linear":
+                abort(
+                    "force_beam_mode=linear_if_elastic requires static_linear "
+                    "analysis for elastic forceBeamColumn2d"
+                )
+        elif analysis_type == "static_linear" and force_beam_has_nonelastic:
+            abort("forceBeamColumn2d with non-elastic fibers requires static_nonlinear analysis")
     if analysis_type != "static_nonlinear" and used_nonelastic_uniaxial:
         abort("nonlinear uniaxial materials require static_nonlinear analysis")
 

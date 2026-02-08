@@ -2,6 +2,10 @@
 
 A adaptation of the popular finite element and earthquake analysis tool `OpenSees` into the high performance, gpu-enhanced programming language mojo.
 
+## Instructions
+
+- Never stub or mock anything unless explicitly specified by the user. If there is a big feature break it into steps, and ask for confirmation
+
 ## Current progress
 
 Read and updated progress / goals in the plan, [PLAN.md](./docs/PLAN.md). If anything seems hard, you can always break it down into sub-tasks. Keep track of progress and update the checkboxes.

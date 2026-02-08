@@ -73,6 +73,7 @@ This document is a living roadmap for Strut (Mojo rewrite of OpenSees). It captu
 
 - [x] Add RCM-based banded solver path for large linear frames.
 - [x] Add generated large-frame benchmark (~1k DOF).
+- [x] Add elastic `forceBeamColumn2d` linear fast path + global (dense/banded) stiffness assembly support.
 
 ## Phase 3 (Mid-Term)
 

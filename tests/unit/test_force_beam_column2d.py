@@ -5,6 +5,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+import pytest
+
 
 repo_root = Path(__file__).resolve().parents[2]
 
@@ -134,3 +136,39 @@ def test_force_beam_column2d_displacement_control_cyclic_sign_reversal():
     assert len(rows) == 3
     # Global Fy at node i should reverse sign when control displacement reverses.
     assert rows[0][1] * rows[1][1] < 0.0
+
+
+def test_force_beam_column2d_static_linear_elastic_runs():
+    case_data = _base_force_beam_case(
+        {"id": 1, "type": "Elastic", "params": {"E": 30000000000.0}}
+    )
+    case_data["analysis"] = {
+        "type": "static_linear",
+        "steps": 1,
+        "force_beam_mode": "linear_if_elastic",
+    }
+
+    with tempfile.TemporaryDirectory() as tmp:
+        out_dir = Path(tmp)
+        _run_mojo_case(case_data, out_dir)
+        rows = _read_rows(out_dir / "element_force_ele1.out")
+
+    assert len(rows) == 1
+    assert len(rows[0]) == 6
+    assert all(math.isfinite(value) for value in rows[0])
+
+
+def test_force_beam_column2d_static_linear_nonelastic_rejected():
+    case_data = _base_force_beam_case(
+        {
+            "id": 1,
+            "type": "Steel01",
+            "params": {"Fy": 250000000.0, "E0": 200000000000.0, "b": 0.01},
+        }
+    )
+    case_data["analysis"] = {"type": "static_linear", "steps": 1}
+
+    with tempfile.TemporaryDirectory() as tmp:
+        out_dir = Path(tmp)
+        with pytest.raises(subprocess.CalledProcessError):
+            _run_mojo_case(case_data, out_dir)

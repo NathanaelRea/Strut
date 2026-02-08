@@ -106,12 +106,9 @@ def build_frame_case(
             }
         ]
         analysis = {
-            "type": "static_nonlinear",
+            "type": "static_linear",
             "steps": 1,
-            "max_iters": 80,
-            "tol": 1.0e-7,
-            "rel_tol": 1.0e-8,
-            "integrator": {"type": "LoadControl"},
+            "force_beam_mode": "linear_if_elastic",
         }
 
     data = {

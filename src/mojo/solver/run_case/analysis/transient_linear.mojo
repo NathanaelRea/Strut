@@ -85,9 +85,13 @@ fn run_transient_linear(
         u,
         uniaxial_defs,
         uniaxial_state_defs,
+        uniaxial_states,
         elem_uniaxial_offsets,
         elem_uniaxial_counts,
         elem_uniaxial_state_ids,
+        fiber_section_defs,
+        fiber_section_cells,
+        fiber_section_index_by_id,
     )
     var K_ff: List[List[Float64]] = []
     for _ in range(free_count):

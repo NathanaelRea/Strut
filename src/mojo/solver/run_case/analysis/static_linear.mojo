@@ -1,5 +1,5 @@
 from collections import List
-from materials import UniMaterialDef
+from materials import UniMaterialDef, UniMaterialState
 from python import Python, PythonObject
 
 from linalg import gaussian_elimination
@@ -7,6 +7,7 @@ from solver.assembly import assemble_global_stiffness, assemble_global_stiffness
 from solver.banded import banded_gaussian_elimination, estimate_bandwidth
 from solver.profile import _append_event
 from solver.time_series import eval_time_series
+from sections import FiberCell, FiberSection2dDef
 
 fn run_static_linear(
     nodes: PythonObject,
@@ -21,9 +22,13 @@ fn run_static_linear(
     mut F_total: List[Float64],
     uniaxial_defs: List[UniMaterialDef],
     uniaxial_state_defs: List[Int],
+    mut uniaxial_states: List[UniMaterialState],
     elem_uniaxial_offsets: List[Int],
     elem_uniaxial_counts: List[Int],
     elem_uniaxial_state_ids: List[Int],
+    fiber_section_defs: List[FiberSection2dDef],
+    fiber_section_cells: List[FiberCell],
+    fiber_section_index_by_id: List[Int],
     use_banded_linear: Bool,
     free_index: List[Int],
     free: List[Int],
@@ -68,9 +73,13 @@ fn run_static_linear(
             u,
             uniaxial_defs,
             uniaxial_state_defs,
+            uniaxial_states,
             elem_uniaxial_offsets,
             elem_uniaxial_counts,
             elem_uniaxial_state_ids,
+            fiber_section_defs,
+            fiber_section_cells,
+            fiber_section_index_by_id,
             free_index,
             len(free),
             bw,
@@ -88,9 +97,13 @@ fn run_static_linear(
             u,
             uniaxial_defs,
             uniaxial_state_defs,
+            uniaxial_states,
             elem_uniaxial_offsets,
             elem_uniaxial_counts,
             elem_uniaxial_state_ids,
+            fiber_section_defs,
+            fiber_section_cells,
+            fiber_section_index_by_id,
         )
     if do_profile:
         var t_asm_end = Int(time.perf_counter_ns())

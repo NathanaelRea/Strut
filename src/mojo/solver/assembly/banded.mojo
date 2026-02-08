@@ -40,9 +40,13 @@ fn assemble_global_stiffness_banded(
     u: List[Float64],
     uniaxial_defs: List[UniMaterialDef],
     uniaxial_state_defs: List[Int],
+    mut uniaxial_states: List[UniMaterialState],
     elem_uniaxial_offsets: List[Int],
     elem_uniaxial_counts: List[Int],
     elem_uniaxial_state_ids: List[Int],
+    fiber_section_defs: List[FiberSection2dDef],
+    fiber_section_cells: List[FiberCell],
+    fiber_section_index_by_id: List[Int],
     free_index: List[Int],
     free_count: Int,
     bw: Int,
@@ -148,6 +152,82 @@ fn assemble_global_stiffness_banded(
             else:
                 abort("unsupported geomTransf: " + geom)
 
+            for a in range(6):
+                var Aidx = free_map[a]
+                if Aidx < 0:
+                    continue
+                for b in range(6):
+                    var Bidx = free_map[b]
+                    if Bidx < 0:
+                        continue
+                    banded_add(K, bw, Aidx, Bidx, k_global[a][b])
+        elif elem_type == "forceBeamColumn2d":
+            if ndf != 3:
+                abort("forceBeamColumn2d requires ndf=3")
+            var geom = String(elem.get("geomTransf", "Linear"))
+            if geom != "Linear":
+                abort("forceBeamColumn2d v1 supports geomTransf Linear only")
+            var integration = String(elem.get("integration", "Lobatto"))
+            if integration != "Lobatto":
+                abort("forceBeamColumn2d v1 supports Lobatto integration only")
+            var num_int_pts = Int(elem.get("num_int_pts", 3))
+            if num_int_pts != 3:
+                abort("forceBeamColumn2d v1 supports num_int_pts=3")
+
+            var n1 = Int(elem["nodes"][0])
+            var n2 = Int(elem["nodes"][1])
+            var i1 = id_to_index[n1]
+            var i2 = id_to_index[n2]
+            var node1 = nodes[i1]
+            var node2 = nodes[i2]
+
+            var sec_id = Int(elem["section"])
+            if sec_id >= len(fiber_section_index_by_id):
+                abort("forceBeamColumn2d section not found")
+            var sec_index = fiber_section_index_by_id[sec_id]
+            if sec_index < 0 or sec_index >= len(fiber_section_defs):
+                abort("forceBeamColumn2d requires FiberSection2d")
+            var sec_def = fiber_section_defs[sec_index]
+
+            var dof_map = [
+                node_dof_index(i1, 1, ndf),
+                node_dof_index(i1, 2, ndf),
+                node_dof_index(i1, 3, ndf),
+                node_dof_index(i2, 1, ndf),
+                node_dof_index(i2, 2, ndf),
+                node_dof_index(i2, 3, ndf),
+            ]
+            var free_map: List[Int] = []
+            free_map.resize(6, -1)
+            for i in range(6):
+                free_map[i] = free_index[dof_map[i]]
+
+            var u_elem: List[Float64] = []
+            u_elem.resize(6, 0.0)
+            for i in range(6):
+                u_elem[i] = u[dof_map[i]]
+
+            var elem_offset = elem_uniaxial_offsets[e]
+            var elem_state_count = elem_uniaxial_counts[e]
+            var k_global: List[List[Float64]] = []
+            var f_dummy: List[Float64] = []
+            force_beam_column2d_global_tangent_and_internal(
+                Float64(node1["x"]),
+                Float64(node1["y"]),
+                Float64(node2["x"]),
+                Float64(node2["y"]),
+                u_elem,
+                sec_def,
+                fiber_section_cells,
+                uniaxial_defs,
+                uniaxial_states,
+                elem_uniaxial_state_ids,
+                elem_offset,
+                elem_state_count,
+                num_int_pts,
+                k_global,
+                f_dummy,
+            )
             for a in range(6):
                 var Aidx = free_map[a]
                 if Aidx < 0:
