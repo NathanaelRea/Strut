@@ -32,6 +32,7 @@ from solver.profile import (
 )
 from solver.reorder import build_node_adjacency, rcm_order
 from solver.time_series import eval_time_series, find_time_series, parse_time_series
+from sections import FiberCell, FiberSection2dDef, append_fiber_section2d_from_json
 from strut_io import py_len
 
 
@@ -58,6 +59,11 @@ fn _beam2d_element_force_global(
     var sec = sections_by_id[sec_id]
     if sec is None:
         abort("section not found")
+    if String(sec["type"]) == "FiberSection2d":
+        abort(
+            "element_force for elasticBeamColumn2d with FiberSection2d requires "
+            "forceBeamColumn (not implemented)"
+        )
 
     var params = sec["params"]
     var E = Float64(params["E"])
@@ -501,6 +507,27 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
             continue
         else:
             abort("unsupported material type: " + mat_type)
+
+    var fiber_section_defs: List[FiberSection2dDef] = []
+    var fiber_section_cells: List[FiberCell] = []
+    var fiber_section_index_by_id: List[Int] = []
+    fiber_section_index_by_id.resize(len(sections_by_id), -1)
+    for i in range(py_len(sections)):
+        var sec = sections[i]
+        var sec_type = String(sec["type"])
+        if sec_type != "FiberSection2d":
+            continue
+        var sid = Int(sec["id"])
+        if sid >= len(fiber_section_index_by_id):
+            fiber_section_index_by_id.resize(sid + 1, -1)
+        append_fiber_section2d_from_json(
+            sec,
+            uniaxial_def_by_id,
+            fiber_section_defs,
+            fiber_section_cells,
+        )
+        fiber_section_index_by_id[sid] = len(fiber_section_defs) - 1
+
     var elements = data["elements"]
     var elem_count = py_len(elements)
     var elem_ids: List[Int] = []
@@ -514,6 +541,18 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
         if eid >= len(elem_id_to_index):
             elem_id_to_index.resize(eid + 1, -1)
         elem_id_to_index[eid] = i
+    for i in range(elem_count):
+        var elem = elements[i]
+        var elem_type = String(elem["type"])
+        if elem_type != "elasticBeamColumn2d" and elem_type != "elasticBeamColumn3d":
+            continue
+        var sec_id = Int(elem["section"])
+        if sec_id >= 0 and sec_id < len(fiber_section_index_by_id):
+            if fiber_section_index_by_id[sec_id] >= 0:
+                abort(
+                    elem_type + " with FiberSection2d requires forceBeamColumn "
+                    "(not implemented)"
+                )
 
     var uniaxial_states: List[UniMaterialState] = []
     var uniaxial_state_defs: List[Int] = []

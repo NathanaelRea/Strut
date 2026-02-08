@@ -23,7 +23,13 @@ Minimum required fields (v1.0):
   - `z` is required when `ndm=3`.
   - `constraints` DOF indices must be in `1..ndf`.
 - `materials`: list of `{ id, type, params }` (`Elastic`, `ElasticIsotropic`, `Steel01`, `Steel02`, `Concrete01`, `Concrete02`)
-- `sections`: list of `{ id, type, params }` (elastic section only in v1)
+- `sections`: list of `{ id, type, params }`
+  - Elastic: `ElasticSection2d`, `ElasticSection3d`, `ElasticMembranePlateSection`
+  - Fiber (infrastructure): `FiberSection2d`
+    - `params.patches`: list of `rect` patches:
+      - `{ type: "rect", material, num_subdiv_y, num_subdiv_z, y_i, z_i, y_j, z_j }`
+    - `params.layers`: list of `straight` layers:
+      - `{ type: "straight", material, num_bars, bar_area, y_start, z_start, y_end, z_end }`
 - `elements`: list of `{ id, type, nodes, section, geomTransf }`
 - `time_series`: list of `{ type, tag, ... }` (optional; top-level)
   - `Constant`: `{ tag, factor? }`
@@ -43,6 +49,10 @@ Minimum required fields (v1.0):
 - `recorders`: list of
   - `{ type: "node_displacement", nodes, dofs, output }` (`dofs` in `1..ndf`)
   - `{ type: "element_force", elements, output }` (currently `elasticBeamColumn2d` only)
+  
+Current limitation: `FiberSection2d` is parsed and converted to Tcl, but Strut
+does not yet attach it to beam-column elements. `elasticBeamColumn*` with
+`FiberSection2d` currently errors until `forceBeamColumn` is implemented.
 
 ## Harness Workflow
 

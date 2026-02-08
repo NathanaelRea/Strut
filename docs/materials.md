@@ -48,9 +48,18 @@ Newton updates.
   - Support gap activation thresholds and plastic return mapping using the same
     state framework.
 - **Fiber Sections**
-  - Fiber sections should own per-fiber uniaxial material states. Section
-    aggregation (forces + tangent) will become the bridge to nonlinear
-    beam-column elements.
+  - Implemented infrastructure (`FiberSection2d`, `patch rect`, `layer straight`):
+    - Fiber discretization stores per-fiber `(y, z, area, material)`.
+    - Section owns one uniaxial state per fiber.
+    - Aggregation (about section centroid `y_bar`) follows:
+      - `eps_f = eps0 - (y - y_bar) * kappa`
+      - `N = sum(sig_f * A_f)`
+      - `Mz = sum(-sig_f * A_f * (y - y_bar))`
+      - `k11 = sum(Et_f * A_f)`
+      - `k12 = sum(-Et_f * A_f * (y - y_bar))`
+      - `k22 = sum(Et_f * A_f * (y - y_bar)^2)`
+  - This section workflow is exposed by `src/mojo/section_path.mojo` and
+    `scripts/run_mojo_section_path.py` for unit validation.
 
 ## Compatibility Notes
 

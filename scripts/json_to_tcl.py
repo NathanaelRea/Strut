@@ -259,7 +259,7 @@ def main():
             else:
                 raise ValueError(f"unsupported material type: {mat['type']}")
 
-        # Sections (ElasticSection2d, ElasticSection3d, or ElasticMembranePlateSection)
+        # Sections (elastic, membrane/plate, or FiberSection2d subset)
         for sec in sections.values():
             params = sec["params"]
             if sec["type"] == "ElasticSection2d":
@@ -283,6 +283,72 @@ def main():
                 f.write(
                     f"section ElasticMembranePlateSection {sec['id']} {E} {nu} {h} {rho}\n"
                 )
+            elif sec["type"] == "FiberSection2d":
+                patches = params.get("patches", [])
+                layers = params.get("layers", [])
+                if not patches and not layers:
+                    raise ValueError("FiberSection2d requires at least one patch or layer")
+                f.write(f"section Fiber {sec['id']} {{\n")
+                for patch in patches:
+                    patch_type = patch.get("type")
+                    if patch_type != "rect":
+                        raise ValueError(
+                            f"unsupported FiberSection2d patch type: {patch_type}"
+                        )
+                    mat = patch["material"]
+                    if mat not in materials:
+                        raise ValueError(f"FiberSection2d patch material {mat} not found")
+                    if materials[mat]["type"] == "ElasticIsotropic":
+                        raise ValueError(
+                            "FiberSection2d patch requires uniaxial material (not ElasticIsotropic)"
+                        )
+                    ny = patch["num_subdiv_y"]
+                    nz = patch["num_subdiv_z"]
+                    yi = patch["y_i"]
+                    zi = patch["z_i"]
+                    yj = patch["y_j"]
+                    zj = patch["z_j"]
+                    if ny <= 0 or nz <= 0:
+                        raise ValueError(
+                            "FiberSection2d patch rect requires num_subdiv_y and "
+                            "num_subdiv_z > 0"
+                        )
+                    f.write(
+                        f"  patch rect {mat} {ny} {nz} {yi} {zi} {yj} {zj}\n"
+                    )
+                for layer in layers:
+                    layer_type = layer.get("type")
+                    if layer_type != "straight":
+                        raise ValueError(
+                            f"unsupported FiberSection2d layer type: {layer_type}"
+                        )
+                    mat = layer["material"]
+                    if mat not in materials:
+                        raise ValueError(f"FiberSection2d layer material {mat} not found")
+                    if materials[mat]["type"] == "ElasticIsotropic":
+                        raise ValueError(
+                            "FiberSection2d layer requires uniaxial material (not ElasticIsotropic)"
+                        )
+                    num_bars = layer["num_bars"]
+                    bar_area = layer["bar_area"]
+                    y_start = layer["y_start"]
+                    z_start = layer["z_start"]
+                    y_end = layer["y_end"]
+                    z_end = layer["z_end"]
+                    if num_bars <= 0:
+                        raise ValueError(
+                            "FiberSection2d layer straight requires num_bars > 0"
+                        )
+                    if bar_area <= 0:
+                        raise ValueError(
+                            "FiberSection2d layer straight requires bar_area > 0"
+                        )
+                    f.write(
+                        "  layer straight "
+                        f"{mat} {num_bars} {bar_area} "
+                        f"{y_start} {z_start} {y_end} {z_end}\n"
+                    )
+                f.write("}\n")
             else:
                 raise ValueError(f"unsupported section type: {sec['type']}")
 
@@ -312,6 +378,12 @@ def main():
         for elem in elements:
             if elem["type"] == "elasticBeamColumn2d":
                 sec = sections[elem["section"]]
+                if sec["type"] == "FiberSection2d":
+                    raise ValueError(
+                        "elasticBeamColumn2d with FiberSection2d requires forceBeamColumn"
+                    )
+                if sec["type"] != "ElasticSection2d":
+                    raise ValueError("elasticBeamColumn2d requires ElasticSection2d")
                 params = sec["params"]
                 A = params["A"]
                 E = params["E"]
@@ -323,6 +395,8 @@ def main():
                 )
             elif elem["type"] == "elasticBeamColumn3d":
                 sec = sections[elem["section"]]
+                if sec["type"] != "ElasticSection3d":
+                    raise ValueError("elasticBeamColumn3d requires ElasticSection3d")
                 params = sec["params"]
                 A = params["A"]
                 E = params["E"]
