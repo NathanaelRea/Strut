@@ -177,6 +177,22 @@ def collect_archive_trend(
     return timestamps, engine_medians
 
 
+def archive_min_timestamp(archive_dir: Path) -> Optional[datetime]:
+    files = sorted(archive_dir.glob("*-summary.json"))
+    if not files:
+        return None
+    min_ts: Optional[datetime] = None
+    for path in files:
+        try:
+            data = load_summary(path)
+        except Exception:
+            continue
+        ts = parse_timestamp(path, data)
+        if min_ts is None or ts < min_ts:
+            min_ts = ts
+    return min_ts
+
+
 MOJO_COLOR = "#FF5A1F"
 
 
@@ -299,6 +315,8 @@ def plot_recent_bar(
     group_gap: float = 0.6,
     label_max_len: int = 28,
     title: str = "Recent benchmark (analysis time per case)",
+    unit_label: str = "us",
+    scale: float = 1.0,
 ):
     fig, ax = plt.subplots(figsize=(10, 5))
     if group_spans:
@@ -338,8 +356,8 @@ def plot_recent_bar(
         x = list(range(len(names)))
         group_centers = []
     width = 0.38
-    opensees_vals = engines.get("opensees", [])
-    mojo_vals = engines.get("mojo", [])
+    opensees_vals = [v * scale for v in engines.get("opensees", [])]
+    mojo_vals = [v * scale for v in engines.get("mojo", [])]
     opensees_err = errors.get("opensees", [])
     mojo_err = errors.get("mojo", [])
 
@@ -357,7 +375,7 @@ def plot_recent_bar(
         color=MOJO_COLOR,
     )
 
-    ax.set_ylabel("Analysis time (us)")
+    ax.set_ylabel(f"Analysis time ({unit_label})")
     ax.set_title(title)
     ax.set_xticks(list(x))
     display_names = [_truncate_label(name, label_max_len) for name in names]
@@ -387,6 +405,9 @@ def plot_archive_trend(
     timestamps: List[datetime],
     medians: Dict[str, List[float]],
     title: str,
+    unit_label: str,
+    scale: float,
+    min_timestamp: Optional[datetime] = None,
 ):
     fig, ax = plt.subplots(figsize=(10, 4))
     if timestamps:
@@ -394,22 +415,24 @@ def plot_archive_trend(
         mojo_medians = medians.get("mojo", [])
         ax.plot(
             timestamps,
-            opensees_medians,
+            [v * scale for v in opensees_medians],
             marker="o",
             label="OpenSees",
         )
         ax.plot(
             timestamps,
-            mojo_medians,
+            [v * scale for v in mojo_medians],
             marker="o",
             label="Mojo",
             color=MOJO_COLOR,
         )
 
-    ax.set_ylabel("Median analysis time (s)")
+    ax.set_ylabel(f"Median analysis time ({unit_label})")
     ax.set_title(title)
     ax.grid(axis="y", linestyle=":", alpha=0.5)
     ax.legend()
+    if min_timestamp is not None:
+        ax.set_xlim(left=min_timestamp)
     fig.autofmt_xdate()
     fig.tight_layout()
     return fig
@@ -526,12 +549,13 @@ def main() -> None:
 
     with PdfPages(output_path) as pdf:
         if archive_dir.exists():
+            archive_min_ts = archive_min_timestamp(archive_dir)
             archive_specs = [
-                ("small", "Archive trend (small cases)"),
-                ("medium", "Archive trend (medium cases)"),
-                ("large", "Archive trend (large cases)"),
+                ("small", "Archive trend (small cases)", "us", 1e6),
+                ("medium", "Archive trend (medium cases)", "ms", 1e3),
+                ("large", "Archive trend (large cases)", "s", 1.0),
             ]
-            for size_label, title in archive_specs:
+            for size_label, title, unit_label, scale in archive_specs:
                 timestamps, medians = collect_archive_trend(
                     archive_dir,
                     size_label,
@@ -543,7 +567,14 @@ def main() -> None:
                     for vals in medians.values()
                     for v in vals
                 ):
-                    fig = plot_archive_trend(timestamps, medians, title)
+                    fig = plot_archive_trend(
+                        timestamps,
+                        medians,
+                        title,
+                        unit_label,
+                        scale,
+                        min_timestamp=archive_min_ts,
+                    )
                     pdf.savefig(fig)
                     plt.close(fig)
 
@@ -567,6 +598,8 @@ def main() -> None:
                 medium_spans,
                 group_gap=args.group_gap,
                 title="Recent benchmark (medium cases)",
+                unit_label="ms",
+                scale=1.0 / 1e3,
             )
             pdf.savefig(fig)
             plt.close(fig)
