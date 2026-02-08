@@ -155,6 +155,23 @@ def main():
             if fix is not None:
                 f.write(f"fix {node_id} {' '.join(str(v) for v in fix)}\n")
 
+        # Nodal masses (lumped)
+        masses = data.get("masses", [])
+        if masses:
+            mass_map = {}
+            for entry in masses:
+                node_id = entry["node"]
+                dof = entry["dof"]
+                value = entry["value"]
+                if dof < 1 or dof > ndf:
+                    raise ValueError(f"mass dof {dof} out of range 1..{ndf}")
+                vec = mass_map.setdefault(node_id, [0.0] * ndf)
+                vec[dof - 1] += value
+            for node_id, vec in mass_map.items():
+                if node_id not in node_by_id:
+                    raise ValueError(f"mass node {node_id} not found")
+                f.write(f"mass {node_id} {' '.join(str(v) for v in vec)}\n")
+
         # Materials (Elastic uniaxial or ElasticIsotropic)
         for mat in materials.values():
             params = mat["params"]
@@ -331,6 +348,7 @@ def main():
         analysis = data.get("analysis", {"type": "static_linear", "steps": 1})
         analysis_type = analysis.get("type", "static_linear")
         steps = analysis.get("steps", 1)
+        dt = None
         if steps < 1:
             raise ValueError("analysis steps must be >= 1")
         f.write("constraints Plain\n")
@@ -348,6 +366,19 @@ def main():
             f.write("algorithm Newton\n")
             f.write(f"integrator LoadControl {1.0/steps}\n")
             f.write("analysis Static\n")
+        elif analysis_type == "transient_linear":
+            dt = analysis.get("dt")
+            if dt is None or dt <= 0.0:
+                raise ValueError("transient_linear requires dt > 0")
+            integrator = analysis.get("integrator", {"type": "Newmark"})
+            if integrator.get("type", "Newmark") != "Newmark":
+                raise ValueError("transient_linear only supports Newmark integrator")
+            gamma = integrator.get("gamma", 0.5)
+            beta = integrator.get("beta", 0.25)
+            f.write("test NormUnbalance 1.0e-12 10\n")
+            f.write("algorithm Linear\n")
+            f.write(f"integrator Newmark {gamma} {beta}\n")
+            f.write("analysis Transient\n")
         else:
             raise ValueError(f"unsupported analysis type: {analysis_type}")
 
@@ -370,7 +401,10 @@ def main():
             else:
                 raise ValueError(f"unsupported recorder type: {rec_type}")
 
-        f.write(f"analyze {steps}\n")
+        if analysis_type == "transient_linear":
+            f.write(f"analyze {steps} {dt}\n")
+        else:
+            f.write(f"analyze {steps}\n")
 
 
 if __name__ == "__main__":

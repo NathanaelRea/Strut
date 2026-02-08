@@ -33,7 +33,9 @@ Minimum required fields (v1.0):
 - `pattern`: `{ type: "Plain", tag, time_series }` (optional; top-level)
 - `loads`: list of `{ node, dof, value }` (`dof` must be in `1..ndf`)
 - `element_loads`: list of `{ element, type, w }` (optional, `type: "beamUniform"` only)
-- `analysis`: `{ type: "static_linear" | "static_nonlinear", steps: 1, max_iters?, tol?, rel_tol? }`
+- `analysis`: `{ type: "static_linear" | "static_nonlinear" | "transient_linear", steps: 1, dt?, max_iters?, tol?, rel_tol?, integrator? }`
+  - `transient_linear` requires `dt > 0` and supports `integrator: { type: "Newmark", gamma?, beta? }`
+- `masses`: list of `{ node, dof, value }` (optional; nodal lumped masses for dynamics)
 - `recorders`: list of
   - `{ type: "node_displacement", nodes, dofs, output }` (`dofs` in `1..ndf`)
   - `{ type: "element_force", elements, output }` (currently `elasticBeamColumn2d` only)
@@ -48,13 +50,13 @@ Minimum required fields (v1.0):
 
 ## Output Format
 
-Node displacement outputs are written as space-separated values with one row per analysis step:
+Node displacement outputs are written as space-separated values with one row per analysis step (transient uses one line per time step):
 
 ```
 0.0000000000000000e+00 -1.6666666666666667e-05 -2.5000000000000000e-05
 ```
 
-For OpenSees, the Tcl recorder writes a space-separated vector per line. The comparator reads the last line for each node.
+For OpenSees, the Tcl recorder writes a space-separated vector per line. The comparator reads the last line for static cases and all lines for transient cases.
 
 Element force outputs are written as space-separated values with one row per analysis step. For `elasticBeamColumn2d`,
 the vector contains 6 global end forces (3 at node 1, 3 at node 2) in the OpenSees "force" recorder ordering.

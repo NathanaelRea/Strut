@@ -114,6 +114,20 @@ fn _beam2d_element_force_global(
     return f_elem^
 
 
+fn _append_output(
+    mut filenames: List[String],
+    mut buffers: List[String],
+    filename: String,
+    line: String,
+):
+    for i in range(len(filenames)):
+        if filenames[i] == filename:
+            buffers[i] = buffers[i] + line
+            return
+    filenames.append(filename)
+    buffers.append(line)
+
+
 def run_case(data: PythonObject, output_path: String, profile_path: String):
     var model = data["model"]
     var ndm = Int(model["ndm"])
@@ -283,6 +297,17 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
     if len(free) == 0:
         abort("no free dofs")
 
+    var M_total: List[Float64] = []
+    M_total.resize(total_dofs, 0.0)
+    var masses = data.get("masses", [])
+    for i in range(py_len(masses)):
+        var mass = masses[i]
+        var node_id = Int(mass["node"])
+        var dof = Int(mass["dof"])
+        require_dof_in_range(dof, ndf, "mass")
+        var idx = node_dof_index(id_to_index[node_id], dof, ndf)
+        M_total[idx] += Float64(mass["value"])
+
     var analysis = data.get("analysis", {"type": "static_linear", "steps": 1})
     var analysis_type = String(analysis.get("type", "static_linear"))
     var steps = Int(analysis.get("steps", 1))
@@ -310,8 +335,12 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
         if ts_index < 0:
             abort("time_series tag not found")
 
+    var recorders = data.get("recorders", [])
+
     var u: List[Float64] = []
     u.resize(total_dofs, 0.0)
+    var transient_output_files: List[String] = []
+    var transient_output_buffers: List[String] = []
 
     var t_solve_start = Int(time.perf_counter_ns())
     if do_profile:
@@ -547,6 +576,157 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
                 )
             if not converged:
                 abort("static_nonlinear did not converge")
+    elif analysis_type == "transient_linear":
+        var dt = Float64(analysis.get("dt", 0.0))
+        if dt <= 0.0:
+            abort("transient_linear requires dt > 0")
+        var integrator = analysis.get("integrator", {"type": "Newmark"})
+        var integrator_type = String(integrator.get("type", "Newmark"))
+        if integrator_type != "Newmark":
+            abort("transient_linear only supports Newmark integrator")
+        var gamma = Float64(integrator.get("gamma", 0.5))
+        var beta = Float64(integrator.get("beta", 0.25))
+        if beta <= 0.0:
+            abort("Newmark beta must be > 0")
+
+        var free_count = len(free)
+        var M_f: List[Float64] = []
+        M_f.resize(free_count, 0.0)
+        var has_mass = False
+        for i in range(free_count):
+            var m = M_total[free[i]]
+            M_f[i] = m
+            if m != 0.0:
+                has_mass = True
+        if not has_mass:
+            abort("transient_linear requires masses on free dofs")
+
+        var K = assemble_global_stiffness(
+            nodes,
+            elements,
+            sections_by_id,
+            materials_by_id,
+            id_to_index,
+            node_count,
+            ndf,
+            ndm,
+            u,
+        )
+        var K_ff: List[List[Float64]] = []
+        for _ in range(free_count):
+            var row: List[Float64] = []
+            row.resize(free_count, 0.0)
+            K_ff.append(row^)
+        for i in range(free_count):
+            for j in range(free_count):
+                K_ff[i][j] = K[free[i]][free[j]]
+
+        var a0 = 1.0 / (beta * dt * dt)
+        var a2 = 1.0 / (beta * dt)
+        var a3 = 1.0 / (2.0 * beta) - 1.0
+        var K_eff: List[List[Float64]] = []
+        for _ in range(free_count):
+            var row_eff: List[Float64] = []
+            row_eff.resize(free_count, 0.0)
+            K_eff.append(row_eff^)
+        for i in range(free_count):
+            for j in range(free_count):
+                K_eff[i][j] = K_ff[i][j]
+            K_eff[i][i] += a0 * M_f[i]
+
+        var v: List[Float64] = []
+        v.resize(total_dofs, 0.0)
+        var a: List[Float64] = []
+        a.resize(total_dofs, 0.0)
+
+        var P_eff: List[Float64] = []
+        P_eff.resize(free_count, 0.0)
+
+        for step in range(steps):
+            var t = Float64(step + 1) * dt
+            var factor = 1.0
+            if ts_index >= 0:
+                factor = eval_time_series(time_series[ts_index], t)
+            for i in range(free_count):
+                var idx = free[i]
+                P_eff[i] = (
+                    F_total[idx] * factor
+                    + M_f[i] * (a0 * u[idx] + a2 * v[idx] + a3 * a[idx])
+                )
+            var K_eff_step: List[List[Float64]] = []
+            for i in range(free_count):
+                var row: List[Float64] = []
+                row.resize(free_count, 0.0)
+                K_eff_step.append(row^)
+                for j in range(free_count):
+                    K_eff_step[i][j] = K_eff[i][j]
+            var P_step: List[Float64] = []
+            P_step.resize(free_count, 0.0)
+            for i in range(free_count):
+                P_step[i] = P_eff[i]
+            var u_f = gaussian_elimination(K_eff_step, P_step)
+            for i in range(free_count):
+                var idx = free[i]
+                var u_next = u_f[i]
+                var a_next = a0 * (u_next - u[idx]) - a2 * v[idx] - a3 * a[idx]
+                var v_next = v[idx] + dt * ((1.0 - gamma) * a[idx] + gamma * a_next)
+                u[idx] = u_next
+                v[idx] = v_next
+                a[idx] = a_next
+
+            for r in range(py_len(recorders)):
+                var rec = recorders[r]
+                var rec_type = String(rec["type"])
+                if rec_type == "node_displacement":
+                    var dofs = rec["dofs"]
+                    var output = String(rec.get("output", "node_disp"))
+                    var nodes_out = rec["nodes"]
+                    for nidx in range(py_len(nodes_out)):
+                        var node_id = Int(nodes_out[nidx])
+                        var i = id_to_index[node_id]
+                        var line = String()
+                        for j in range(py_len(dofs)):
+                            var dof = Int(dofs[j])
+                            require_dof_in_range(dof, ndf, "recorder")
+                            var value = u[node_dof_index(i, dof, ndf)]
+                            if j > 0:
+                                line += " "
+                            line += String(value)
+                        line += "\n"
+                        var filename = output + "_node" + String(node_id) + ".out"
+                        _append_output(
+                            transient_output_files, transient_output_buffers, filename, line
+                        )
+                elif rec_type == "element_force":
+                    var output = String(rec.get("output", "element_force"))
+                    var elements_out = rec["elements"]
+                    for eidx in range(py_len(elements_out)):
+                        var elem_id = Int(elements_out[eidx])
+                        if elem_id >= len(elem_id_to_index) or elem_id_to_index[elem_id] < 0:
+                            abort("recorder element not found")
+                        var elem = elements[elem_id_to_index[elem_id]]
+                        if String(elem["type"]) != "elasticBeamColumn2d":
+                            abort("element_force recorder supports elasticBeamColumn2d only")
+                        var f_elem = _beam2d_element_force_global(
+                            elem,
+                            nodes,
+                            sections_by_id,
+                            id_to_index,
+                            ndf,
+                            u,
+                        )
+                        var line = String()
+                        for j in range(6):
+                            if j > 0:
+                                line += " "
+                            line += String(f_elem[j])
+                        line += "\n"
+                        var filename = output + "_ele" + String(elem_id) + ".out"
+                        _append_output(
+                            transient_output_files, transient_output_buffers, filename, line
+                        )
+                else:
+                    abort("unsupported recorder type")
     else:
         abort("unsupported analysis type: " + analysis_type)
     var t_solve_end = Int(time.perf_counter_ns())
@@ -564,58 +744,63 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
     out_dir.mkdir(parents=True, exist_ok=True)
     var analysis_path = out_dir.joinpath("analysis_time_us.txt")
     analysis_path.write_text(PythonObject(String(analysis_us) + "\n"))
-    var recorders = data.get("recorders", [])
-    for r in range(py_len(recorders)):
-        var rec = recorders[r]
-        var rec_type = String(rec["type"])
-        if rec_type == "node_displacement":
-            var dofs = rec["dofs"]
-            var output = String(rec.get("output", "node_disp"))
-            var nodes_out = rec["nodes"]
-            for nidx in range(py_len(nodes_out)):
-                var node_id = Int(nodes_out[nidx])
-                var i = id_to_index[node_id]
-                var line = String()
-                for j in range(py_len(dofs)):
-                    var dof = Int(dofs[j])
-                    require_dof_in_range(dof, ndf, "recorder")
-                    var value = u[node_dof_index(i, dof, ndf)]
-                    if j > 0:
-                        line += " "
-                    line += String(value)
-                line += "\n"
-                var filename = output + "_node" + String(node_id) + ".out"
-                var file_path = out_dir.joinpath(filename)
-                file_path.write_text(PythonObject(line))
-        elif rec_type == "element_force":
-            var output = String(rec.get("output", "element_force"))
-            var elements_out = rec["elements"]
-            for eidx in range(py_len(elements_out)):
-                var elem_id = Int(elements_out[eidx])
-                if elem_id >= len(elem_id_to_index) or elem_id_to_index[elem_id] < 0:
-                    abort("recorder element not found")
-                var elem = elements[elem_id_to_index[elem_id]]
-                if String(elem["type"]) != "elasticBeamColumn2d":
-                    abort("element_force recorder supports elasticBeamColumn2d only")
-                var f_elem = _beam2d_element_force_global(
-                    elem,
-                    nodes,
-                    sections_by_id,
-                    id_to_index,
-                    ndf,
-                    u,
-                )
-                var line = String()
-                for j in range(6):
-                    if j > 0:
-                        line += " "
-                    line += String(f_elem[j])
-                line += "\n"
-                var filename = output + "_ele" + String(elem_id) + ".out"
-                var file_path = out_dir.joinpath(filename)
-                file_path.write_text(PythonObject(line))
-        else:
-            abort("unsupported recorder type")
+    if analysis_type == "transient_linear":
+        for i in range(len(transient_output_files)):
+            var filename = transient_output_files[i]
+            var file_path = out_dir.joinpath(filename)
+            file_path.write_text(PythonObject(transient_output_buffers[i]))
+    else:
+        for r in range(py_len(recorders)):
+            var rec = recorders[r]
+            var rec_type = String(rec["type"])
+            if rec_type == "node_displacement":
+                var dofs = rec["dofs"]
+                var output = String(rec.get("output", "node_disp"))
+                var nodes_out = rec["nodes"]
+                for nidx in range(py_len(nodes_out)):
+                    var node_id = Int(nodes_out[nidx])
+                    var i = id_to_index[node_id]
+                    var line = String()
+                    for j in range(py_len(dofs)):
+                        var dof = Int(dofs[j])
+                        require_dof_in_range(dof, ndf, "recorder")
+                        var value = u[node_dof_index(i, dof, ndf)]
+                        if j > 0:
+                            line += " "
+                        line += String(value)
+                    line += "\n"
+                    var filename = output + "_node" + String(node_id) + ".out"
+                    var file_path = out_dir.joinpath(filename)
+                    file_path.write_text(PythonObject(line))
+            elif rec_type == "element_force":
+                var output = String(rec.get("output", "element_force"))
+                var elements_out = rec["elements"]
+                for eidx in range(py_len(elements_out)):
+                    var elem_id = Int(elements_out[eidx])
+                    if elem_id >= len(elem_id_to_index) or elem_id_to_index[elem_id] < 0:
+                        abort("recorder element not found")
+                    var elem = elements[elem_id_to_index[elem_id]]
+                    if String(elem["type"]) != "elasticBeamColumn2d":
+                        abort("element_force recorder supports elasticBeamColumn2d only")
+                    var f_elem = _beam2d_element_force_global(
+                        elem,
+                        nodes,
+                        sections_by_id,
+                        id_to_index,
+                        ndf,
+                        u,
+                    )
+                    var line = String()
+                    for j in range(6):
+                        if j > 0:
+                            line += " "
+                        line += String(f_elem[j])
+                    line += "\n"
+                    var filename = output + "_ele" + String(elem_id) + ".out"
+                    var file_path = out_dir.joinpath(filename)
+                    file_path.write_text(PythonObject(line))
+            else:
+                abort("unsupported recorder type")
 
     var t2 = Int(time.perf_counter_ns())
     if do_profile:

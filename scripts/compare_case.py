@@ -30,6 +30,13 @@ def _load_last_values(path: Path):
     return _parse_line(lines[-1])
 
 
+def _load_all_values(path: Path):
+    lines = [ln for ln in path.read_text().splitlines() if ln.strip()]
+    if not lines:
+        raise ValueError(f"empty output file: {path}")
+    return [_parse_line(ln) for ln in lines]
+
+
 def _compare_vectors(ref, got, rtol=REL_TOL, atol=ABS_TOL):
     if len(ref) != len(got):
         return False, [f"length mismatch: {len(ref)} != {len(got)}"]
@@ -60,6 +67,9 @@ def main():
     tol = data.get("parity_tolerance", {})
     rtol = tol.get("rtol", REL_TOL)
     atol = tol.get("atol", ABS_TOL)
+    analysis = data.get("analysis", {})
+    analysis_type = analysis.get("type", "static_linear")
+    is_transient = str(analysis_type).startswith("transient")
 
     ref_dir = case_root / "reference"
     mojo_dir = case_root / "mojo"
@@ -78,12 +88,27 @@ def main():
                 if not mojo_file.exists():
                     failures.append(f"missing mojo output: {mojo_file}")
                     continue
-                ref_vals = _load_last_values(ref_file)
-                mojo_vals = _load_last_values(mojo_file)
-                ok, errors = _compare_vectors(ref_vals, mojo_vals, rtol=rtol, atol=atol)
-                if not ok:
-                    failures.append(f"node {node_id} mismatch")
-                    failures.extend([f"  {err}" for err in errors])
+                if is_transient:
+                    ref_vals = _load_all_values(ref_file)
+                    mojo_vals = _load_all_values(mojo_file)
+                    if len(ref_vals) != len(mojo_vals):
+                        failures.append(
+                            f"node {node_id} step count mismatch: {len(ref_vals)} != {len(mojo_vals)}"
+                        )
+                        continue
+                    for step, (rvec, gvec) in enumerate(zip(ref_vals, mojo_vals), start=1):
+                        ok, errors = _compare_vectors(rvec, gvec, rtol=rtol, atol=atol)
+                        if not ok:
+                            failures.append(f"node {node_id} mismatch at step {step}")
+                            failures.extend([f"  {err}" for err in errors])
+                            break
+                else:
+                    ref_vals = _load_last_values(ref_file)
+                    mojo_vals = _load_last_values(mojo_file)
+                    ok, errors = _compare_vectors(ref_vals, mojo_vals, rtol=rtol, atol=atol)
+                    if not ok:
+                        failures.append(f"node {node_id} mismatch")
+                        failures.extend([f"  {err}" for err in errors])
         elif rec_type == "element_force":
             output = rec.get("output", "element_force")
             for elem_id in rec["elements"]:
@@ -95,12 +120,27 @@ def main():
                 if not mojo_file.exists():
                     failures.append(f"missing mojo output: {mojo_file}")
                     continue
-                ref_vals = _load_last_values(ref_file)
-                mojo_vals = _load_last_values(mojo_file)
-                ok, errors = _compare_vectors(ref_vals, mojo_vals, rtol=rtol, atol=atol)
-                if not ok:
-                    failures.append(f"element {elem_id} mismatch")
-                    failures.extend([f"  {err}" for err in errors])
+                if is_transient:
+                    ref_vals = _load_all_values(ref_file)
+                    mojo_vals = _load_all_values(mojo_file)
+                    if len(ref_vals) != len(mojo_vals):
+                        failures.append(
+                            f"element {elem_id} step count mismatch: {len(ref_vals)} != {len(mojo_vals)}"
+                        )
+                        continue
+                    for step, (rvec, gvec) in enumerate(zip(ref_vals, mojo_vals), start=1):
+                        ok, errors = _compare_vectors(rvec, gvec, rtol=rtol, atol=atol)
+                        if not ok:
+                            failures.append(f"element {elem_id} mismatch at step {step}")
+                            failures.extend([f"  {err}" for err in errors])
+                            break
+                else:
+                    ref_vals = _load_last_values(ref_file)
+                    mojo_vals = _load_last_values(mojo_file)
+                    ok, errors = _compare_vectors(ref_vals, mojo_vals, rtol=rtol, atol=atol)
+                    if not ok:
+                        failures.append(f"element {elem_id} mismatch")
+                        failures.extend([f"  {err}" for err in errors])
         else:
             raise ValueError(f"unsupported recorder type: {rec_type}")
 
