@@ -22,7 +22,7 @@ Minimum required fields (v1.0):
 - `nodes`: list of `{ id, x, y, z?, constraints? }`
   - `z` is required when `ndm=3`.
   - `constraints` DOF indices must be in `1..ndf`.
-- `materials`: list of `{ id, type, params }` (`Elastic`, `ElasticIsotropic`, `Steel01`, `Concrete01`)
+- `materials`: list of `{ id, type, params }` (`Elastic`, `ElasticIsotropic`, `Steel01`, `Steel02`, `Concrete01`, `Concrete02`)
 - `sections`: list of `{ id, type, params }` (elastic section only in v1)
 - `elements`: list of `{ id, type, nodes, section, geomTransf }`
 - `time_series`: list of `{ type, tag, ... }` (optional; top-level)
@@ -35,6 +35,9 @@ Minimum required fields (v1.0):
 - `element_loads`: list of `{ element, type, w }` (optional, `type: "beamUniform"` only)
 - `analysis`: `{ type: "static_linear" | "static_nonlinear" | "transient_linear", steps: 1, dt?, max_iters?, tol?, rel_tol?, integrator? }`
   - Nonlinear uniaxial materials require `static_nonlinear`.
+  - `static_nonlinear` integrator options:
+    - Load control: `{ type: "LoadControl" }` (default)
+    - Displacement control: `{ type: "DisplacementControl", node, dof, du? | targets?, cutback?, max_cutbacks?, min_du? }`
   - `transient_linear` requires `dt > 0` and supports `integrator: { type: "Newmark", gamma?, beta? }`
 - `masses`: list of `{ node, dof, value }` (optional; nodal lumped masses for dynamics)
 - `recorders`: list of

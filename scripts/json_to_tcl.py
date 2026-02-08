@@ -172,7 +172,7 @@ def main():
                     raise ValueError(f"mass node {node_id} not found")
                 f.write(f"mass {node_id} {' '.join(str(v) for v in vec)}\n")
 
-        # Materials (Elastic/Steel01/Concrete01 uniaxial or ElasticIsotropic)
+        # Materials (Elastic/Steel01/Steel02/Concrete01/Concrete02 uniaxial or ElasticIsotropic)
         for mat in materials.values():
             params = mat["params"]
             if mat["type"] == "Elastic":
@@ -183,6 +183,46 @@ def main():
                 E0 = params["E0"]
                 b = params["b"]
                 f.write(f"uniaxialMaterial Steel01 {mat['id']} {fy} {E0} {b}\n")
+            elif mat["type"] == "Steel02":
+                fy = params["Fy"]
+                E0 = params["E0"]
+                b = params["b"]
+                has_r = all(k in params for k in ("R0", "cR1", "cR2"))
+                has_r_any = any(k in params for k in ("R0", "cR1", "cR2"))
+                has_a = all(k in params for k in ("a1", "a2", "a3", "a4"))
+                has_a_any = any(k in params for k in ("a1", "a2", "a3", "a4"))
+                has_siginit = "sigInit" in params
+                if has_r_any and not has_r:
+                    raise ValueError("Steel02 requires R0, cR1, cR2 together")
+                if has_a_any and not has_a:
+                    raise ValueError("Steel02 requires a1, a2, a3, a4 together")
+                if has_a and not has_r:
+                    raise ValueError("Steel02 a1-a4 require R0/cR1/cR2")
+                if has_siginit and not has_a:
+                    raise ValueError("Steel02 sigInit requires a1-a4 and R0/cR1/cR2")
+                if has_siginit:
+                    f.write(
+                        "uniaxialMaterial Steel02 "
+                        f"{mat['id']} {fy} {E0} {b} "
+                        f"{params['R0']} {params['cR1']} {params['cR2']} "
+                        f"{params['a1']} {params['a2']} {params['a3']} {params['a4']} "
+                        f"{params['sigInit']}\n"
+                    )
+                elif has_a:
+                    f.write(
+                        "uniaxialMaterial Steel02 "
+                        f"{mat['id']} {fy} {E0} {b} "
+                        f"{params['R0']} {params['cR1']} {params['cR2']} "
+                        f"{params['a1']} {params['a2']} {params['a3']} {params['a4']}\n"
+                    )
+                elif has_r:
+                    f.write(
+                        "uniaxialMaterial Steel02 "
+                        f"{mat['id']} {fy} {E0} {b} "
+                        f"{params['R0']} {params['cR1']} {params['cR2']}\n"
+                    )
+                else:
+                    f.write(f"uniaxialMaterial Steel02 {mat['id']} {fy} {E0} {b}\n")
             elif mat["type"] == "Concrete01":
                 fpc = params["fpc"]
                 epsc0 = params["epsc0"]
@@ -191,6 +231,26 @@ def main():
                 f.write(
                     f"uniaxialMaterial Concrete01 {mat['id']} {fpc} {epsc0} {fpcu} {epscu}\n"
                 )
+            elif mat["type"] == "Concrete02":
+                fpc = params["fpc"]
+                epsc0 = params["epsc0"]
+                fpcu = params["fpcu"]
+                epscu = params["epscu"]
+                has_rat = "rat" in params
+                has_ft = "ft" in params
+                has_ets = "Ets" in params
+                if has_rat != has_ft or has_rat != has_ets:
+                    raise ValueError("Concrete02 requires rat, ft, Ets together")
+                if has_rat:
+                    f.write(
+                        "uniaxialMaterial Concrete02 "
+                        f"{mat['id']} {fpc} {epsc0} {fpcu} {epscu} "
+                        f"{params['rat']} {params['ft']} {params['Ets']}\n"
+                    )
+                else:
+                    f.write(
+                        f"uniaxialMaterial Concrete02 {mat['id']} {fpc} {epsc0} {fpcu} {epscu}\n"
+                    )
             elif mat["type"] == "ElasticIsotropic":
                 E = params["E"]
                 nu = params["nu"]
@@ -362,6 +422,7 @@ def main():
         analysis_type = analysis.get("type", "static_linear")
         steps = analysis.get("steps", 1)
         dt = None
+        static_nl_post_lines = None
         if steps < 1:
             raise ValueError("analysis steps must be >= 1")
         f.write("constraints Plain\n")
@@ -377,8 +438,49 @@ def main():
             max_iters = analysis.get("max_iters", 20)
             f.write(f"test NormUnbalance {tol} {max_iters}\n")
             f.write("algorithm Newton\n")
-            f.write(f"integrator LoadControl {1.0/steps}\n")
-            f.write("analysis Static\n")
+            integrator = analysis.get("integrator", {"type": "LoadControl"})
+            integrator_type = integrator.get("type", "LoadControl")
+            if integrator_type == "LoadControl":
+                f.write(f"integrator LoadControl {1.0/steps}\n")
+                f.write("analysis Static\n")
+            elif integrator_type == "DisplacementControl":
+                node = integrator.get("node")
+                dof = integrator.get("dof")
+                if node is None or dof is None:
+                    raise ValueError("DisplacementControl requires node and dof")
+                f.write("analysis Static\n")
+                targets = integrator.get("targets")
+                if targets is not None:
+                    if not isinstance(targets, list) or len(targets) == 0:
+                        raise ValueError("DisplacementControl targets must be a non-empty list")
+                    static_nl_post_lines = [
+                        "set strut_dc_prev 0.0",
+                        "set strut_dc_targets {" + " ".join(str(float(val)) for val in targets) + "}",
+                        "foreach strut_dc_targ $strut_dc_targets {",
+                        "  set strut_dc_du [expr $strut_dc_targ - $strut_dc_prev]",
+                        "  if {[expr abs($strut_dc_du)] < 1.0e-16} {",
+                        "    set strut_dc_prev $strut_dc_targ",
+                        "    continue",
+                        "  }",
+                        f"  integrator DisplacementControl {int(node)} {int(dof)} $strut_dc_du",
+                        "  set strut_dc_ok [analyze 1]",
+                        "  if {$strut_dc_ok != 0} {",
+                        "    error \"analysis failed\"",
+                        "  }",
+                        "  set strut_dc_prev $strut_dc_targ",
+                        "}",
+                    ]
+                else:
+                    du = integrator.get("du")
+                    if du is None or float(du) == 0.0:
+                        raise ValueError("DisplacementControl requires non-zero du when targets are omitted")
+                    f.write(f"integrator DisplacementControl {int(node)} {int(dof)} {float(du)}\n")
+                    f.write(f"set strut_dc_ok [analyze {steps}]\n")
+                    f.write("if {$strut_dc_ok != 0} {\n")
+                    f.write("  error \"analysis failed\"\n")
+                    f.write("}\n")
+            else:
+                raise ValueError(f"unsupported static_nonlinear integrator: {integrator_type}")
         elif analysis_type == "transient_linear":
             dt = analysis.get("dt")
             if dt is None or dt <= 0.0:
@@ -416,6 +518,13 @@ def main():
 
         if analysis_type == "transient_linear":
             f.write(f"analyze {steps} {dt}\n")
+        elif analysis_type == "static_nonlinear":
+            integrator = analysis.get("integrator", {"type": "LoadControl"})
+            if integrator.get("type", "LoadControl") == "LoadControl":
+                f.write(f"analyze {steps}\n")
+            elif static_nl_post_lines is not None:
+                for line in static_nl_post_lines:
+                    f.write(line + "\n")
         else:
             f.write(f"analyze {steps}\n")
 

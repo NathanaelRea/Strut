@@ -190,6 +190,57 @@ fn _append_output(
     buffers.append(line)
 
 
+fn _solve_linear_system(
+    mut A: List[List[Float64]], mut b: List[Float64], mut x: List[Float64]
+) -> Bool:
+    var n = len(b)
+    if len(A) != n:
+        return False
+    x.resize(n, 0.0)
+    for i in range(n):
+        if len(A[i]) != n:
+            return False
+
+    var eps = 1.0e-18
+    for i in range(n):
+        var pivot = i
+        var max_val = abs(A[i][i])
+        for r in range(i + 1, n):
+            var candidate = abs(A[r][i])
+            if candidate > max_val:
+                max_val = candidate
+                pivot = r
+        if max_val <= eps:
+            return False
+        if pivot != i:
+            var tmp = A[i].copy()
+            A[i] = A[pivot].copy()
+            A[pivot] = tmp^
+            var tb = b[i]
+            b[i] = b[pivot]
+            b[pivot] = tb
+
+        var piv = A[i][i]
+        for j in range(i, n):
+            A[i][j] /= piv
+        b[i] /= piv
+
+        for r in range(i + 1, n):
+            var factor = A[r][i]
+            if factor == 0.0:
+                continue
+            for c in range(i, n):
+                A[r][c] -= factor * A[i][c]
+            b[r] -= factor * b[i]
+
+    for i in range(n - 1, -1, -1):
+        var s = b[i]
+        for j in range(i + 1, n):
+            s -= A[i][j] * x[j]
+        x[i] = s
+    return True
+
+
 def run_case(data: PythonObject, output_path: String, profile_path: String):
     var model = data["model"]
     var ndm = Int(model["ndm"])
@@ -326,6 +377,124 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
             if fpcu > 0.0 or fpcu < fpc:
                 abort("Concrete01 fpcu must be between fpc and 0")
             var mat_def = UniMaterialDef(2, fpc, epsc0, fpcu, epscu)
+            uniaxial_def_by_id[mid] = len(uniaxial_defs)
+            uniaxial_defs.append(mat_def)
+        elif mat_type == "Steel02":
+            var params = mat["params"]
+            var Fy = Float64(params["Fy"])
+            var E0 = Float64(params["E0"])
+            var b = Float64(params["b"])
+            if Fy <= 0.0:
+                abort("Steel02 Fy must be > 0")
+            if E0 <= 0.0:
+                abort("Steel02 E0 must be > 0")
+            if b < 0.0 or b >= 1.0:
+                abort("Steel02 b must be in [0, 1)")
+
+            var has_r0 = params.__contains__("R0")
+            var has_cr1 = params.__contains__("cR1")
+            var has_cr2 = params.__contains__("cR2")
+            var has_a1 = params.__contains__("a1")
+            var has_a2 = params.__contains__("a2")
+            var has_a3 = params.__contains__("a3")
+            var has_a4 = params.__contains__("a4")
+            var has_siginit = params.__contains__("sigInit")
+
+            if has_r0 != has_cr1 or has_r0 != has_cr2:
+                abort("Steel02 requires R0, cR1, cR2 together")
+            if has_a1 != has_a2 or has_a1 != has_a3 or has_a1 != has_a4:
+                abort("Steel02 requires a1, a2, a3, a4 together")
+            if has_a1 and not has_r0:
+                abort("Steel02 a1-a4 require R0, cR1, cR2")
+            if has_siginit and not has_a1:
+                abort("Steel02 sigInit requires a1-a4 and R0/cR1/cR2")
+
+            var R0 = 15.0
+            var cR1 = 0.925
+            var cR2 = 0.15
+            if has_r0:
+                R0 = Float64(params["R0"])
+                cR1 = Float64(params["cR1"])
+                cR2 = Float64(params["cR2"])
+            if R0 <= 0.0:
+                abort("Steel02 R0 must be > 0")
+            if cR2 <= 0.0:
+                abort("Steel02 cR2 must be > 0")
+
+            var a1 = 0.0
+            var a2 = 1.0
+            var a3 = 0.0
+            var a4 = 1.0
+            if has_a1:
+                a1 = Float64(params["a1"])
+                a2 = Float64(params["a2"])
+                a3 = Float64(params["a3"])
+                a4 = Float64(params["a4"])
+            if a2 <= 0.0:
+                abort("Steel02 a2 must be > 0")
+            if a4 <= 0.0:
+                abort("Steel02 a4 must be > 0")
+
+            var sig_init = 0.0
+            if has_siginit:
+                sig_init = Float64(params["sigInit"])
+
+            var mat_def = UniMaterialDef(
+                3, Fy, E0, b, R0, cR1, cR2, a1, a2, a3, a4, sig_init
+            )
+            uniaxial_def_by_id[mid] = len(uniaxial_defs)
+            uniaxial_defs.append(mat_def)
+        elif mat_type == "Concrete02":
+            var params = mat["params"]
+            var fpc = Float64(params["fpc"])
+            var epsc0 = Float64(params["epsc0"])
+            var fpcu = Float64(params["fpcu"])
+            var epscu = Float64(params["epscu"])
+            if fpc > 0.0:
+                fpc = -fpc
+            if epsc0 > 0.0:
+                epsc0 = -epsc0
+            if fpcu > 0.0:
+                fpcu = -fpcu
+            if epscu > 0.0:
+                epscu = -epscu
+            if fpc >= 0.0:
+                abort("Concrete02 fpc must be < 0")
+            if epsc0 >= 0.0:
+                abort("Concrete02 epsc0 must be < 0")
+            if epscu >= 0.0:
+                abort("Concrete02 epscu must be < 0")
+            if epscu >= epsc0:
+                abort("Concrete02 epscu must be < epsc0")
+            if fpcu > 0.0 or fpcu < fpc:
+                abort("Concrete02 fpcu must be between fpc and 0")
+
+            var has_rat = params.__contains__("rat")
+            var has_ft = params.__contains__("ft")
+            var has_ets = params.__contains__("Ets")
+            if has_rat != has_ft or has_rat != has_ets:
+                abort("Concrete02 requires rat, ft, Ets together")
+
+            var rat = 0.1
+            var ft = 0.1 * fpc
+            if ft < 0.0:
+                ft = -ft
+            var Ets = 0.1 * fpc / epsc0
+            if has_rat:
+                rat = Float64(params["rat"])
+                ft = Float64(params["ft"])
+                Ets = Float64(params["Ets"])
+
+            if rat == 1.0:
+                abort("Concrete02 rat must not be 1")
+            if ft < 0.0:
+                abort("Concrete02 ft must be >= 0")
+            if Ets <= 0.0:
+                abort("Concrete02 Ets must be > 0")
+
+            var mat_def = UniMaterialDef(
+                4, fpc, epsc0, fpcu, epscu, rat, ft, Ets, 0.0, 0.0, 0.0, 0.0
+            )
             uniaxial_def_by_id[mid] = len(uniaxial_defs)
             uniaxial_defs.append(mat_def)
         elif mat_type == "ElasticIsotropic":
@@ -679,152 +848,152 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
             var row_ff: List[Float64] = []
             row_ff.resize(free_count, 0.0)
             K_ff.append(row_ff^)
+        var integrator = analysis.get("integrator", {"type": "LoadControl"})
+        var integrator_type = String(integrator.get("type", "LoadControl"))
         var F_f: List[Float64] = []
         F_f.resize(free_count, 0.0)
-        for step in range(steps):
-            if do_profile:
-                var t_step_start = Int(time.perf_counter_ns())
-                var step_start_us = (t_step_start - t0) // 1000
-                _append_event(
-                    events, events_need_comma, "O", frame_nonlinear_step, step_start_us
-                )
-            var scale = Float64(step + 1) / Float64(steps)
-            if ts_index >= 0:
-                scale = eval_time_series(time_series[ts_index], scale)
-            var converged = False
-            for _ in range(max_iters):
+        if integrator_type == "LoadControl":
+            for step in range(steps):
                 if do_profile:
-                    var t_iter_start = Int(time.perf_counter_ns())
-                    var iter_start_us = (t_iter_start - t0) // 1000
+                    var t_step_start = Int(time.perf_counter_ns())
+                    var step_start_us = (t_step_start - t0) // 1000
                     _append_event(
-                        events,
-                        events_need_comma,
-                        "O",
-                        frame_nonlinear_iter,
-                        iter_start_us,
+                        events, events_need_comma, "O", frame_nonlinear_step, step_start_us
                     )
-                uniaxial_revert_trial_all(uniaxial_states)
+                var scale = Float64(step + 1) / Float64(steps)
+                if ts_index >= 0:
+                    scale = eval_time_series(time_series[ts_index], scale)
+                var converged = False
+                for _ in range(max_iters):
+                    if do_profile:
+                        var t_iter_start = Int(time.perf_counter_ns())
+                        var iter_start_us = (t_iter_start - t0) // 1000
+                        _append_event(
+                            events,
+                            events_need_comma,
+                            "O",
+                            frame_nonlinear_iter,
+                            iter_start_us,
+                        )
+                    uniaxial_revert_trial_all(uniaxial_states)
+                    if do_profile:
+                        var t_asm_start = Int(time.perf_counter_ns())
+                        var asm_start_us = (t_asm_start - t0) // 1000
+                        _append_event(
+                            events,
+                            events_need_comma,
+                            "O",
+                            frame_assemble_stiffness,
+                            asm_start_us,
+                        )
+                    assemble_global_stiffness_and_internal(
+                        nodes,
+                        elements,
+                        sections_by_id,
+                        materials_by_id,
+                        id_to_index,
+                        node_count,
+                        ndf,
+                        ndm,
+                        u,
+                        uniaxial_defs,
+                        uniaxial_state_defs,
+                        uniaxial_states,
+                        elem_uniaxial_offsets,
+                        elem_uniaxial_counts,
+                        elem_uniaxial_state_ids,
+                        K,
+                        F_int,
+                    )
+                    if do_profile:
+                        var t_asm_end = Int(time.perf_counter_ns())
+                        var asm_end_us = (t_asm_end - t0) // 1000
+                        _append_event(
+                            events,
+                            events_need_comma,
+                            "C",
+                            frame_assemble_stiffness,
+                            asm_end_us,
+                        )
+                    if do_profile:
+                        var t_kff_start = Int(time.perf_counter_ns())
+                        var kff_start_us = (t_kff_start - t0) // 1000
+                        _append_event(
+                            events, events_need_comma, "O", frame_kff_extract, kff_start_us
+                        )
+                    for i in range(free_count):
+                        F_f[i] = F_total_free[i] * scale - F_int[free[i]]
+                    for i in range(free_count):
+                        for j in range(free_count):
+                            K_ff[i][j] = K[free[i]][free[j]]
+                    if do_profile:
+                        var t_kff_end = Int(time.perf_counter_ns())
+                        var kff_end_us = (t_kff_end - t0) // 1000
+                        _append_event(
+                            events, events_need_comma, "C", frame_kff_extract, kff_end_us
+                        )
+                    if do_profile:
+                        var t_solve_nl_start = Int(time.perf_counter_ns())
+                        var solve_nl_start_us = (t_solve_nl_start - t0) // 1000
+                        _append_event(
+                            events,
+                            events_need_comma,
+                            "O",
+                            frame_solve_nonlinear,
+                            solve_nl_start_us,
+                        )
+                    var u_f = gaussian_elimination(K_ff, F_f)
+                    if do_profile:
+                        var t_solve_nl_end = Int(time.perf_counter_ns())
+                        var solve_nl_end_us = (t_solve_nl_end - t0) // 1000
+                        _append_event(
+                            events,
+                            events_need_comma,
+                            "C",
+                            frame_solve_nonlinear,
+                            solve_nl_end_us,
+                        )
+                    var max_diff = 0.0
+                    var max_u = 0.0
+                    for i in range(len(free)):
+                        var idx = free[i]
+                        var du = u_f[i]
+                        var value = u[idx] + du
+                        var diff = abs(du)
+                        if diff > max_diff:
+                            max_diff = diff
+                        var abs_val = abs(value)
+                        if abs_val > max_u:
+                            max_u = abs_val
+                    var scale_tol = rel_tol * max_u
+                    if scale_tol < rel_tol:
+                        scale_tol = rel_tol
+                    var converged_iter = False
+                    if max_diff <= tol or max_diff <= scale_tol:
+                        converged = True
+                        converged_iter = True
+                    for i in range(len(free)):
+                        u[free[i]] += u_f[i]
+                    if do_profile:
+                        var t_iter_end = Int(time.perf_counter_ns())
+                        var iter_end_us = (t_iter_end - t0) // 1000
+                        _append_event(
+                            events,
+                            events_need_comma,
+                            "C",
+                            frame_nonlinear_iter,
+                            iter_end_us,
+                        )
+                    if converged_iter:
+                        break
                 if do_profile:
-                    var t_asm_start = Int(time.perf_counter_ns())
-                    var asm_start_us = (t_asm_start - t0) // 1000
+                    var t_step_end = Int(time.perf_counter_ns())
+                    var step_end_us = (t_step_end - t0) // 1000
                     _append_event(
-                        events,
-                        events_need_comma,
-                        "O",
-                        frame_assemble_stiffness,
-                        asm_start_us,
+                        events, events_need_comma, "C", frame_nonlinear_step, step_end_us
                     )
-                assemble_global_stiffness_and_internal(
-                    nodes,
-                    elements,
-                    sections_by_id,
-                    materials_by_id,
-                    id_to_index,
-                    node_count,
-                    ndf,
-                    ndm,
-                    u,
-                    uniaxial_defs,
-                    uniaxial_state_defs,
-                    uniaxial_states,
-                    elem_uniaxial_offsets,
-                    elem_uniaxial_counts,
-                    elem_uniaxial_state_ids,
-                    K,
-                    F_int,
-                )
-                if do_profile:
-                    var t_asm_end = Int(time.perf_counter_ns())
-                    var asm_end_us = (t_asm_end - t0) // 1000
-                    _append_event(
-                        events,
-                        events_need_comma,
-                        "C",
-                        frame_assemble_stiffness,
-                        asm_end_us,
-                    )
-                if do_profile:
-                    var t_kff_start = Int(time.perf_counter_ns())
-                    var kff_start_us = (t_kff_start - t0) // 1000
-                    _append_event(
-                        events, events_need_comma, "O", frame_kff_extract, kff_start_us
-                    )
-                for i in range(free_count):
-                    F_f[i] = F_total_free[i] * scale - F_int[free[i]]
-                for i in range(free_count):
-                    for j in range(free_count):
-                        K_ff[i][j] = K[free[i]][free[j]]
-                if do_profile:
-                    var t_kff_end = Int(time.perf_counter_ns())
-                    var kff_end_us = (t_kff_end - t0) // 1000
-                    _append_event(
-                        events, events_need_comma, "C", frame_kff_extract, kff_end_us
-                    )
-                if do_profile:
-                    var t_solve_nl_start = Int(time.perf_counter_ns())
-                    var solve_nl_start_us = (t_solve_nl_start - t0) // 1000
-                    _append_event(
-                        events,
-                        events_need_comma,
-                        "O",
-                        frame_solve_nonlinear,
-                        solve_nl_start_us,
-                    )
-                var u_f = gaussian_elimination(K_ff, F_f)
-                if do_profile:
-                    var t_solve_nl_end = Int(time.perf_counter_ns())
-                    var solve_nl_end_us = (t_solve_nl_end - t0) // 1000
-                    _append_event(
-                        events,
-                        events_need_comma,
-                        "C",
-                        frame_solve_nonlinear,
-                        solve_nl_end_us,
-                    )
-                var max_diff = 0.0
-                var max_u = 0.0
-                for i in range(len(free)):
-                    var idx = free[i]
-                    var du = u_f[i]
-                    var value = u[idx] + du
-                    var diff = du
-                    if diff < 0.0:
-                        diff = -diff
-                    if diff > max_diff:
-                        max_diff = diff
-                    var abs_val = value
-                    if abs_val < 0.0:
-                        abs_val = -abs_val
-                    if abs_val > max_u:
-                        max_u = abs_val
-                var scale_tol = rel_tol * max_u
-                if scale_tol < rel_tol:
-                    scale_tol = rel_tol
-                var converged_iter = False
-                if max_diff <= tol or max_diff <= scale_tol:
-                    converged = True
-                    converged_iter = True
-                for i in range(len(free)):
-                    u[free[i]] += u_f[i]
-                if do_profile:
-                    var t_iter_end = Int(time.perf_counter_ns())
-                    var iter_end_us = (t_iter_end - t0) // 1000
-                    _append_event(
-                        events,
-                        events_need_comma,
-                        "C",
-                        frame_nonlinear_iter,
-                        iter_end_us,
-                    )
-                if converged_iter:
-                    break
-            if do_profile:
-                var t_step_end = Int(time.perf_counter_ns())
-                var step_end_us = (t_step_end - t0) // 1000
-                _append_event(
-                    events, events_need_comma, "C", frame_nonlinear_step, step_end_us
-                )
-            if converged:
+                if not converged:
+                    abort("static_nonlinear did not converge")
                 uniaxial_commit_all(uniaxial_states)
                 for r in range(py_len(recorders)):
                     var rec = recorders[r]
@@ -898,8 +1067,328 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
                             )
                     else:
                         abort("unsupported recorder type")
-            if not converged:
-                abort("static_nonlinear did not converge")
+        elif integrator_type == "DisplacementControl":
+            if ts_index >= 0:
+                abort("DisplacementControl does not support time_series scaling")
+            if not integrator.__contains__("node") or not integrator.__contains__("dof"):
+                abort("DisplacementControl requires node and dof")
+            var control_node = Int(integrator["node"])
+            var control_dof = Int(integrator["dof"])
+            require_dof_in_range(control_dof, ndf, "DisplacementControl")
+            if control_node >= len(id_to_index) or id_to_index[control_node] < 0:
+                abort("DisplacementControl node not found")
+            var control_idx = node_dof_index(id_to_index[control_node], control_dof, ndf)
+            if constrained[control_idx]:
+                abort("DisplacementControl dof is constrained")
+            var control_free = -1
+            for i in range(free_count):
+                if free[i] == control_idx:
+                    control_free = i
+                    break
+            if control_free < 0:
+                abort("DisplacementControl dof is not free")
+
+            var cutback = Float64(integrator.get("cutback", analysis.get("cutback", 0.5)))
+            var max_cutbacks = Int(
+                integrator.get("max_cutbacks", analysis.get("max_cutbacks", 8))
+            )
+            var min_du = Float64(integrator.get("min_du", analysis.get("min_du", 1.0e-10)))
+            if cutback <= 0.0 or cutback >= 1.0:
+                abort("DisplacementControl cutback must be in (0, 1)")
+            if max_cutbacks < 0:
+                abort("DisplacementControl max_cutbacks must be >= 0")
+            if min_du <= 0.0:
+                abort("DisplacementControl min_du must be > 0")
+
+            var target_disps: List[Float64] = []
+            if integrator.__contains__("targets"):
+                var targets = integrator["targets"]
+                for i in range(py_len(targets)):
+                    target_disps.append(Float64(targets[i]))
+                if len(target_disps) == 0:
+                    abort("DisplacementControl targets must not be empty")
+                steps = len(target_disps)
+            else:
+                if not integrator.__contains__("du"):
+                    abort("DisplacementControl requires du or targets")
+                var du_step = Float64(integrator["du"])
+                if du_step == 0.0:
+                    abort("DisplacementControl du must be nonzero")
+                for i in range(steps):
+                    target_disps.append(du_step * Float64(i + 1))
+
+            var load_factor = 0.0
+            var R_f: List[Float64] = []
+            R_f.resize(free_count, 0.0)
+            var aug_size = free_count + 1
+            var K_aug: List[List[Float64]] = []
+            for _ in range(aug_size):
+                var row_aug: List[Float64] = []
+                row_aug.resize(aug_size, 0.0)
+                K_aug.append(row_aug^)
+            var rhs_aug: List[Float64] = []
+            rhs_aug.resize(aug_size, 0.0)
+            var sol_aug: List[Float64] = []
+            sol_aug.resize(aug_size, 0.0)
+
+            for step in range(steps):
+                if do_profile:
+                    var t_step_start = Int(time.perf_counter_ns())
+                    var step_start_us = (t_step_start - t0) // 1000
+                    _append_event(
+                        events, events_need_comma, "O", frame_nonlinear_step, step_start_us
+                    )
+
+                var target = target_disps[step]
+                while True:
+                    var remaining = target - u[control_idx]
+                    if abs(remaining) <= min_du:
+                        break
+
+                    var u_base = u.copy()
+                    var lambda_base = load_factor
+                    var attempt_du = remaining
+                    var attempt_ok = False
+
+                    for _ in range(max_cutbacks + 1):
+                        for i in range(total_dofs):
+                            u[i] = u_base[i]
+                        load_factor = lambda_base
+
+                        var converged = False
+                        for _ in range(max_iters):
+                            if do_profile:
+                                var t_iter_start = Int(time.perf_counter_ns())
+                                var iter_start_us = (t_iter_start - t0) // 1000
+                                _append_event(
+                                    events,
+                                    events_need_comma,
+                                    "O",
+                                    frame_nonlinear_iter,
+                                    iter_start_us,
+                                )
+                            uniaxial_revert_trial_all(uniaxial_states)
+                            if do_profile:
+                                var t_asm_start = Int(time.perf_counter_ns())
+                                var asm_start_us = (t_asm_start - t0) // 1000
+                                _append_event(
+                                    events,
+                                    events_need_comma,
+                                    "O",
+                                    frame_assemble_stiffness,
+                                    asm_start_us,
+                                )
+                            assemble_global_stiffness_and_internal(
+                                nodes,
+                                elements,
+                                sections_by_id,
+                                materials_by_id,
+                                id_to_index,
+                                node_count,
+                                ndf,
+                                ndm,
+                                u,
+                                uniaxial_defs,
+                                uniaxial_state_defs,
+                                uniaxial_states,
+                                elem_uniaxial_offsets,
+                                elem_uniaxial_counts,
+                                elem_uniaxial_state_ids,
+                                K,
+                                F_int,
+                            )
+                            if do_profile:
+                                var t_asm_end = Int(time.perf_counter_ns())
+                                var asm_end_us = (t_asm_end - t0) // 1000
+                                _append_event(
+                                    events,
+                                    events_need_comma,
+                                    "C",
+                                    frame_assemble_stiffness,
+                                    asm_end_us,
+                                )
+
+                            if do_profile:
+                                var t_kff_start = Int(time.perf_counter_ns())
+                                var kff_start_us = (t_kff_start - t0) // 1000
+                                _append_event(
+                                    events, events_need_comma, "O", frame_kff_extract, kff_start_us
+                                )
+                            for i in range(free_count):
+                                R_f[i] = load_factor * F_total_free[i] - F_int[free[i]]
+                                for j in range(free_count):
+                                    K_ff[i][j] = K[free[i]][free[j]]
+                            if do_profile:
+                                var t_kff_end = Int(time.perf_counter_ns())
+                                var kff_end_us = (t_kff_end - t0) // 1000
+                                _append_event(
+                                    events, events_need_comma, "C", frame_kff_extract, kff_end_us
+                                )
+
+                            for i in range(free_count):
+                                rhs_aug[i] = R_f[i]
+                                for j in range(free_count):
+                                    K_aug[i][j] = K_ff[i][j]
+                                K_aug[i][free_count] = -F_total_free[i]
+                            for j in range(free_count):
+                                K_aug[free_count][j] = 0.0
+                            K_aug[free_count][control_free] = 1.0
+                            K_aug[free_count][free_count] = 0.0
+                            rhs_aug[free_count] = (
+                                attempt_du - (u[control_idx] - u_base[control_idx])
+                            )
+
+                            if do_profile:
+                                var t_solve_nl_start = Int(time.perf_counter_ns())
+                                var solve_nl_start_us = (t_solve_nl_start - t0) // 1000
+                                _append_event(
+                                    events,
+                                    events_need_comma,
+                                    "O",
+                                    frame_solve_nonlinear,
+                                    solve_nl_start_us,
+                                )
+                            var solved = _solve_linear_system(K_aug, rhs_aug, sol_aug)
+                            if do_profile:
+                                var t_solve_nl_end = Int(time.perf_counter_ns())
+                                var solve_nl_end_us = (t_solve_nl_end - t0) // 1000
+                                _append_event(
+                                    events,
+                                    events_need_comma,
+                                    "C",
+                                    frame_solve_nonlinear,
+                                    solve_nl_end_us,
+                                )
+                            if not solved:
+                                converged = False
+                                break
+
+                            var max_diff = 0.0
+                            var max_u = 0.0
+                            for i in range(free_count):
+                                var idx = free[i]
+                                var du = sol_aug[i]
+                                var value = u[idx] + du
+                                var diff = abs(du)
+                                if diff > max_diff:
+                                    max_diff = diff
+                                var abs_val = abs(value)
+                                if abs_val > max_u:
+                                    max_u = abs_val
+                            for i in range(free_count):
+                                u[free[i]] += sol_aug[i]
+                            load_factor += sol_aug[free_count]
+                            var scale_tol = rel_tol * max_u
+                            if scale_tol < rel_tol:
+                                scale_tol = rel_tol
+                            if max_diff <= tol or max_diff <= scale_tol:
+                                converged = True
+                            if do_profile:
+                                var t_iter_end = Int(time.perf_counter_ns())
+                                var iter_end_us = (t_iter_end - t0) // 1000
+                                _append_event(
+                                    events,
+                                    events_need_comma,
+                                    "C",
+                                    frame_nonlinear_iter,
+                                    iter_end_us,
+                                )
+                            if converged:
+                                break
+
+                        if converged:
+                            attempt_ok = True
+                            break
+                        attempt_du *= cutback
+                        if abs(attempt_du) <= min_du:
+                            break
+
+                    if not attempt_ok:
+                        abort("static_nonlinear did not converge (DisplacementControl)")
+
+                    uniaxial_commit_all(uniaxial_states)
+
+                if do_profile:
+                    var t_step_end = Int(time.perf_counter_ns())
+                    var step_end_us = (t_step_end - t0) // 1000
+                    _append_event(
+                        events, events_need_comma, "C", frame_nonlinear_step, step_end_us
+                    )
+
+                for r in range(py_len(recorders)):
+                    var rec = recorders[r]
+                    var rec_type = String(rec["type"])
+                    if rec_type == "node_displacement":
+                        var dofs = rec["dofs"]
+                        var output = String(rec.get("output", "node_disp"))
+                        var nodes_out = rec["nodes"]
+                        for nidx in range(py_len(nodes_out)):
+                            var node_id = Int(nodes_out[nidx])
+                            var i = id_to_index[node_id]
+                            var line = String()
+                            for j in range(py_len(dofs)):
+                                var dof = Int(dofs[j])
+                                require_dof_in_range(dof, ndf, "recorder")
+                                var value = u[node_dof_index(i, dof, ndf)]
+                                if j > 0:
+                                    line += " "
+                                line += String(value)
+                            line += "\n"
+                            var filename = output + "_node" + String(node_id) + ".out"
+                            _append_output(
+                                static_output_files, static_output_buffers, filename, line
+                            )
+                    elif rec_type == "element_force":
+                        var output = String(rec.get("output", "element_force"))
+                        var elements_out = rec["elements"]
+                        for eidx in range(py_len(elements_out)):
+                            var elem_id = Int(elements_out[eidx])
+                            if (
+                                elem_id >= len(elem_id_to_index)
+                                or elem_id_to_index[elem_id] < 0
+                            ):
+                                abort("recorder element not found")
+                            var elem_index = elem_id_to_index[elem_id]
+                            var elem = elements[elem_index]
+                            var elem_type = String(elem["type"])
+                            var f_elem: List[Float64] = []
+                            if elem_type == "elasticBeamColumn2d":
+                                f_elem = _beam2d_element_force_global(
+                                    elem,
+                                    nodes,
+                                    sections_by_id,
+                                    id_to_index,
+                                    ndf,
+                                    u,
+                                )
+                            elif elem_type == "truss":
+                                f_elem = _truss_element_force_global(
+                                    elem_index,
+                                    elem,
+                                    nodes,
+                                    id_to_index,
+                                    ndf,
+                                    uniaxial_states,
+                                    elem_uniaxial_offsets,
+                                    elem_uniaxial_counts,
+                                    elem_uniaxial_state_ids,
+                                )
+                            else:
+                                abort("element_force recorder supports truss or elasticBeamColumn2d only")
+                            var line = String()
+                            for j in range(len(f_elem)):
+                                if j > 0:
+                                    line += " "
+                                line += String(f_elem[j])
+                            line += "\n"
+                            var filename = output + "_ele" + String(elem_id) + ".out"
+                            _append_output(
+                                static_output_files, static_output_buffers, filename, line
+                            )
+                    else:
+                        abort("unsupported recorder type")
+        else:
+            abort("unsupported static_nonlinear integrator: " + integrator_type)
     elif analysis_type == "transient_linear":
         var dt = Float64(analysis.get("dt", 0.0))
         if dt <= 0.0:

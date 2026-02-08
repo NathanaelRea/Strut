@@ -80,8 +80,10 @@ This document is a living roadmap for Strut (Mojo rewrite of OpenSees). It captu
 ### A. Material Nonlinearity
 
 - [x] Add nonlinear uniaxial material: Steel (bilinear).
+- [x] Add nonlinear uniaxial material: Steel02 (Menegotto-Pinto).
 - [x] Add stress-strain plotting script for nonlinear materials.
 - [x] Add nonlinear uniaxial material: Concrete (unconfined).
+- [x] Add nonlinear uniaxial material: Concrete02 (tension softening + damage unloading).
 - [ ] Add nonlinear uniaxial material: Gap / hook / elastic-plastic.
 - [ ] Section aggregation (fiber sections).
 - [ ] Hysteresis verification vs OpenSees.
@@ -97,7 +99,8 @@ This document is a living roadmap for Strut (Mojo rewrite of OpenSees). It captu
 ### C. Solver Features
 
 - [ ] Nonlinear solution algorithms (Newton, Modified Newton).
-- [ ] Convergence tests and step control.
+- [x] Convergence tests and step control.
+- [x] Static nonlinear displacement-control integrator with augmented load-factor solve.
 - [ ] Rayleigh damping for dynamic analysis.
 
 ## Phase 4 (Long-Term)

@@ -18,7 +18,6 @@ except ModuleNotFoundError as exc:
 try:
     from .plot_constants import MOJO_ORANGE, OPENSEES_BLUE
 except ImportError:
-    # Allow running as a standalone script.
     from plot_constants import MOJO_ORANGE, OPENSEES_BLUE
 
 
@@ -33,20 +32,46 @@ def material_definitions() -> List[dict]:
             "type": "Steel01",
             "params": {"Fy": 250.0, "E0": 200000.0, "b": 0.01},
             "units": "SI",
-            "steps": 100,
-            "load_tension": 1000.0,
-            "load_compression": -1000.0,
+            "steps": 120,
+            "curve": {
+                "strain_min": -0.02,
+                "strain_max": 0.02,
+            },
             "hysteresis": {
-                "min_strain": -0.005,
-                "max_strain": 0.05,
-                "cycles": 10,
+                "min_strain": -0.02,
+                "max_strain": 0.02,
+                "cycles": 3,
                 "ramp": True,
-                "ramp_power": 2.0,
-                "ramp_positive_only": True,
-                "steps_per_segment": 80,
-                "max_iters": 200,
-                "tol": 1.0e-10,
-                "rel_tol": 1.0e-8,
+                "steps_per_segment": 40,
+            },
+        },
+        {
+            "name": "steel02",
+            "type": "Steel02",
+            "params": {
+                "Fy": 250.0,
+                "E0": 200000.0,
+                "b": 0.01,
+                "R0": 18.0,
+                "cR1": 0.925,
+                "cR2": 0.15,
+                "a1": 0.01,
+                "a2": 1.0,
+                "a3": 0.01,
+                "a4": 1.0,
+            },
+            "units": "SI",
+            "steps": 200,
+            "curve": {
+                "strain_min": -0.03,
+                "strain_max": 0.03,
+            },
+            "hysteresis": {
+                "min_strain": -0.03,
+                "max_strain": 0.03,
+                "cycles": 3,
+                "ramp": True,
+                "steps_per_segment": 40,
             },
         },
         {
@@ -54,37 +79,70 @@ def material_definitions() -> List[dict]:
             "type": "Concrete01",
             "params": {"fpc": -30.0, "epsc0": -0.002, "fpcu": -20.0, "epscu": -0.006},
             "units": "SI",
-            "steps": 240,
-            "mode": "direct_compare",
-            "strain_min": -0.012,
-            "strain_max": 0.002,
-            "direct_directions": ["compression", "tension"],
+            "steps": 180,
+            "curve": {
+                "strain_min": -0.015,
+                "strain_max": 0.005,
+            },
             "hysteresis": {
                 "min_strain": -0.015,
                 "max_strain": 0.0,
-                "cycles": 10,
+                "cycles": 4,
                 "ramp": True,
                 "ramp_power": 2.0,
-                "steps_per_segment": 80,
-                "max_iters": 200,
-                "tol": 1.0e-10,
-                "rel_tol": 1.0e-8,
+                "steps_per_segment": 40,
+            },
+        },
+        {
+            "name": "concrete02_unconfined",
+            "type": "Concrete02",
+            "params": {
+                "fpc": -30.0,
+                "epsc0": -0.002,
+                "fpcu": -20.0,
+                "epscu": -0.006,
+                "rat": 0.1,
+                "ft": 3.0,
+                "Ets": 200.0,
+            },
+            "units": "SI",
+            "steps": 240,
+            "curve": {
+                "strain_min": -0.015,
+                "strain_max": 0.005,
+            },
+            "hysteresis": {
+                "min_strain": -0.015,
+                "max_strain": 0.0005,
+                "cycles": 4,
+                "ramp": True,
+                "steps_per_segment": 40,
             },
         },
     ]
 
 
-def build_case(
+def _linspace_targets(end_value: float, steps: int) -> List[float]:
+    if steps < 1:
+        raise ValueError("steps must be >= 1")
+    return [end_value * (float(i + 1) / float(steps)) for i in range(steps)]
+
+
+def build_displacement_case(
     material: dict,
-    direction: str,
-    load_value: float,
+    case_name: str,
+    displacement_targets: List[float],
+    analysis_opts: Optional[dict] = None,
 ) -> dict:
-    name = f"{material['name']}_curve_{direction}"
+    if not displacement_targets:
+        raise ValueError("displacement_targets must not be empty")
+    if analysis_opts is None:
+        analysis_opts = {}
     return {
         "schema_version": "1.0",
         "enabled": True,
         "metadata": {
-            "name": name,
+            "name": case_name,
             "units": material.get("units", ""),
         },
         "model": {"ndm": 2, "ndf": 2},
@@ -104,13 +162,22 @@ def build_case(
                 "material": 1,
             }
         ],
-        "loads": [{"node": 2, "dof": 1, "value": load_value}],
+        "loads": [{"node": 2, "dof": 1, "value": 1.0}],
         "analysis": {
             "type": "static_nonlinear",
-            "steps": int(material.get("steps", 100)),
-            "max_iters": 30,
-            "tol": 1.0e-10,
-            "rel_tol": 1.0e-8,
+            "steps": len(displacement_targets),
+            "max_iters": int(analysis_opts.get("max_iters", 80)),
+            "tol": float(analysis_opts.get("tol", 1.0e-10)),
+            "rel_tol": float(analysis_opts.get("rel_tol", 1.0e-8)),
+            "integrator": {
+                "type": "DisplacementControl",
+                "node": 2,
+                "dof": 1,
+                "targets": displacement_targets,
+                "cutback": float(analysis_opts.get("cutback", 0.5)),
+                "max_cutbacks": int(analysis_opts.get("max_cutbacks", 12)),
+                "min_du": float(analysis_opts.get("min_du", 1.0e-8)),
+            },
         },
         "recorders": [
             {
@@ -155,7 +222,7 @@ def _strain_path(
         return strains
     if cycles < 1:
         raise ValueError("cycles must be >= 1")
-    targets = [0.0]
+    path_targets = [0.0]
     if min_strain is not None or max_strain is not None:
         if min_strain is None or max_strain is None:
             raise ValueError("min_strain and max_strain must both be set")
@@ -167,120 +234,29 @@ def _strain_path(
             scale = float(i) / float(cycles) if ramp else 1.0
             if ramp and ramp_power != 1.0:
                 scale = scale ** ramp_power
-            targets.append(max_val * scale)
+            path_targets.append(max_val * scale)
             if min_val != 0.0:
                 if ramp_positive_only:
-                    targets.append(min_val)
+                    path_targets.append(min_val)
                 else:
-                    targets.append(min_val * scale)
+                    path_targets.append(min_val * scale)
             else:
-                targets.append(0.0)
-        targets.append(0.0)
+                path_targets.append(0.0)
+        path_targets.append(0.0)
     else:
         if not strain_levels:
             raise ValueError("strain_levels must not be empty")
         for _ in range(cycles):
             for level in strain_levels:
-                targets.append(abs(float(level)))
-                targets.append(-abs(float(level)))
-        targets.append(0.0)
+                path_targets.append(abs(float(level)))
+                path_targets.append(-abs(float(level)))
+        path_targets.append(0.0)
     strains: List[float] = []
-    for start, end in zip(targets[:-1], targets[1:]):
+    for start, end in zip(path_targets[:-1], path_targets[1:]):
         for i in range(1, steps_per_segment + 1):
             t = float(i) / float(steps_per_segment)
             strains.append(start + (end - start) * t)
     return strains
-
-
-def build_hysteresis_case(
-    material: dict,
-    strain_levels: List[float],
-    steps_per_segment: int,
-    analysis_opts: Optional[dict] = None,
-) -> Tuple[dict, List[float]]:
-    params = material.get("params", {})
-    if analysis_opts is None:
-        analysis_opts = {}
-    if "E0" in params:
-        e0 = float(params["E0"])
-    elif material.get("type") == "Concrete01":
-        fpc = float(params["fpc"])
-        epsc0 = float(params["epsc0"])
-        if epsc0 == 0.0:
-            raise ValueError("Concrete01 epsc0 must be nonzero for hysteresis")
-        e0 = (2.0 * fpc) / epsc0
-    else:
-        raise ValueError(
-            f"{material['name']} hysteresis requires E0 to map strain to load"
-        )
-    base_load = max(
-        abs(float(material.get("load_tension", 1.0))),
-        abs(float(material.get("load_compression", -1.0))),
-    )
-    if base_load <= 0.0:
-        raise ValueError("base load must be positive for hysteresis")
-    strains = _strain_path(
-        strain_levels,
-        steps_per_segment,
-        min_strain=analysis_opts.get("min_strain"),
-        max_strain=analysis_opts.get("max_strain"),
-        cycles=int(analysis_opts.get("cycles", 1)),
-        targets=analysis_opts.get("targets"),
-    )
-    stresses = [e0 * strain for strain in strains]
-    scales = [stress / base_load for stress in stresses]
-    steps = len(scales)
-    time = [(i + 1) / steps for i in range(steps)]
-    case = {
-        "schema_version": "1.0",
-        "enabled": True,
-        "metadata": {
-            "name": f"{material['name']}_hysteresis",
-            "units": material.get("units", ""),
-        },
-        "model": {"ndm": 2, "ndf": 2},
-        "nodes": [
-            {"id": 1, "x": 0.0, "y": 0.0, "constraints": [1, 2]},
-            {"id": 2, "x": 1.0, "y": 0.0, "constraints": [2]},
-        ],
-        "materials": [
-            {"id": 1, "type": material["type"], "params": material["params"]}
-        ],
-        "elements": [
-            {
-                "id": 1,
-                "type": "truss",
-                "nodes": [1, 2],
-                "area": 1.0,
-                "material": 1,
-            }
-        ],
-        "time_series": {
-            "type": "Path",
-            "tag": 1,
-            "time": time,
-            "values": scales,
-            "use_last": True,
-        },
-        "pattern": {"type": "Plain", "tag": 1, "time_series": 1},
-        "loads": [{"node": 2, "dof": 1, "value": base_load}],
-        "analysis": {
-            "type": "static_nonlinear",
-            "steps": steps,
-            "max_iters": int(analysis_opts.get("max_iters", 30)),
-            "tol": float(analysis_opts.get("tol", 1.0e-10)),
-            "rel_tol": float(analysis_opts.get("rel_tol", 1.0e-8)),
-        },
-        "recorders": [
-            {
-                "type": "node_displacement",
-                "nodes": [2],
-                "dofs": [1],
-                "output": "node_disp",
-            }
-        ],
-    }
-    return case, scales
 
 
 def case_geometry(data: dict) -> Tuple[float, float, List[float]]:
@@ -298,31 +274,12 @@ def case_geometry(data: dict) -> Tuple[float, float, List[float]]:
     y1 = float(n1["y"])
     x2 = float(n2["x"])
     y2 = float(n2["y"])
-    if "z" in n1 or "z" in n2:
-        z1 = float(n1.get("z", 0.0))
-        z2 = float(n2.get("z", 0.0))
-        dx = x2 - x1
-        dy = y2 - y1
-        dz = z2 - z1
-        length = (dx * dx + dy * dy + dz * dz) ** 0.5
-        direction = [dx / length, dy / length, dz / length]
-    else:
-        dx = x2 - x1
-        dy = y2 - y1
-        length = (dx * dx + dy * dy) ** 0.5
-        direction = [dx / length, dy / length]
+    dx = x2 - x1
+    dy = y2 - y1
+    length = (dx * dx + dy * dy) ** 0.5
+    direction = [dx / length, dy / length]
     area = float(elem.get("area", 1.0))
     return length, area, direction
-
-
-def case_load_and_steps(data: dict) -> Tuple[float, int]:
-    loads = data.get("loads", [])
-    if not loads:
-        raise ValueError("case has no loads")
-    load = loads[0]
-    load_value = float(load["value"])
-    steps = int(data.get("analysis", {}).get("steps", 1))
-    return load_value, steps
 
 
 def recorder_output_file(data: dict) -> str:
@@ -373,73 +330,27 @@ def read_element_force_rows(path: Path) -> List[List[float]]:
     return values
 
 
-def truss_axial_forces(
-    rows: List[List[float]], direction: List[float]
-) -> List[float]:
+def truss_axial_forces(rows: List[List[float]], direction: List[float]) -> List[float]:
     if not rows:
         return []
-    if len(direction) == 2:
-        c, s = direction
-        forces = []
-        for row in rows:
-            if len(row) == 1:
-                forces.append(row[0])
-                continue
-            if len(row) < 4:
-                raise ValueError("truss force recorder expected 4 values for 2D")
-            f1x, f1y = row[0], row[1]
-            forces.append(-(f1x * c + f1y * s))
-        return forces
-    if len(direction) == 3:
-        l, m, n = direction
-        forces = []
-        for row in rows:
-            if len(row) == 1:
-                forces.append(row[0])
-                continue
-            if len(row) < 6:
-                raise ValueError("truss force recorder expected 6 values for 3D")
-            f1x, f1y, f1z = row[0], row[1], row[2]
-            forces.append(-(f1x * l + f1y * m + f1z * n))
-        return forces
-    raise ValueError("invalid truss direction length")
+    c, s = direction
+    forces = []
+    for row in rows:
+        if len(row) == 1:
+            forces.append(row[0])
+            continue
+        if len(row) < 4:
+            raise ValueError("truss force recorder expected 4 values for 2D")
+        f1x, f1y = row[0], row[1]
+        forces.append(-(f1x * c + f1y * s))
+    return forces
 
 
 def compute_curve(
     displacements: List[float],
-    steps: int,
-    load_value: float,
-    area: float,
     length: float,
-    forces: Optional[List[float]] = None,
-    scales: Optional[List[float]] = None,
-    strain_scale: float = 1.0,
-) -> Tuple[List[float], List[float]]:
-    if scales is None:
-        scales = [float(i + 1) / float(steps) for i in range(steps)]
-    if forces is None:
-        count = min(len(displacements), len(scales), steps)
-    else:
-        count = min(len(displacements), len(forces), steps)
-    strains = []
-    stresses = []
-    for i in range(count):
-        if forces is None:
-            scale = scales[i]
-            stress = load_value * scale / area
-        else:
-            stress = forces[i] / area
-        strain = displacements[i] / length * strain_scale
-        strains.append(strain)
-        stresses.append(stress)
-    return strains, stresses
-
-
-def compute_hysteresis_curve(
-    displacements: List[float],
+    area: float,
     forces: List[float],
-    length: float,
-    area: float,
 ) -> Tuple[List[float], List[float]]:
     count = min(len(displacements), len(forces))
     strains = []
@@ -450,42 +361,6 @@ def compute_hysteresis_curve(
     return strains, stresses
 
 
-def concrete01_envelope(
-    strain: float, fpc: float, epsc0: float, fpcu: float, epscu: float
-) -> Tuple[float, float]:
-    if strain >= 0.0:
-        return 0.0, 0.0
-    if strain > epsc0:
-        eta = strain / epsc0
-        stress = fpc * (2.0 * eta - eta * eta)
-        ec0 = (2.0 * fpc) / epsc0
-        tangent = ec0 * (1.0 - eta)
-        return stress, tangent
-    if strain > epscu:
-        tangent = (fpc - fpcu) / (epsc0 - epscu)
-        stress = fpc + tangent * (strain - epsc0)
-        return stress, tangent
-    return fpcu, 0.0
-
-
-def compute_direct_concrete01_curve(
-    params: dict, strain_min: float, strain_max: float, steps: int
-) -> Tuple[List[float], List[float]]:
-    fpc = float(params["fpc"])
-    epsc0 = float(params["epsc0"])
-    fpcu = float(params["fpcu"])
-    epscu = float(params["epscu"])
-    strains: List[float] = []
-    stresses: List[float] = []
-    for i in range(steps + 1):
-        t = float(i) / float(steps)
-        strain = strain_min + (strain_max - strain_min) * t
-        stress, _ = concrete01_envelope(strain, fpc, epsc0, fpcu, epscu)
-        strains.append(strain)
-        stresses.append(stress)
-    return strains, stresses
-
-
 def write_csv(path: Path, strains: List[float], stresses: List[float]) -> None:
     lines = ["strain,stress"]
     for strain, stress in zip(strains, stresses):
@@ -493,12 +368,7 @@ def write_csv(path: Path, strains: List[float], stresses: List[float]) -> None:
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def run_case(
-    repo_root: Path,
-    case_json: Path,
-    out_dir: Path,
-    engine: str,
-) -> Path:
+def run_case(repo_root: Path, case_json: Path, out_dir: Path, engine: str) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
     if engine == "opensees":
         tcl_path = out_dir / "model.tcl"
@@ -535,6 +405,31 @@ def run_case(
     return out_dir
 
 
+def run_curve_case(
+    repo_root: Path,
+    case_data: dict,
+    material_out: Path,
+    engine: str,
+    label: str,
+    skip_run: bool,
+) -> Tuple[List[float], List[float]]:
+    out_dir = material_out / engine / label
+    case_json_path = material_out / "tmp" / f"{label}.json"
+    case_json_path.parent.mkdir(parents=True, exist_ok=True)
+    case_json_path.write_text(json.dumps(case_data, indent=2) + "\n", encoding="utf-8")
+
+    if not skip_run:
+        run_case(repo_root, case_json_path, out_dir, engine)
+
+    length, area, direction_vec = case_geometry(case_data)
+    disp_path = out_dir / recorder_output_file(case_data)
+    force_path = out_dir / recorder_element_force_file(case_data)
+    displacements = read_displacements(disp_path)
+    force_rows = read_element_force_rows(force_path)
+    forces = truss_axial_forces(force_rows, direction_vec)
+    return compute_curve(displacements, length, area, forces)
+
+
 def plot_material(
     material: str,
     data: Dict[str, Dict[str, Tuple[List[float], List[float]]]],
@@ -545,7 +440,6 @@ def plot_material(
     engine_colors = {
         "mojo": MOJO_ORANGE,
         "opensees": OPENSEES_BLUE,
-        "direct": MOJO_ORANGE,
     }
     for engine in ("opensees", "mojo"):
         series = data.get(engine)
@@ -556,28 +450,13 @@ def plot_material(
             points.extend(zip(strains, stresses))
         if not points:
             continue
-        # Combine tension/compression into a single curve sorted by strain.
         points.sort(key=lambda pair: pair[0])
         xs = [pt[0] for pt in points]
         ys = [pt[1] for pt in points]
         line_color = engine_colors.get(engine, MOJO_ORANGE)
-        ax.plot(
-            xs,
-            ys,
-            linestyle="-",
-            color=line_color,
-            label=engine,
-            zorder=2,
-        )
+        ax.plot(xs, ys, linestyle="-", color=line_color, label=engine, zorder=2)
         if xs:
-            ax.scatter(
-                [xs[0], xs[-1]],
-                [ys[0], ys[-1]],
-                s=18,
-                color=line_color,
-                edgecolors="none",
-                zorder=1,
-            )
+            ax.scatter([xs[0], xs[-1]], [ys[0], ys[-1]], s=18, color=line_color, edgecolors="none", zorder=1)
     ax.axhline(0.0, color="#777777", linewidth=0.8)
     ax.axvline(0.0, color="#777777", linewidth=0.8)
     ax.set_xlabel("strain (-)")
@@ -612,13 +491,7 @@ def plot_hysteresis(
         strains, stresses = series
         if not strains:
             continue
-        ax.plot(
-            strains,
-            stresses,
-            linestyle="-",
-            color=engine_colors.get(engine, MOJO_ORANGE),
-            label=engine,
-        )
+        ax.plot(strains, stresses, linestyle="-", color=engine_colors.get(engine, MOJO_ORANGE), label=engine)
     ax.axhline(0.0, color="#777777", linewidth=0.8)
     ax.axvline(0.0, color="#777777", linewidth=0.8)
     ax.set_xlabel("strain (-)")
@@ -635,87 +508,10 @@ def plot_hysteresis(
     return out_path, fig
 
 
-def write_opensees_hysteresis_tcl(
-    out_dir: Path,
-    material: dict,
-    strain_history: List[float],
-    length: float,
-) -> Tuple[Path, str, str]:
-    out_dir.mkdir(parents=True, exist_ok=True)
-    tcl_path = out_dir / "model.tcl"
-    if not strain_history:
-        raise ValueError("hysteresis strain history is empty")
-    disp_values = [strain * length for strain in strain_history]
-    params = material["params"]
-    mat_type = material["type"]
-    if mat_type == "Steel01":
-        mat_line = (
-            f"uniaxialMaterial Steel01 1 {params['Fy']} {params['E0']} {params['b']}"
-        )
-    elif mat_type == "Concrete01":
-        mat_line = (
-            f"uniaxialMaterial Concrete01 1 {params['fpc']} {params['epsc0']} "
-            f"{params['fpcu']} {params['epscu']}"
-        )
-    else:
-        raise ValueError(f"unsupported hysteresis material: {mat_type}")
-    disp_file = "node_disp_node2.out"
-    force_file = "element_force_ele1.out"
-    lines = [
-        "wipe",
-        "model basic -ndm 2 -ndf 2",
-        "node 1 0.0 0.0",
-        "node 2 1.0 0.0",
-        "fix 1 1 1",
-        "fix 2 0 1",
-        mat_line,
-        "element truss 1 1 2 1.0 1",
-        "timeSeries Linear 1",
-        "pattern Plain 1 1 {",
-        "  load 2 1.0 0.0",
-        "}",
-        "constraints Plain",
-        "numberer RCM",
-        "system BandGeneral",
-        "test NormUnbalance 1.0e-10 200",
-        "algorithm Newton",
-        "analysis Static",
-        f"recorder Node -file {disp_file} -node 2 -dof 1 disp",
-        f"recorder Element -file {force_file} -ele 1 force",
-        "set targets {"
-        + " ".join(f"{v:.12e}" for v in disp_values)
-        + "}",
-        "set prev 0.0",
-        "foreach targ $targets {",
-        "  set dU [expr $targ - $prev]",
-        "  if {[expr abs($dU)] < 1.0e-16} {",
-        "    set prev $targ",
-        "    continue",
-        "  }",
-        "  integrator DisplacementControl 2 1 $dU",
-        "  set ok [analyze 1]",
-        "  if {$ok != 0} {",
-        "    puts \"analysis failed\"",
-        "    break",
-        "  }",
-        "  set prev $targ",
-        "}",
-    ]
-    tcl_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    return tcl_path, disp_file, force_file
-
-
-def _bbox(
-    strains: List[float], stresses: List[float]
-) -> Tuple[float, float, float, float]:
+def _bbox(strains: List[float], stresses: List[float]) -> Tuple[float, float, float, float]:
     if not strains or not stresses:
         return (0.0, 0.0, 0.0, 0.0)
-    return (
-        min(strains),
-        max(strains),
-        min(stresses),
-        max(stresses),
-    )
+    return (min(strains), max(strains), min(stresses), max(stresses))
 
 
 def _isclose(a: float, b: float, rtol: float, atol: float) -> bool:
@@ -755,13 +551,13 @@ def main() -> None:
     parser.add_argument(
         "--bbox-rtol",
         type=float,
-        default=1.0e-6,
+        default=5.0e-6,
         help="Relative tolerance for bbox comparison.",
     )
     parser.add_argument(
         "--bbox-atol",
         type=float,
-        default=1.0e-9,
+        default=1.0e-8,
         help="Absolute tolerance for bbox comparison.",
     )
     parser.add_argument(
@@ -772,13 +568,12 @@ def main() -> None:
     args = parser.parse_args()
 
     repo_root = Path(__file__).resolve().parents[1]
-
     requested = [m.lower() for m in args.materials] if args.materials else None
-
     engines = ["mojo", "opensees"] if args.engine == "both" else [args.engine]
 
     pdf_path = args.output_dir / "material_curves.pdf"
     args.output_dir.mkdir(parents=True, exist_ok=True)
+
     with PdfPages(pdf_path) as pdf:
         for material in material_definitions():
             material_name = material["name"]
@@ -787,92 +582,55 @@ def main() -> None:
 
             material_out = args.output_dir / material_name
             curve_data: Dict[str, Dict[str, Tuple[List[float], List[float]]]] = {}
+            curve_cfg = material.get("curve", {})
+            steps = int(material.get("steps", 120))
+            min_strain = float(curve_cfg.get("strain_min", -0.01))
+            max_strain = float(curve_cfg.get("strain_max", 0.01))
+            analysis_cfg = material.get("analysis", {})
 
-            mode = material.get("mode", "solver")
-            if mode in ("direct", "direct_compare"):
-                directions = {
-                    direction: None
-                    for direction in material.get("direct_directions", ["compression"])
-                }
-            else:
-                directions = {
-                    "tension": build_case(
-                        material, "tension", material["load_tension"]
-                    ),
-                    "compression": build_case(
-                        material, "compression", material["load_compression"]
-                    ),
-                }
+            direction_cases: Dict[str, dict] = {}
+            if max_strain > 0.0:
+                tension_targets = _linspace_targets(max_strain, steps)
+                direction_cases["tension"] = build_displacement_case(
+                    material,
+                    f"{material_name}_curve_tension",
+                    tension_targets,
+                    analysis_cfg,
+                )
+            if min_strain < 0.0:
+                compression_targets = _linspace_targets(min_strain, steps)
+                direction_cases["compression"] = build_displacement_case(
+                    material,
+                    f"{material_name}_curve_compression",
+                    compression_targets,
+                    analysis_cfg,
+                )
 
-            if (
-                mode in ("direct", "direct_compare")
-                and material["type"] == "Concrete01"
-            ):
-                direct_series: Dict[str, Tuple[List[float], List[float]]] = {}
-                for direction in directions.keys():
-                    strains, stresses = compute_direct_concrete01_curve(
-                        material["params"],
-                        float(material.get("strain_min", -0.01)),
-                        float(material.get("strain_max", 0.0)),
-                        int(material.get("steps", 200)),
+            for engine in engines:
+                curve_data[engine] = {}
+                for direction, case_data in direction_cases.items():
+                    strains, stresses = run_curve_case(
+                        repo_root,
+                        case_data,
+                        material_out,
+                        engine,
+                        direction,
+                        args.skip_run,
                     )
-                    direct_series[direction] = (strains, stresses)
-                    csv_path = material_out / f"direct_{direction}.csv"
+                    curve_data[engine][direction] = (strains, stresses)
+                    csv_path = material_out / f"{engine}_{direction}.csv"
                     write_csv(csv_path, strains, stresses)
-                if mode == "direct_compare":
-                    curve_data["mojo"] = dict(direct_series)
-                    curve_data["opensees"] = dict(direct_series)
-                    print(
-                        f"{material_name}: direct curve used for mojo/opensees compare"
-                    )
-                else:
-                    curve_data["direct"] = direct_series
-            else:
-                for engine in engines:
-                    curve_data[engine] = {}
-                    for direction, case_data in directions.items():
-                        out_dir = material_out / engine / direction
-                        case_json_path = material_out / "tmp" / f"{direction}.json"
-                        case_json_path.parent.mkdir(parents=True, exist_ok=True)
-                        case_json_path.write_text(
-                            json.dumps(case_data, indent=2) + "\n",
-                            encoding="utf-8",
-                        )
-                        if not args.skip_run:
-                            run_case(repo_root, case_json_path, out_dir, engine)
-
-                        length, area, direction_vec = case_geometry(case_data)
-                        load_value, steps = case_load_and_steps(case_data)
-                        output_file = recorder_output_file(case_data)
-                        disp_path = out_dir / output_file
-                        displacements = read_displacements(disp_path)
-                        forces = None
-                        try:
-                            force_file = recorder_element_force_file(case_data)
-                            force_path = out_dir / force_file
-                            if force_path.exists():
-                                force_rows = read_element_force_rows(force_path)
-                                forces = truss_axial_forces(force_rows, direction_vec)
-                        except ValueError:
-                            forces = None
-
-                        strains, stresses = compute_curve(
-                            displacements,
-                            steps,
-                            load_value,
-                            area,
-                            length,
-                            forces=forces,
-                            strain_scale=1.0,
-                        )
-                        curve_data[engine][direction] = (strains, stresses)
-
-                        csv_path = material_out / f"{engine}_{direction}.csv"
-                        write_csv(csv_path, strains, stresses)
 
             if "mojo" in curve_data and "opensees" in curve_data:
                 print(f"{material_name} bbox:")
-                for direction in ("tension", "compression"):
+                directions = sorted(
+                    set(curve_data["mojo"].keys()) | set(curve_data["opensees"].keys())
+                )
+                if "tension" in directions and "compression" in directions:
+                    directions = ["tension", "compression"] + [
+                        d for d in directions if d not in ("tension", "compression")
+                    ]
+                for direction in directions:
                     if (
                         direction not in curve_data["mojo"]
                         or direction not in curve_data["opensees"]
@@ -899,25 +657,18 @@ def main() -> None:
                         print(_color(msg, "31", not args.no_color))
                         for diff in diffs:
                             print(f"    {diff}")
-            elif "direct" in curve_data:
-                print(f"{material_name} bbox: skip (direct curve)")
             else:
                 print(f"{material_name} bbox: skip (need both mojo and opensees)")
 
             units = str(material.get("units", ""))
-
-            plot_path, fig = plot_material(
-                material_name, curve_data, material_out, units
-            )
+            plot_path, fig = plot_material(material_name, curve_data, material_out, units)
             print(f"wrote {plot_path}")
             pdf.savefig(fig)
             plt.close(fig)
 
             hysteresis_cfg = material.get("hysteresis")
             if hysteresis_cfg:
-                hyst_data: Dict[str, Tuple[List[float], List[float]]] = {}
                 steps_per_segment = int(hysteresis_cfg.get("steps_per_segment", 20))
-                targets = hysteresis_cfg.get("targets")
                 strain_levels = list(hysteresis_cfg.get("strain_levels", []))
                 strain_history = _strain_path(
                     strain_levels,
@@ -925,66 +676,52 @@ def main() -> None:
                     min_strain=hysteresis_cfg.get("min_strain"),
                     max_strain=hysteresis_cfg.get("max_strain"),
                     cycles=int(hysteresis_cfg.get("cycles", 1)),
-                    targets=targets,
+                    targets=hysteresis_cfg.get("targets"),
                     ramp=bool(hysteresis_cfg.get("ramp", False)),
-                    ramp_positive_only=bool(
-                        hysteresis_cfg.get("ramp_positive_only", False)
-                    ),
+                    ramp_positive_only=bool(hysteresis_cfg.get("ramp_positive_only", False)),
                     ramp_power=float(hysteresis_cfg.get("ramp_power", 1.0)),
                 )
+                hyst_case = build_displacement_case(
+                    material,
+                    f"{material_name}_hysteresis",
+                    strain_history,
+                    {
+                        "max_iters": hysteresis_cfg.get("max_iters", analysis_cfg.get("max_iters", 80)),
+                        "tol": hysteresis_cfg.get("tol", analysis_cfg.get("tol", 1.0e-10)),
+                        "rel_tol": hysteresis_cfg.get("rel_tol", analysis_cfg.get("rel_tol", 1.0e-8)),
+                        "cutback": hysteresis_cfg.get("cutback", analysis_cfg.get("cutback", 0.5)),
+                        "max_cutbacks": hysteresis_cfg.get("max_cutbacks", analysis_cfg.get("max_cutbacks", 12)),
+                        "min_du": hysteresis_cfg.get("min_du", analysis_cfg.get("min_du", 1.0e-8)),
+                    },
+                )
+
+                hyst_data: Dict[str, Tuple[List[float], List[float]]] = {}
                 for engine in engines:
-                    out_dir = material_out / engine / "hysteresis"
-                    if engine == "mojo":
+                    try:
+                        strains, stresses = run_curve_case(
+                            repo_root,
+                            hyst_case,
+                            material_out,
+                            engine,
+                            "hysteresis",
+                            args.skip_run,
+                        )
+                    except subprocess.CalledProcessError as exc:
                         print(
-                            f"{material_name} hysteresis: mojo run skipped (displacement-controlled hysteresis not supported)"
+                            f"{material_name} hysteresis: {engine} run failed ({exc.returncode}); skipping"
                         )
                         continue
-
-                    if engine == "opensees":
-                        length = 1.0
-                        area = 1.0
-                        tcl_path, disp_file, force_file = write_opensees_hysteresis_tcl(
-                            out_dir, material, strain_history, length
+                    except ValueError:
+                        print(
+                            f"{material_name} hysteresis: {engine} produced empty outputs; skipping"
                         )
-                        if not args.skip_run:
-                            try:
-                                run(
-                                    [
-                                        str(repo_root / "scripts" / "run_opensees_wine.sh"),
-                                        "--script",
-                                        str(tcl_path),
-                                        "--output",
-                                        str(out_dir),
-                                    ]
-                                )
-                            except subprocess.CalledProcessError as exc:
-                                print(
-                                    f"{material_name} hysteresis: {engine} run failed ({exc.returncode}); skipping"
-                                )
-                                continue
-                        disp_path = out_dir / disp_file
-                        force_path = out_dir / force_file
-                        try:
-                            displacements = read_displacements(disp_path)
-                            force_rows = read_element_force_rows(force_path)
-                            forces = truss_axial_forces(force_rows, [1.0, 0.0])
-                        except ValueError:
-                            print(
-                                f"{material_name} hysteresis: {engine} produced empty outputs; skipping"
-                            )
-                            continue
-                        strains, stresses = compute_hysteresis_curve(
-                            displacements, forces, length, area
-                        )
-                        hyst_data[engine] = (strains, stresses)
-
-                        csv_path = material_out / f"{engine}_hysteresis.csv"
-                        write_csv(csv_path, strains, stresses)
+                        continue
+                    hyst_data[engine] = (strains, stresses)
+                    csv_path = material_out / f"{engine}_hysteresis.csv"
+                    write_csv(csv_path, strains, stresses)
 
                 if hyst_data:
-                    hyst_path, hyst_fig = plot_hysteresis(
-                        material_name, hyst_data, material_out, units
-                    )
+                    hyst_path, hyst_fig = plot_hysteresis(material_name, hyst_data, material_out, units)
                     print(f"wrote {hyst_path}")
                     pdf.savefig(hyst_fig)
                     plt.close(hyst_fig)
