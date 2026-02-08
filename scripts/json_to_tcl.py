@@ -356,7 +356,11 @@ def main():
         transf_tags = {}
         next_tag = 1
         for elem in elements:
-            if elem["type"] not in ("elasticBeamColumn2d", "elasticBeamColumn3d"):
+            if elem["type"] not in (
+                "elasticBeamColumn2d",
+                "elasticBeamColumn3d",
+                "forceBeamColumn2d",
+            ):
                 continue
             name = elem.get("geomTransf", "Linear")
             if elem["type"] == "elasticBeamColumn3d":
@@ -373,6 +377,33 @@ def main():
                     vx, vy, vz = key[1]
                     f.write(f"geomTransf {name} {next_tag} {vx} {vy} {vz}\n")
                 next_tag += 1
+
+        # Beam integrations (forceBeamColumn2d v1: Lobatto only)
+        integration_tags = {}
+        next_int_tag = 1
+        for elem in elements:
+            if elem["type"] != "forceBeamColumn2d":
+                continue
+            sec = sections[elem["section"]]
+            if sec["type"] != "FiberSection2d":
+                raise ValueError("forceBeamColumn2d requires FiberSection2d")
+            geom = elem.get("geomTransf", "Linear")
+            if geom != "Linear":
+                raise ValueError("forceBeamColumn2d v1 supports geomTransf Linear only")
+            integration = elem.get("integration", "Lobatto")
+            if integration != "Lobatto":
+                raise ValueError("forceBeamColumn2d v1 supports Lobatto integration only")
+            num_int_pts = int(elem.get("num_int_pts", 3))
+            if num_int_pts != 3:
+                raise ValueError("forceBeamColumn2d v1 supports num_int_pts=3")
+            key = (integration, elem["section"], num_int_pts)
+            if key in integration_tags:
+                continue
+            integration_tags[key] = next_int_tag
+            f.write(
+                f"beamIntegration {integration} {next_int_tag} {elem['section']} {num_int_pts}\n"
+            )
+            next_int_tag += 1
 
         # Elements (elasticBeamColumn2d, truss, zeroLength, twoNodeLink, fourNodeQuad, shell)
         for elem in elements:
@@ -392,6 +423,21 @@ def main():
                 transf_tag = transf_tags[(elem.get("geomTransf", "Linear"), None)]
                 f.write(
                     f"element elasticBeamColumn {elem['id']} {n1} {n2} {A} {E} {I} {transf_tag}\n"
+                )
+            elif elem["type"] == "forceBeamColumn2d":
+                sec = sections[elem["section"]]
+                if sec["type"] != "FiberSection2d":
+                    raise ValueError("forceBeamColumn2d requires FiberSection2d")
+                integration = elem.get("integration", "Lobatto")
+                num_int_pts = int(elem.get("num_int_pts", 3))
+                key = (integration, elem["section"], num_int_pts)
+                if key not in integration_tags:
+                    raise ValueError("forceBeamColumn2d integration definition missing")
+                n1, n2 = elem["nodes"]
+                transf_tag = transf_tags[(elem.get("geomTransf", "Linear"), None)]
+                int_tag = integration_tags[key]
+                f.write(
+                    f"element forceBeamColumn {elem['id']} {n1} {n2} {transf_tag} {int_tag}\n"
                 )
             elif elem["type"] == "elasticBeamColumn3d":
                 sec = sections[elem["section"]]
@@ -595,7 +641,10 @@ def main():
         elif analysis_type == "static_nonlinear":
             integrator = analysis.get("integrator", {"type": "LoadControl"})
             if integrator.get("type", "LoadControl") == "LoadControl":
-                f.write(f"analyze {steps}\n")
+                f.write(f"set strut_nl_ok [analyze {steps}]\n")
+                f.write("if {$strut_nl_ok != 0} {\n")
+                f.write("  error \"analysis failed\"\n")
+                f.write("}\n")
             elif static_nl_post_lines is not None:
                 for line in static_nl_post_lines:
                     f.write(line + "\n")

@@ -19,6 +19,9 @@ Key files:
 
 Current limitation:
 
-- `elasticBeamColumn2d` / `elasticBeamColumn3d` do not consume fiber sections yet.
-- Models that bind `FiberSection2d` to those elements fail fast and require a
-  future `forceBeamColumn` implementation.
+- `elasticBeamColumn2d` / `elasticBeamColumn3d` still do not consume fiber sections.
+- `forceBeamColumn2d` is available in a minimum v1 scope only:
+  - `geomTransf: Linear`
+  - `integration: Lobatto`
+  - `num_int_pts: 3`
+  - `analysis.type: static_nonlinear`

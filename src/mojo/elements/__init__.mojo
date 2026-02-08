@@ -7,6 +7,7 @@ from elements.beam2d import (
     beam_uniform_load_global,
 )
 from elements.beam3d import beam3d_global_stiffness, beam3d_local_stiffness
+from elements.force_beam_column2d import force_beam_column2d_global_tangent_and_internal
 from elements.link import link_global_stiffness
 from elements.quad4 import quad4_plane_stress_stiffness
 from elements.shell4 import shell4_mindlin_stiffness

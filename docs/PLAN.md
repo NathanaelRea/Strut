@@ -88,14 +88,14 @@ This document is a living roadmap for Strut (Mojo rewrite of OpenSees). It captu
 ### B. High-Leverage Coverage
 
 - [x] Add `section Fiber` support (`patch`, `layer`) and section aggregation workflow.
-- [ ] Add `forceBeamColumn` (2D first) on top of fiber/nonlinear sections.
+- [x] Add `forceBeamColumn` 2D minimum path (`forceBeamColumn2d`: Linear geom, Lobatto, 3 IP) on top of fiber/nonlinear sections.
 - [ ] Add earthquake loading parity: `UniformExcitation` + Rayleigh damping in transient workflows.
 - [ ] Add modal workflow features: eigen analysis + `equalDOF` / transformation constraints.
 - [ ] Add recorder parity for common example outputs (`reaction`, `drift`, envelope element force).
 
 ### C. Beam-Column Nonlinearities
 
-- [ ] `forceBeamColumn`.
+- [x] `forceBeamColumn`.
 - [ ] `dispBeamColumn`.
 - [ ] `beamWithHinges`.
 - [ ] `gradientInelasticBeamColumn`.

@@ -14,6 +14,7 @@ def build_frame_case(
     load_per_node: float,
     name: str,
     enabled: bool,
+    element_type: str,
 ):
     nodes = []
     node_id = 1
@@ -39,12 +40,15 @@ def build_frame_case(
             elements.append(
                 {
                     "id": elem_id,
-                    "type": "elasticBeamColumn2d",
+                    "type": element_type,
                     "nodes": [nid(i, j), nid(i, j + 1)],
                     "section": 1,
                     "geomTransf": "Linear",
                 }
             )
+            if element_type == "forceBeamColumn2d":
+                elements[-1]["integration"] = "Lobatto"
+                elements[-1]["num_int_pts"] = 3
             elem_id += 1
 
     # Beams (skip ground level)
@@ -53,12 +57,15 @@ def build_frame_case(
             elements.append(
                 {
                     "id": elem_id,
-                    "type": "elasticBeamColumn2d",
+                    "type": element_type,
                     "nodes": [nid(i, j), nid(i + 1, j)],
                     "section": 1,
                     "geomTransf": "Linear",
                 }
             )
+            if element_type == "forceBeamColumn2d":
+                elements[-1]["integration"] = "Lobatto"
+                elements[-1]["num_int_pts"] = 3
             elem_id += 1
 
     loads = []
@@ -68,10 +75,49 @@ def build_frame_case(
 
     top_nodes = [nid(i, top_j) for i in range(bays + 1)]
 
+    sections = [
+        {
+            "id": 1,
+            "type": "ElasticSection2d",
+            "params": {"E": E, "A": A, "I": I},
+        }
+    ]
+    analysis = {"type": "static_linear", "steps": 1}
+    if element_type == "forceBeamColumn2d":
+        sections = [
+            {
+                "id": 1,
+                "type": "FiberSection2d",
+                "params": {
+                    "patches": [
+                        {
+                            "type": "rect",
+                            "material": 1,
+                            "num_subdiv_y": 4,
+                            "num_subdiv_z": 2,
+                            "y_i": -0.2,
+                            "z_i": -0.1,
+                            "y_j": 0.2,
+                            "z_j": 0.1,
+                        }
+                    ],
+                    "layers": [],
+                },
+            }
+        ]
+        analysis = {
+            "type": "static_nonlinear",
+            "steps": 1,
+            "max_iters": 80,
+            "tol": 1.0e-7,
+            "rel_tol": 1.0e-8,
+            "integrator": {"type": "LoadControl"},
+        }
+
     data = {
         "schema_version": "1.0",
         "enabled": enabled,
-        "status": "active",
+        "status": "benchmark",
         "metadata": {"name": name, "units": "SI"},
         "opensees": {
             "model_builder": {"type": "BasicBuilder", "ndm": 2, "ndf": 3},
@@ -89,16 +135,10 @@ def build_frame_case(
         "model": {"ndm": 2, "ndf": 3},
         "nodes": nodes,
         "materials": [{"id": 1, "type": "Elastic", "params": {"E": E}}],
-        "sections": [
-            {
-                "id": 1,
-                "type": "ElasticSection2d",
-                "params": {"E": E, "A": A, "I": I},
-            }
-        ],
+        "sections": sections,
         "elements": elements,
         "loads": loads,
-        "analysis": {"type": "static_linear", "steps": 1},
+        "analysis": analysis,
         "recorders": [
             {
                 "type": "node_displacement",
@@ -124,6 +164,11 @@ def main() -> None:
     parser.add_argument("--name", default=None)
     parser.add_argument("--output", required=True)
     parser.add_argument("--disabled", action="store_true")
+    parser.add_argument(
+        "--element-type",
+        choices=["elasticBeamColumn2d", "forceBeamColumn2d"],
+        default="elasticBeamColumn2d",
+    )
     args = parser.parse_args()
 
     name = args.name or f"elastic_frame_{args.bays}bay_{args.stories}story"
@@ -139,6 +184,7 @@ def main() -> None:
         load_per_node=args.load,
         name=name,
         enabled=enabled,
+        element_type=args.element_type,
     )
 
     out_path = Path(args.output)

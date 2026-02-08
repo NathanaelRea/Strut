@@ -8,6 +8,7 @@ from elements import (
     beam2d_pdelta_global_stiffness,
     beam_global_stiffness,
     beam_uniform_load_global,
+    force_beam_column2d_global_tangent_and_internal,
 )
 from linalg import gaussian_elimination
 from materials import (
@@ -22,7 +23,7 @@ from solver.assembly import (
     assemble_global_stiffness_banded,
     assemble_global_stiffness_and_internal,
 )
-from solver.banded import banded_gaussian_elimination, estimate_bandwidth
+from solver.banded import banded_gaussian_elimination, banded_matrix, estimate_bandwidth
 from solver.dof import node_dof_index, require_dof_in_range
 from solver.profile import (
     _append_event,
@@ -180,6 +181,86 @@ fn _truss_element_force_global(
     var m = dy / L
     var n = dz / L
     return [-N * l, -N * m, -N * n, N * l, N * m, N * n]
+
+
+fn _force_beam_column2d_element_force_global(
+    elem_index: Int,
+    elem: PythonObject,
+    nodes: PythonObject,
+    id_to_index: List[Int],
+    ndf: Int,
+    u: List[Float64],
+    fiber_section_defs: List[FiberSection2dDef],
+    fiber_section_cells: List[FiberCell],
+    fiber_section_index_by_id: List[Int],
+    uniaxial_defs: List[UniMaterialDef],
+    mut uniaxial_states: List[UniMaterialState],
+    elem_uniaxial_offsets: List[Int],
+    elem_uniaxial_counts: List[Int],
+    elem_uniaxial_state_ids: List[Int],
+) raises -> List[Float64]:
+    if ndf != 3:
+        abort("forceBeamColumn2d requires ndf=3")
+    var geom = String(elem.get("geomTransf", "Linear"))
+    if geom != "Linear":
+        abort("forceBeamColumn2d v1 supports geomTransf Linear only")
+    var integration = String(elem.get("integration", "Lobatto"))
+    if integration != "Lobatto":
+        abort("forceBeamColumn2d v1 supports Lobatto integration only")
+    var num_int_pts = Int(elem.get("num_int_pts", 3))
+    if num_int_pts != 3:
+        abort("forceBeamColumn2d v1 supports num_int_pts=3")
+
+    var n1 = Int(elem["nodes"][0])
+    var n2 = Int(elem["nodes"][1])
+    var i1 = id_to_index[n1]
+    var i2 = id_to_index[n2]
+    var node1 = nodes[i1]
+    var node2 = nodes[i2]
+
+    var sec_id = Int(elem["section"])
+    if sec_id >= len(fiber_section_index_by_id):
+        abort("forceBeamColumn2d section not found")
+    var sec_index = fiber_section_index_by_id[sec_id]
+    if sec_index < 0 or sec_index >= len(fiber_section_defs):
+        abort("forceBeamColumn2d requires FiberSection2d")
+    var sec_def = fiber_section_defs[sec_index]
+
+    var dof_map = [
+        node_dof_index(i1, 1, ndf),
+        node_dof_index(i1, 2, ndf),
+        node_dof_index(i1, 3, ndf),
+        node_dof_index(i2, 1, ndf),
+        node_dof_index(i2, 2, ndf),
+        node_dof_index(i2, 3, ndf),
+    ]
+    var u_elem: List[Float64] = []
+    u_elem.resize(6, 0.0)
+    for i in range(6):
+        u_elem[i] = u[dof_map[i]]
+
+    var elem_offset = elem_uniaxial_offsets[elem_index]
+    var elem_state_count = elem_uniaxial_counts[elem_index]
+    var k_dummy: List[List[Float64]] = []
+    var f_global: List[Float64] = []
+    force_beam_column2d_global_tangent_and_internal(
+        Float64(node1["x"]),
+        Float64(node1["y"]),
+        Float64(node2["x"]),
+        Float64(node2["y"]),
+        u_elem,
+        sec_def,
+        fiber_section_cells,
+        uniaxial_defs,
+        uniaxial_states,
+        elem_uniaxial_state_ids,
+        elem_offset,
+        elem_state_count,
+        num_int_pts,
+        k_dummy,
+        f_global,
+    )
+    return f_global^
 
 
 fn _append_output(
@@ -541,18 +622,37 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
         if eid >= len(elem_id_to_index):
             elem_id_to_index.resize(eid + 1, -1)
         elem_id_to_index[eid] = i
+    var has_force_beam_column2d = False
     for i in range(elem_count):
         var elem = elements[i]
         var elem_type = String(elem["type"])
-        if elem_type != "elasticBeamColumn2d" and elem_type != "elasticBeamColumn3d":
+        if elem_type == "elasticBeamColumn2d" or elem_type == "elasticBeamColumn3d":
+            var sec_id = Int(elem["section"])
+            if sec_id >= 0 and sec_id < len(fiber_section_index_by_id):
+                if fiber_section_index_by_id[sec_id] >= 0:
+                    abort(
+                        elem_type + " with FiberSection2d requires forceBeamColumn2d"
+                    )
             continue
+        if elem_type != "forceBeamColumn2d":
+            continue
+        has_force_beam_column2d = True
+        if ndf != 3:
+            abort("forceBeamColumn2d requires ndf=3")
+        var geom = String(elem.get("geomTransf", "Linear"))
+        if geom != "Linear":
+            abort("forceBeamColumn2d v1 supports geomTransf Linear only")
+        var integration = String(elem.get("integration", "Lobatto"))
+        if integration != "Lobatto":
+            abort("forceBeamColumn2d v1 supports Lobatto integration only")
+        var num_int_pts = Int(elem.get("num_int_pts", 3))
+        if num_int_pts != 3:
+            abort("forceBeamColumn2d v1 supports num_int_pts=3")
         var sec_id = Int(elem["section"])
-        if sec_id >= 0 and sec_id < len(fiber_section_index_by_id):
-            if fiber_section_index_by_id[sec_id] >= 0:
-                abort(
-                    elem_type + " with FiberSection2d requires forceBeamColumn "
-                    "(not implemented)"
-                )
+        if sec_id < 0 or sec_id >= len(fiber_section_index_by_id):
+            abort("forceBeamColumn2d section not found")
+        if fiber_section_index_by_id[sec_id] < 0:
+            abort("forceBeamColumn2d requires FiberSection2d")
 
     var uniaxial_states: List[UniMaterialState] = []
     var uniaxial_state_defs: List[Int] = []
@@ -595,6 +695,29 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
                 elem_uniaxial_state_ids.append(state_index)
                 if not uni_mat_is_elastic(mat_def):
                     used_nonelastic_uniaxial = True
+        elif elem_type == "forceBeamColumn2d":
+            var sec_id = Int(elem["section"])
+            var sec_index = fiber_section_index_by_id[sec_id]
+            if sec_index < 0 or sec_index >= len(fiber_section_defs):
+                abort("forceBeamColumn2d requires FiberSection2d")
+            var sec_def = fiber_section_defs[sec_index]
+            var num_int_pts = Int(elem.get("num_int_pts", 3))
+            var state_count = num_int_pts * sec_def.fiber_count
+            elem_uniaxial_offsets[e] = len(elem_uniaxial_state_ids)
+            elem_uniaxial_counts[e] = state_count
+            for _ in range(num_int_pts):
+                for i in range(sec_def.fiber_count):
+                    var cell = fiber_section_cells[sec_def.fiber_offset + i]
+                    var def_index = cell.def_index
+                    if def_index < 0 or def_index >= len(uniaxial_defs):
+                        abort("forceBeamColumn2d fiber material definition out of range")
+                    var mat_def = uniaxial_defs[def_index]
+                    var state_index = len(uniaxial_states)
+                    uniaxial_states.append(UniMaterialState(mat_def))
+                    uniaxial_state_defs.append(def_index)
+                    elem_uniaxial_state_ids.append(state_index)
+                    if not uni_mat_is_elastic(mat_def):
+                        used_nonelastic_uniaxial = True
         else:
             elem_uniaxial_offsets[e] = len(elem_uniaxial_state_ids)
             elem_uniaxial_counts[e] = 0
@@ -671,6 +794,8 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
     var steps = Int(analysis.get("steps", 1))
     if steps < 1:
         abort("analysis steps must be >= 1")
+    if has_force_beam_column2d and analysis_type != "static_nonlinear":
+        abort("forceBeamColumn2d currently requires static_nonlinear analysis")
     if analysis_type != "static_nonlinear" and used_nonelastic_uniaxial:
         abort("nonlinear uniaxial materials require static_nonlinear analysis")
 
@@ -691,14 +816,18 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
     if free_count == 0:
         abort("no free dofs")
 
-    var use_banded = False
+    var use_banded_linear = False
+    var use_banded_nonlinear = False
     if analysis_type == "static_linear":
         if solver_pref == "banded" or (solver_pref == "auto" and free_count > band_threshold):
-            use_banded = True
+            use_banded_linear = True
+    elif analysis_type == "static_nonlinear":
+        if solver_pref == "banded" or (solver_pref == "auto" and free_count > band_threshold):
+            use_banded_nonlinear = True
 
     var free: List[Int] = []
     var free_index: List[Int] = []
-    if use_banded:
+    if use_banded_linear or use_banded_nonlinear:
         var adjacency = build_node_adjacency(elements, node_count, id_to_index)
         var node_order = rcm_order(adjacency)
         free_index.resize(total_dofs, -1)
@@ -774,7 +903,7 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
         var bw = 0
         var K_ff_banded: List[List[Float64]] = []
         var K: List[List[Float64]] = []
-        if use_banded:
+        if use_banded_linear:
             bw = estimate_bandwidth(elements, id_to_index, ndf, free_index)
             if bw > len(free) - 1:
                 bw = len(free) - 1
@@ -831,7 +960,7 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
         for i in range(len(free)):
             F_f[i] = F_total[free[i]]
         var K_ff: List[List[Float64]] = []
-        if not use_banded:
+        if not use_banded_linear:
             for _ in range(len(free)):
                 var row: List[Float64] = []
                 row.resize(len(free), 0.0)
@@ -850,7 +979,7 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
                 events, events_need_comma, "O", frame_solve_linear, solve_lin_start_us
             )
         var u_f: List[Float64]
-        if use_banded:
+        if use_banded_linear:
             u_f = banded_gaussian_elimination(K_ff_banded, bw, F_f)
         else:
             u_f = gaussian_elimination(K_ff, F_f)
@@ -882,13 +1011,23 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
         var F_int: List[Float64] = []
         F_int.resize(total_dofs, 0.0)
 
-        var K_ff: List[List[Float64]] = []
-        for _ in range(free_count):
-            var row_ff: List[Float64] = []
-            row_ff.resize(free_count, 0.0)
-            K_ff.append(row_ff^)
         var integrator = analysis.get("integrator", {"type": "LoadControl"})
         var integrator_type = String(integrator.get("type", "LoadControl"))
+        var use_banded_loadcontrol = use_banded_nonlinear and integrator_type == "LoadControl"
+        var bw_nl = 0
+        if use_banded_loadcontrol:
+            bw_nl = estimate_bandwidth(elements, id_to_index, ndf, free_index)
+            if bw_nl > free_count - 1:
+                bw_nl = free_count - 1
+        var K_ff: List[List[Float64]] = []
+        if not use_banded_loadcontrol:
+            for _ in range(free_count):
+                var row_ff: List[Float64] = []
+                row_ff.resize(free_count, 0.0)
+                K_ff.append(row_ff^)
+        var K_ff_banded: List[List[Float64]] = []
+        if use_banded_loadcontrol:
+            K_ff_banded = banded_matrix(free_count, bw_nl)
         var F_f: List[Float64] = []
         F_f.resize(free_count, 0.0)
         if integrator_type == "LoadControl":
@@ -941,6 +1080,9 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
                         elem_uniaxial_offsets,
                         elem_uniaxial_counts,
                         elem_uniaxial_state_ids,
+                        fiber_section_defs,
+                        fiber_section_cells,
+                        fiber_section_index_by_id,
                         K,
                         F_int,
                     )
@@ -959,12 +1101,28 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
                         var kff_start_us = (t_kff_start - t0) // 1000
                         _append_event(
                             events, events_need_comma, "O", frame_kff_extract, kff_start_us
-                        )
+                    )
                     for i in range(free_count):
                         F_f[i] = F_total_free[i] * scale - F_int[free[i]]
-                    for i in range(free_count):
-                        for j in range(free_count):
-                            K_ff[i][j] = K[free[i]][free[j]]
+                    if use_banded_loadcontrol:
+                        var width = bw_nl * 2 + 1
+                        for i in range(free_count):
+                            for j in range(width):
+                                K_ff_banded[i][j] = 0.0
+                        for i in range(free_count):
+                            var row_i = free[i]
+                            var j0 = i - bw_nl
+                            if j0 < 0:
+                                j0 = 0
+                            var j1 = i + bw_nl
+                            if j1 > free_count - 1:
+                                j1 = free_count - 1
+                            for j in range(j0, j1 + 1):
+                                K_ff_banded[i][j - i + bw_nl] = K[row_i][free[j]]
+                    else:
+                        for i in range(free_count):
+                            for j in range(free_count):
+                                K_ff[i][j] = K[free[i]][free[j]]
                     if do_profile:
                         var t_kff_end = Int(time.perf_counter_ns())
                         var kff_end_us = (t_kff_end - t0) // 1000
@@ -981,7 +1139,11 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
                             frame_solve_nonlinear,
                             solve_nl_start_us,
                         )
-                    var u_f = gaussian_elimination(K_ff, F_f)
+                    var u_f: List[Float64]
+                    if use_banded_loadcontrol:
+                        u_f = banded_gaussian_elimination(K_ff_banded, bw_nl, F_f)
+                    else:
+                        u_f = gaussian_elimination(K_ff, F_f)
                     if do_profile:
                         var t_solve_nl_end = Int(time.perf_counter_ns())
                         var solve_nl_end_us = (t_solve_nl_end - t0) // 1000
@@ -1080,6 +1242,23 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
                                     ndf,
                                     u,
                                 )
+                            elif elem_type == "forceBeamColumn2d":
+                                f_elem = _force_beam_column2d_element_force_global(
+                                    elem_index,
+                                    elem,
+                                    nodes,
+                                    id_to_index,
+                                    ndf,
+                                    u,
+                                    fiber_section_defs,
+                                    fiber_section_cells,
+                                    fiber_section_index_by_id,
+                                    uniaxial_defs,
+                                    uniaxial_states,
+                                    elem_uniaxial_offsets,
+                                    elem_uniaxial_counts,
+                                    elem_uniaxial_state_ids,
+                                )
                             elif elem_type == "truss":
                                 f_elem = _truss_element_force_global(
                                     elem_index,
@@ -1093,7 +1272,10 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
                                     elem_uniaxial_state_ids,
                                 )
                             else:
-                                abort("element_force recorder supports truss or elasticBeamColumn2d only")
+                                abort(
+                                    "element_force recorder supports truss, "
+                                    "elasticBeamColumn2d, or forceBeamColumn2d only"
+                                )
                             var line = String()
                             for j in range(len(f_elem)):
                                 if j > 0:
@@ -1233,6 +1415,9 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
                                 elem_uniaxial_offsets,
                                 elem_uniaxial_counts,
                                 elem_uniaxial_state_ids,
+                                fiber_section_defs,
+                                fiber_section_cells,
+                                fiber_section_index_by_id,
                                 K,
                                 F_int,
                             )
@@ -1400,6 +1585,23 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
                                     ndf,
                                     u,
                                 )
+                            elif elem_type == "forceBeamColumn2d":
+                                f_elem = _force_beam_column2d_element_force_global(
+                                    elem_index,
+                                    elem,
+                                    nodes,
+                                    id_to_index,
+                                    ndf,
+                                    u,
+                                    fiber_section_defs,
+                                    fiber_section_cells,
+                                    fiber_section_index_by_id,
+                                    uniaxial_defs,
+                                    uniaxial_states,
+                                    elem_uniaxial_offsets,
+                                    elem_uniaxial_counts,
+                                    elem_uniaxial_state_ids,
+                                )
                             elif elem_type == "truss":
                                 f_elem = _truss_element_force_global(
                                     elem_index,
@@ -1413,7 +1615,10 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
                                     elem_uniaxial_state_ids,
                                 )
                             else:
-                                abort("element_force recorder supports truss or elasticBeamColumn2d only")
+                                abort(
+                                    "element_force recorder supports truss, "
+                                    "elasticBeamColumn2d, or forceBeamColumn2d only"
+                                )
                             var line = String()
                             for j in range(len(f_elem)):
                                 if j > 0:
@@ -1574,6 +1779,23 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
                                 ndf,
                                 u,
                             )
+                        elif elem_type == "forceBeamColumn2d":
+                            f_elem = _force_beam_column2d_element_force_global(
+                                elem_index,
+                                elem,
+                                nodes,
+                                id_to_index,
+                                ndf,
+                                u,
+                                fiber_section_defs,
+                                fiber_section_cells,
+                                fiber_section_index_by_id,
+                                uniaxial_defs,
+                                uniaxial_states,
+                                elem_uniaxial_offsets,
+                                elem_uniaxial_counts,
+                                elem_uniaxial_state_ids,
+                            )
                         elif elem_type == "truss":
                             f_elem = _truss_element_force_global(
                                 elem_index,
@@ -1587,7 +1809,10 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
                                 elem_uniaxial_state_ids,
                             )
                         else:
-                            abort("element_force recorder supports truss or elasticBeamColumn2d only")
+                            abort(
+                                "element_force recorder supports truss, "
+                                "elasticBeamColumn2d, or forceBeamColumn2d only"
+                            )
                         var line = String()
                         for j in range(len(f_elem)):
                             if j > 0:
@@ -1670,6 +1895,23 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
                             ndf,
                             u,
                         )
+                    elif elem_type == "forceBeamColumn2d":
+                        f_elem = _force_beam_column2d_element_force_global(
+                            elem_index,
+                            elem,
+                            nodes,
+                            id_to_index,
+                            ndf,
+                            u,
+                            fiber_section_defs,
+                            fiber_section_cells,
+                            fiber_section_index_by_id,
+                            uniaxial_defs,
+                            uniaxial_states,
+                            elem_uniaxial_offsets,
+                            elem_uniaxial_counts,
+                            elem_uniaxial_state_ids,
+                        )
                     elif elem_type == "truss":
                         f_elem = _truss_element_force_global(
                             elem_index,
@@ -1683,7 +1925,10 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
                             elem_uniaxial_state_ids,
                         )
                     else:
-                        abort("element_force recorder supports truss or elasticBeamColumn2d only")
+                        abort(
+                            "element_force recorder supports truss, "
+                            "elasticBeamColumn2d, or forceBeamColumn2d only"
+                        )
                     var line = String()
                     for j in range(len(f_elem)):
                         if j > 0:

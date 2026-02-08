@@ -250,7 +250,8 @@ def _inject_opensees_timing(tcl_lines: List[str], timing_file: str) -> List[str]
     injected = False
     for line in tcl_lines:
         stripped = line.lstrip()
-        if not injected and stripped.startswith("analyze "):
+        has_analyze = stripped.startswith("analyze ") or "[analyze " in stripped
+        if not injected and has_analyze:
             out.append('set __strut_t0 [clock microseconds]')
             out.append(line)
             out.append('set __strut_t1 [clock microseconds]')
@@ -300,18 +301,24 @@ def main() -> None:
         "--gen-frame-bays",
         type=int,
         default=None,
-        help="Generate a synthetic elastic frame with this number of bays.",
+        help="Generate a synthetic frame with this number of bays.",
     )
     parser.add_argument(
         "--gen-frame-stories",
         type=int,
         default=None,
-        help="Generate a synthetic elastic frame with this number of stories.",
+        help="Generate a synthetic frame with this number of stories.",
     )
     parser.add_argument(
         "--gen-frame-name",
         default=None,
         help="Optional name for generated frame case (default: elastic_frame_{bays}bay_{stories}story).",
+    )
+    parser.add_argument(
+        "--gen-frame-element",
+        choices=("elasticBeamColumn2d", "forceBeamColumn2d"),
+        default="elasticBeamColumn2d",
+        help="Element type for generated frame case.",
     )
     parser.add_argument(
         "--repeat",
@@ -379,7 +386,12 @@ def main() -> None:
     validation_root = repo_root / "tests" / "validation"
     generated_cases: List[CaseSpec] = []
 
-    if args.batch_opensees and args.gen_frame_bays is None and args.gen_frame_stories is None:
+    auto_batch_default_gen = (
+        args.batch_opensees
+        and args.gen_frame_bays is None
+        and args.gen_frame_stories is None
+    )
+    if auto_batch_default_gen:
         args.gen_frame_bays = 18
         args.gen_frame_stories = 17
     if (args.gen_frame_bays is None) != (args.gen_frame_stories is None):
@@ -387,7 +399,10 @@ def main() -> None:
     if args.gen_frame_bays is not None and args.gen_frame_stories is not None:
         if args.gen_frame_bays <= 0 or args.gen_frame_stories <= 0:
             raise SystemExit("--gen-frame-bays and --gen-frame-stories must be > 0.")
-        name = args.gen_frame_name or f"elastic_frame_{args.gen_frame_bays}bay_{args.gen_frame_stories}story"
+        default_prefix = "elastic_frame"
+        if args.gen_frame_element == "forceBeamColumn2d":
+            default_prefix = "force_beam_column2d_fiber_frame"
+        name = args.gen_frame_name or f"{default_prefix}_{args.gen_frame_bays}bay_{args.gen_frame_stories}story"
         gen_dir = repo_root / "benchmark" / ".tmp"
         gen_dir.mkdir(parents=True, exist_ok=True)
         gen_path = gen_dir / f"{name}.json"
@@ -399,6 +414,8 @@ def main() -> None:
                 str(args.gen_frame_bays),
                 "--stories",
                 str(args.gen_frame_stories),
+                "--element-type",
+                args.gen_frame_element,
                 "--name",
                 name,
                 "--output",
@@ -407,6 +424,31 @@ def main() -> None:
             verbose=os.getenv("STRUT_VERBOSE") == "1",
         )
         generated_cases.append(CaseSpec(name=name, json_path=gen_path))
+
+        if auto_batch_default_gen and args.gen_frame_element != "forceBeamColumn2d":
+            fiber_name = (
+                f"force_beam_column2d_fiber_frame_{args.gen_frame_bays}bay_"
+                f"{args.gen_frame_stories}story"
+            )
+            fiber_path = gen_dir / f"{fiber_name}.json"
+            run(
+                [
+                    "python",
+                    str(repo_root / "scripts" / "gen_frame_case.py"),
+                    "--bays",
+                    str(args.gen_frame_bays),
+                    "--stories",
+                    str(args.gen_frame_stories),
+                    "--element-type",
+                    "forceBeamColumn2d",
+                    "--name",
+                    fiber_name,
+                    "--output",
+                    str(fiber_path),
+                ],
+                verbose=os.getenv("STRUT_VERBOSE") == "1",
+            )
+            generated_cases.append(CaseSpec(name=fiber_name, json_path=fiber_path))
 
     if args.cases:
         case_specs = []

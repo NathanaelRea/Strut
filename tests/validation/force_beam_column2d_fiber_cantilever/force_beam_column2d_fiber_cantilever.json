@@ -1,0 +1,74 @@
+{
+  "schema_version": "1.0",
+  "enabled": false,
+  "status": "wip",
+  "metadata": {
+    "name": "force_beam_column2d_fiber_cantilever",
+    "units": "SI"
+  },
+  "model": {
+    "ndm": 2,
+    "ndf": 3
+  },
+  "nodes": [
+    {"id": 1, "x": 0.0, "y": 0.0, "constraints": [1, 2, 3]},
+    {"id": 2, "x": 4.0, "y": 0.0}
+  ],
+  "materials": [
+    {"id": 1, "type": "Steel01", "params": {"Fy": 350000000.0, "E0": 200000000000.0, "b": 0.01}}
+  ],
+  "sections": [
+    {
+      "id": 1,
+      "type": "FiberSection2d",
+      "params": {
+        "patches": [
+          {
+            "type": "rect",
+            "material": 1,
+            "num_subdiv_y": 16,
+            "num_subdiv_z": 2,
+            "y_i": -0.25,
+            "z_i": -0.15,
+            "y_j": 0.25,
+            "z_j": 0.15
+          }
+        ],
+        "layers": []
+      }
+    }
+  ],
+  "elements": [
+    {
+      "id": 1,
+      "type": "forceBeamColumn2d",
+      "nodes": [1, 2],
+      "section": 1,
+      "geomTransf": "Linear",
+      "integration": "Lobatto",
+      "num_int_pts": 3
+    }
+  ],
+  "loads": [
+    {"node": 2, "dof": 2, "value": 1.0}
+  ],
+  "analysis": {
+    "type": "static_nonlinear",
+    "steps": 3,
+    "max_iters": 40,
+    "tol": 1.0e-10,
+    "rel_tol": 1.0e-8,
+    "integrator": {
+      "type": "DisplacementControl",
+      "node": 2,
+      "dof": 2,
+      "targets": [0.01, 0.02, 0.03],
+      "cutback": 0.5,
+      "max_cutbacks": 8
+    }
+  },
+  "recorders": [
+    {"type": "node_displacement", "nodes": [2], "dofs": [1, 2, 3], "output": "node_disp"},
+    {"type": "element_force", "elements": [1], "output": "element_force"}
+  ]
+}

@@ -48,11 +48,13 @@ Minimum required fields (v1.0):
 - `masses`: list of `{ node, dof, value }` (optional; nodal lumped masses for dynamics)
 - `recorders`: list of
   - `{ type: "node_displacement", nodes, dofs, output }` (`dofs` in `1..ndf`)
-  - `{ type: "element_force", elements, output }` (currently `elasticBeamColumn2d` only)
-  
-Current limitation: `FiberSection2d` is parsed and converted to Tcl, but Strut
-does not yet attach it to beam-column elements. `elasticBeamColumn*` with
-`FiberSection2d` currently errors until `forceBeamColumn` is implemented.
+  - `{ type: "element_force", elements, output }` (`truss`, `elasticBeamColumn2d`, `forceBeamColumn2d`)
+
+Current limitation: `forceBeamColumn2d` is v1 only:
+- `geomTransf: Linear`
+- `integration: Lobatto`
+- `num_int_pts: 3`
+- `analysis.type: static_nonlinear`
 
 ## Harness Workflow
 
@@ -72,7 +74,7 @@ Node displacement outputs are written as space-separated values with one row per
 
 For OpenSees, the Tcl recorder writes a space-separated vector per line. The comparator reads the last line for static cases and all lines for transient cases.
 
-Element force outputs are written as space-separated values with one row per analysis step. For `elasticBeamColumn2d`,
+Element force outputs are written as space-separated values with one row per analysis step. For `elasticBeamColumn2d` and `forceBeamColumn2d`,
 the vector contains 6 global end forces (3 at node 1, 3 at node 2) in the OpenSees "force" recorder ordering.
 
 ## Tolerances (Phase 1)
