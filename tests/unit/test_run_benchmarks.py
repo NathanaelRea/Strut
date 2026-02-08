@@ -59,6 +59,22 @@ def test_discover_default_cases_includes_disabled_benchmark(monkeypatch, tmp_pat
     assert case_names == ["bench_case", "enabled_case"]
 
 
+def test_discover_all_cases_includes_disabled_cases(tmp_path: Path):
+    validation_root = tmp_path / "validation"
+    _write_case(
+        validation_root / "enabled_case" / "enabled_case.json", enabled=True, status="active"
+    )
+    _write_case(
+        validation_root / "disabled_case" / "disabled_case.json", enabled=False, status="active"
+    )
+    _write_case(
+        validation_root / "bench_case" / "bench_case.json", enabled=False, status="benchmark"
+    )
+
+    case_names = [case.name for case in run_benchmarks.discover_all_cases(validation_root)]
+    assert case_names == ["bench_case", "disabled_case", "enabled_case"]
+
+
 def test_expand_case_patterns_deduplicates_and_sorts(tmp_path: Path):
     validation_root = tmp_path / "validation"
     _write_case(validation_root / "beta_case" / "beta_case.json")
@@ -68,6 +84,53 @@ def test_expand_case_patterns_deduplicates_and_sorts(tmp_path: Path):
         validation_root, ["*case", "alpha_case"]
     )
     assert [case.name for case in cases] == ["alpha_case", "beta_case"]
+
+
+def test_filter_cases_by_enabled_counts_disabled_and_skipped(tmp_path: Path):
+    validation_root = tmp_path / "validation"
+    enabled_case = validation_root / "enabled_case" / "enabled_case.json"
+    benchmark_disabled_case = validation_root / "benchmark_disabled" / "benchmark_disabled.json"
+    disabled_case = validation_root / "disabled_case" / "disabled_case.json"
+    _write_case(enabled_case, enabled=True, status="active")
+    _write_case(benchmark_disabled_case, enabled=False, status="benchmark")
+    _write_case(disabled_case, enabled=False, status="active")
+
+    case_specs = [
+        run_benchmarks.CaseSpec(name="enabled_case", json_path=enabled_case),
+        run_benchmarks.CaseSpec(
+            name="benchmark_disabled", json_path=benchmark_disabled_case
+        ),
+        run_benchmarks.CaseSpec(name="disabled_case", json_path=disabled_case),
+    ]
+
+    filtered, disabled_selected, skipped_disabled = run_benchmarks.filter_cases_by_enabled(
+        case_specs, include_disabled=False
+    )
+
+    assert [case.name for case in filtered] == ["enabled_case", "benchmark_disabled"]
+    assert disabled_selected == 2
+    assert skipped_disabled == 1
+
+
+def test_filter_cases_by_enabled_include_disabled_keeps_all_cases(tmp_path: Path):
+    validation_root = tmp_path / "validation"
+    enabled_case = validation_root / "enabled_case" / "enabled_case.json"
+    disabled_case = validation_root / "disabled_case" / "disabled_case.json"
+    _write_case(enabled_case, enabled=True, status="active")
+    _write_case(disabled_case, enabled=False, status="active")
+
+    case_specs = [
+        run_benchmarks.CaseSpec(name="enabled_case", json_path=enabled_case),
+        run_benchmarks.CaseSpec(name="disabled_case", json_path=disabled_case),
+    ]
+
+    filtered, disabled_selected, skipped_disabled = run_benchmarks.filter_cases_by_enabled(
+        case_specs, include_disabled=True
+    )
+
+    assert [case.name for case in filtered] == ["enabled_case", "disabled_case"]
+    assert disabled_selected == 1
+    assert skipped_disabled == 0
 
 
 def test_case_free_dofs_counts_boolean_and_index_constraints(tmp_path: Path):

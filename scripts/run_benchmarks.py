@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from statistics import mean, median
-from typing import Iterable, List, Optional
+from typing import Iterable, List, Optional, Tuple
 
 ABS_TOL = 1e-8
 REL_TOL = 1e-5
@@ -72,11 +72,35 @@ def _case_free_dofs(path: Path) -> Optional[int]:
     return total - constrained
 
 
-def load_case_enabled(path: Path) -> bool:
+def _load_case_flags(path: Path) -> Tuple[bool, bool]:
     data = json.loads(path.read_text())
-    if bool(data.get("enabled", True)):
-        return True
-    return data.get("status") == "benchmark"
+    enabled = bool(data.get("enabled", True))
+    disabled = not enabled
+    runnable = enabled or data.get("status") == "benchmark"
+    return disabled, runnable
+
+
+def load_case_enabled(path: Path) -> bool:
+    _, runnable = _load_case_flags(path)
+    return runnable
+
+
+def filter_cases_by_enabled(
+    case_specs: List[CaseSpec],
+    include_disabled: bool,
+) -> Tuple[List[CaseSpec], int, int]:
+    filtered = []
+    disabled_selected = 0
+    skipped_disabled = 0
+    for case in case_specs:
+        disabled, runnable = _load_case_flags(case.json_path)
+        if disabled:
+            disabled_selected += 1
+        if include_disabled or runnable:
+            filtered.append(case)
+        else:
+            skipped_disabled += 1
+    return filtered, disabled_selected, skipped_disabled
 
 
 def resolve_case_from_name(validation_root: Path, name: str) -> Optional[CaseSpec]:
@@ -122,6 +146,14 @@ def discover_default_cases(validation_root: Path) -> List[CaseSpec]:
         if not load_case_enabled(match) and os.getenv("STRUT_RUN_ALL_CASES") != "1":
             continue
         cases.append(CaseSpec(name=match.stem, json_path=match))
+    return sorted(cases, key=lambda c: c.name)
+
+
+def discover_all_cases(validation_root: Path) -> List[CaseSpec]:
+    cases = [
+        CaseSpec(name=match.stem, json_path=match)
+        for match in validation_root.glob("*/*.json")
+    ]
     return sorted(cases, key=lambda c: c.name)
 
 
@@ -503,7 +535,7 @@ def main() -> None:
                 else:
                     case_specs.extend(expand_case_patterns(validation_root, [part]))
     else:
-        case_specs = discover_default_cases(validation_root)
+        case_specs = discover_all_cases(validation_root)
 
     if generated_cases:
         case_specs.extend(generated_cases)
@@ -511,8 +543,12 @@ def main() -> None:
     if not case_specs:
         raise SystemExit("No benchmark cases found. Provide --cases or add validation cases.")
 
-    if not args.include_disabled:
-        case_specs = [case for case in case_specs if load_case_enabled(case.json_path)]
+    include_disabled_effective = args.include_disabled or (
+        args.cases is None and os.getenv("STRUT_RUN_ALL_CASES") == "1"
+    )
+    case_specs, disabled_selected_count, skipped_disabled_count = filter_cases_by_enabled(
+        case_specs, include_disabled=include_disabled_effective
+    )
 
     if not case_specs:
         raise SystemExit("All selected cases are disabled. Use --include-disabled to run.")
@@ -549,6 +585,11 @@ def main() -> None:
     parity_failures = []
 
     log(f"Running {len(case_specs)} benchmark case(s).")
+    log(
+        "Disabled selected: "
+        f"{disabled_selected_count}; "
+        f"skipped as disabled: {skipped_disabled_count}."
+    )
 
     run_opensees = args.engine in ("both", "opensees")
     run_mojo = args.engine in ("both", "mojo")

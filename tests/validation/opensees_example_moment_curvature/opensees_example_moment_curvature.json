@@ -1,0 +1,70 @@
+{
+  "schema_version": "1.0",
+  "enabled": false,
+  "status": "todo",
+  "metadata": {
+    "name": "opensees_example_moment_curvature",
+    "units": "kips-in"
+  },
+  "source_doc": "docs/agent-reference/OpenSeesDocs/moment_curvature_example.html",
+  "source_example": "docs/agent-reference/OpenSeesExamples/moment_curvature_example/MomentCurvature.tcl",
+  "notes": "Disabled parity case: requires zeroLengthSection moment-curvature workflow from OpenSees example.",
+  "model": {
+    "ndm": 2,
+    "ndf": 3
+  },
+  "nodes": [
+    { "id": 1, "x": 0.0, "y": 0.0, "constraints": [1, 2, 3] },
+    { "id": 2, "x": 0.0, "y": 0.0, "constraints": [2] }
+  ],
+  "materials": [
+    { "id": 1, "type": "Concrete01", "params": { "fpc": -6.0, "epsc0": -0.004, "fpcu": -5.0, "epscu": -0.014 } },
+    { "id": 2, "type": "Concrete01", "params": { "fpc": -5.0, "epsc0": -0.002, "fpcu": 0.0, "epscu": -0.006 } },
+    { "id": 3, "type": "Steel01", "params": { "Fy": 60.0, "E0": 30000.0, "b": 0.01 } }
+  ],
+  "sections": [
+    {
+      "id": 1,
+      "type": "FiberSection2d",
+      "params": {
+        "patches": [
+          { "type": "rect", "material": 1, "num_subdiv_y": 10, "num_subdiv_z": 1, "y_i": -10.5, "z_i": -6.0, "y_j": 10.5, "z_j": 6.0 }
+        ],
+        "layers": [
+          { "type": "straight", "material": 3, "num_bars": 3, "bar_area": 0.60, "y_start": 10.5, "z_start": 6.0, "y_end": 10.5, "z_end": -6.0 },
+          { "type": "straight", "material": 3, "num_bars": 3, "bar_area": 0.60, "y_start": -10.5, "z_start": 6.0, "y_end": -10.5, "z_end": -6.0 }
+        ]
+      }
+    }
+  ],
+  "elements": [
+    { "id": 1, "type": "zeroLengthSection", "nodes": [1, 2], "section": 1 }
+  ],
+  "time_series": [
+    { "type": "Constant", "tag": 1, "factor": 1.0 },
+    { "type": "Linear", "tag": 2, "factor": 1.0 }
+  ],
+  "pattern": {
+    "type": "Plain",
+    "tag": 2,
+    "time_series": 2
+  },
+  "loads": [
+    { "node": 2, "dof": 3, "value": 1.0 }
+  ],
+  "analysis": {
+    "type": "static_nonlinear",
+    "steps": 100,
+    "constraints": "Plain",
+    "algorithm": "Newton",
+    "integrator": {
+      "type": "DisplacementControl",
+      "node": 2,
+      "dof": 3,
+      "du": 0.0001
+    }
+  },
+  "recorders": [
+    { "type": "node_displacement", "nodes": [2], "dofs": [3], "output": "section_curvature" }
+  ]
+}
