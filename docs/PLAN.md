@@ -4,7 +4,6 @@ This document is a living roadmap for Strut (Mojo rewrite of OpenSees). It captu
 
 ## Context and Current State
 
-- Canonical model format is JSON (`schema_version: 1.0`).
 - Harness converts JSON -> Tcl -> OpenSees and compares results with a Strut solver output.
 - Phase-1 solver is implemented in Mojo (Python is only used for the harness).
 - Current focus: 2D linear `elasticBeamColumn` with static linear analysis and nodal displacement comparisons.
@@ -84,11 +83,17 @@ This document is a living roadmap for Strut (Mojo rewrite of OpenSees). It captu
 - [x] Add stress-strain plotting script for nonlinear materials.
 - [x] Add nonlinear uniaxial material: Concrete (unconfined).
 - [x] Add nonlinear uniaxial material: Concrete02 (tension softening + damage unloading).
-- [ ] Add nonlinear uniaxial material: Gap / hook / elastic-plastic.
-- [ ] Section aggregation (fiber sections).
-- [ ] Hysteresis verification vs OpenSees.
+- [x] Hysteresis verification vs OpenSees.
 
-### B. Beam-Column Nonlinearities
+### B. High-Leverage Coverage
+
+- [ ] Add `section Fiber` support (`patch`, `layer`) and section aggregation workflow.
+- [ ] Add `forceBeamColumn` (2D first) on top of fiber/nonlinear sections.
+- [ ] Add earthquake loading parity: `UniformExcitation` + Rayleigh damping in transient workflows.
+- [ ] Add modal workflow features: eigen analysis + `equalDOF` / transformation constraints.
+- [ ] Add recorder parity for common example outputs (`reaction`, `drift`, envelope element force).
+
+### C. Beam-Column Nonlinearities
 
 - [ ] `forceBeamColumn`.
 - [ ] `dispBeamColumn`.
@@ -96,7 +101,7 @@ This document is a living roadmap for Strut (Mojo rewrite of OpenSees). It captu
 - [ ] `gradientInelasticBeamColumn`.
 - [ ] `mixedBeamColumn`.
 
-### C. Solver Features
+### D. Solver Features
 
 - [ ] Nonlinear solution algorithms (Newton, Modified Newton).
 - [x] Convergence tests and step control.
@@ -162,26 +167,3 @@ The following are major OpenSees element families to consider. This list is base
 - [ ] Offload assembly and solver kernels.
 - [ ] Sparse solver acceleration.
 - [ ] Batched element kernels for many small elements.
-
-## Harness and Schema Evolution
-
-- [ ] Extend JSON schema with versioned upgrades (1.1, 1.2, ...).
-- [ ] Maintain conversion to Tcl as a compatibility layer.
-- [ ] Add recorder output: element forces.
-- [ ] Add recorder output: reactions.
-- [ ] Add recorder output: section forces.
-- [ ] Add structured error reporting and mismatch dashboards.
-
-## Next Concrete Tasks (Suggested)
-
-1. [ ] Implement Mojo solver parity for 2D linear beam.
-2. [ ] Add three additional JSON cases (2D frame variations).
-3. [ ] Add element force comparison in the comparator.
-4. [ ] Add P-Delta geometric transformation.
-5. [ ] Add a second element (truss or zeroLength).
-
-## Assumptions / Notes
-
-- OpenSees (C++/Tcl) remains the canonical reference.
-- Tests and harness drive development order.
-- GPU optimization is deferred until parity is stable.
