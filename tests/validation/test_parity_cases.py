@@ -1,6 +1,6 @@
-import os
 import subprocess
 from pathlib import Path
+import os
 
 import pytest
 
@@ -11,11 +11,7 @@ def _case_paths():
 
 
 def _enabled_case_paths():
-    for case_path in _case_paths():
-        data = case_path.read_text()
-        if '"enabled": false' in data and os.getenv("STRUT_RUN_ALL_CASES") != "1":
-            continue
-        yield case_path
+    return _case_paths()
 
 
 def _selected_case_paths():
@@ -35,8 +31,6 @@ def _selected_case_paths():
 
 @pytest.mark.parametrize("case_path", _selected_case_paths())
 def test_parity_case(case_path: Path):
-    if os.getenv("STRUT_RUN_PARITY") != "1":
-        pytest.skip("parity tests disabled (set STRUT_RUN_PARITY=1)")
     if not case_path.exists():
         pytest.fail(f"missing case JSON: {case_path}")
 

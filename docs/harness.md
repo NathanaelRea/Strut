@@ -72,7 +72,7 @@ the vector contains 6 global end forces (3 at node 1, 3 at node 2) in the OpenSe
 - The current phase-1 solver is implemented in Python for harness validation. Replace with Mojo and wire `strut.mojo` into the harness once the Mojo implementation is ready.
 - Expand schema and harness only after parity is stable.
 - For static analyses with time series, Strut uses normalized pseudoTime `t = (step + 1) / steps` (static_linear uses `t = 1.0`).
-- Validation cases can be marked with `"enabled": false` in JSON. `STRUT_RUN_ALL_CASES=1` runs all cases in tests, and `STRUT_FORCE_CASE=1` forces a disabled case in `scripts/run_case.py`.
+- Validation cases can be marked with `"enabled": false` in JSON. This flag is currently informational; tests run all cases. `STRUT_FORCE_CASE=1` forces a disabled case in `scripts/run_case.py`.
 - `scripts/run_mojo_case.py` runs the Python solver by default and only uses Mojo when `STRUT_MOJO_SOLVER=1` and `mojo` is on `PATH`.
 - OpenSees reference outputs are cached by JSON content hash in `tests/validation/<case>/reference/.ref_hash`. Set `STRUT_REFRESH_REFERENCE=1` to regenerate.
 - Benchmarks use `scripts/run_benchmarks.py`. The latest run is written to `benchmark/results/` (`benchmark/results-profile/` when `--profile`), and summary snapshots are archived in `benchmark/archive/` (both ignored by git). Runs with `--profile` default to `--no-archive`.
