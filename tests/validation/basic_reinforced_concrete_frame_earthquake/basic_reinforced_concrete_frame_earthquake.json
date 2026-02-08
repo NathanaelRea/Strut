@@ -1,40 +1,44 @@
 {
   "schema_version": "1.0",
-  "enabled": false,
-  "status": "todo",
+  "enabled": true,
+  "status": "active",
   "metadata": {
     "name": "basic_reinforced_concrete_frame_earthquake",
     "units": "SI"
   },
   "source_doc": "docs/agent-reference/OpenSeesDocs/reinforced_concrete_frame_earthquake_analysis.html",
-  "notes": "Earthquake analysis for RC portal frame; uses UniformExcitation and Path time series.",
+  "notes": "Earthquake loading parity case using UniformExcitation and Rayleigh damping in a transient workflow.",
   "model": {
     "ndm": 2,
     "ndf": 3
   },
-  "opensees": {
-    "model_builder": {
-      "type": "BasicBuilder",
-      "ndm": 2,
-      "ndf": 3
-    },
-    "time_series": {
+  "time_series": [
+    {
       "type": "Path",
-      "tag": 1
-    },
-    "pattern": {
-      "type": "UniformExcitation",
-      "tag": 2,
-      "time_series": 1
-    },
-    "analysis": {
-      "constraints": "Plain",
-      "numberer": "RCM",
-      "system": "BandGeneral (per docs)",
-      "algorithm": "Newmark (per docs)",
-      "integrator": "Newmark (per docs)",
-      "analysis": "Transient"
+      "tag": 1,
+      "dt": 0.05,
+      "values": [
+        0.0,
+        0.2,
+        -0.1,
+        0.15,
+        -0.05,
+        0.0
+      ],
+      "factor": 9.81
     }
+  ],
+  "pattern": {
+    "type": "UniformExcitation",
+    "tag": 2,
+    "direction": 1,
+    "accel": 1
+  },
+  "rayleigh": {
+    "alphaM": 0.0,
+    "betaK": 0.0,
+    "betaKInit": 0.0,
+    "betaKComm": 0.000625
   },
   "nodes": [
     {
@@ -85,22 +89,32 @@
       "geomTransf": "Linear"
     }
   ],
-  "loads": [
+  "masses": [
+    {
+      "node": 2,
+      "dof": 1,
+      "value": 1000.0
+    },
     {
       "node": 2,
       "dof": 2,
-      "value": -1000.0
+      "value": 1000.0
     }
   ],
   "analysis": {
-    "type": "static_linear",
-    "steps": 1
+    "type": "transient_linear",
+    "steps": 6,
+    "dt": 0.05,
+    "integrator": {
+      "type": "Newmark",
+      "gamma": 0.5,
+      "beta": 0.25
+    }
   },
   "recorders": [
     {
       "type": "node_displacement",
       "nodes": [
-        1,
         2
       ],
       "dofs": [
@@ -109,6 +123,18 @@
         3
       ],
       "output": "node_disp"
+    },
+    {
+      "type": "node_reaction",
+      "nodes": [
+        1
+      ],
+      "dofs": [
+        1,
+        2,
+        3
+      ],
+      "output": "reaction"
     }
   ]
 }

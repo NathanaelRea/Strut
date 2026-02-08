@@ -19,9 +19,9 @@ def main():
     args = parser.parse_args()
 
     repo_root = Path(__file__).resolve().parents[1]
-    mojo = shutil.which("mojo")
-    if mojo is None:
-        raise SystemExit("mojo executable not found on PATH; required to run solver.")
+    uv = shutil.which("uv")
+    if uv is None:
+        raise SystemExit("uv executable not found on PATH; required to run solver.")
 
     verbose = os.getenv("STRUT_VERBOSE") == "1"
     solver_bin = os.getenv("STRUT_MOJO_BIN")
@@ -44,7 +44,9 @@ def main():
         solver_path.parent.mkdir(parents=True, exist_ok=True)
         run(
             [
-                mojo,
+                uv,
+                "run",
+                "mojo",
                 "build",
                 str(repo_root / "src" / "mojo" / "strut.mojo"),
                 "-o",

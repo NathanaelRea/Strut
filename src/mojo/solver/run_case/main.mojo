@@ -18,6 +18,7 @@ from solver.run_case.analysis.static_nonlinear import (
     run_static_nonlinear_load_control,
 )
 from solver.run_case.analysis.transient_linear import run_transient_linear
+from solver.run_case.analysis.transient_nonlinear import run_transient_nonlinear
 from solver.run_case.analysis.modal_eigen import run_modal_eigen
 from solver.run_case.helpers import (
     _drift_value,
@@ -82,6 +83,13 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
     var has_transformation_mpc = state.has_transformation_mpc
     var time_series = state.time_series
     var ts_index = state.ts_index
+    var pattern_type = state.pattern_type
+    var uniform_excitation_direction = state.uniform_excitation_direction
+    var uniform_accel_ts_index = state.uniform_accel_ts_index
+    var rayleigh_alpha_m = state.rayleigh_alpha_m
+    var rayleigh_beta_k = state.rayleigh_beta_k
+    var rayleigh_beta_k_init = state.rayleigh_beta_k_init
+    var rayleigh_beta_k_comm = state.rayleigh_beta_k_comm
     var recorders = state.recorders
 
     var id_to_index = state.id_to_index.copy()
@@ -255,6 +263,56 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
             steps,
             ts_index,
             time_series,
+            pattern_type,
+            uniform_excitation_direction,
+            uniform_accel_ts_index,
+            rayleigh_alpha_m,
+            rayleigh_beta_k,
+            rayleigh_beta_k_init,
+            rayleigh_beta_k_comm,
+            nodes,
+            elements,
+            sections_by_id,
+            materials_by_id,
+            id_to_index,
+            node_count,
+            ndf,
+            ndm,
+            total_dofs,
+            u,
+            uniaxial_defs,
+            uniaxial_state_defs,
+            uniaxial_states,
+            elem_uniaxial_offsets,
+            elem_uniaxial_counts,
+            elem_uniaxial_state_ids,
+            F_total,
+            M_total,
+            free,
+            recorders,
+            elem_id_to_index,
+            fiber_section_defs,
+            fiber_section_cells,
+            fiber_section_index_by_id,
+            transient_output_files,
+            transient_output_buffers,
+            has_transformation_mpc,
+            rep_dof,
+            constrained,
+        )
+    elif analysis_type == "transient_nonlinear":
+        run_transient_nonlinear(
+            analysis,
+            steps,
+            ts_index,
+            time_series,
+            pattern_type,
+            uniform_excitation_direction,
+            uniform_accel_ts_index,
+            rayleigh_alpha_m,
+            rayleigh_beta_k,
+            rayleigh_beta_k_init,
+            rayleigh_beta_k_comm,
             nodes,
             elements,
             sections_by_id,
@@ -334,7 +392,7 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
     out_dir.mkdir(parents=True, exist_ok=True)
     var analysis_path = out_dir.joinpath("analysis_time_us.txt")
     analysis_path.write_text(PythonObject(String(analysis_us) + "\n"))
-    if analysis_type == "transient_linear":
+    if analysis_type == "transient_linear" or analysis_type == "transient_nonlinear":
         for i in range(len(transient_output_files)):
             var filename = transient_output_files[i]
             var file_path = out_dir.joinpath(filename)

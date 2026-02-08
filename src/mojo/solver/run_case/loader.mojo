@@ -57,6 +57,13 @@ struct RunCaseState(Movable):
     var M_total: List[Float64]
     var time_series: PythonObject
     var ts_index: Int
+    var pattern_type: String
+    var uniform_excitation_direction: Int
+    var uniform_accel_ts_index: Int
+    var rayleigh_alpha_m: Float64
+    var rayleigh_beta_k: Float64
+    var rayleigh_beta_k_init: Float64
+    var rayleigh_beta_k_comm: Float64
     var recorders: PythonObject
 
     fn __init__(out self):
@@ -97,6 +104,13 @@ struct RunCaseState(Movable):
         self.M_total = []
         self.time_series = None
         self.ts_index = -1
+        self.pattern_type = "Plain"
+        self.uniform_excitation_direction = 0
+        self.uniform_accel_ts_index = -1
+        self.rayleigh_alpha_m = 0.0
+        self.rayleigh_beta_k = 0.0
+        self.rayleigh_beta_k_init = 0.0
+        self.rayleigh_beta_k_comm = 0.0
         self.recorders = None
 
 
@@ -586,8 +600,13 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
                 )
         elif analysis_type == "static_linear" and force_beam_has_nonelastic:
             abort("forceBeamColumn2d with non-elastic fibers requires static_nonlinear analysis")
-    if analysis_type != "static_nonlinear" and analysis_type != "modal_eigen" and used_nonelastic_uniaxial:
-        abort("nonlinear uniaxial materials require static_nonlinear analysis")
+    if (
+        analysis_type != "static_nonlinear"
+        and analysis_type != "transient_nonlinear"
+        and analysis_type != "modal_eigen"
+        and used_nonelastic_uniaxial
+    ):
+        abort("nonlinear uniaxial materials require static_nonlinear or transient_nonlinear analysis")
 
     var solver_pref = String(analysis.get("system", analysis.get("solver", "auto")))
     if solver_pref == "":
@@ -702,24 +721,61 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
 
     var time_series = parse_time_series(data)
     var ts_index = -1
-    if py_len(time_series) > 0:
-        var ts_tag = -1
-        var pattern = data.get("pattern", None)
+    var pattern = data.get("pattern", None)
+    var pattern_type = "Plain"
+    var uniform_excitation_direction = 0
+    var uniform_accel_ts_index = -1
+    if pattern is not None:
+        pattern_type = String(pattern.get("type", "Plain"))
+        if pattern_type != "Plain" and pattern_type != "UniformExcitation":
+            abort("unsupported pattern type: " + pattern_type)
+    if py_len(time_series) > 0 or pattern is not None:
         if pattern is None:
             if py_len(time_series) == 1:
-                ts_tag = Int(time_series[0]["tag"])
+                var ts_tag = Int(time_series[0]["tag"])
+                ts_index = find_time_series(time_series, ts_tag)
+                if ts_index < 0:
+                    abort("time_series tag not found")
             else:
                 abort("pattern missing for multiple time_series")
-        else:
-            var pattern_type = String(pattern.get("type", "Plain"))
-            if pattern_type != "Plain":
-                abort("unsupported pattern type: " + pattern_type)
+        elif pattern_type == "Plain":
             if not pattern.__contains__("time_series"):
                 abort("pattern missing time_series")
-            ts_tag = Int(pattern["time_series"])
-        ts_index = find_time_series(time_series, ts_tag)
-        if ts_index < 0:
-            abort("time_series tag not found")
+            var ts_tag = Int(pattern["time_series"])
+            ts_index = find_time_series(time_series, ts_tag)
+            if ts_index < 0:
+                abort("time_series tag not found")
+        else:
+            if analysis_type != "transient_linear" and analysis_type != "transient_nonlinear":
+                abort("UniformExcitation requires transient analysis")
+            if not pattern.__contains__("direction"):
+                abort("UniformExcitation pattern missing direction")
+            uniform_excitation_direction = Int(pattern["direction"])
+            if uniform_excitation_direction < 1 or uniform_excitation_direction > ndm:
+                abort("UniformExcitation direction out of range 1..ndm")
+            var accel_tag = -1
+            if pattern.__contains__("accel"):
+                accel_tag = Int(pattern["accel"])
+            elif pattern.__contains__("time_series"):
+                accel_tag = Int(pattern["time_series"])
+            else:
+                abort("UniformExcitation pattern missing accel time_series tag")
+            uniform_accel_ts_index = find_time_series(time_series, accel_tag)
+            if uniform_accel_ts_index < 0:
+                abort("UniformExcitation accel time_series tag not found")
+            if py_len(loads) > 0 or py_len(element_loads) > 0:
+                abort("UniformExcitation does not support nodal/element loads")
+
+    var rayleigh_alpha_m = 0.0
+    var rayleigh_beta_k = 0.0
+    var rayleigh_beta_k_init = 0.0
+    var rayleigh_beta_k_comm = 0.0
+    var rayleigh = data.get("rayleigh", None)
+    if rayleigh is not None:
+        rayleigh_alpha_m = Float64(rayleigh.get("alphaM", 0.0))
+        rayleigh_beta_k = Float64(rayleigh.get("betaK", 0.0))
+        rayleigh_beta_k_init = Float64(rayleigh.get("betaKInit", 0.0))
+        rayleigh_beta_k_comm = Float64(rayleigh.get("betaKComm", 0.0))
 
     var recorders = data.get("recorders", [])
 
@@ -760,6 +816,13 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
     state.M_total = M_total^
     state.time_series = time_series
     state.ts_index = ts_index
+    state.pattern_type = pattern_type
+    state.uniform_excitation_direction = uniform_excitation_direction
+    state.uniform_accel_ts_index = uniform_accel_ts_index
+    state.rayleigh_alpha_m = rayleigh_alpha_m
+    state.rayleigh_beta_k = rayleigh_beta_k
+    state.rayleigh_beta_k_init = rayleigh_beta_k_init
+    state.rayleigh_beta_k_comm = rayleigh_beta_k_comm
     state.recorders = recorders
 
     return state^

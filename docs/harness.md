@@ -37,10 +37,13 @@ Minimum required fields (v1.0):
   - `Linear`: `{ tag, factor? }`
   - `Path`: `{ tag, values, dt? | time?, factor?, use_last? }`
   - `Trig`: `{ tag, t_start, t_finish, period, phase_shift?, factor?, zero_shift? }`
-- `pattern`: `{ type: "Plain", tag, time_series }` (optional; top-level)
+- `pattern`: (optional; top-level)
+  - `Plain`: `{ type: "Plain", tag, time_series }`
+  - `UniformExcitation`: `{ type: "UniformExcitation", tag, direction, accel }`
 - `loads`: list of `{ node, dof, value }` (`dof` must be in `1..ndf`)
 - `element_loads`: list of `{ element, type, w }` (optional, `type: "beamUniform"` only)
-- `analysis`: `{ type: "static_linear" | "static_nonlinear" | "transient_linear" | "modal_eigen", steps: 1, constraints?, num_modes?, dt?, max_iters?, tol?, rel_tol?, integrator? }`
+- `rayleigh`: `{ alphaM?, betaK?, betaKInit?, betaKComm? }` (optional; top-level)
+- `analysis`: `{ type: "static_linear" | "static_nonlinear" | "transient_linear" | "transient_nonlinear" | "modal_eigen", steps: 1, constraints?, num_modes?, dt?, max_iters?, tol?, rel_tol?, integrator?, algorithm? }`
   - `constraints`: `Plain` (default) or `Transformation`.
   - Nonlinear uniaxial materials require `static_nonlinear`.
   - `modal_eigen` requires `num_modes >= 1` and positive nodal masses on free DOFs.
@@ -48,6 +51,9 @@ Minimum required fields (v1.0):
     - Load control: `{ type: "LoadControl" }` (default)
     - Displacement control: `{ type: "DisplacementControl", node, dof, du? | targets?, cutback?, max_cutbacks?, min_du? }`
   - `transient_linear` requires `dt > 0` and supports `integrator: { type: "Newmark", gamma?, beta? }`
+  - `transient_nonlinear` requires `dt > 0` and supports:
+    - `integrator: { type: "Newmark", gamma?, beta? }`
+    - `algorithm: "Newton"` (current)
 - `masses`: list of `{ node, dof, value }` (optional; nodal lumped masses for dynamics)
 - `recorders`: list of
   - `{ type: "node_displacement", nodes, dofs, output }` (`dofs` in `1..ndf`)

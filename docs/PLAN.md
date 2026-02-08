@@ -90,7 +90,7 @@ This document is a living roadmap for Strut (Mojo rewrite of OpenSees). It captu
 
 - [x] Add `section Fiber` support (`patch`, `layer`) and section aggregation workflow.
 - [x] Add `forceBeamColumn` 2D minimum path (`forceBeamColumn2d`: Linear geom, Lobatto, 3 IP) on top of fiber/nonlinear sections.
-- [ ] Add earthquake loading parity: `UniformExcitation` + Rayleigh damping in transient workflows.
+- [x] Add earthquake loading parity: `UniformExcitation` + Rayleigh damping in transient workflows.
 - [x] Add modal workflow features: eigen analysis + `equalDOF` / transformation constraints.
 - [x] Add recorder parity for common example outputs (`reaction`, `drift`, envelope element force).
 
@@ -105,6 +105,7 @@ This document is a living roadmap for Strut (Mojo rewrite of OpenSees). It captu
 ### D. Solver Features
 
 - [ ] Nonlinear solution algorithms (Newton, Modified Newton).
+- [ ] Add transient nonlinear `Modified Newton` algorithm after `Newmark + Newton` baseline.
 - [x] Convergence tests and step control.
 - [x] Static nonlinear displacement-control integrator with augmented load-factor solve.
 - [ ] Rayleigh damping for dynamic analysis.

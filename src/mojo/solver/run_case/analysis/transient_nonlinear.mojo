@@ -1,11 +1,16 @@
 from collections import List
-from materials import UniMaterialDef, UniMaterialState
+from materials import (
+    UniMaterialDef,
+    UniMaterialState,
+    uniaxial_commit_all,
+    uniaxial_revert_trial_all,
+)
 from os import abort
 from python import PythonObject
 from sections import FiberCell, FiberSection2dDef
 
 from linalg import gaussian_elimination
-from solver.assembly import assemble_global_stiffness, assemble_internal_forces
+from solver.assembly import assemble_global_stiffness_and_internal, assemble_internal_forces
 from solver.dof import node_dof_index, require_dof_in_range
 from solver.time_series import eval_time_series
 from strut_io import py_len
@@ -13,6 +18,7 @@ from strut_io import py_len
 from solver.run_case.helpers import (
     _append_output,
     _collapse_matrix_by_rep,
+    _collapse_vector_by_rep,
     _element_force_global_for_recorder,
     _enforce_equal_dof_values,
     _flush_envelope_outputs,
@@ -22,7 +28,8 @@ from solver.run_case.helpers import (
     _update_envelope,
 )
 
-fn run_transient_linear(
+
+fn run_transient_nonlinear(
     analysis: PythonObject,
     steps: Int,
     ts_index: Int,
@@ -66,7 +73,7 @@ fn run_transient_linear(
 ) raises:
     var dt = Float64(analysis.get("dt", 0.0))
     if dt <= 0.0:
-        abort("transient_linear requires dt > 0")
+        abort("transient_nonlinear requires dt > 0")
     if pattern_type != "Plain" and pattern_type != "UniformExcitation":
         abort("unsupported pattern type: " + pattern_type)
     if pattern_type == "UniformExcitation":
@@ -74,14 +81,25 @@ fn run_transient_linear(
             abort("UniformExcitation direction out of range")
         if uniform_accel_ts_index < 0:
             abort("UniformExcitation missing accel time_series")
+
+    var algorithm = String(analysis.get("algorithm", "Newton"))
+    if algorithm != "Newton":
+        abort("transient_nonlinear only supports Newton algorithm")
+
     var integrator = analysis.get("integrator", {"type": "Newmark"})
     var integrator_type = String(integrator.get("type", "Newmark"))
     if integrator_type != "Newmark":
-        abort("transient_linear only supports Newmark integrator")
+        abort("transient_nonlinear only supports Newmark integrator")
     var gamma = Float64(integrator.get("gamma", 0.5))
     var beta = Float64(integrator.get("beta", 0.25))
     if beta <= 0.0:
         abort("Newmark beta must be > 0")
+
+    var max_iters = Int(analysis.get("max_iters", 20))
+    var tol = Float64(analysis.get("tol", 1.0e-10))
+    var rel_tol = Float64(analysis.get("rel_tol", 1.0e-8))
+    if max_iters < 1:
+        abort("transient_nonlinear max_iters must be >= 1")
 
     var free_count = len(free)
     var M_f: List[Float64] = []
@@ -93,9 +111,45 @@ fn run_transient_linear(
         if m != 0.0:
             has_mass = True
     if not has_mass:
-        abort("transient_linear requires masses on free dofs")
+        abort("transient_nonlinear requires masses on free dofs")
 
-    var K = assemble_global_stiffness(
+    var a0 = 1.0 / (beta * dt * dt)
+    var a1 = gamma / (beta * dt)
+    var a2 = 1.0 / (beta * dt)
+    var a3 = 1.0 / (2.0 * beta) - 1.0
+
+    var K: List[List[Float64]] = []
+    for _ in range(total_dofs):
+        var row: List[Float64] = []
+        row.resize(total_dofs, 0.0)
+        K.append(row^)
+    var F_int: List[Float64] = []
+    F_int.resize(total_dofs, 0.0)
+
+    var K_ff: List[List[Float64]] = []
+    var K_init_ff: List[List[Float64]] = []
+    var K_comm_ff: List[List[Float64]] = []
+    var C_ff: List[List[Float64]] = []
+    var K_eff: List[List[Float64]] = []
+    for _ in range(free_count):
+        var row_kff: List[Float64] = []
+        row_kff.resize(free_count, 0.0)
+        K_ff.append(row_kff^)
+        var row_kinit: List[Float64] = []
+        row_kinit.resize(free_count, 0.0)
+        K_init_ff.append(row_kinit^)
+        var row_kcomm: List[Float64] = []
+        row_kcomm.resize(free_count, 0.0)
+        K_comm_ff.append(row_kcomm^)
+        var row_c: List[Float64] = []
+        row_c.resize(free_count, 0.0)
+        C_ff.append(row_c^)
+        var row_keff: List[Float64] = []
+        row_keff.resize(free_count, 0.0)
+        K_eff.append(row_keff^)
+
+    uniaxial_revert_trial_all(uniaxial_states)
+    assemble_global_stiffness_and_internal(
         nodes,
         elements,
         sections_by_id,
@@ -114,59 +168,42 @@ fn run_transient_linear(
         fiber_section_defs,
         fiber_section_cells,
         fiber_section_index_by_id,
+        K,
+        F_int,
     )
     if has_transformation_mpc:
         K = _collapse_matrix_by_rep(K, rep_dof)
-    var K_ff: List[List[Float64]] = []
-    for _ in range(free_count):
-        var row: List[Float64] = []
-        row.resize(free_count, 0.0)
-        K_ff.append(row^)
     for i in range(free_count):
         for j in range(free_count):
-            K_ff[i][j] = K[free[i]][free[j]]
-
-    var a0 = 1.0 / (beta * dt * dt)
-    var a1 = gamma / (beta * dt)
-    var a2 = 1.0 / (beta * dt)
-    var a3 = 1.0 / (2.0 * beta) - 1.0
-    var a4 = gamma / beta - 1.0
-    var a5 = dt * (gamma / (2.0 * beta) - 1.0)
-    var beta_sum = rayleigh_beta_k + rayleigh_beta_k_init + rayleigh_beta_k_comm
-    var C_ff: List[List[Float64]] = []
-    for i in range(free_count):
-        var row_c: List[Float64] = []
-        row_c.resize(free_count, 0.0)
-        C_ff.append(row_c^)
-        C_ff[i][i] = rayleigh_alpha_m * M_f[i]
-    if beta_sum != 0.0:
-        for i in range(free_count):
-            for j in range(free_count):
-                C_ff[i][j] += beta_sum * K_ff[i][j]
-
-    var K_eff: List[List[Float64]] = []
-    for _ in range(free_count):
-        var row_eff: List[Float64] = []
-        row_eff.resize(free_count, 0.0)
-        K_eff.append(row_eff^)
-    for i in range(free_count):
-        for j in range(free_count):
-            K_eff[i][j] = K_ff[i][j] + a1 * C_ff[i][j]
-        K_eff[i][i] += a0 * M_f[i]
+            K_init_ff[i][j] = K[free[i]][free[j]]
+            K_comm_ff[i][j] = K_init_ff[i][j]
+    uniaxial_revert_trial_all(uniaxial_states)
 
     var v: List[Float64] = []
     v.resize(total_dofs, 0.0)
     var a: List[Float64] = []
     a.resize(total_dofs, 0.0)
 
+    var u_n: List[Float64] = []
+    u_n.resize(free_count, 0.0)
+    var v_n: List[Float64] = []
+    v_n.resize(free_count, 0.0)
+    var a_n: List[Float64] = []
+    a_n.resize(free_count, 0.0)
+    var v_trial: List[Float64] = []
+    v_trial.resize(free_count, 0.0)
+    var a_trial: List[Float64] = []
+    a_trial.resize(free_count, 0.0)
+
     var F_ext_step: List[Float64] = []
     F_ext_step.resize(total_dofs, 0.0)
     var P_ext_f: List[Float64] = []
     P_ext_f.resize(free_count, 0.0)
-    var P_eff: List[Float64] = []
-    P_eff.resize(free_count, 0.0)
-    var C_term: List[Float64] = []
-    C_term.resize(free_count, 0.0)
+    var R_f: List[Float64] = []
+    R_f.resize(free_count, 0.0)
+    var du_f: List[Float64] = []
+    du_f.resize(free_count, 0.0)
+
     var record_reactions = _has_recorder_type(recorders, "node_reaction")
     var envelope_files: List[String] = []
     var envelope_min: List[List[Float64]] = []
@@ -178,53 +215,177 @@ fn run_transient_linear(
             _enforce_equal_dof_values(u, rep_dof, constrained)
             _enforce_equal_dof_values(v, rep_dof, constrained)
             _enforce_equal_dof_values(a, rep_dof, constrained)
+
+        for i in range(free_count):
+            var idx = free[i]
+            u_n[i] = u[idx]
+            v_n[i] = v[idx]
+            a_n[i] = a[idx]
+
         var t = Float64(step + 1) * dt
         for i in range(total_dofs):
             F_ext_step[i] = 0.0
-        var factor = 1.0
         if pattern_type == "UniformExcitation":
             var ag = eval_time_series(time_series[uniform_accel_ts_index], t)
             for i in range(total_dofs):
                 if (i % ndf) + 1 == uniform_excitation_direction:
                     F_ext_step[i] = -M_total[i] * ag
         else:
+            var factor = 1.0
             if ts_index >= 0:
                 factor = eval_time_series(time_series[ts_index], t)
             for i in range(total_dofs):
                 F_ext_step[i] = F_total[i] * factor
         for i in range(free_count):
-            var idx = free[i]
-            P_ext_f[i] = F_ext_step[idx]
-            C_term[i] = a1 * u[idx] + a4 * v[idx] + a5 * a[idx]
-            P_eff[i] = (
-                P_ext_f[i]
-                + M_f[i] * (a0 * u[idx] + a2 * v[idx] + a3 * a[idx])
+            P_ext_f[i] = F_ext_step[free[i]]
+
+        var converged = False
+        for _ in range(max_iters):
+            uniaxial_revert_trial_all(uniaxial_states)
+            assemble_global_stiffness_and_internal(
+                nodes,
+                elements,
+                sections_by_id,
+                materials_by_id,
+                id_to_index,
+                node_count,
+                ndf,
+                ndm,
+                u,
+                uniaxial_defs,
+                uniaxial_state_defs,
+                uniaxial_states,
+                elem_uniaxial_offsets,
+                elem_uniaxial_counts,
+                elem_uniaxial_state_ids,
+                fiber_section_defs,
+                fiber_section_cells,
+                fiber_section_index_by_id,
+                K,
+                F_int,
             )
+            if has_transformation_mpc:
+                K = _collapse_matrix_by_rep(K, rep_dof)
+                F_int = _collapse_vector_by_rep(F_int, rep_dof)
+            for i in range(free_count):
+                for j in range(free_count):
+                    K_ff[i][j] = K[free[i]][free[j]]
+
+            for i in range(free_count):
+                for j in range(free_count):
+                    C_ff[i][j] = 0.0
+                C_ff[i][i] = rayleigh_alpha_m * M_f[i]
+            if rayleigh_beta_k != 0.0:
+                for i in range(free_count):
+                    for j in range(free_count):
+                        C_ff[i][j] += rayleigh_beta_k * K_ff[i][j]
+            if rayleigh_beta_k_init != 0.0:
+                for i in range(free_count):
+                    for j in range(free_count):
+                        C_ff[i][j] += rayleigh_beta_k_init * K_init_ff[i][j]
+            if rayleigh_beta_k_comm != 0.0:
+                for i in range(free_count):
+                    for j in range(free_count):
+                        C_ff[i][j] += rayleigh_beta_k_comm * K_comm_ff[i][j]
+
+            for i in range(free_count):
+                var idx = free[i]
+                a_trial[i] = a0 * (u[idx] - u_n[i]) - a2 * v_n[i] - a3 * a_n[i]
+                v_trial[i] = v_n[i] + dt * ((1.0 - gamma) * a_n[i] + gamma * a_trial[i])
+
+            for i in range(free_count):
+                var damping_force = 0.0
+                for j in range(free_count):
+                    damping_force += C_ff[i][j] * v_trial[j]
+                R_f[i] = (
+                    P_ext_f[i]
+                    - F_int[free[i]]
+                    - damping_force
+                    - M_f[i] * a_trial[i]
+                )
+
+            for i in range(free_count):
+                for j in range(free_count):
+                    K_eff[i][j] = K_ff[i][j] + a1 * C_ff[i][j]
+                K_eff[i][i] += a0 * M_f[i]
+
+            var K_step: List[List[Float64]] = []
+            for i in range(free_count):
+                var row_step: List[Float64] = []
+                row_step.resize(free_count, 0.0)
+                K_step.append(row_step^)
+                for j in range(free_count):
+                    K_step[i][j] = K_eff[i][j]
+            var R_step: List[Float64] = []
+            R_step.resize(free_count, 0.0)
+            for i in range(free_count):
+                R_step[i] = R_f[i]
+            du_f = gaussian_elimination(K_step, R_step)
+
+            var max_diff = 0.0
+            var max_u = 0.0
+            for i in range(free_count):
+                var idx = free[i]
+                var du = du_f[i]
+                var value = u[idx] + du
+                var diff = abs(du)
+                if diff > max_diff:
+                    max_diff = diff
+                var abs_val = abs(value)
+                if abs_val > max_u:
+                    max_u = abs_val
+            var scale_tol = rel_tol * max_u
+            if scale_tol < rel_tol:
+                scale_tol = rel_tol
+
+            for i in range(free_count):
+                u[free[i]] += du_f[i]
+            if has_transformation_mpc:
+                _enforce_equal_dof_values(u, rep_dof, constrained)
+
+            if max_diff <= tol or max_diff <= scale_tol:
+                converged = True
+                break
+
+        if not converged:
+            abort("transient_nonlinear did not converge")
+
+        uniaxial_revert_trial_all(uniaxial_states)
+        assemble_global_stiffness_and_internal(
+            nodes,
+            elements,
+            sections_by_id,
+            materials_by_id,
+            id_to_index,
+            node_count,
+            ndf,
+            ndm,
+            u,
+            uniaxial_defs,
+            uniaxial_state_defs,
+            uniaxial_states,
+            elem_uniaxial_offsets,
+            elem_uniaxial_counts,
+            elem_uniaxial_state_ids,
+            fiber_section_defs,
+            fiber_section_cells,
+            fiber_section_index_by_id,
+            K,
+            F_int,
+        )
+        if has_transformation_mpc:
+            K = _collapse_matrix_by_rep(K, rep_dof)
         for i in range(free_count):
-            var damp = 0.0
             for j in range(free_count):
-                damp += C_ff[i][j] * C_term[j]
-            P_eff[i] += damp
-        var K_eff_step: List[List[Float64]] = []
-        for i in range(free_count):
-            var row: List[Float64] = []
-            row.resize(free_count, 0.0)
-            K_eff_step.append(row^)
-            for j in range(free_count):
-                K_eff_step[i][j] = K_eff[i][j]
-        var P_step: List[Float64] = []
-        P_step.resize(free_count, 0.0)
-        for i in range(free_count):
-            P_step[i] = P_eff[i]
-        var u_f = gaussian_elimination(K_eff_step, P_step)
+                K_comm_ff[i][j] = K[free[i]][free[j]]
+        uniaxial_commit_all(uniaxial_states)
+
         for i in range(free_count):
             var idx = free[i]
-            var u_next = u_f[i]
-            var a_next = a0 * (u_next - u[idx]) - a2 * v[idx] - a3 * a[idx]
-            var v_next = v[idx] + dt * ((1.0 - gamma) * a[idx] + gamma * a_next)
-            u[idx] = u_next
-            v[idx] = v_next
+            var a_next = a0 * (u[idx] - u_n[i]) - a2 * v_n[i] - a3 * a_n[i]
+            var v_next = v_n[i] + dt * ((1.0 - gamma) * a_n[i] + gamma * a_next)
             a[idx] = a_next
+            v[idx] = v_next
         if has_transformation_mpc:
             _enforce_equal_dof_values(u, rep_dof, constrained)
             _enforce_equal_dof_values(v, rep_dof, constrained)
@@ -290,7 +451,7 @@ fn run_transient_linear(
                 var dofs = rec["dofs"]
                 if not record_reactions:
                     abort("internal error: reaction recorder flag mismatch")
-                var F_int = assemble_internal_forces(
+                var F_int_reaction = assemble_internal_forces(
                     nodes,
                     elements,
                     sections_by_id,
@@ -316,7 +477,7 @@ fn run_transient_linear(
                         var dof = Int(dofs[j])
                         require_dof_in_range(dof, ndf, "recorder")
                         var idx = node_dof_index(i, dof, ndf)
-                        values[j] = F_int[idx] - F_ext_step[idx]
+                        values[j] = F_int_reaction[idx] - F_ext_step[idx]
                     var line = _format_values_line(values)
                     var filename = output + "_node" + String(node_id) + ".out"
                     _append_output(

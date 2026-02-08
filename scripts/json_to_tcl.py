@@ -507,56 +507,92 @@ def main():
             else:
                 raise ValueError(f"unsupported element type: {elem['type']}")
 
-        # Loads
+        # Loads / patterns (Plain or UniformExcitation)
         loads = data.get("loads", [])
         element_loads = data.get("element_loads", [])
-        if loads or element_loads:
+        pattern = data.get("pattern")
+        if loads or element_loads or pattern is not None:
             ts_list = _normalize_time_series(data.get("time_series"))
-            pattern = data.get("pattern")
+            ts_tags = set()
             if ts_list:
                 for ts in ts_list:
                     _emit_time_series(f, ts)
+                ts_tags = {ts["tag"] for ts in ts_list}
                 if pattern is None:
                     if len(ts_list) == 1:
                         pattern = {"type": "Plain", "tag": 1, "time_series": ts_list[0]["tag"]}
                     else:
                         raise ValueError("pattern required when multiple time_series are defined")
             else:
-                _emit_time_series(f, {"type": "Linear", "tag": 1, "factor": 1.0})
-                if pattern is None:
-                    pattern = {"type": "Plain", "tag": 1, "time_series": 1}
+                pattern_type = pattern.get("type", "Plain") if pattern is not None else "Plain"
+                if pattern_type == "UniformExcitation":
+                    raise ValueError("UniformExcitation pattern requires time_series definitions")
+                if loads or element_loads:
+                    _emit_time_series(f, {"type": "Linear", "tag": 1, "factor": 1.0})
+                    ts_tags = {1}
+                    if pattern is None:
+                        pattern = {"type": "Plain", "tag": 1, "time_series": 1}
 
             if pattern is None:
                 raise ValueError("pattern required when loads are present")
-            if pattern.get("type", "Plain") != "Plain":
-                raise ValueError(f"unsupported pattern type: {pattern.get('type')}")
-            pattern_tag = pattern.get("tag", 1)
-            ts_tag = pattern.get("time_series")
-            if ts_tag is None:
-                raise ValueError("pattern missing time_series tag")
-            ts_tags = {ts["tag"] for ts in ts_list} if ts_list else {1}
-            if ts_tag not in ts_tags:
-                raise ValueError(f"pattern time_series tag {ts_tag} not found")
+            pattern_type = pattern.get("type", "Plain")
+            if pattern_type == "Plain":
+                pattern_tag = pattern.get("tag", 1)
+                ts_tag = pattern.get("time_series")
+                if ts_tag is None:
+                    raise ValueError("pattern missing time_series tag")
+                if ts_tag not in ts_tags:
+                    raise ValueError(f"pattern time_series tag {ts_tag} not found")
+                f.write(f"pattern Plain {pattern_tag} {ts_tag} {{\n")
+                if loads:
+                    load_map = {}
+                    for load in loads:
+                        node_id = load["node"]
+                        vec = load_map.setdefault(node_id, [0.0] * ndf)
+                        dof = load["dof"]
+                        if dof < 1 or dof > ndf:
+                            raise ValueError(f"load dof {dof} out of range 1..{ndf}")
+                        vec[dof - 1] += load["value"]
+                    for node_id, vec in load_map.items():
+                        f.write(f"  load {node_id} {' '.join(str(v) for v in vec)}\n")
+                for elem_load in element_loads:
+                    if elem_load["type"] != "beamUniform":
+                        raise ValueError(f"unsupported element load type: {elem_load['type']}")
+                    elem_id = elem_load["element"]
+                    w = elem_load["w"]
+                    f.write(f"  eleLoad -ele {elem_id} -type -beamUniform {w}\n")
+                f.write("}\n")
+            elif pattern_type == "UniformExcitation":
+                if loads or element_loads:
+                    raise ValueError("UniformExcitation does not support nodal/element loads")
+                pattern_tag = pattern.get("tag", 1)
+                direction = pattern.get("direction")
+                if direction is None:
+                    raise ValueError("UniformExcitation pattern missing direction")
+                direction = int(direction)
+                if direction < 1 or direction > ndm:
+                    raise ValueError("UniformExcitation direction out of range 1..ndm")
+                accel_tag = pattern.get("accel", pattern.get("time_series"))
+                if accel_tag is None:
+                    raise ValueError("UniformExcitation pattern missing accel time_series tag")
+                accel_tag = int(accel_tag)
+                if accel_tag not in ts_tags:
+                    raise ValueError(
+                        f"UniformExcitation accel time_series tag {accel_tag} not found"
+                    )
+                f.write(
+                    f"pattern UniformExcitation {pattern_tag} {direction} -accel {accel_tag}\n"
+                )
+            else:
+                raise ValueError(f"unsupported pattern type: {pattern_type}")
 
-            f.write(f"pattern Plain {pattern_tag} {ts_tag} {{\n")
-            if loads:
-                load_map = {}
-                for load in loads:
-                    node_id = load["node"]
-                    vec = load_map.setdefault(node_id, [0.0] * ndf)
-                    dof = load["dof"]
-                    if dof < 1 or dof > ndf:
-                        raise ValueError(f"load dof {dof} out of range 1..{ndf}")
-                    vec[dof - 1] += load["value"]
-                for node_id, vec in load_map.items():
-                    f.write(f"  load {node_id} {' '.join(str(v) for v in vec)}\n")
-            for elem_load in element_loads:
-                if elem_load["type"] != "beamUniform":
-                    raise ValueError(f"unsupported element load type: {elem_load['type']}")
-                elem_id = elem_load["element"]
-                w = elem_load["w"]
-                f.write(f"  eleLoad -ele {elem_id} -type -beamUniform {w}\n")
-            f.write("}\n")
+        rayleigh = data.get("rayleigh")
+        if rayleigh is not None:
+            alpha_m = float(rayleigh.get("alphaM", 0.0))
+            beta_k = float(rayleigh.get("betaK", 0.0))
+            beta_k_init = float(rayleigh.get("betaKInit", 0.0))
+            beta_k_comm = float(rayleigh.get("betaKComm", 0.0))
+            f.write(f"rayleigh {alpha_m} {beta_k} {beta_k_init} {beta_k_comm}\n")
 
         # Analysis setup
         analysis = data.get("analysis", {"type": "static_linear", "steps": 1})
@@ -640,6 +676,21 @@ def main():
             f.write("algorithm Linear\n")
             f.write(f"integrator Newmark {gamma} {beta}\n")
             f.write("analysis Transient\n")
+        elif analysis_type == "transient_nonlinear":
+            dt = analysis.get("dt")
+            if dt is None or dt <= 0.0:
+                raise ValueError("transient_nonlinear requires dt > 0")
+            integrator = analysis.get("integrator", {"type": "Newmark"})
+            if integrator.get("type", "Newmark") != "Newmark":
+                raise ValueError("transient_nonlinear only supports Newmark integrator")
+            gamma = integrator.get("gamma", 0.5)
+            beta = integrator.get("beta", 0.25)
+            tol = analysis.get("tol", 1.0e-10)
+            max_iters = analysis.get("max_iters", 20)
+            f.write(f"test NormUnbalance {tol} {max_iters}\n")
+            f.write("algorithm Newton\n")
+            f.write(f"integrator Newmark {gamma} {beta}\n")
+            f.write("analysis Transient\n")
         elif analysis_type == "modal_eigen":
             num_modes = int(analysis.get("num_modes", 0))
             if num_modes < 1:
@@ -694,7 +745,7 @@ def main():
             else:
                 raise ValueError(f"unsupported recorder type: {rec_type}")
 
-        if analysis_type == "transient_linear":
+        if analysis_type == "transient_linear" or analysis_type == "transient_nonlinear":
             f.write(f"analyze {steps} {dt}\n")
         elif analysis_type == "modal_eigen":
             num_modes = int(analysis.get("num_modes", 0))

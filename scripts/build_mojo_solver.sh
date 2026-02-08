@@ -6,5 +6,5 @@ out_dir="${repo_root}/build/mojo"
 out_bin="${out_dir}/strut"
 
 mkdir -p "${out_dir}"
-mojo build "${repo_root}/src/mojo/strut.mojo" -o "${out_bin}"
+uv run mojo build "${repo_root}/src/mojo/strut.mojo" -o "${out_bin}"
 echo "Built ${out_bin}"
