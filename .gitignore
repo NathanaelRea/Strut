@@ -17,6 +17,7 @@ wheels/
 .modular/
 
 # Benchmark artifacts
+.tmp/
 benches/results/
 benchmark/results/
 benchmark/speedscope/

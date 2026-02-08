@@ -1,3 +1,4 @@
+import json
 import subprocess
 from pathlib import Path
 import os
@@ -11,7 +12,16 @@ def _case_paths():
 
 
 def _enabled_case_paths():
-    return _case_paths()
+    paths = []
+    include_disabled = os.getenv("STRUT_RUN_ALL_CASES") == "1"
+    for path in _case_paths():
+        if include_disabled:
+            paths.append(path)
+            continue
+        data = json.loads(path.read_text())
+        if data.get("enabled", True):
+            paths.append(path)
+    return paths
 
 
 def _selected_case_paths():

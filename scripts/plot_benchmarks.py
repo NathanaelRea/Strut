@@ -6,7 +6,7 @@ import sys
 import webbrowser
 from datetime import datetime
 from pathlib import Path
-from statistics import stdev
+from statistics import median
 import math
 from typing import Dict, List, Optional, Tuple
 
@@ -63,8 +63,11 @@ def _case_mean_std_seconds(case: dict, engine: str) -> Tuple[float, float]:
 
 def collect_recent_cases(
     summary: dict,
+    indices: Optional[List[int]] = None,
 ) -> Tuple[List[str], Dict[str, List[float]], Dict[str, List[Tuple[float, float]]]]:
     cases = summary.get("cases", [])
+    if indices is not None:
+        cases = [cases[i] for i in indices]
     names = [case["name"] for case in cases]
     engines = {}
     errors = {}
@@ -87,64 +90,91 @@ def collect_recent_cases(
     return names, engines, errors
 
 
-def _case_time_map(summary: dict, engine: str) -> Dict[str, float]:
-    cases = summary.get("cases", [])
-    out: Dict[str, float] = {}
-    for case in cases:
-        name = case.get("name")
-        if not isinstance(name, str):
-            continue
-        value = _case_time_seconds(case, engine)
-        if isinstance(value, (int, float)) and math.isfinite(value):
-            out[name] = float(value)
-    return out
+def _count_constrained_dofs(node: dict, ndf: int) -> int:
+    constraints = node.get("constraints")
+    if not constraints:
+        return 0
+    if isinstance(constraints, list):
+        if all(isinstance(v, bool) for v in constraints):
+            if len(constraints) != ndf:
+                return 0
+            return sum(1 for v in constraints if v)
+        return len(constraints)
+    return 0
+
+
+def _case_free_dofs(case: dict) -> Optional[int]:
+    dofs = case.get("dofs")
+    if isinstance(dofs, int):
+        return dofs
+    json_path = case.get("json")
+    if not json_path:
+        return None
+    path = Path(json_path)
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text())
+    except Exception:
+        return None
+    model = data.get("model", {})
+    ndf = model.get("ndf")
+    nodes = data.get("nodes")
+    if not isinstance(ndf, int) or not isinstance(nodes, list):
+        return None
+    constrained = 0
+    for node in nodes:
+        if isinstance(node, dict):
+            constrained += _count_constrained_dofs(node, ndf)
+    total = len(nodes) * ndf
+    return total - constrained
+
+
+def _case_size_label(
+    free_dofs: Optional[int], medium_threshold: int, large_threshold: int
+) -> str:
+    if free_dofs is None:
+        return "small"
+    if free_dofs >= large_threshold:
+        return "large"
+    if free_dofs >= medium_threshold:
+        return "medium"
+    return "small"
 
 
 def collect_archive_trend(
     archive_dir: Path,
-) -> Tuple[List[datetime], Dict[str, List[float]], Dict[str, List[float]]]:
-    engine_means: Dict[str, List[float]] = {"opensees": [], "mojo": []}
-    engine_stds: Dict[str, List[float]] = {"opensees": [], "mojo": []}
+    size_filter: Optional[str],
+    medium_threshold: int,
+    large_threshold: int,
+) -> Tuple[List[datetime], Dict[str, List[float]]]:
+    engine_medians: Dict[str, List[float]] = {"opensees": [], "mojo": []}
     timestamps: List[datetime] = []
     files = sorted(archive_dir.glob("*-summary.json"))
     if not files:
-        return timestamps, engine_means, engine_stds
+        return timestamps, engine_medians
 
-    baseline_data = load_summary(files[-1])
-    baseline_maps = {
-        engine: _case_time_map(baseline_data, engine)
-        for engine in ("opensees", "mojo")
-    }
     for path in files:
         data = load_summary(path)
         for engine in ("opensees", "mojo"):
-            base = baseline_maps.get(engine, {})
-            current = _case_time_map(data, engine)
-            ratios: List[float] = []
-            for name, cur in current.items():
-                base_val = base.get(name)
-                if base_val is None or base_val <= 0.0:
-                    continue
-                ratios.append(cur / base_val)
-            if ratios:
-                log_ratios = [math.log(r) for r in ratios if r > 0.0]
-                if log_ratios:
-                    mu = sum(log_ratios) / len(log_ratios)
-                    mean_ratio = math.exp(mu)
-                    engine_means[engine].append(mean_ratio)
-                    if len(log_ratios) > 1:
-                        sigma = stdev(log_ratios)
-                        engine_stds[engine].append(sigma)
-                    else:
-                        engine_stds[engine].append(0.0)
-                else:
-                    engine_means[engine].append(float("nan"))
-                    engine_stds[engine].append(0.0)
+            values: List[float] = []
+            for case in data.get("cases", []):
+                if size_filter:
+                    free_dofs = _case_free_dofs(case)
+                    label = _case_size_label(
+                        free_dofs, medium_threshold, large_threshold
+                    )
+                    if label != size_filter:
+                        continue
+                value = _case_time_seconds(case, engine)
+                if isinstance(value, (int, float)) and math.isfinite(value):
+                    values.append(float(value))
+            if values:
+                engine_medians[engine].append(median(values))
             else:
-                engine_means[engine].append(float("nan"))
-                engine_stds[engine].append(0.0)
+                engine_medians[engine].append(float("nan"))
         timestamps.append(parse_timestamp(path, data))
-    return timestamps, engine_means, engine_stds
+    return timestamps, engine_medians
 
 
 MOJO_COLOR = "#FF5A1F"
@@ -268,6 +298,7 @@ def plot_recent_bar(
     group_spans: Optional[List[Tuple[str, int, int]]] = None,
     group_gap: float = 0.6,
     label_max_len: int = 28,
+    title: str = "Recent benchmark (analysis time per case)",
 ):
     fig, ax = plt.subplots(figsize=(10, 5))
     if group_spans:
@@ -317,8 +348,6 @@ def plot_recent_bar(
         opensees_vals,
         width,
         label="OpenSees",
-        yerr=list(zip(*opensees_err)) if opensees_err else None,
-        capsize=3,
     )
     ax.bar(
         [i + width / 2 for i in x],
@@ -326,12 +355,10 @@ def plot_recent_bar(
         width,
         label="Mojo",
         color=MOJO_COLOR,
-        yerr=list(zip(*mojo_err)) if mojo_err else None,
-        capsize=3,
     )
 
     ax.set_ylabel("Analysis time (us)")
-    ax.set_title("Recent benchmark (analysis time per case)")
+    ax.set_title(title)
     ax.set_xticks(list(x))
     display_names = [_truncate_label(name, label_max_len) for name in names]
     ax.set_xticklabels(display_names, rotation=45, ha="right", fontsize=8)
@@ -358,65 +385,29 @@ def plot_recent_bar(
 
 def plot_archive_trend(
     timestamps: List[datetime],
-    means: Dict[str, List[float]],
-    stds: Dict[str, List[float]],
+    medians: Dict[str, List[float]],
+    title: str,
 ):
     fig, ax = plt.subplots(figsize=(10, 4))
     if timestamps:
-        opensees_means = means.get("opensees", [])
-        opensees_stds = stds.get("opensees", [])
-        mojo_means = means.get("mojo", [])
-        mojo_stds = stds.get("mojo", [])
-        opensees_lower = []
-        opensees_upper = []
-        mojo_lower = []
-        mojo_upper = []
-        for mean_ratio, sigma in zip(opensees_means, opensees_stds):
-            if not isinstance(mean_ratio, (int, float)) or not math.isfinite(mean_ratio):
-                opensees_lower.append(0.0)
-                opensees_upper.append(0.0)
-                continue
-            if sigma > 0.0:
-                scale = math.exp(sigma)
-                opensees_lower.append(mean_ratio - mean_ratio / scale)
-                opensees_upper.append(mean_ratio * scale - mean_ratio)
-            else:
-                opensees_lower.append(0.0)
-                opensees_upper.append(0.0)
-        for mean_ratio, sigma in zip(mojo_means, mojo_stds):
-            if not isinstance(mean_ratio, (int, float)) or not math.isfinite(mean_ratio):
-                mojo_lower.append(0.0)
-                mojo_upper.append(0.0)
-                continue
-            if sigma > 0.0:
-                scale = math.exp(sigma)
-                mojo_lower.append(mean_ratio - mean_ratio / scale)
-                mojo_upper.append(mean_ratio * scale - mean_ratio)
-            else:
-                mojo_lower.append(0.0)
-                mojo_upper.append(0.0)
-        opensees_err = [opensees_lower, opensees_upper]
-        mojo_err = [mojo_lower, mojo_upper]
-        ax.errorbar(
+        opensees_medians = medians.get("opensees", [])
+        mojo_medians = medians.get("mojo", [])
+        ax.plot(
             timestamps,
-            opensees_means,
-            yerr=opensees_err,
+            opensees_medians,
             marker="o",
             label="OpenSees",
-            capsize=3,
         )
-        ax.errorbar(
+        ax.plot(
             timestamps,
-            mojo_means,
-            yerr=mojo_err,
+            mojo_medians,
             marker="o",
             label="Mojo",
             color=MOJO_COLOR,
-            capsize=3,
         )
 
-    ax.set_ylabel("Geometric mean ratio vs baseline")
-    ax.set_title("Archive trend (normalized to baseline, std dev of log ratios)")
+    ax.set_ylabel("Median analysis time (s)")
+    ax.set_title(title)
     ax.grid(axis="y", linestyle=":", alpha=0.5)
     ax.legend()
     fig.autofmt_xdate()
@@ -459,6 +450,18 @@ def main() -> None:
         help="Number of empty slots between case groups (default: 0.6 -> 1 slot).",
     )
     parser.add_argument(
+        "--large-threshold",
+        type=int,
+        default=1000,
+        help="Free-DOF threshold to split large benchmarks (default: 1000).",
+    )
+    parser.add_argument(
+        "--medium-threshold",
+        type=int,
+        default=300,
+        help="Free-DOF threshold to split medium benchmarks (default: 300).",
+    )
+    parser.add_argument(
         "--open",
         action="store_true",
         help="Open the output after writing (best effort).",
@@ -484,34 +487,101 @@ def main() -> None:
         raise SystemExit(f"Missing results summary: {results_path}")
 
     summary = load_summary(results_path)
-    names, engines, errors = collect_recent_cases(summary)
-    names, engines, errors, group_spans = group_cases(
-        names,
-        engines,
-        errors,
-        args.group_by,
-        Path(args.group_config) if args.group_config else None,
-    )
-    for engine, values in engines.items():
-        if values and all(isinstance(v, float) and v != v for v in values):
-            print(
-                f"warning: no analysis timings for {engine} in {results_path}; "
-                "rebuild and rerun benchmarks to populate analysis_us"
-            )
+    cases = summary.get("cases", [])
+    small_indices: List[int] = []
+    medium_indices: List[int] = []
+    large_indices: List[int] = []
+    for idx, case in enumerate(cases):
+        free_dofs = _case_free_dofs(case)
+        if free_dofs is not None:
+            if free_dofs >= args.large_threshold:
+                large_indices.append(idx)
+            elif free_dofs >= args.medium_threshold:
+                medium_indices.append(idx)
+            else:
+                small_indices.append(idx)
+        else:
+            small_indices.append(idx)
+
+    def _prepare(indices: List[int]):
+        names, engines, errors = collect_recent_cases(summary, indices)
+        names, engines, errors, group_spans = group_cases(
+            names,
+            engines,
+            errors,
+            args.group_by,
+            Path(args.group_config) if args.group_config else None,
+        )
+        for engine, values in engines.items():
+            if values and all(isinstance(v, float) and v != v for v in values):
+                print(
+                    f"warning: no analysis timings for {engine} in {results_path}; "
+                    "rebuild and rerun benchmarks to populate analysis_us"
+                )
+        return names, engines, errors, group_spans
+
+    small_names, small_engines, small_errors, small_spans = _prepare(small_indices)
+    medium_names, medium_engines, medium_errors, medium_spans = _prepare(medium_indices)
+    large_names, large_engines, large_errors, large_spans = _prepare(large_indices)
 
     with PdfPages(output_path) as pdf:
-        fig = plot_recent_bar(
-            names, engines, errors, group_spans, group_gap=args.group_gap
-        )
-        pdf.savefig(fig)
-        plt.close(fig)
-
         if archive_dir.exists():
-            timestamps, means, stds = collect_archive_trend(archive_dir)
-            if timestamps:
-                fig = plot_archive_trend(timestamps, means, stds)
-                pdf.savefig(fig)
-                plt.close(fig)
+            archive_specs = [
+                ("small", "Archive trend (small cases)"),
+                ("medium", "Archive trend (medium cases)"),
+                ("large", "Archive trend (large cases)"),
+            ]
+            for size_label, title in archive_specs:
+                timestamps, medians = collect_archive_trend(
+                    archive_dir,
+                    size_label,
+                    args.medium_threshold,
+                    args.large_threshold,
+                )
+                if timestamps and any(
+                    isinstance(v, float) and math.isfinite(v)
+                    for vals in medians.values()
+                    for v in vals
+                ):
+                    fig = plot_archive_trend(timestamps, medians, title)
+                    pdf.savefig(fig)
+                    plt.close(fig)
+
+        if small_names:
+            fig = plot_recent_bar(
+                small_names,
+                small_engines,
+                small_errors,
+                small_spans,
+                group_gap=args.group_gap,
+                title="Recent benchmark (small cases)",
+            )
+            pdf.savefig(fig)
+            plt.close(fig)
+
+        if medium_names:
+            fig = plot_recent_bar(
+                medium_names,
+                medium_engines,
+                medium_errors,
+                medium_spans,
+                group_gap=args.group_gap,
+                title="Recent benchmark (medium cases)",
+            )
+            pdf.savefig(fig)
+            plt.close(fig)
+
+        if large_names:
+            fig = plot_recent_bar(
+                large_names,
+                large_engines,
+                large_errors,
+                large_spans,
+                group_gap=args.group_gap,
+                title="Recent benchmark (large cases)",
+            )
+            pdf.savefig(fig)
+            plt.close(fig)
 
     print(f"Wrote {output_path}")
 

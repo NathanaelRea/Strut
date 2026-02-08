@@ -40,9 +40,42 @@ def log_err(msg: str) -> None:
     log(_color(msg, "31"))
 
 
+def _count_constrained_dofs(node: dict, ndf: int) -> int:
+    constraints = node.get("constraints")
+    if not constraints:
+        return 0
+    if isinstance(constraints, list):
+        if all(isinstance(v, bool) for v in constraints):
+            if len(constraints) != ndf:
+                return 0
+            return sum(1 for v in constraints if v)
+        return len(constraints)
+    return 0
+
+
+def _case_free_dofs(path: Path) -> Optional[int]:
+    try:
+        data = json.loads(path.read_text())
+    except Exception:
+        return None
+    model = data.get("model", {})
+    ndf = model.get("ndf")
+    nodes = data.get("nodes")
+    if not isinstance(ndf, int) or not isinstance(nodes, list):
+        return None
+    constrained = 0
+    for node in nodes:
+        if isinstance(node, dict):
+            constrained += _count_constrained_dofs(node, ndf)
+    total = len(nodes) * ndf
+    return total - constrained
+
+
 def load_case_enabled(path: Path) -> bool:
     data = json.loads(path.read_text())
-    return bool(data.get("enabled", True))
+    if bool(data.get("enabled", True)):
+        return True
+    return data.get("status") == "benchmark"
 
 
 def resolve_case_from_name(validation_root: Path, name: str) -> Optional[CaseSpec]:
@@ -108,6 +141,7 @@ def git_rev(repo_root: Path) -> Optional[str]:
 def write_summary_csv(path: Path, rows: List[dict]) -> None:
     headers = [
         "case",
+        "dofs",
         "engine",
         "mode",
         "repeat",
@@ -263,6 +297,23 @@ def main() -> None:
         help="Case name, JSON path, or glob. Repeatable.",
     )
     parser.add_argument(
+        "--gen-frame-bays",
+        type=int,
+        default=None,
+        help="Generate a synthetic elastic frame with this number of bays.",
+    )
+    parser.add_argument(
+        "--gen-frame-stories",
+        type=int,
+        default=None,
+        help="Generate a synthetic elastic frame with this number of stories.",
+    )
+    parser.add_argument(
+        "--gen-frame-name",
+        default=None,
+        help="Optional name for generated frame case (default: elastic_frame_{bays}bay_{stories}story).",
+    )
+    parser.add_argument(
         "--repeat",
         type=int,
         default=int(os.getenv("STRUT_BENCH_REPEAT", "3")),
@@ -326,6 +377,36 @@ def main() -> None:
 
     repo_root = Path(__file__).resolve().parents[1]
     validation_root = repo_root / "tests" / "validation"
+    generated_cases: List[CaseSpec] = []
+
+    if args.batch_opensees and args.gen_frame_bays is None and args.gen_frame_stories is None:
+        args.gen_frame_bays = 18
+        args.gen_frame_stories = 17
+    if (args.gen_frame_bays is None) != (args.gen_frame_stories is None):
+        raise SystemExit("--gen-frame-bays and --gen-frame-stories must be provided together.")
+    if args.gen_frame_bays is not None and args.gen_frame_stories is not None:
+        if args.gen_frame_bays <= 0 or args.gen_frame_stories <= 0:
+            raise SystemExit("--gen-frame-bays and --gen-frame-stories must be > 0.")
+        name = args.gen_frame_name or f"elastic_frame_{args.gen_frame_bays}bay_{args.gen_frame_stories}story"
+        gen_dir = repo_root / "benchmark" / ".tmp"
+        gen_dir.mkdir(parents=True, exist_ok=True)
+        gen_path = gen_dir / f"{name}.json"
+        run(
+            [
+                "python",
+                str(repo_root / "scripts" / "gen_frame_case.py"),
+                "--bays",
+                str(args.gen_frame_bays),
+                "--stories",
+                str(args.gen_frame_stories),
+                "--name",
+                name,
+                "--output",
+                str(gen_path),
+            ],
+            verbose=os.getenv("STRUT_VERBOSE") == "1",
+        )
+        generated_cases.append(CaseSpec(name=name, json_path=gen_path))
 
     if args.cases:
         case_specs = []
@@ -344,6 +425,9 @@ def main() -> None:
                     case_specs.extend(expand_case_patterns(validation_root, [part]))
     else:
         case_specs = discover_default_cases(validation_root)
+
+    if generated_cases:
+        case_specs.extend(generated_cases)
 
     if not case_specs:
         raise SystemExit("No benchmark cases found. Provide --cases or add validation cases.")
@@ -398,7 +482,11 @@ def main() -> None:
 
     def build_case_tcl(case: CaseSpec) -> dict:
         case_name = case.name
-        case_entry = {"name": case_name, "json": str(case.json_path)}
+        case_entry = {
+            "name": case_name,
+            "json": str(case.json_path),
+            "dofs": _case_free_dofs(case.json_path),
+        }
 
         tcl_out = results_root / "tcl" / f"{case_name}.tcl"
         run(
@@ -538,6 +626,7 @@ def main() -> None:
         csv_rows.append(
             {
                 "case": "opensees_batch",
+                "dofs": "",
                 "engine": "opensees",
                 "mode": "total_batch",
                 "repeat": args.repeat,
@@ -558,6 +647,7 @@ def main() -> None:
             csv_rows.append(
                 {
                     "case": case_name,
+                    "dofs": entry.get("dofs", ""),
                     "engine": "opensees",
                     "mode": "total_batch_case",
                     "repeat": "",
@@ -585,6 +675,7 @@ def main() -> None:
             csv_rows.append(
                 {
                     "case": "opensees_batch",
+                    "dofs": "",
                     "engine": "opensees",
                     "mode": "compute_only_batch",
                     "repeat": args.repeat,
@@ -728,6 +819,7 @@ def main() -> None:
             csv_rows.append(
                 {
                     "case": case_name,
+                    "dofs": case_entry.get("dofs", ""),
                     "engine": "opensees",
                     "mode": "total",
                     "repeat": args.repeat,
@@ -757,6 +849,7 @@ def main() -> None:
                 csv_rows.append(
                     {
                         "case": case_name,
+                        "dofs": case_entry.get("dofs", ""),
                         "engine": "opensees",
                         "mode": "compute_only",
                         "repeat": args.repeat,
@@ -789,6 +882,7 @@ def main() -> None:
             csv_rows.append(
                 {
                     "case": case_name,
+                    "dofs": case_entry.get("dofs", ""),
                     "engine": "mojo",
                     "mode": "total",
                     "repeat": args.repeat,
@@ -822,6 +916,7 @@ def main() -> None:
                 csv_rows.append(
                     {
                         "case": case_name,
+                        "dofs": case_entry.get("dofs", ""),
                         "engine": "mojo",
                         "mode": "compute_only",
                         "repeat": args.repeat,
