@@ -31,6 +31,7 @@ Minimum required fields (v1.0):
     - `params.layers`: list of `straight` layers:
       - `{ type: "straight", material, num_bars, bar_area, y_start, z_start, y_end, z_end }`
 - `elements`: list of `{ id, type, nodes, section, geomTransf }`
+- `mp_constraints`: list of `{ type: "equalDOF", retained_node, constrained_node, dofs }` (optional; requires transformation handler)
 - `time_series`: list of `{ type, tag, ... }` (optional; top-level)
   - `Constant`: `{ tag, factor? }`
   - `Linear`: `{ tag, factor? }`
@@ -39,8 +40,10 @@ Minimum required fields (v1.0):
 - `pattern`: `{ type: "Plain", tag, time_series }` (optional; top-level)
 - `loads`: list of `{ node, dof, value }` (`dof` must be in `1..ndf`)
 - `element_loads`: list of `{ element, type, w }` (optional, `type: "beamUniform"` only)
-- `analysis`: `{ type: "static_linear" | "static_nonlinear" | "transient_linear", steps: 1, dt?, max_iters?, tol?, rel_tol?, integrator? }`
+- `analysis`: `{ type: "static_linear" | "static_nonlinear" | "transient_linear" | "modal_eigen", steps: 1, constraints?, num_modes?, dt?, max_iters?, tol?, rel_tol?, integrator? }`
+  - `constraints`: `Plain` (default) or `Transformation`.
   - Nonlinear uniaxial materials require `static_nonlinear`.
+  - `modal_eigen` requires `num_modes >= 1` and positive nodal masses on free DOFs.
   - `static_nonlinear` integrator options:
     - Load control: `{ type: "LoadControl" }` (default)
     - Displacement control: `{ type: "DisplacementControl", node, dof, du? | targets?, cutback?, max_cutbacks?, min_du? }`
@@ -52,6 +55,7 @@ Minimum required fields (v1.0):
   - `{ type: "node_reaction", nodes, dofs, output }` (`dofs` in `1..ndf`)
   - `{ type: "drift", i_node, j_node, dof, perp_dirn, output }`
   - `{ type: "envelope_element_force", elements, output }` (`truss`, `elasticBeamColumn2d`, `forceBeamColumn2d`)
+  - `{ type: "modal_eigen", modes, nodes, dofs, output }`
 
 Current limitation: `forceBeamColumn2d` is v1 only:
 - `geomTransf: Linear`
@@ -88,6 +92,10 @@ Envelope element force outputs are written with 3 rows:
 - row 1: component-wise minima
 - row 2: component-wise maxima
 - row 3: component-wise absolute maxima
+
+Modal eigen outputs are written as:
+- `<output>_eigenvalues.out`: one eigenvalue per line (ascending mode order).
+- `<output>_mode<k>_node<id>.out`: one line with requested DOF components of mode `k` at node `id`.
 
 ## Tolerances (Phase 1)
 

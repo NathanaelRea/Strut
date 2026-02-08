@@ -15,8 +15,11 @@ from strut_io import py_len
 
 from solver.run_case.helpers import (
     _append_output,
+    _collapse_matrix_by_rep,
+    _collapse_vector_by_rep,
     _drift_value,
     _element_force_global_for_recorder,
+    _enforce_equal_dof_values,
     _flush_envelope_outputs,
     _format_values_line,
     _has_recorder_type,
@@ -66,6 +69,9 @@ fn run_static_nonlinear_load_control(
     frame_solve_nonlinear: Int,
     frame_nonlinear_step: Int,
     frame_nonlinear_iter: Int,
+    has_transformation_mpc: Bool,
+    rep_dof: List[Int],
+    constrained: List[Bool],
 ) raises:
     var time = Python.import_module("time")
     var max_iters = Int(analysis.get("max_iters", 20))
@@ -118,6 +124,8 @@ fn run_static_nonlinear_load_control(
             _append_event(
                 events, events_need_comma, "O", frame_nonlinear_step, step_start_us
             )
+        if has_transformation_mpc:
+            _enforce_equal_dof_values(u, rep_dof, constrained)
         var scale = Float64(step + 1) / Float64(steps)
         if ts_index >= 0:
             scale = eval_time_series(time_series[ts_index], scale)
@@ -166,6 +174,9 @@ fn run_static_nonlinear_load_control(
                 K,
                 F_int,
             )
+            if has_transformation_mpc:
+                K = _collapse_matrix_by_rep(K, rep_dof)
+                F_int = _collapse_vector_by_rep(F_int, rep_dof)
             if do_profile:
                 var t_asm_end = Int(time.perf_counter_ns())
                 var asm_end_us = (t_asm_end - t0) // 1000
@@ -255,6 +266,8 @@ fn run_static_nonlinear_load_control(
                 converged_iter = True
             for i in range(len(free)):
                 u[free[i]] += u_f[i]
+            if has_transformation_mpc:
+                _enforce_equal_dof_values(u, rep_dof, constrained)
             if do_profile:
                 var t_iter_end = Int(time.perf_counter_ns())
                 var iter_end_us = (t_iter_end - t0) // 1000
@@ -482,6 +495,8 @@ fn run_static_nonlinear_displacement_control(
     frame_solve_nonlinear: Int,
     frame_nonlinear_step: Int,
     frame_nonlinear_iter: Int,
+    has_transformation_mpc: Bool,
+    rep_dof: List[Int],
 ) raises:
     var time = Python.import_module("time")
     var max_iters = Int(analysis.get("max_iters", 20))
@@ -522,6 +537,8 @@ fn run_static_nonlinear_displacement_control(
     var control_idx = node_dof_index(id_to_index[control_node], control_dof, ndf)
     if constrained[control_idx]:
         abort("DisplacementControl dof is constrained")
+    if has_transformation_mpc and rep_dof[control_idx] != control_idx:
+        abort("DisplacementControl dof must be retained for equalDOF")
     var control_free = -1
     for i in range(free_count):
         if free[i] == control_idx:
@@ -585,6 +602,8 @@ fn run_static_nonlinear_displacement_control(
             _append_event(
                 events, events_need_comma, "O", frame_nonlinear_step, step_start_us
             )
+        if has_transformation_mpc:
+            _enforce_equal_dof_values(u, rep_dof, constrained)
 
         var target = target_disps[step]
         while True:
@@ -647,6 +666,9 @@ fn run_static_nonlinear_displacement_control(
                         K,
                         F_int,
                     )
+                    if has_transformation_mpc:
+                        K = _collapse_matrix_by_rep(K, rep_dof)
+                        F_int = _collapse_vector_by_rep(F_int, rep_dof)
                     if do_profile:
                         var t_asm_end = Int(time.perf_counter_ns())
                         var asm_end_us = (t_asm_end - t0) // 1000
@@ -728,6 +750,8 @@ fn run_static_nonlinear_displacement_control(
                     for i in range(free_count):
                         u[free[i]] += sol_aug[i]
                     load_factor += sol_aug[free_count]
+                    if has_transformation_mpc:
+                        _enforce_equal_dof_values(u, rep_dof, constrained)
                     var scale_tol = rel_tol * max_u
                     if scale_tol < rel_tol:
                         scale_tol = rel_tol

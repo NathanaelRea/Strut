@@ -6,6 +6,7 @@ import os
 import shutil
 import subprocess
 import time
+import math
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -245,13 +246,37 @@ def _compare_vectors(
     return len(errors) == 0, errors
 
 
+def _compare_mode_shape_vectors(
+    ref: List[float],
+    got: List[float],
+    rtol: float = REL_TOL,
+    atol: float = ABS_TOL,
+):
+    if len(ref) != len(got):
+        return False, [f"length mismatch: {len(ref)} != {len(got)}"]
+    ref_norm = math.sqrt(sum(v * v for v in ref))
+    got_norm = math.sqrt(sum(v * v for v in got))
+    eps = 1.0e-20
+    if ref_norm <= eps and got_norm <= eps:
+        return True, []
+    if ref_norm <= eps or got_norm <= eps:
+        return False, ["mode shape norm mismatch (one is near zero)"]
+    ref_unit = [v / ref_norm for v in ref]
+    got_unit = [v / got_norm for v in got]
+    dot = sum(r * g for r, g in zip(ref_unit, got_unit))
+    if dot < 0.0:
+        got_unit = [-v for v in got_unit]
+    return _compare_vectors(ref_unit, got_unit, rtol=rtol, atol=atol)
+
+
 def _inject_opensees_timing(tcl_lines: List[str], timing_file: str) -> List[str]:
     out = []
     injected = False
     for line in tcl_lines:
         stripped = line.lstrip()
         has_analyze = stripped.startswith("analyze ") or "[analyze " in stripped
-        if not injected and has_analyze:
+        has_eigen = stripped.startswith("eigen ") or "[eigen " in stripped
+        if not injected and (has_analyze or has_eigen):
             out.append('set __strut_t0 [clock microseconds]')
             out.append(line)
             out.append('set __strut_t1 [clock microseconds]')
@@ -262,7 +287,7 @@ def _inject_opensees_timing(tcl_lines: List[str], timing_file: str) -> List[str]
             continue
         out.append(line)
     if not injected:
-        raise ValueError("failed to inject timing: analyze command not found in Tcl")
+        raise ValueError("failed to inject timing: analyze/eigen command not found in Tcl")
     return out
 
 
@@ -628,6 +653,43 @@ def main() -> None:
             verbose=verbose,
         )
 
+    def run_opensees_batch_repeated(
+        entries: List[dict], output_root: Path, compute: bool, repeat: int, warmup: int
+    ):
+        if not entries:
+            return [], {}, {}
+
+        n = len(entries)
+        names = [entry["name"] for entry in entries]
+        analysis_by_case = {name: [] for name in names}
+        total_by_case = {name: [] for name in names}
+
+        for i in range(warmup):
+            offset = i % n
+            rotated = entries[offset:] + entries[:offset]
+            run_opensees_batch(rotated, output_root, compute)
+
+        times = []
+        for i in range(repeat):
+            offset = i % n
+            rotated = entries[offset:] + entries[:offset]
+            start = time.perf_counter()
+            run_opensees_batch(rotated, output_root, compute)
+            end = time.perf_counter()
+            times.append(end - start)
+
+            analysis_map = _load_case_metric(output_root, entries, "analysis_time_us.txt")
+            total_map = _load_case_metric(output_root, entries, "case_time_us.txt")
+            for name in names:
+                analysis_us = analysis_map.get(name)
+                total_us = total_map.get(name)
+                if analysis_us is not None:
+                    analysis_by_case[name].append(analysis_us)
+                if total_us is not None:
+                    total_by_case[name].append(total_us)
+
+        return times, analysis_by_case, total_by_case
+
     def run_mojo_batch(entries: List[dict], output_root: Path, compute: bool) -> None:
         ensure_clean_dir(output_root)
         if mojo_solver is None:
@@ -646,19 +708,14 @@ def main() -> None:
     run_opensees_per_case = run_opensees and not args.batch_opensees
     if run_opensees and args.batch_opensees:
         log("Running OpenSees in batch mode.")
-        opensees_times = run_engine(
-            lambda out, last_run: run_opensees_batch(case_entries, out, compute=False),
+        opensees_times, batch_analysis_hist, batch_total_hist = run_opensees_batch_repeated(
+            case_entries,
             results_root / "opensees",
-            args.repeat,
-            args.warmup,
+            compute=False,
+            repeat=args.repeat,
+            warmup=args.warmup,
         )
         log_ok("OpenSees batch pass OK.")
-        batch_analysis = _load_case_metric(
-            results_root / "opensees", case_entries, "analysis_time_us.txt"
-        )
-        batch_totals = _load_case_metric(
-            results_root / "opensees", case_entries, "case_time_us.txt"
-        )
         batch_stats = {
             "times_s": opensees_times,
             "mean_s": mean(opensees_times),
@@ -679,13 +736,26 @@ def main() -> None:
                 "analysis_us": "",
             }
         )
-        for case_name, analysis_us in batch_analysis.items():
-            total_us = batch_totals.get(case_name)
+        for case_entry in case_entries:
+            case_name = case_entry["name"]
+            analysis_hist = batch_analysis_hist.get(case_name, [])
+            total_hist = batch_total_hist.get(case_name, [])
+            analysis_mean = int(mean(analysis_hist)) if analysis_hist else None
+            total_mean = int(mean(total_hist)) if total_hist else None
+            analysis_median = int(median(analysis_hist)) if analysis_hist else None
+            total_median = int(median(total_hist)) if total_hist else None
+            analysis_us = analysis_median
+            total_us = total_median
             entry = case_entries_by_name.get(case_name)
             if entry is not None:
                 batch_entry = entry.setdefault("opensees_batch", {})
                 batch_entry["analysis_us"] = analysis_us
                 batch_entry["total_us"] = total_us
+                batch_entry["analysis_mean_us"] = analysis_mean
+                batch_entry["total_mean_us"] = total_mean
+                batch_entry["analysis_median_us"] = analysis_median
+                batch_entry["total_median_us"] = total_median
+                batch_entry["repeats"] = len(analysis_hist)
             csv_rows.append(
                 {
                     "case": case_name,
@@ -695,8 +765,12 @@ def main() -> None:
                     "repeat": "",
                     "warmup": "",
                     "mean_s": f"{(total_us or 0) / 1e6:.6f}" if total_us is not None else "",
-                    "median_s": f"{(total_us or 0) / 1e6:.6f}" if total_us is not None else "",
-                    "min_s": f"{(total_us or 0) / 1e6:.6f}" if total_us is not None else "",
+                    "median_s": f"{(total_median or 0) / 1e6:.6f}"
+                    if total_median is not None
+                    else "",
+                    "min_s": f"{(min(total_hist) if total_hist else 0) / 1e6:.6f}"
+                    if total_hist
+                    else "",
                     "analysis_us": analysis_us,
                 }
             )
@@ -1274,6 +1348,73 @@ def main() -> None:
                                 )
                                 parity_failures.extend([f"  {err}" for err in errors])
                                 break
+                elif rec_type == "modal_eigen":
+                    output = rec.get("output", "modal")
+                    eig_ref = (
+                        results_root / "opensees" / case_name / f"{output}_eigenvalues.out"
+                    )
+                    eig_mojo = results_root / "mojo" / case_name / f"{output}_eigenvalues.out"
+                    if not eig_ref.exists():
+                        parity_failures.append(
+                            f"{case_name}: missing OpenSees output: {eig_ref}"
+                        )
+                        continue
+                    if not eig_mojo.exists():
+                        parity_failures.append(
+                            f"{case_name}: missing Mojo output: {eig_mojo}"
+                        )
+                        continue
+                    try:
+                        ref_rows = _load_all_values(eig_ref)
+                        mojo_rows = _load_all_values(eig_mojo)
+                    except ValueError as exc:
+                        parity_failures.append(f"{case_name}: {exc}")
+                        continue
+                    ref_vals = [row[0] for row in ref_rows]
+                    mojo_vals = [row[0] for row in mojo_rows]
+                    ok, errors = _compare_vectors(ref_vals, mojo_vals, rtol=rtol, atol=atol)
+                    if not ok:
+                        parity_failures.append(f"{case_name}: modal eigenvalue mismatch")
+                        parity_failures.extend([f"  {err}" for err in errors])
+
+                    for mode_no in rec.get("modes", []):
+                        for node_id in rec.get("nodes", []):
+                            ref_file = (
+                                results_root
+                                / "opensees"
+                                / case_name
+                                / f"{output}_mode{int(mode_no)}_node{int(node_id)}.out"
+                            )
+                            mojo_file = (
+                                results_root
+                                / "mojo"
+                                / case_name
+                                / f"{output}_mode{int(mode_no)}_node{int(node_id)}.out"
+                            )
+                            if not ref_file.exists():
+                                parity_failures.append(
+                                    f"{case_name}: missing OpenSees output: {ref_file}"
+                                )
+                                continue
+                            if not mojo_file.exists():
+                                parity_failures.append(
+                                    f"{case_name}: missing Mojo output: {mojo_file}"
+                                )
+                                continue
+                            try:
+                                ref_vec = _load_last_values(ref_file)
+                                mojo_vec = _load_last_values(mojo_file)
+                            except ValueError as exc:
+                                parity_failures.append(f"{case_name}: {exc}")
+                                continue
+                            ok, errors = _compare_mode_shape_vectors(
+                                ref_vec, mojo_vec, rtol=rtol, atol=atol
+                            )
+                            if not ok:
+                                parity_failures.append(
+                                    f"{case_name}: modal mode shape mismatch mode={mode_no} node={node_id}"
+                                )
+                                parity_failures.extend([f"  {err}" for err in errors])
                 else:
                     parity_failures.append(
                         f"{case_name}: unsupported recorder type: {rec_type}"

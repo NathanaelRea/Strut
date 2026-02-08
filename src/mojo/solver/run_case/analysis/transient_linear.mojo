@@ -12,7 +12,9 @@ from strut_io import py_len
 
 from solver.run_case.helpers import (
     _append_output,
+    _collapse_matrix_by_rep,
     _element_force_global_for_recorder,
+    _enforce_equal_dof_values,
     _flush_envelope_outputs,
     _format_values_line,
     _has_recorder_type,
@@ -52,6 +54,9 @@ fn run_transient_linear(
     fiber_section_index_by_id: List[Int],
     mut transient_output_files: List[String],
     mut transient_output_buffers: List[String],
+    has_transformation_mpc: Bool,
+    rep_dof: List[Int],
+    constrained: List[Bool],
 ) raises:
     var dt = Float64(analysis.get("dt", 0.0))
     if dt <= 0.0:
@@ -97,6 +102,8 @@ fn run_transient_linear(
         fiber_section_cells,
         fiber_section_index_by_id,
     )
+    if has_transformation_mpc:
+        K = _collapse_matrix_by_rep(K, rep_dof)
     var K_ff: List[List[Float64]] = []
     for _ in range(free_count):
         var row: List[Float64] = []
@@ -133,6 +140,10 @@ fn run_transient_linear(
     var envelope_abs: List[List[Float64]] = []
 
     for step in range(steps):
+        if has_transformation_mpc:
+            _enforce_equal_dof_values(u, rep_dof, constrained)
+            _enforce_equal_dof_values(v, rep_dof, constrained)
+            _enforce_equal_dof_values(a, rep_dof, constrained)
         var t = Float64(step + 1) * dt
         var factor = 1.0
         if ts_index >= 0:
@@ -163,6 +174,10 @@ fn run_transient_linear(
             u[idx] = u_next
             v[idx] = v_next
             a[idx] = a_next
+        if has_transformation_mpc:
+            _enforce_equal_dof_values(u, rep_dof, constrained)
+            _enforce_equal_dof_values(v, rep_dof, constrained)
+            _enforce_equal_dof_values(a, rep_dof, constrained)
 
         for r in range(py_len(recorders)):
             var rec = recorders[r]

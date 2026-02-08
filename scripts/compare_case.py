@@ -2,6 +2,7 @@
 import argparse
 import json
 import os
+import math
 from pathlib import Path
 
 ABS_TOL = 1e-8
@@ -49,6 +50,24 @@ def _compare_vectors(ref, got, rtol=REL_TOL, atol=ABS_TOL):
                 f"dof {i}: ref={r:.6e} got={g:.6e} abs={abs_err:.3e} rel={rel_err:.3e}"
             )
     return len(errors) == 0, errors
+
+
+def _compare_mode_shape_vectors(ref, got, rtol=REL_TOL, atol=ABS_TOL):
+    if len(ref) != len(got):
+        return False, [f"length mismatch: {len(ref)} != {len(got)}"]
+    ref_norm = math.sqrt(sum(v * v for v in ref))
+    got_norm = math.sqrt(sum(v * v for v in got))
+    eps = 1.0e-20
+    if ref_norm <= eps and got_norm <= eps:
+        return True, []
+    if ref_norm <= eps or got_norm <= eps:
+        return False, ["mode shape norm mismatch (one is near zero)"]
+    ref_unit = [v / ref_norm for v in ref]
+    got_unit = [v / got_norm for v in got]
+    dot = sum(r * g for r, g in zip(ref_unit, got_unit))
+    if dot < 0.0:
+        got_unit = [-v for v in got_unit]
+    return _compare_vectors(ref_unit, got_unit, rtol=rtol, atol=atol)
 
 
 def main():
@@ -105,7 +124,9 @@ def main():
                 else:
                     ref_vals = _load_last_values(ref_file)
                     mojo_vals = _load_last_values(mojo_file)
-                    ok, errors = _compare_vectors(ref_vals, mojo_vals, rtol=rtol, atol=atol)
+                    ok, errors = _compare_mode_shape_vectors(
+                        ref_vals, mojo_vals, rtol=rtol, atol=atol
+                    )
                     if not ok:
                         failures.append(f"node {node_id} mismatch")
                         failures.extend([f"  {err}" for err in errors])
@@ -234,6 +255,48 @@ def main():
                         )
                         failures.extend([f"  {err}" for err in errors])
                         break
+        elif rec_type == "modal_eigen":
+            output = rec.get("output", "modal")
+            modes = rec.get("modes", [])
+            if not modes:
+                failures.append("modal_eigen recorder missing modes")
+                continue
+            eig_ref = ref_dir / f"{output}_eigenvalues.out"
+            eig_mojo = mojo_dir / f"{output}_eigenvalues.out"
+            if not eig_ref.exists():
+                failures.append(f"missing reference output: {eig_ref}")
+                continue
+            if not eig_mojo.exists():
+                failures.append(f"missing mojo output: {eig_mojo}")
+                continue
+            ref_rows = _load_all_values(eig_ref)
+            mojo_rows = _load_all_values(eig_mojo)
+            ref_vals = [row[0] for row in ref_rows]
+            mojo_vals = [row[0] for row in mojo_rows]
+            ok, errors = _compare_vectors(ref_vals, mojo_vals, rtol=rtol, atol=atol)
+            if not ok:
+                failures.append("modal eigenvalue mismatch")
+                failures.extend([f"  {err}" for err in errors])
+
+            for mode in modes:
+                mode_no = int(mode)
+                for node_id in rec["nodes"]:
+                    ref_file = ref_dir / f"{output}_mode{mode_no}_node{node_id}.out"
+                    mojo_file = mojo_dir / f"{output}_mode{mode_no}_node{node_id}.out"
+                    if not ref_file.exists():
+                        failures.append(f"missing reference output: {ref_file}")
+                        continue
+                    if not mojo_file.exists():
+                        failures.append(f"missing mojo output: {mojo_file}")
+                        continue
+                    ref_vals = _load_last_values(ref_file)
+                    mojo_vals = _load_last_values(mojo_file)
+                    ok, errors = _compare_vectors(ref_vals, mojo_vals, rtol=rtol, atol=atol)
+                    if not ok:
+                        failures.append(
+                            f"modal mode shape mismatch mode={mode_no} node={node_id}"
+                        )
+                        failures.extend([f"  {err}" for err in errors])
         else:
             raise ValueError(f"unsupported recorder type: {rec_type}")
 

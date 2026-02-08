@@ -510,3 +510,38 @@ fn _solve_linear_system(
             s -= A[i][j] * x[j]
         x[i] = s
     return True
+
+
+fn _collapse_vector_by_rep(values: List[Float64], rep_dof: List[Int]) -> List[Float64]:
+    var out: List[Float64] = []
+    out.resize(len(values), 0.0)
+    for i in range(len(values)):
+        out[rep_dof[i]] += values[i]
+    return out^
+
+
+fn _collapse_matrix_by_rep(
+    matrix: List[List[Float64]], rep_dof: List[Int]
+) -> List[List[Float64]]:
+    var n = len(matrix)
+    var out: List[List[Float64]] = []
+    for _ in range(n):
+        var row: List[Float64] = []
+        row.resize(n, 0.0)
+        out.append(row^)
+    for i in range(n):
+        var ri = rep_dof[i]
+        for j in range(n):
+            out[ri][rep_dof[j]] += matrix[i][j]
+    return out^
+
+
+fn _enforce_equal_dof_values(
+    mut values: List[Float64], rep_dof: List[Int], constrained: List[Bool]
+):
+    for i in range(len(values)):
+        var rep = rep_dof[i]
+        if constrained[rep]:
+            values[i] = 0.0
+        else:
+            values[i] = values[rep]

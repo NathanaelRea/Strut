@@ -43,11 +43,16 @@ struct RunCaseState(Movable):
     var analysis: PythonObject
     var analysis_type: String
     var steps: Int
+    var modal_num_modes: Int
+    var constraints_handler: String
     var use_banded_linear: Bool
     var use_banded_nonlinear: Bool
+    var has_transformation_mpc: Bool
 
     var free: List[Int]
     var free_index: List[Int]
+    var rep_dof: List[Int]
+    var active_index_by_dof: List[Int]
 
     var M_total: List[Float64]
     var time_series: PythonObject
@@ -80,10 +85,15 @@ struct RunCaseState(Movable):
         self.analysis = None
         self.analysis_type = ""
         self.steps = 0
+        self.modal_num_modes = 0
+        self.constraints_handler = "Plain"
         self.use_banded_linear = False
         self.use_banded_nonlinear = False
+        self.has_transformation_mpc = False
         self.free = []
         self.free_index = []
+        self.rep_dof = []
+        self.active_index_by_dof = []
         self.M_total = []
         self.time_series = None
         self.ts_index = -1
@@ -511,6 +521,17 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
         var idx = node_dof_index(id_to_index[node_id], dof, ndf)
         F_total[idx] += Float64(load["value"])
 
+    var M_total: List[Float64] = []
+    M_total.resize(total_dofs, 0.0)
+    var masses = data.get("masses", [])
+    for i in range(py_len(masses)):
+        var mass = masses[i]
+        var node_id = Int(mass["node"])
+        var dof = Int(mass["dof"])
+        require_dof_in_range(dof, ndf, "mass")
+        var idx = node_dof_index(id_to_index[node_id], dof, ndf)
+        M_total[idx] += Float64(mass["value"])
+
     var constrained: List[Bool] = []
     constrained.resize(total_dofs, False)
     for i in range(node_count):
@@ -526,7 +547,15 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
 
     var analysis = data.get("analysis", {"type": "static_linear", "steps": 1})
     var analysis_type = String(analysis.get("type", "static_linear"))
+    var constraints_handler = String(analysis.get("constraints", "Plain"))
+    if constraints_handler != "Plain" and constraints_handler != "Transformation":
+        abort("unsupported constraints handler: " + constraints_handler)
     var steps = Int(analysis.get("steps", 1))
+    var modal_num_modes = 0
+    if analysis_type == "modal_eigen":
+        modal_num_modes = Int(analysis.get("num_modes", 0))
+        if modal_num_modes < 1:
+            abort("modal_eigen requires num_modes >= 1")
     if steps < 1:
         abort("analysis steps must be >= 1")
     var force_beam_mode = String(analysis.get("force_beam_mode", "auto"))
@@ -557,7 +586,7 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
                 )
         elif analysis_type == "static_linear" and force_beam_has_nonelastic:
             abort("forceBeamColumn2d with non-elastic fibers requires static_nonlinear analysis")
-    if analysis_type != "static_nonlinear" and used_nonelastic_uniaxial:
+    if analysis_type != "static_nonlinear" and analysis_type != "modal_eigen" and used_nonelastic_uniaxial:
         abort("nonlinear uniaxial materials require static_nonlinear analysis")
 
     var solver_pref = String(analysis.get("system", analysis.get("solver", "auto")))
@@ -569,17 +598,78 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
     if band_threshold < 0:
         band_threshold = 0
 
+    var rep_dof: List[Int] = []
+    rep_dof.resize(total_dofs, 0)
+    for i in range(total_dofs):
+        rep_dof[i] = i
+
+    var has_transformation_mpc = False
+    var mp_constraints = data.get("mp_constraints", [])
+    if py_len(mp_constraints) > 0:
+        if constraints_handler != "Transformation":
+            abort("mp_constraints require analysis.constraints=Transformation")
+        has_transformation_mpc = True
+    for i in range(py_len(mp_constraints)):
+        var mpc = mp_constraints[i]
+        var mpc_type = String(mpc.get("type", ""))
+        if mpc_type != "equalDOF":
+            abort("unsupported mp constraint type: " + mpc_type)
+        var retained_node = Int(mpc["retained_node"])
+        var constrained_node = Int(mpc["constrained_node"])
+        if retained_node >= len(id_to_index) or id_to_index[retained_node] < 0:
+            abort("equalDOF retained_node not found")
+        if constrained_node >= len(id_to_index) or id_to_index[constrained_node] < 0:
+            abort("equalDOF constrained_node not found")
+        var retained_idx = id_to_index[retained_node]
+        var constrained_idx = id_to_index[constrained_node]
+        var dofs = mpc.get("dofs", [])
+        if py_len(dofs) == 0:
+            abort("equalDOF requires non-empty dofs")
+        for j in range(py_len(dofs)):
+            var dof = Int(dofs[j])
+            require_dof_in_range(dof, ndf, "equalDOF")
+            var retained_dof = node_dof_index(retained_idx, dof, ndf)
+            var constrained_dof = node_dof_index(constrained_idx, dof, ndf)
+            rep_dof[constrained_dof] = retained_dof
+
+    for i in range(total_dofs):
+        var rep = i
+        while rep_dof[rep] != rep:
+            rep = rep_dof[rep]
+        rep_dof[i] = rep
+
+    var F_effective: List[Float64] = []
+    F_effective.resize(total_dofs, 0.0)
+    var M_effective: List[Float64] = []
+    M_effective.resize(total_dofs, 0.0)
+    for i in range(total_dofs):
+        var rep = rep_dof[i]
+        F_effective[rep] += F_total[i]
+        M_effective[rep] += M_total[i]
+    F_total = F_effective^
+    M_total = M_effective^
+
+    var active_index_by_dof: List[Int] = []
+    active_index_by_dof.resize(total_dofs, -1)
     var free_count = 0
     for i in range(total_dofs):
-        if not constrained[i]:
-            free_count += 1
+        if rep_dof[i] != i:
+            constrained[i] = True
+            continue
+        if constrained[i]:
+            continue
+        active_index_by_dof[i] = free_count
+        free_count += 1
 
     if free_count == 0:
         abort("no free dofs")
 
     var use_banded_linear = False
     var use_banded_nonlinear = False
-    if analysis_type == "static_linear":
+    if has_transformation_mpc:
+        use_banded_linear = False
+        use_banded_nonlinear = False
+    elif analysis_type == "static_linear":
         if solver_pref == "banded" or (solver_pref == "auto" and free_count > band_threshold):
             use_banded_linear = True
     elif analysis_type == "static_nonlinear":
@@ -596,24 +686,19 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
             var node_idx = node_order[i]
             for dof in range(1, ndf + 1):
                 var idx = node_dof_index(node_idx, dof, ndf)
+                if rep_dof[idx] != idx:
+                    continue
                 if not constrained[idx]:
                     free_index[idx] = len(free)
                     free.append(idx)
     else:
+        free_index.resize(total_dofs, -1)
         for i in range(total_dofs):
+            if rep_dof[i] != i:
+                continue
             if not constrained[i]:
+                free_index[i] = len(free)
                 free.append(i)
-
-    var M_total: List[Float64] = []
-    M_total.resize(total_dofs, 0.0)
-    var masses = data.get("masses", [])
-    for i in range(py_len(masses)):
-        var mass = masses[i]
-        var node_id = Int(mass["node"])
-        var dof = Int(mass["dof"])
-        require_dof_in_range(dof, ndf, "mass")
-        var idx = node_dof_index(id_to_index[node_id], dof, ndf)
-        M_total[idx] += Float64(mass["value"])
 
     var time_series = parse_time_series(data)
     var ts_index = -1
@@ -663,10 +748,15 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
     state.analysis = analysis
     state.analysis_type = analysis_type
     state.steps = steps
+    state.modal_num_modes = modal_num_modes
+    state.constraints_handler = constraints_handler
     state.use_banded_linear = use_banded_linear
     state.use_banded_nonlinear = use_banded_nonlinear
+    state.has_transformation_mpc = has_transformation_mpc
     state.free = free^
     state.free_index = free_index^
+    state.rep_dof = rep_dof^
+    state.active_index_by_dof = active_index_by_dof^
     state.M_total = M_total^
     state.time_series = time_series
     state.ts_index = ts_index

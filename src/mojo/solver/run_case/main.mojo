@@ -18,9 +18,11 @@ from solver.run_case.analysis.static_nonlinear import (
     run_static_nonlinear_load_control,
 )
 from solver.run_case.analysis.transient_linear import run_transient_linear
+from solver.run_case.analysis.modal_eigen import run_modal_eigen
 from solver.run_case.helpers import (
     _drift_value,
     _element_force_global_for_recorder,
+    _enforce_equal_dof_values,
     _format_values_line,
     _has_recorder_type,
     _scaled_forces,
@@ -74,8 +76,10 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
     var analysis = state.analysis
     var analysis_type = state.analysis_type
     var steps = state.steps
+    var modal_num_modes = state.modal_num_modes
     var use_banded_linear = state.use_banded_linear
     var use_banded_nonlinear = state.use_banded_nonlinear
+    var has_transformation_mpc = state.has_transformation_mpc
     var time_series = state.time_series
     var ts_index = state.ts_index
     var recorders = state.recorders
@@ -97,6 +101,7 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
     var constrained = state.constrained.copy()
     var free = state.free.copy()
     var free_index = state.free_index.copy()
+    var rep_dof = state.rep_dof.copy()
     var M_total = state.M_total.copy()
 
     var u: List[Float64] = []
@@ -146,6 +151,9 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
             frame_kff_extract,
             frame_solve_linear,
             total_dofs,
+            has_transformation_mpc,
+            rep_dof,
+            constrained,
         )
     elif analysis_type == "static_nonlinear":
         var integrator = analysis.get("integrator", {"type": "LoadControl"})
@@ -192,6 +200,9 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
                 frame_solve_nonlinear,
                 frame_nonlinear_step,
                 frame_nonlinear_iter,
+                has_transformation_mpc,
+                rep_dof,
+                constrained,
             )
         elif integrator_type == "DisplacementControl":
             run_static_nonlinear_displacement_control(
@@ -233,6 +244,8 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
                 frame_solve_nonlinear,
                 frame_nonlinear_step,
                 frame_nonlinear_iter,
+                has_transformation_mpc,
+                rep_dof,
             )
         else:
             abort("unsupported static_nonlinear integrator: " + integrator_type)
@@ -268,6 +281,41 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
             fiber_section_index_by_id,
             transient_output_files,
             transient_output_buffers,
+            has_transformation_mpc,
+            rep_dof,
+            constrained,
+        )
+    elif analysis_type == "modal_eigen":
+        run_modal_eigen(
+            analysis,
+            modal_num_modes,
+            nodes,
+            elements,
+            sections_by_id,
+            materials_by_id,
+            id_to_index,
+            node_count,
+            ndf,
+            ndm,
+            total_dofs,
+            u,
+            uniaxial_defs,
+            uniaxial_state_defs,
+            uniaxial_states,
+            elem_uniaxial_offsets,
+            elem_uniaxial_counts,
+            elem_uniaxial_state_ids,
+            fiber_section_defs,
+            fiber_section_cells,
+            fiber_section_index_by_id,
+            M_total,
+            constrained,
+            free,
+            has_transformation_mpc,
+            rep_dof,
+            recorders,
+            static_output_files,
+            static_output_buffers,
         )
     else:
         abort("unsupported analysis type: " + analysis_type)
@@ -291,12 +339,19 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
             var filename = transient_output_files[i]
             var file_path = out_dir.joinpath(filename)
             file_path.write_text(PythonObject(transient_output_buffers[i]))
+    elif analysis_type == "modal_eigen":
+        for i in range(len(static_output_files)):
+            var filename = static_output_files[i]
+            var file_path = out_dir.joinpath(filename)
+            file_path.write_text(PythonObject(static_output_buffers[i]))
     elif analysis_type == "static_nonlinear" and len(static_output_files) > 0:
         for i in range(len(static_output_files)):
             var filename = static_output_files[i]
             var file_path = out_dir.joinpath(filename)
             file_path.write_text(PythonObject(static_output_buffers[i]))
     else:
+        if has_transformation_mpc:
+            _enforce_equal_dof_values(u, rep_dof, constrained)
         var has_reaction_recorder = _has_recorder_type(recorders, "node_reaction")
         var F_int_reaction: List[Float64] = []
         var F_ext_reaction: List[Float64] = []

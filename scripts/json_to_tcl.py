@@ -155,6 +155,27 @@ def main():
             if fix is not None:
                 f.write(f"fix {node_id} {' '.join(str(v) for v in fix)}\n")
 
+        mp_constraints = data.get("mp_constraints", [])
+        for mpc in mp_constraints:
+            mpc_type = mpc.get("type")
+            if mpc_type != "equalDOF":
+                raise ValueError(f"unsupported mp constraint type: {mpc_type}")
+            retained = mpc.get("retained_node")
+            constrained_node = mpc.get("constrained_node")
+            dofs = mpc.get("dofs", [])
+            if retained not in node_by_id:
+                raise ValueError(f"equalDOF retained_node {retained} not found")
+            if constrained_node not in node_by_id:
+                raise ValueError(f"equalDOF constrained_node {constrained_node} not found")
+            if not isinstance(dofs, list) or not dofs:
+                raise ValueError("equalDOF requires non-empty dofs list")
+            dof_vals = []
+            for dof in dofs:
+                if not isinstance(dof, int) or dof < 1 or dof > ndf:
+                    raise ValueError(f"equalDOF dof {dof} out of range 1..{ndf}")
+                dof_vals.append(str(dof))
+            f.write(f"equalDOF {retained} {constrained_node} {' '.join(dof_vals)}\n")
+
         # Nodal masses (lumped)
         masses = data.get("masses", [])
         if masses:
@@ -541,11 +562,16 @@ def main():
         analysis = data.get("analysis", {"type": "static_linear", "steps": 1})
         analysis_type = analysis.get("type", "static_linear")
         steps = analysis.get("steps", 1)
+        constraints_handler = analysis.get("constraints", "Plain")
         dt = None
         static_nl_post_lines = None
         if steps < 1:
             raise ValueError("analysis steps must be >= 1")
-        f.write("constraints Plain\n")
+        if constraints_handler not in ("Plain", "Transformation"):
+            raise ValueError(f"unsupported constraints handler: {constraints_handler}")
+        if mp_constraints and constraints_handler != "Transformation":
+            raise ValueError("mp_constraints require analysis.constraints=Transformation")
+        f.write(f"constraints {constraints_handler}\n")
         f.write("numberer RCM\n")
         f.write("system BandGeneral\n")
         if analysis_type == "static_linear":
@@ -614,6 +640,10 @@ def main():
             f.write("algorithm Linear\n")
             f.write(f"integrator Newmark {gamma} {beta}\n")
             f.write("analysis Transient\n")
+        elif analysis_type == "modal_eigen":
+            num_modes = int(analysis.get("num_modes", 0))
+            if num_modes < 1:
+                raise ValueError("modal_eigen requires num_modes >= 1")
         else:
             raise ValueError(f"unsupported analysis type: {analysis_type}")
 
@@ -658,11 +688,58 @@ def main():
                     f.write(
                         f"recorder EnvelopeElement -file {filename} -ele {elem_id} forces\n"
                     )
+            elif rec_type == "modal_eigen":
+                # Modal outputs are emitted explicitly after `eigen`, not through recorder commands.
+                pass
             else:
                 raise ValueError(f"unsupported recorder type: {rec_type}")
 
         if analysis_type == "transient_linear":
             f.write(f"analyze {steps} {dt}\n")
+        elif analysis_type == "modal_eigen":
+            num_modes = int(analysis.get("num_modes", 0))
+            f.write(f"set strut_modal_lambda [eigen {num_modes}]\n")
+            modal_outputs = {}
+            for rec in recorders:
+                if rec.get("type") != "modal_eigen":
+                    continue
+                output = rec.get("output", "modal")
+                if output not in modal_outputs:
+                    modal_outputs[output] = rec
+                    f.write(f"set strut_ev_file [open \"{output}_eigenvalues.out\" \"w\"]\n")
+                    f.write("foreach strut_ev $strut_modal_lambda {\n")
+                    f.write("  puts $strut_ev_file $strut_ev\n")
+                    f.write("}\n")
+                    f.write("close $strut_ev_file\n")
+
+                modes = rec.get("modes", [])
+                if not isinstance(modes, list) or len(modes) == 0:
+                    raise ValueError("modal_eigen recorder requires non-empty modes")
+                nodes_out = rec.get("nodes", [])
+                dofs = rec.get("dofs", [])
+                if not isinstance(nodes_out, list) or len(nodes_out) == 0:
+                    raise ValueError("modal_eigen recorder requires non-empty nodes")
+                if not isinstance(dofs, list) or len(dofs) == 0:
+                    raise ValueError("modal_eigen recorder requires non-empty dofs")
+                for mode in modes:
+                    mode_no = int(mode)
+                    if mode_no < 1 or mode_no > num_modes:
+                        raise ValueError("modal_eigen recorder mode out of range")
+                    for node_id in nodes_out:
+                        if node_id not in node_by_id:
+                            raise ValueError(f"modal_eigen recorder node {node_id} not found")
+                        f.write("set strut_modal_line \"\"\n")
+                        for dof in dofs:
+                            if dof < 1 or dof > ndf:
+                                raise ValueError(f"modal_eigen dof {dof} out of range 1..{ndf}")
+                            f.write(
+                                f"append strut_modal_line \"[nodeEigenvector {int(node_id)} {mode_no} {int(dof)}] \"\n"
+                            )
+                        f.write(
+                            f"set strut_modal_file [open \"{output}_mode{mode_no}_node{int(node_id)}.out\" \"w\"]\n"
+                        )
+                        f.write("puts $strut_modal_file [string trim $strut_modal_line]\n")
+                        f.write("close $strut_modal_file\n")
         elif analysis_type == "static_nonlinear":
             integrator = analysis.get("integrator", {"type": "LoadControl"})
             if integrator.get("type", "LoadControl") == "LoadControl":

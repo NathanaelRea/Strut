@@ -6,6 +6,7 @@ from linalg import gaussian_elimination
 from solver.assembly import assemble_global_stiffness, assemble_global_stiffness_banded
 from solver.banded import banded_gaussian_elimination, estimate_bandwidth
 from solver.profile import _append_event
+from solver.run_case.helpers import _collapse_matrix_by_rep, _enforce_equal_dof_values
 from solver.time_series import eval_time_series
 from sections import FiberCell, FiberSection2dDef
 
@@ -42,6 +43,9 @@ fn run_static_linear(
     frame_kff_extract: Int,
     frame_solve_linear: Int,
     total_dofs: Int,
+    has_transformation_mpc: Bool,
+    rep_dof: List[Int],
+    constrained: List[Bool],
 ) raises:
     var time = Python.import_module("time")
     if ts_index >= 0:
@@ -105,6 +109,8 @@ fn run_static_linear(
             fiber_section_cells,
             fiber_section_index_by_id,
         )
+        if has_transformation_mpc:
+            K = _collapse_matrix_by_rep(K, rep_dof)
     if do_profile:
         var t_asm_end = Int(time.perf_counter_ns())
         var asm_end_us = (t_asm_end - t0) // 1000
@@ -153,3 +159,5 @@ fn run_static_linear(
         )
     for i in range(len(free)):
         u[free[i]] = u_f[i]
+    if has_transformation_mpc:
+        _enforce_equal_dof_values(u, rep_dof, constrained)
