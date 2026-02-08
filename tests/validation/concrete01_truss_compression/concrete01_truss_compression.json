@@ -1,0 +1,82 @@
+{
+  "schema_version": "1.0",
+  "enabled": true,
+  "metadata": {
+    "name": "concrete01_truss_compression",
+    "units": "SI"
+  },
+  "model": {
+    "ndm": 2,
+    "ndf": 2
+  },
+  "nodes": [
+    {
+      "id": 1,
+      "x": 0.0,
+      "y": 0.0,
+      "constraints": [
+        1,
+        2
+      ]
+    },
+    {
+      "id": 2,
+      "x": 1.0,
+      "y": 0.0,
+      "constraints": [
+        2
+      ]
+    }
+  ],
+  "materials": [
+    {
+      "id": 1,
+      "type": "Concrete01",
+      "params": {
+        "fpc": -30.0,
+        "epsc0": -0.002,
+        "fpcu": -20.0,
+        "epscu": -0.006
+      }
+    }
+  ],
+  "elements": [
+    {
+      "id": 1,
+      "type": "truss",
+      "nodes": [
+        1,
+        2
+      ],
+      "area": 1.0,
+      "material": 1
+    }
+  ],
+  "loads": [
+    {
+      "node": 2,
+      "dof": 1,
+      "value": -10.0
+    }
+  ],
+  "analysis": {
+    "type": "static_nonlinear",
+    "steps": 10,
+    "max_iters": 25,
+    "tol": 1.0e-10,
+    "rel_tol": 1.0e-8
+  },
+  "recorders": [
+    {
+      "type": "node_displacement",
+      "nodes": [
+        2
+      ],
+      "dofs": [
+        1,
+        2
+      ],
+      "output": "node_disp"
+    }
+  ]
+}
