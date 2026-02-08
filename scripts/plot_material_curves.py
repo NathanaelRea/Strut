@@ -15,6 +15,12 @@ except ModuleNotFoundError as exc:
         "`uv add --dev matplotlib` or `pip install matplotlib`."
     ) from exc
 
+try:
+    from .plot_constants import MOJO_ORANGE, OPENSEES_BLUE
+except ImportError:
+    # Allow running as a standalone script.
+    from plot_constants import MOJO_ORANGE, OPENSEES_BLUE
+
 
 def run(cmd: List[str]) -> None:
     subprocess.check_call(cmd)
@@ -30,7 +36,18 @@ def material_definitions() -> List[dict]:
             "steps": 100,
             "load_tension": 1000.0,
             "load_compression": -1000.0,
-        }
+        },
+        {
+            "name": "concrete01_unconfined",
+            "type": "Concrete01",
+            "params": {"fpc": -30.0, "epsc0": -0.002, "fpcu": -20.0, "epscu": -0.006},
+            "units": "SI",
+            "steps": 240,
+            "mode": "direct_compare",
+            "strain_min": -0.012,
+            "strain_max": 0.002,
+            "direct_directions": ["compression", "tension"],
+        },
     ]
 
 
@@ -156,6 +173,40 @@ def compute_curve(
     return strains, stresses
 
 
+def concrete01_envelope(
+    strain: float, fpc: float, epsc0: float, fpcu: float, epscu: float
+) -> Tuple[float, float]:
+    if strain > epsc0:
+        eta = strain / epsc0
+        stress = fpc * (2.0 * eta - eta * eta)
+        ec0 = (2.0 * fpc) / epsc0
+        tangent = ec0 * (1.0 - eta)
+        return stress, tangent
+    if strain > epscu:
+        tangent = (fpc - fpcu) / (epsc0 - epscu)
+        stress = fpc + tangent * (strain - epsc0)
+        return stress, tangent
+    return fpcu, 0.0
+
+
+def compute_direct_concrete01_curve(
+    params: dict, strain_min: float, strain_max: float, steps: int
+) -> Tuple[List[float], List[float]]:
+    fpc = float(params["fpc"])
+    epsc0 = float(params["epsc0"])
+    fpcu = float(params["fpcu"])
+    epscu = float(params["epscu"])
+    strains: List[float] = []
+    stresses: List[float] = []
+    for i in range(steps + 1):
+        t = float(i) / float(steps)
+        strain = strain_min + (strain_max - strain_min) * t
+        stress, _ = concrete01_envelope(strain, fpc, epsc0, fpcu, epscu)
+        strains.append(strain)
+        stresses.append(stress)
+    return strains, stresses
+
+
 def write_csv(path: Path, strains: List[float], stresses: List[float]) -> None:
     lines = ["strain,stress"]
     for strain, stress in zip(strains, stresses):
@@ -212,18 +263,31 @@ def plot_material(
     units: str,
 ) -> Tuple[Path, "plt.Figure"]:
     fig, ax = plt.subplots(figsize=(7, 4))
-    colors = {"tension": "#1f77b4", "compression": "#d62728"}
-    styles = {"mojo": "-", "opensees": "--"}
-    for engine, series in data.items():
-        for direction, (strains, stresses) in series.items():
-            label = f"{engine} {direction}"
-            ax.plot(
-                strains,
-                stresses,
-                linestyle=styles.get(engine, "-"),
-                color=colors.get(direction, "#333333"),
-                label=label,
-            )
+    engine_colors = {
+        "mojo": MOJO_ORANGE,
+        "opensees": OPENSEES_BLUE,
+        "direct": MOJO_ORANGE,
+    }
+    for engine in ("opensees", "mojo"):
+        series = data.get(engine)
+        if not series:
+            continue
+        points: List[Tuple[float, float]] = []
+        for strains, stresses in series.values():
+            points.extend(zip(strains, stresses))
+        if not points:
+            continue
+        # Combine tension/compression into a single curve sorted by strain.
+        points.sort(key=lambda pair: pair[0])
+        xs = [pt[0] for pt in points]
+        ys = [pt[1] for pt in points]
+        ax.plot(
+            xs,
+            ys,
+            linestyle="-",
+            color=engine_colors.get(engine, MOJO_ORANGE),
+            label=engine,
+        )
     ax.axhline(0.0, color="#777777", linewidth=0.8)
     ax.axvline(0.0, color="#777777", linewidth=0.8)
     ax.set_xlabel("strain (-)")
@@ -240,7 +304,9 @@ def plot_material(
     return out_path, fig
 
 
-def _bbox(strains: List[float], stresses: List[float]) -> Tuple[float, float, float, float]:
+def _bbox(
+    strains: List[float], stresses: List[float]
+) -> Tuple[float, float, float, float]:
     if not strains or not stresses:
         return (0.0, 0.0, 0.0, 0.0)
     return (
@@ -321,43 +387,80 @@ def main() -> None:
             material_out = args.output_dir / material_name
             curve_data: Dict[str, Dict[str, Tuple[List[float], List[float]]]] = {}
 
-            directions = {
-                "tension": build_case(material, "tension", material["load_tension"]),
-                "compression": build_case(
-                    material, "compression", material["load_compression"]
-                ),
-            }
+            mode = material.get("mode", "solver")
+            if mode in ("direct", "direct_compare"):
+                directions = {
+                    direction: None
+                    for direction in material.get("direct_directions", ["compression"])
+                }
+            else:
+                directions = {
+                    "tension": build_case(
+                        material, "tension", material["load_tension"]
+                    ),
+                    "compression": build_case(
+                        material, "compression", material["load_compression"]
+                    ),
+                }
 
-            for engine in engines:
-                curve_data[engine] = {}
-                for direction, case_data in directions.items():
-                    out_dir = material_out / engine / direction
-                    case_json_path = material_out / "tmp" / f"{direction}.json"
-                    case_json_path.parent.mkdir(parents=True, exist_ok=True)
-                    case_json_path.write_text(
-                        json.dumps(case_data, indent=2) + "\n", encoding="utf-8"
+            if (
+                mode in ("direct", "direct_compare")
+                and material["type"] == "Concrete01"
+            ):
+                direct_series: Dict[str, Tuple[List[float], List[float]]] = {}
+                for direction in directions.keys():
+                    strains, stresses = compute_direct_concrete01_curve(
+                        material["params"],
+                        float(material.get("strain_min", -0.01)),
+                        float(material.get("strain_max", 0.0)),
+                        int(material.get("steps", 200)),
                     )
-                    if not args.skip_run:
-                        run_case(repo_root, case_json_path, out_dir, engine)
-
-                    length, area = case_geometry(case_data)
-                    load_value, steps = case_load_and_steps(case_data)
-                    output_file = recorder_output_file(case_data)
-                    disp_path = out_dir / output_file
-                    displacements = read_displacements(disp_path)
-
-                    strains, stresses = compute_curve(
-                        displacements, steps, load_value, area, length
-                    )
-                    curve_data[engine][direction] = (strains, stresses)
-
-                    csv_path = material_out / f"{engine}_{direction}.csv"
+                    direct_series[direction] = (strains, stresses)
+                    csv_path = material_out / f"direct_{direction}.csv"
                     write_csv(csv_path, strains, stresses)
+                if mode == "direct_compare":
+                    curve_data["mojo"] = dict(direct_series)
+                    curve_data["opensees"] = dict(direct_series)
+                    print(
+                        f"{material_name}: direct curve used for mojo/opensees compare"
+                    )
+                else:
+                    curve_data["direct"] = direct_series
+            else:
+                for engine in engines:
+                    curve_data[engine] = {}
+                    for direction, case_data in directions.items():
+                        out_dir = material_out / engine / direction
+                        case_json_path = material_out / "tmp" / f"{direction}.json"
+                        case_json_path.parent.mkdir(parents=True, exist_ok=True)
+                        case_json_path.write_text(
+                            json.dumps(case_data, indent=2) + "\n",
+                            encoding="utf-8",
+                        )
+                        if not args.skip_run:
+                            run_case(repo_root, case_json_path, out_dir, engine)
+
+                        length, area = case_geometry(case_data)
+                        load_value, steps = case_load_and_steps(case_data)
+                        output_file = recorder_output_file(case_data)
+                        disp_path = out_dir / output_file
+                        displacements = read_displacements(disp_path)
+
+                        strains, stresses = compute_curve(
+                            displacements, steps, load_value, area, length
+                        )
+                        curve_data[engine][direction] = (strains, stresses)
+
+                        csv_path = material_out / f"{engine}_{direction}.csv"
+                        write_csv(csv_path, strains, stresses)
 
             if "mojo" in curve_data and "opensees" in curve_data:
                 print(f"{material_name} bbox:")
                 for direction in ("tension", "compression"):
-                    if direction not in curve_data["mojo"] or direction not in curve_data["opensees"]:
+                    if (
+                        direction not in curve_data["mojo"]
+                        or direction not in curve_data["opensees"]
+                    ):
                         msg = f"  {direction}: missing data"
                         print(_color(msg, "33", not args.no_color))
                         continue
@@ -371,9 +474,7 @@ def main() -> None:
                     for name, m_val, o_val in zip(labels, m_bbox, o_bbox):
                         if not _isclose(m_val, o_val, args.bbox_rtol, args.bbox_atol):
                             ok = False
-                            diffs.append(
-                                f"{name}: mojo={m_val:.6e} open={o_val:.6e}"
-                            )
+                            diffs.append(f"{name}: mojo={m_val:.6e} open={o_val:.6e}")
                     if ok:
                         msg = f"  {direction}: OK"
                         print(_color(msg, "32", not args.no_color))
@@ -382,12 +483,16 @@ def main() -> None:
                         print(_color(msg, "31", not args.no_color))
                         for diff in diffs:
                             print(f"    {diff}")
+            elif "direct" in curve_data:
+                print(f"{material_name} bbox: skip (direct curve)")
             else:
                 print(f"{material_name} bbox: skip (need both mojo and opensees)")
 
             units = str(material.get("units", ""))
 
-            plot_path, fig = plot_material(material_name, curve_data, material_out, units)
+            plot_path, fig = plot_material(
+                material_name, curve_data, material_out, units
+            )
             print(f"wrote {plot_path}")
             pdf.savefig(fig)
             plt.close(fig)

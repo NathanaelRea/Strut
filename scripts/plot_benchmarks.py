@@ -11,6 +11,12 @@ import math
 from typing import Dict, List, Optional, Tuple
 
 try:
+    from .plot_constants import MOJO_ORANGE
+except ImportError:
+    # Allow running as a standalone script.
+    from plot_constants import MOJO_ORANGE
+
+try:
     import matplotlib.pyplot as plt
     from matplotlib.backends.backend_pdf import PdfPages
 except ModuleNotFoundError as exc:
@@ -193,9 +199,6 @@ def archive_min_timestamp(archive_dir: Path) -> Optional[datetime]:
     return min_ts
 
 
-MOJO_COLOR = "#FF5A1F"
-
-
 def _group_label_from_prefix(name: str) -> str:
     parts = name.split("_")
     if len(parts) >= 2:
@@ -248,7 +251,12 @@ def group_cases(
     errors: Dict[str, List[Tuple[float, float]]],
     group_by: str,
     group_config: Optional[Path],
-) -> Tuple[List[str], Dict[str, List[float]], Dict[str, List[Tuple[float, float]]], List[Tuple[str, int, int]]]:
+) -> Tuple[
+    List[str],
+    Dict[str, List[float]],
+    Dict[str, List[Tuple[float, float]]],
+    List[Tuple[str, int, int]],
+]:
     if group_by == "none":
         return names, engines, errors, []
 
@@ -299,7 +307,8 @@ def group_cases(
 
     ordered_names = [names[i] for i in ordered_indices]
     ordered_engines = {
-        engine: [values[i] for i in ordered_indices] for engine, values in engines.items()
+        engine: [values[i] for i in ordered_indices]
+        for engine, values in engines.items()
     }
     ordered_errors = {
         engine: [errs[i] for i in ordered_indices] for engine, errs in errors.items()
@@ -322,9 +331,7 @@ def plot_recent_bar(
     if group_spans:
         gap_slots = max(0, int(round(group_gap)))
         expanded_names: List[str] = []
-        expanded_engines: Dict[str, List[float]] = {
-            engine: [] for engine in engines
-        }
+        expanded_engines: Dict[str, List[float]] = {engine: [] for engine in engines}
         expanded_errors: Dict[str, List[Tuple[float, float]]] = {
             engine: [] for engine in errors
         }
@@ -372,7 +379,7 @@ def plot_recent_bar(
         mojo_vals,
         width,
         label="Mojo",
-        color=MOJO_COLOR,
+        color=MOJO_ORANGE,
     )
 
     ax.set_ylabel(f"Analysis time ({unit_label})")
@@ -424,7 +431,7 @@ def plot_archive_trend(
             [v * scale for v in mojo_medians],
             marker="o",
             label="Mojo",
-            color=MOJO_COLOR,
+            color=MOJO_ORANGE,
         )
 
     ax.set_ylabel(f"Median analysis time ({unit_label})")
