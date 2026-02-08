@@ -153,15 +153,19 @@ def collect_archive_trend(
     size_filter: Optional[str],
     medium_threshold: int,
     large_threshold: int,
-) -> Tuple[List[datetime], Dict[str, List[float]]]:
-    engine_medians: Dict[str, List[float]] = {"opensees": [], "mojo": []}
+) -> Tuple[List[datetime], Dict[str, List[float]], Dict[str, List[float]]]:
+    engine_means: Dict[str, List[float]] = {"opensees": [], "mojo": []}
+    engine_stds: Dict[str, List[float]] = {"opensees": [], "mojo": []}
     timestamps: List[datetime] = []
     files = sorted(archive_dir.glob("*-summary.json"))
     if not files:
-        return timestamps, engine_medians
+        return timestamps, engine_means, engine_stds
+
+    per_hash_entries: Dict[str, List[Tuple[datetime, Dict[str, float]]]] = {}
 
     for path in files:
         data = load_summary(path)
+        run_medians: Dict[str, float] = {}
         for engine in ("opensees", "mojo"):
             values: List[float] = []
             for case in data.get("cases", []):
@@ -175,12 +179,44 @@ def collect_archive_trend(
                 value = _case_time_seconds(case, engine)
                 if isinstance(value, (int, float)) and math.isfinite(value):
                     values.append(float(value))
-            if values:
-                engine_medians[engine].append(median(values))
-            else:
-                engine_medians[engine].append(float("nan"))
-        timestamps.append(parse_timestamp(path, data))
-    return timestamps, engine_medians
+            run_medians[engine] = median(values) if values else float("nan")
+
+        git_rev = data.get("git_rev")
+        hash_key = (
+            git_rev.strip() if isinstance(git_rev, str) and git_rev.strip() else "unknown"
+        )
+        per_hash_entries.setdefault(hash_key, []).append(
+            (parse_timestamp(path, data), run_medians)
+        )
+
+    def _mean_std(values: List[float]) -> Tuple[float, float]:
+        finite = [v for v in values if isinstance(v, (int, float)) and math.isfinite(v)]
+        if not finite:
+            return float("nan"), float("nan")
+        mean = sum(finite) / len(finite)
+        if len(finite) == 1:
+            return mean, 0.0
+        variance = sum((v - mean) ** 2 for v in finite) / len(finite)
+        return mean, math.sqrt(variance)
+
+    ordered_batches = sorted(
+        (
+            (max(ts for ts, _ in entries), entries)
+            for entries in per_hash_entries.values()
+            if entries
+        ),
+        key=lambda item: item[0],
+    )
+
+    for latest_ts, entries in ordered_batches:
+        timestamps.append(latest_ts)
+        for engine in ("opensees", "mojo"):
+            values = [run_vals.get(engine, float("nan")) for _, run_vals in entries]
+            mean_val, std_val = _mean_std(values)
+            engine_means[engine].append(mean_val)
+            engine_stds[engine].append(std_val)
+
+    return timestamps, engine_means, engine_stds
 
 
 def archive_min_timestamp(archive_dir: Path) -> Optional[datetime]:
@@ -410,7 +446,8 @@ def plot_recent_bar(
 
 def plot_archive_trend(
     timestamps: List[datetime],
-    medians: Dict[str, List[float]],
+    means: Dict[str, List[float]],
+    stds: Dict[str, List[float]],
     title: str,
     unit_label: str,
     scale: float,
@@ -418,23 +455,31 @@ def plot_archive_trend(
 ):
     fig, ax = plt.subplots(figsize=(10, 4))
     if timestamps:
-        opensees_medians = medians.get("opensees", [])
-        mojo_medians = medians.get("mojo", [])
-        ax.plot(
+        opensees_means = means.get("opensees", [])
+        mojo_means = means.get("mojo", [])
+        opensees_stds = stds.get("opensees", [])
+        mojo_stds = stds.get("mojo", [])
+        ax.errorbar(
             timestamps,
-            [v * scale for v in opensees_medians],
+            [v * scale for v in opensees_means],
+            yerr=[v * scale for v in opensees_stds],
             marker="o",
+            linestyle="none",
             label="OpenSees",
+            capsize=3,
         )
-        ax.plot(
+        ax.errorbar(
             timestamps,
-            [v * scale for v in mojo_medians],
+            [v * scale for v in mojo_means],
+            yerr=[v * scale for v in mojo_stds],
             marker="o",
+            linestyle="none",
             label="Mojo",
             color=MOJO_ORANGE,
+            capsize=3,
         )
 
-    ax.set_ylabel(f"Median analysis time ({unit_label})")
+    ax.set_ylabel(f"Mean median analysis time ({unit_label})")
     ax.set_title(title)
     ax.grid(axis="y", linestyle=":", alpha=0.5)
     ax.legend()
@@ -563,7 +608,7 @@ def main() -> None:
                 ("large", "Archive trend (large cases)", "s", 1.0),
             ]
             for size_label, title, unit_label, scale in archive_specs:
-                timestamps, medians = collect_archive_trend(
+                timestamps, means, stds = collect_archive_trend(
                     archive_dir,
                     size_label,
                     args.medium_threshold,
@@ -571,12 +616,13 @@ def main() -> None:
                 )
                 if timestamps and any(
                     isinstance(v, float) and math.isfinite(v)
-                    for vals in medians.values()
+                    for vals in means.values()
                     for v in vals
                 ):
                     fig = plot_archive_trend(
                         timestamps,
-                        medians,
+                        means,
+                        stds,
                         title,
                         unit_label,
                         scale,
