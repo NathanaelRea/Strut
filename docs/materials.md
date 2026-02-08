@@ -20,10 +20,11 @@ dependent behavior without cross-element coupling.
 
 ## Nonlinear Solver Integration
 
-`static_nonlinear` calls `revert_trial_all` each Newton iteration, then assembles
+`static_nonlinear` and `transient_nonlinear` call `revert_trial_all` each nonlinear
+iteration, then assemble
 internal forces and tangent stiffness using trial states. On step convergence,
 `commit_all` persists the state. This keeps material evolution consistent with
-Newton updates.
+Newton/Modified Newton updates.
 
 ## Implemented Uniaxial Models
 
@@ -63,8 +64,8 @@ Newton updates.
 
 ## Compatibility Notes
 
-Nonlinear uniaxial materials currently require `static_nonlinear` analysis. Linear
-analyses continue to use elastic tangents only.
+Nonlinear uniaxial materials currently require `static_nonlinear` or
+`transient_nonlinear` analysis. Linear analyses continue to use elastic tangents only.
 
 ## Stress-Strain Curves
 

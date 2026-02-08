@@ -135,3 +135,31 @@ def test_transient_nonlinear_newmark_newton_smoke():
     assert len(force_rows) == 6
     assert all(math.isfinite(row[0]) for row in disp_rows)
     assert all(math.isfinite(v) for row in force_rows for v in row)
+
+
+def test_transient_nonlinear_modified_newton_smoke():
+    case_data = _base_truss_dynamic_case(
+        {"id": 1, "type": "Steel01", "params": {"Fy": 10.0, "E0": 100.0, "b": 0.01}}
+    )
+    case_data["time_series"] = [
+        {"type": "Path", "tag": 4, "dt": 0.02, "values": [1.0, 1.0, 0.5, 0.0, 0.0, 0.0]}
+    ]
+    case_data["pattern"] = {"type": "UniformExcitation", "tag": 4, "direction": 1, "accel": 4}
+    case_data["analysis"] = {
+        "type": "transient_nonlinear",
+        "steps": 6,
+        "dt": 0.02,
+        "integrator": {"type": "Newmark", "gamma": 0.5, "beta": 0.25},
+        "algorithm": "ModifiedNewton",
+        "tol": 1.0e-8,
+        "rel_tol": 1.0e-6,
+        "max_iters": 30,
+    }
+
+    with tempfile.TemporaryDirectory() as tmp:
+        out_dir = Path(tmp)
+        _run_mojo_case(case_data, out_dir)
+        disp_rows = _read_rows(out_dir / "node_disp_node2.out")
+
+    assert len(disp_rows) == 6
+    assert all(math.isfinite(row[0]) for row in disp_rows)

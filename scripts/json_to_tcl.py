@@ -618,8 +618,13 @@ def main():
         elif analysis_type == "static_nonlinear":
             tol = analysis.get("tol", 1.0e-10)
             max_iters = analysis.get("max_iters", 20)
+            algorithm = analysis.get("algorithm", "Newton")
+            if algorithm not in ("Newton", "ModifiedNewton"):
+                raise ValueError(
+                    f"unsupported static_nonlinear algorithm: {algorithm}"
+                )
             f.write(f"test NormUnbalance {tol} {max_iters}\n")
-            f.write("algorithm Newton\n")
+            f.write(f"algorithm {algorithm}\n")
             integrator = analysis.get("integrator", {"type": "LoadControl"})
             integrator_type = integrator.get("type", "LoadControl")
             if integrator_type == "LoadControl":
@@ -680,6 +685,11 @@ def main():
             dt = analysis.get("dt")
             if dt is None or dt <= 0.0:
                 raise ValueError("transient_nonlinear requires dt > 0")
+            algorithm = analysis.get("algorithm", "Newton")
+            if algorithm not in ("Newton", "ModifiedNewton"):
+                raise ValueError(
+                    f"unsupported transient_nonlinear algorithm: {algorithm}"
+                )
             integrator = analysis.get("integrator", {"type": "Newmark"})
             if integrator.get("type", "Newmark") != "Newmark":
                 raise ValueError("transient_nonlinear only supports Newmark integrator")
@@ -688,7 +698,7 @@ def main():
             tol = analysis.get("tol", 1.0e-10)
             max_iters = analysis.get("max_iters", 20)
             f.write(f"test NormUnbalance {tol} {max_iters}\n")
-            f.write("algorithm Newton\n")
+            f.write(f"algorithm {algorithm}\n")
             f.write(f"integrator Newmark {gamma} {beta}\n")
             f.write("analysis Transient\n")
         elif analysis_type == "modal_eigen":

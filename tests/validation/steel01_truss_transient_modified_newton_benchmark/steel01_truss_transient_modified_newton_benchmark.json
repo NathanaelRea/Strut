@@ -1,0 +1,121 @@
+{
+  "schema_version": "1.0",
+  "enabled": false,
+  "status": "benchmark",
+  "metadata": {
+    "name": "steel01_truss_transient_modified_newton_benchmark",
+    "units": "SI"
+  },
+  "notes": "Transient nonlinear benchmark case for ModifiedNewton algorithm on a 2D truss under UniformExcitation.",
+  "model": {
+    "ndm": 2,
+    "ndf": 2
+  },
+  "nodes": [
+    {
+      "id": 1,
+      "x": 0.0,
+      "y": 0.0,
+      "constraints": [
+        1,
+        2
+      ]
+    },
+    {
+      "id": 2,
+      "x": 1.0,
+      "y": 0.0,
+      "constraints": [
+        2
+      ]
+    }
+  ],
+  "materials": [
+    {
+      "id": 1,
+      "type": "Steel01",
+      "params": {
+        "Fy": 10.0,
+        "E0": 100.0,
+        "b": 0.01
+      }
+    }
+  ],
+  "elements": [
+    {
+      "id": 1,
+      "type": "truss",
+      "nodes": [
+        1,
+        2
+      ],
+      "area": 1.0,
+      "material": 1
+    }
+  ],
+  "time_series": [
+    {
+      "type": "Path",
+      "tag": 1,
+      "dt": 0.02,
+      "values": [
+        1.0,
+        1.0,
+        0.5,
+        0.0,
+        0.0,
+        0.0
+      ]
+    }
+  ],
+  "pattern": {
+    "type": "UniformExcitation",
+    "tag": 1,
+    "direction": 1,
+    "accel": 1
+  },
+  "masses": [
+    {
+      "node": 2,
+      "dof": 1,
+      "value": 1.0
+    }
+  ],
+  "analysis": {
+    "type": "transient_nonlinear",
+    "steps": 6,
+    "dt": 0.02,
+    "integrator": {
+      "type": "Newmark",
+      "gamma": 0.5,
+      "beta": 0.25
+    },
+    "algorithm": "ModifiedNewton",
+    "tol": 1.0e-8,
+    "rel_tol": 1.0e-6,
+    "max_iters": 30
+  },
+  "parity_tolerance": {
+    "atol": 1.0e-8,
+    "rtol": 1.0e-5
+  },
+  "recorders": [
+    {
+      "type": "node_displacement",
+      "nodes": [
+        2
+      ],
+      "dofs": [
+        1
+      ],
+      "output": "node_disp"
+    },
+    {
+      "type": "element_force",
+      "elements": [
+        1
+      ],
+      "output": "element_force"
+    }
+  ]
+}

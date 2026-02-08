@@ -77,6 +77,14 @@ fn run_static_nonlinear_load_control(
     var max_iters = Int(analysis.get("max_iters", 20))
     var tol = Float64(analysis.get("tol", 1.0e-10))
     var rel_tol = Float64(analysis.get("rel_tol", 1.0e-8))
+    var algorithm = String(analysis.get("algorithm", "Newton"))
+    var use_modified_newton = False
+    if algorithm == "Newton":
+        pass
+    elif algorithm == "ModifiedNewton":
+        use_modified_newton = True
+    else:
+        abort("unsupported static_nonlinear algorithm: " + algorithm)
     if max_iters < 1:
         abort("max_iters must be >= 1")
     var free_count = len(free)
@@ -130,6 +138,7 @@ fn run_static_nonlinear_load_control(
         if ts_index >= 0:
             scale = eval_time_series(time_series[ts_index], scale)
         var converged = False
+        var tangent_initialized = False
         for _ in range(max_iters):
             if do_profile:
                 var t_iter_start = Int(time.perf_counter_ns())
@@ -196,24 +205,28 @@ fn run_static_nonlinear_load_control(
             for i in range(free_count):
                 F_f[i] = F_total_free[i] * scale - F_int[free[i]]
             if use_banded_loadcontrol:
-                var width = bw_nl * 2 + 1
-                for i in range(free_count):
-                    for j in range(width):
-                        K_ff_banded[i][j] = 0.0
-                for i in range(free_count):
-                    var row_i = free[i]
-                    var j0 = i - bw_nl
-                    if j0 < 0:
-                        j0 = 0
-                    var j1 = i + bw_nl
-                    if j1 > free_count - 1:
-                        j1 = free_count - 1
-                    for j in range(j0, j1 + 1):
-                        K_ff_banded[i][j - i + bw_nl] = K[row_i][free[j]]
+                if not use_modified_newton or not tangent_initialized:
+                    var width = bw_nl * 2 + 1
+                    for i in range(free_count):
+                        for j in range(width):
+                            K_ff_banded[i][j] = 0.0
+                    for i in range(free_count):
+                        var row_i = free[i]
+                        var j0 = i - bw_nl
+                        if j0 < 0:
+                            j0 = 0
+                        var j1 = i + bw_nl
+                        if j1 > free_count - 1:
+                            j1 = free_count - 1
+                        for j in range(j0, j1 + 1):
+                            K_ff_banded[i][j - i + bw_nl] = K[row_i][free[j]]
+                    tangent_initialized = True
             else:
-                for i in range(free_count):
-                    for j in range(free_count):
-                        K_ff[i][j] = K[free[i]][free[j]]
+                if not use_modified_newton or not tangent_initialized:
+                    for i in range(free_count):
+                        for j in range(free_count):
+                            K_ff[i][j] = K[free[i]][free[j]]
+                    tangent_initialized = True
             if do_profile:
                 var t_kff_end = Int(time.perf_counter_ns())
                 var kff_end_us = (t_kff_end - t0) // 1000
@@ -502,6 +515,14 @@ fn run_static_nonlinear_displacement_control(
     var max_iters = Int(analysis.get("max_iters", 20))
     var tol = Float64(analysis.get("tol", 1.0e-10))
     var rel_tol = Float64(analysis.get("rel_tol", 1.0e-8))
+    var algorithm = String(analysis.get("algorithm", "Newton"))
+    var use_modified_newton = False
+    if algorithm == "Newton":
+        pass
+    elif algorithm == "ModifiedNewton":
+        use_modified_newton = True
+    else:
+        abort("unsupported static_nonlinear algorithm: " + algorithm)
     if max_iters < 1:
         abort("max_iters must be >= 1")
     var free_count = len(free)
@@ -622,6 +643,7 @@ fn run_static_nonlinear_displacement_control(
                 load_factor = lambda_base
 
                 var converged = False
+                var tangent_initialized = False
                 for _ in range(max_iters):
                     if do_profile:
                         var t_iter_start = Int(time.perf_counter_ns())
@@ -688,8 +710,11 @@ fn run_static_nonlinear_displacement_control(
                         )
                     for i in range(free_count):
                         R_f[i] = load_factor * F_total_free[i] - F_int[free[i]]
-                        for j in range(free_count):
-                            K_ff[i][j] = K[free[i]][free[j]]
+                    if not use_modified_newton or not tangent_initialized:
+                        for i in range(free_count):
+                            for j in range(free_count):
+                                K_ff[i][j] = K[free[i]][free[j]]
+                        tangent_initialized = True
                     if do_profile:
                         var t_kff_end = Int(time.perf_counter_ns())
                         var kff_end_us = (t_kff_end - t0) // 1000

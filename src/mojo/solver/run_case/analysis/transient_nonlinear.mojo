@@ -83,8 +83,13 @@ fn run_transient_nonlinear(
             abort("UniformExcitation missing accel time_series")
 
     var algorithm = String(analysis.get("algorithm", "Newton"))
-    if algorithm != "Newton":
-        abort("transient_nonlinear only supports Newton algorithm")
+    var use_modified_newton = False
+    if algorithm == "Newton":
+        pass
+    elif algorithm == "ModifiedNewton":
+        use_modified_newton = True
+    else:
+        abort("unsupported transient_nonlinear algorithm: " + algorithm)
 
     var integrator = analysis.get("integrator", {"type": "Newmark"})
     var integrator_type = String(integrator.get("type", "Newmark"))
@@ -240,6 +245,7 @@ fn run_transient_nonlinear(
             P_ext_f[i] = F_ext_step[free[i]]
 
         var converged = False
+        var tangent_initialized = False
         for _ in range(max_iters):
             uniaxial_revert_trial_all(uniaxial_states)
             assemble_global_stiffness_and_internal(
@@ -267,9 +273,11 @@ fn run_transient_nonlinear(
             if has_transformation_mpc:
                 K = _collapse_matrix_by_rep(K, rep_dof)
                 F_int = _collapse_vector_by_rep(F_int, rep_dof)
-            for i in range(free_count):
-                for j in range(free_count):
-                    K_ff[i][j] = K[free[i]][free[j]]
+            if not use_modified_newton or not tangent_initialized:
+                for i in range(free_count):
+                    for j in range(free_count):
+                        K_ff[i][j] = K[free[i]][free[j]]
+                tangent_initialized = True
 
             for i in range(free_count):
                 for j in range(free_count):

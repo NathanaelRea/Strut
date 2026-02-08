@@ -105,6 +105,29 @@ def test_force_beam_column2d_smoke_static_nonlinear_load_control():
     assert all(math.isfinite(value) for row in rows for value in row)
 
 
+def test_force_beam_column2d_smoke_static_nonlinear_modified_newton():
+    case_data = _base_force_beam_case(
+        {"id": 1, "type": "Elastic", "params": {"E": 30000000000.0}}
+    )
+    case_data["analysis"] = {
+        "type": "static_nonlinear",
+        "steps": 3,
+        "max_iters": 20,
+        "tol": 1e-10,
+        "algorithm": "ModifiedNewton",
+        "integrator": {"type": "LoadControl"},
+    }
+
+    with tempfile.TemporaryDirectory() as tmp:
+        out_dir = Path(tmp)
+        _run_mojo_case(case_data, out_dir)
+        rows = _read_rows(out_dir / "element_force_ele1.out")
+
+    assert len(rows) == 3
+    assert all(len(row) == 6 for row in rows)
+    assert all(math.isfinite(value) for row in rows for value in row)
+
+
 def test_force_beam_column2d_displacement_control_cyclic_sign_reversal():
     case_data = _base_force_beam_case(
         {

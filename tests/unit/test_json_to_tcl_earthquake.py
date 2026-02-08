@@ -68,6 +68,28 @@ def test_json_to_tcl_emits_uniform_excitation_rayleigh_and_transient_nonlinear()
     assert "analyze 2 0.1\n" in text
 
 
+def test_json_to_tcl_emits_modified_newton_algorithms():
+    case = _base_uniform_case()
+    case["analysis"]["algorithm"] = "ModifiedNewton"
+
+    text = _run_json_to_tcl(case)
+    assert "algorithm ModifiedNewton\n" in text
+
+    case["pattern"] = {"type": "Plain", "tag": 1, "time_series": 2}
+    case["loads"] = [{"node": 2, "dof": 1, "value": 1.0}]
+    case["analysis"] = {
+        "type": "static_nonlinear",
+        "steps": 2,
+        "max_iters": 10,
+        "tol": 1.0e-8,
+        "algorithm": "ModifiedNewton",
+        "integrator": {"type": "LoadControl"},
+    }
+    text_static = _run_json_to_tcl(case)
+    assert "algorithm ModifiedNewton\n" in text_static
+    assert "analysis Static\n" in text_static
+
+
 def test_json_to_tcl_rejects_uniform_excitation_with_nodal_loads():
     case = _base_uniform_case()
     case["loads"] = [{"node": 2, "dof": 1, "value": 1.0}]

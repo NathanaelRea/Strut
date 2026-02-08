@@ -104,8 +104,9 @@ This document is a living roadmap for Strut (Mojo rewrite of OpenSees). It captu
 
 ### D. Solver Features
 
-- [ ] Nonlinear solution algorithms (Newton, Modified Newton).
-- [ ] Add transient nonlinear `Modified Newton` algorithm after `Newmark + Newton` baseline.
+- [x] Nonlinear solution algorithms (Newton, Modified Newton).
+- [x] Add transient nonlinear `Modified Newton` algorithm after `Newmark + Newton` baseline.
+- [x] Add validation/benchmark coverage for nonlinear algorithm selection (`Newton`, `ModifiedNewton`).
 - [x] Convergence tests and step control.
 - [x] Static nonlinear displacement-control integrator with augmented load-factor solve.
 - [ ] Rayleigh damping for dynamic analysis.
