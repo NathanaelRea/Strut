@@ -84,7 +84,9 @@ def expand_case_patterns(validation_root: Path, patterns: Iterable[str]) -> List
 
 def discover_default_cases(validation_root: Path) -> List[CaseSpec]:
     cases = []
-    for match in validation_root.glob("elastic_*/elastic_*.json"):
+    for match in validation_root.glob("*/*.json"):
+        if not load_case_enabled(match) and os.getenv("STRUT_RUN_ALL_CASES") != "1":
+            continue
         cases.append(CaseSpec(name=match.stem, json_path=match))
     return sorted(cases, key=lambda c: c.name)
 
@@ -179,6 +181,12 @@ def _load_last_values(path: Path) -> List[float]:
         raise ValueError(f"empty output file: {path}")
     return _parse_line(lines[-1])
 
+
+def _load_all_values(path: Path) -> List[List[float]]:
+    lines = [ln for ln in path.read_text().splitlines() if ln.strip()]
+    if not lines:
+        raise ValueError(f"empty output file: {path}")
+    return [_parse_line(ln) for ln in lines]
 
 def _isclose(a: float, b: float, rtol: float = REL_TOL, atol: float = ABS_TOL) -> bool:
     return abs(a - b) <= (atol + rtol * abs(b))
@@ -338,7 +346,7 @@ def main() -> None:
         case_specs = discover_default_cases(validation_root)
 
     if not case_specs:
-        raise SystemExit("No benchmark cases found. Provide --cases or add elastic_* cases.")
+        raise SystemExit("No benchmark cases found. Provide --cases or add validation cases.")
 
     if not args.include_disabled:
         case_specs = [case for case in case_specs if load_case_enabled(case.json_path)]
@@ -828,6 +836,9 @@ def main() -> None:
         if run_opensees and run_mojo:
             case_data = json.loads(Path(case_entry["json"]).read_text())
             recorders = case_data.get("recorders", [])
+            analysis = case_data.get("analysis", {})
+            analysis_type = str(analysis.get("type", "static_linear"))
+            is_transient = analysis_type.startswith("transient")
             tol = case_data.get("parity_tolerance", {})
             rtol = tol.get("rtol", REL_TOL)
             atol = tol.get("atol", ABS_TOL)
@@ -859,17 +870,40 @@ def main() -> None:
                             )
                             continue
                         try:
-                            ref_vals = _load_last_values(ref_file)
-                            mojo_vals = _load_last_values(mojo_file)
+                            if is_transient:
+                                ref_vals = _load_all_values(ref_file)
+                                mojo_vals = _load_all_values(mojo_file)
+                            else:
+                                ref_vals = _load_last_values(ref_file)
+                                mojo_vals = _load_last_values(mojo_file)
                         except ValueError as exc:
                             parity_failures.append(f"{case_name}: {exc}")
                             continue
-                        ok, errors = _compare_vectors(
-                            ref_vals, mojo_vals, rtol=rtol, atol=atol
-                        )
-                        if not ok:
-                            parity_failures.append(f"{case_name}: node {node_id} mismatch")
-                            parity_failures.extend([f"  {err}" for err in errors])
+                        if is_transient:
+                            if len(ref_vals) != len(mojo_vals):
+                                parity_failures.append(
+                                    f"{case_name}: node {node_id} step count mismatch: {len(ref_vals)} != {len(mojo_vals)}"
+                                )
+                                continue
+                            for step, (rvec, gvec) in enumerate(
+                                zip(ref_vals, mojo_vals), start=1
+                            ):
+                                ok, errors = _compare_vectors(
+                                    rvec, gvec, rtol=rtol, atol=atol
+                                )
+                                if not ok:
+                                    parity_failures.append(
+                                        f"{case_name}: node {node_id} mismatch at step {step}"
+                                    )
+                                    parity_failures.extend([f"  {err}" for err in errors])
+                                    break
+                        else:
+                            ok, errors = _compare_vectors(
+                                ref_vals, mojo_vals, rtol=rtol, atol=atol
+                            )
+                            if not ok:
+                                parity_failures.append(f"{case_name}: node {node_id} mismatch")
+                                parity_failures.extend([f"  {err}" for err in errors])
                 elif rec_type == "element_force":
                     output = rec.get("output", "element_force")
                     for elem_id in rec.get("elements", []):
@@ -896,19 +930,42 @@ def main() -> None:
                             )
                             continue
                         try:
-                            ref_vals = _load_last_values(ref_file)
-                            mojo_vals = _load_last_values(mojo_file)
+                            if is_transient:
+                                ref_vals = _load_all_values(ref_file)
+                                mojo_vals = _load_all_values(mojo_file)
+                            else:
+                                ref_vals = _load_last_values(ref_file)
+                                mojo_vals = _load_last_values(mojo_file)
                         except ValueError as exc:
                             parity_failures.append(f"{case_name}: {exc}")
                             continue
-                        ok, errors = _compare_vectors(
-                            ref_vals, mojo_vals, rtol=rtol, atol=atol
-                        )
-                        if not ok:
-                            parity_failures.append(
-                                f"{case_name}: element {elem_id} mismatch"
+                        if is_transient:
+                            if len(ref_vals) != len(mojo_vals):
+                                parity_failures.append(
+                                    f"{case_name}: element {elem_id} step count mismatch: {len(ref_vals)} != {len(mojo_vals)}"
+                                )
+                                continue
+                            for step, (rvec, gvec) in enumerate(
+                                zip(ref_vals, mojo_vals), start=1
+                            ):
+                                ok, errors = _compare_vectors(
+                                    rvec, gvec, rtol=rtol, atol=atol
+                                )
+                                if not ok:
+                                    parity_failures.append(
+                                        f"{case_name}: element {elem_id} mismatch at step {step}"
+                                    )
+                                    parity_failures.extend([f"  {err}" for err in errors])
+                                    break
+                        else:
+                            ok, errors = _compare_vectors(
+                                ref_vals, mojo_vals, rtol=rtol, atol=atol
                             )
-                            parity_failures.extend([f"  {err}" for err in errors])
+                            if not ok:
+                                parity_failures.append(
+                                    f"{case_name}: element {elem_id} mismatch"
+                                )
+                                parity_failures.extend([f"  {err}" for err in errors])
                 else:
                     parity_failures.append(
                         f"{case_name}: unsupported recorder type: {rec_type}"

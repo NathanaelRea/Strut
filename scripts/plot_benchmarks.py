@@ -6,7 +6,8 @@ import sys
 import webbrowser
 from datetime import datetime
 from pathlib import Path
-from statistics import median, stdev
+from statistics import stdev
+import math
 from typing import Dict, List, Optional, Tuple
 
 try:
@@ -86,22 +87,64 @@ def collect_recent_cases(
     return names, engines, errors
 
 
-def collect_archive_trend(archive_dir: Path) -> Tuple[List[datetime], Dict[str, List[float]]]:
-    engine_series: Dict[str, List[float]] = {"opensees": [], "mojo": []}
+def _case_time_map(summary: dict, engine: str) -> Dict[str, float]:
+    cases = summary.get("cases", [])
+    out: Dict[str, float] = {}
+    for case in cases:
+        name = case.get("name")
+        if not isinstance(name, str):
+            continue
+        value = _case_time_seconds(case, engine)
+        if isinstance(value, (int, float)) and math.isfinite(value):
+            out[name] = float(value)
+    return out
+
+
+def collect_archive_trend(
+    archive_dir: Path,
+) -> Tuple[List[datetime], Dict[str, List[float]], Dict[str, List[float]]]:
+    engine_means: Dict[str, List[float]] = {"opensees": [], "mojo": []}
+    engine_stds: Dict[str, List[float]] = {"opensees": [], "mojo": []}
     timestamps: List[datetime] = []
     files = sorted(archive_dir.glob("*-summary.json"))
+    if not files:
+        return timestamps, engine_means, engine_stds
+
+    baseline_data = load_summary(files[-1])
+    baseline_maps = {
+        engine: _case_time_map(baseline_data, engine)
+        for engine in ("opensees", "mojo")
+    }
     for path in files:
         data = load_summary(path)
-        cases = data.get("cases", [])
         for engine in ("opensees", "mojo"):
-            medians = [_case_time_seconds(case, engine) for case in cases]
-            medians = [m for m in medians if isinstance(m, (int, float))]
-            if medians:
-                engine_series[engine].append(median(medians) * 1e6)
+            base = baseline_maps.get(engine, {})
+            current = _case_time_map(data, engine)
+            ratios: List[float] = []
+            for name, cur in current.items():
+                base_val = base.get(name)
+                if base_val is None or base_val <= 0.0:
+                    continue
+                ratios.append(cur / base_val)
+            if ratios:
+                log_ratios = [math.log(r) for r in ratios if r > 0.0]
+                if log_ratios:
+                    mu = sum(log_ratios) / len(log_ratios)
+                    mean_ratio = math.exp(mu)
+                    engine_means[engine].append(mean_ratio)
+                    if len(log_ratios) > 1:
+                        sigma = stdev(log_ratios)
+                        engine_stds[engine].append(sigma)
+                    else:
+                        engine_stds[engine].append(0.0)
+                else:
+                    engine_means[engine].append(float("nan"))
+                    engine_stds[engine].append(0.0)
             else:
-                engine_series[engine].append(float("nan"))
+                engine_means[engine].append(float("nan"))
+                engine_stds[engine].append(0.0)
         timestamps.append(parse_timestamp(path, data))
-    return timestamps, engine_series
+    return timestamps, engine_means, engine_stds
 
 
 MOJO_COLOR = "#FF5A1F"
@@ -114,6 +157,16 @@ def _group_label_from_prefix(name: str) -> str:
     if parts:
         return parts[0]
     return "other"
+
+
+def _truncate_label(label: str, max_len: int) -> str:
+    if max_len <= 0:
+        return ""
+    if len(label) <= max_len:
+        return label
+    if max_len <= 3:
+        return label[:max_len]
+    return label[: max_len - 3] + "..."
 
 
 def _match_group(name: str, matchers: List[str]) -> bool:
@@ -214,6 +267,7 @@ def plot_recent_bar(
     errors: Dict[str, List[Tuple[float, float]]],
     group_spans: Optional[List[Tuple[str, int, int]]] = None,
     group_gap: float = 0.6,
+    label_max_len: int = 28,
 ):
     fig, ax = plt.subplots(figsize=(10, 5))
     if group_spans:
@@ -279,7 +333,8 @@ def plot_recent_bar(
     ax.set_ylabel("Analysis time (us)")
     ax.set_title("Recent benchmark (analysis time per case)")
     ax.set_xticks(list(x))
-    ax.set_xticklabels(names, rotation=45, ha="right")
+    display_names = [_truncate_label(name, label_max_len) for name in names]
+    ax.set_xticklabels(display_names, rotation=45, ha="right", fontsize=8)
     ax.tick_params(axis="x", pad=2)
     ax.legend()
     ax.grid(axis="y", linestyle=":", alpha=0.5)
@@ -301,20 +356,67 @@ def plot_recent_bar(
     return fig
 
 
-def plot_archive_trend(timestamps: List[datetime], series: Dict[str, List[float]]):
+def plot_archive_trend(
+    timestamps: List[datetime],
+    means: Dict[str, List[float]],
+    stds: Dict[str, List[float]],
+):
     fig, ax = plt.subplots(figsize=(10, 4))
     if timestamps:
-        ax.plot(timestamps, series.get("opensees", []), marker="o", label="OpenSees")
-        ax.plot(
+        opensees_means = means.get("opensees", [])
+        opensees_stds = stds.get("opensees", [])
+        mojo_means = means.get("mojo", [])
+        mojo_stds = stds.get("mojo", [])
+        opensees_lower = []
+        opensees_upper = []
+        mojo_lower = []
+        mojo_upper = []
+        for mean_ratio, sigma in zip(opensees_means, opensees_stds):
+            if not isinstance(mean_ratio, (int, float)) or not math.isfinite(mean_ratio):
+                opensees_lower.append(0.0)
+                opensees_upper.append(0.0)
+                continue
+            if sigma > 0.0:
+                scale = math.exp(sigma)
+                opensees_lower.append(mean_ratio - mean_ratio / scale)
+                opensees_upper.append(mean_ratio * scale - mean_ratio)
+            else:
+                opensees_lower.append(0.0)
+                opensees_upper.append(0.0)
+        for mean_ratio, sigma in zip(mojo_means, mojo_stds):
+            if not isinstance(mean_ratio, (int, float)) or not math.isfinite(mean_ratio):
+                mojo_lower.append(0.0)
+                mojo_upper.append(0.0)
+                continue
+            if sigma > 0.0:
+                scale = math.exp(sigma)
+                mojo_lower.append(mean_ratio - mean_ratio / scale)
+                mojo_upper.append(mean_ratio * scale - mean_ratio)
+            else:
+                mojo_lower.append(0.0)
+                mojo_upper.append(0.0)
+        opensees_err = [opensees_lower, opensees_upper]
+        mojo_err = [mojo_lower, mojo_upper]
+        ax.errorbar(
             timestamps,
-            series.get("mojo", []),
+            opensees_means,
+            yerr=opensees_err,
+            marker="o",
+            label="OpenSees",
+            capsize=3,
+        )
+        ax.errorbar(
+            timestamps,
+            mojo_means,
+            yerr=mojo_err,
             marker="o",
             label="Mojo",
             color=MOJO_COLOR,
+            capsize=3,
         )
 
-    ax.set_ylabel("Median analysis time across cases (us)")
-    ax.set_title("Archive trend (median analysis across cases)")
+    ax.set_ylabel("Geometric mean ratio vs baseline")
+    ax.set_title("Archive trend (normalized to baseline, std dev of log ratios)")
     ax.grid(axis="y", linestyle=":", alpha=0.5)
     ax.legend()
     fig.autofmt_xdate()
@@ -405,9 +507,9 @@ def main() -> None:
         plt.close(fig)
 
         if archive_dir.exists():
-            timestamps, series = collect_archive_trend(archive_dir)
+            timestamps, means, stds = collect_archive_trend(archive_dir)
             if timestamps:
-                fig = plot_archive_trend(timestamps, series)
+                fig = plot_archive_trend(timestamps, means, stds)
                 pdf.savefig(fig)
                 plt.close(fig)
 
