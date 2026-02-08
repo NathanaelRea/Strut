@@ -22,7 +22,7 @@ def main():
             var t0 = Int(time.perf_counter_ns())
             run_case(data, entry_output, "")
             var t1 = Int(time.perf_counter_ns())
-            var elapsed_us = (t1 - t0) / 1000
+            var elapsed_us = (t1 - t0) // 1000
             var out_dir = pathlib.Path(entry_output)
             out_dir.mkdir(parents=True, exist_ok=True)
             var file_path = out_dir.joinpath("case_time_us.txt")

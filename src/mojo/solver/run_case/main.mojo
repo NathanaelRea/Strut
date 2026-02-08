@@ -383,9 +383,8 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
         _append_event(events, events_need_comma, "C", frame_solve, solve_end_us)
         _append_event(events, events_need_comma, "O", frame_output, solve_end_us)
 
-    var t_output_start = t_solve_end
-    var t1 = Int(time.perf_counter_ns())
-    var analysis_us = (t_output_start - t0) // 1000
+    # Match OpenSees timing injection (`analyze`/`eigen`) by timing solve only.
+    var analysis_us = (t_solve_end - t_solve_start) // 1000
 
     var pathlib = Python.import_module("pathlib")
     var out_dir = pathlib.Path(output_path)

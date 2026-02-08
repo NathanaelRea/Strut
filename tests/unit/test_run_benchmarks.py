@@ -106,6 +106,18 @@ def test_inject_opensees_timing_requires_analyze_or_eigen():
         run_benchmarks._inject_opensees_timing(["wipe", "puts ok"], "analysis_time_us.txt")
 
 
+def test_tcl_uses_eigen_detects_eigen_command(tmp_path: Path):
+    tcl = tmp_path / "case.tcl"
+    tcl.write_text("set vals [eigen 2]\n", encoding="utf-8")
+    assert run_benchmarks._tcl_uses_eigen(tcl) is True
+
+
+def test_tcl_uses_eigen_false_without_eigen(tmp_path: Path):
+    tcl = tmp_path / "case.tcl"
+    tcl.write_text("analyze 1\n", encoding="utf-8")
+    assert run_benchmarks._tcl_uses_eigen(tcl) is False
+
+
 def test_compare_mode_shape_vectors_tolerates_sign_flip():
     ok, errors = run_benchmarks._compare_mode_shape_vectors([1.0, 2.0], [-2.0, -4.0])
     assert ok is True

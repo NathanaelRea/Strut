@@ -10,7 +10,8 @@
 
 - `scripts/gen_frame_case.py --bays 18 --stories 17 --output /tmp/frame.json --disabled`
 - `uv run scripts/run_benchmarks.py --cases /tmp/frame.json --no-archive`
-- `uv run scripts/run_benchmarks.py --gen-frame-bays 18 --gen-frame-stories 17 --batch --no-archive`
+- `uv run scripts/run_benchmarks.py --gen-frame-bays 18 --gen-frame-stories 17 --no-archive`
+- `uv run scripts/run_benchmarks.py --gen-frame-bays 18 --gen-frame-stories 17 --no-batch --no-archive`
 - `uv run scripts/run_benchmarks.py --gen-frame-bays 18 --gen-frame-stories 17 --gen-frame-element forceBeamColumn2d --cases force_beam_column2d_fiber_frame_18bay_17story --no-archive`
 
 ## Benchmark Iteration Rule
@@ -22,6 +23,13 @@
 
 - Mojo is compiled on first run and cached at `build/mojo/strut`.
 - Precompile with `scripts/build_mojo_solver.sh`.
+
+## Timing Notes
+
+- `analysis_time_us.txt` is the apples-to-apples metric: OpenSees times `analyze/eigen`; Mojo times the solver phase only.
+- Batch mode is on by default for both engines; use `--no-batch` to run per-case process timings.
+- OpenSees batch mode prewarms `eigen` once outside case timers to avoid first-call initialization skew in modal benchmarks.
+- Default batch runs (no `--cases`, no `--gen-frame-*`) auto-add generated ~969-DOF frame benchmarks so medium-size plots remain populated.
 
 ## Output Comparison Strategy
 

@@ -11,12 +11,12 @@ timing (cached at `build/mojo/strut`).
 Examples:
 
 ```bash
-python scripts/run_benchmarks.py
-python scripts/run_benchmarks.py --cases elastic_beam_cantilever,elastic_frame_portal
-python scripts/run_benchmarks.py --cases tests/validation/elastic_frame_two_story/elastic_frame_two_story.json
-python scripts/run_benchmarks.py --engine mojo
-python scripts/run_benchmarks.py --batch-opensees
-python scripts/run_benchmarks.py --gen-frame-bays 18 --gen-frame-stories 17 --gen-frame-element forceBeamColumn2d --cases force_beam_column2d_fiber_frame_18bay_17story --no-archive
+uv run scripts/run_benchmarks.py
+uv run scripts/run_benchmarks.py --cases elastic_beam_cantilever,elastic_frame_portal
+uv run scripts/run_benchmarks.py --cases tests/validation/elastic_frame_two_story/elastic_frame_two_story.json
+uv run scripts/run_benchmarks.py --engine mojo
+uv run scripts/run_benchmarks.py --no-batch
+uv run scripts/run_benchmarks.py --gen-frame-bays 18 --gen-frame-stories 17 --gen-frame-element forceBeamColumn2d --cases force_beam_column2d_fiber_frame_18bay_17story --no-archive
 ```
 
 Upcoming element benchmarks (disabled until element support lands):
@@ -30,7 +30,7 @@ Upcoming element benchmarks (disabled until element support lands):
 Run these explicitly once enabled:
 
 ```bash
-python scripts/run_benchmarks.py --cases elastic_truss_basic,elastic_four_node_quad_basic --include-disabled
+uv run scripts/run_benchmarks.py --cases elastic_truss_basic,elastic_four_node_quad_basic --include-disabled
 ```
 
 ## Results
@@ -42,7 +42,10 @@ python scripts/run_benchmarks.py --cases elastic_truss_basic,elastic_four_node_q
 - When running both engines, the runner compares outputs and fails on mismatch.
 - The runner performs a second pass without recorders to estimate compute-only time.
 - The runner prints progress per case and pass while running.
-- The OpenSees total pass writes `analysis_time_us.txt` in each case output directory.
+- `analysis_time_us.txt` is solve-only for both engines (OpenSees `analyze/eigen`, Mojo solve phase).
+- Batch mode is enabled for both engines by default; use `--no-batch` for single-case process timings.
+- OpenSees batch mode prewarms `eigen` once outside case timers to remove first-call initialization skew.
+- Default batch runs (without `--cases` or `--gen-frame-*`) auto-include generated medium-size frame benchmarks.
 
 Both directories are ignored by git.
 
@@ -51,12 +54,12 @@ Both directories are ignored by git.
 The plot helper requires matplotlib:
 
 ```bash
-python scripts/plot_benchmarks.py --output benchmark/results/plots.pdf
+uv run scripts/plot_benchmarks.py --output benchmark/results/plots.pdf
 ```
 
 Group and order cases in the bar chart (default is prefix grouping, disable with `--group-by none`):
 
 ```bash
-python scripts/plot_benchmarks.py --group-by prefix
-python scripts/plot_benchmarks.py --group-by config --group-config benchmark/groups.json
+uv run scripts/plot_benchmarks.py --group-by prefix
+uv run scripts/plot_benchmarks.py --group-by config --group-config benchmark/groups.json
 ```

@@ -35,6 +35,10 @@ This document is a living roadmap for Strut (Mojo rewrite of OpenSees). It captu
 - [x] Benchmark runner for OpenSees (Wine) vs Mojo.
 - [x] Store latest benchmark results in `benchmark/results/` (ignored for now).
 - [x] Store archival benchmark summaries in `benchmark/archive/` (ignored for now).
+- [x] Align benchmark analysis timing semantics (OpenSees `analyze/eigen` vs Mojo solve-only) and support batch-mode apples-to-apples long-lived-process comparison.
+- [x] Default benchmark mode to batch both engines; add `--no-batch` for per-case process timing.
+- [x] Stabilize OpenSees batch eigen timings by prewarming eigen once outside per-case timers.
+- [x] Keep medium-size benchmark coverage in default batch runs by auto-adding generated ~969-DOF frame cases when no explicit case list is provided.
 
 ## Phase 2 (Near-Term)
 
