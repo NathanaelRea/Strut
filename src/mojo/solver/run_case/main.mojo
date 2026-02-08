@@ -2,6 +2,7 @@ from collections import List
 from os import abort
 from python import Python, PythonObject
 
+from solver.assembly import assemble_internal_forces
 from solver.dof import node_dof_index, require_dof_in_range
 from solver.profile import (
     _append_event,
@@ -18,9 +19,12 @@ from solver.run_case.analysis.static_nonlinear import (
 )
 from solver.run_case.analysis.transient_linear import run_transient_linear
 from solver.run_case.helpers import (
-    _beam2d_element_force_global,
-    _force_beam_column2d_element_force_global,
-    _truss_element_force_global,
+    _drift_value,
+    _element_force_global_for_recorder,
+    _format_values_line,
+    _has_recorder_type,
+    _scaled_forces,
+    _update_envelope,
 )
 from solver.run_case.loader import load_case_state
 
@@ -293,6 +297,32 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
             var file_path = out_dir.joinpath(filename)
             file_path.write_text(PythonObject(static_output_buffers[i]))
     else:
+        var has_reaction_recorder = _has_recorder_type(recorders, "node_reaction")
+        var F_int_reaction: List[Float64] = []
+        var F_ext_reaction: List[Float64] = []
+        if has_reaction_recorder:
+            F_int_reaction = assemble_internal_forces(
+                nodes,
+                elements,
+                sections_by_id,
+                materials_by_id,
+                id_to_index,
+                node_count,
+                ndf,
+                ndm,
+                u,
+                uniaxial_defs,
+                uniaxial_state_defs,
+                uniaxial_states,
+                elem_uniaxial_offsets,
+                elem_uniaxial_counts,
+                elem_uniaxial_state_ids,
+            )
+            F_ext_reaction = _scaled_forces(F_total, 1.0)
+        var envelope_files: List[String] = []
+        var envelope_min: List[List[Float64]] = []
+        var envelope_max: List[List[Float64]] = []
+        var envelope_abs: List[List[Float64]] = []
         for r in range(py_len(recorders)):
             var rec = recorders[r]
             var rec_type = String(rec["type"])
@@ -324,62 +354,103 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
                         abort("recorder element not found")
                     var elem_index = elem_id_to_index[elem_id]
                     var elem = elements[elem_index]
-                    var elem_type = String(elem["type"])
-                    var f_elem: List[Float64] = []
-                    if elem_type == "elasticBeamColumn2d":
-                        f_elem = _beam2d_element_force_global(
-                            elem,
-                            nodes,
-                            sections_by_id,
-                            id_to_index,
-                            ndf,
-                            u,
-                        )
-                    elif elem_type == "forceBeamColumn2d":
-                        f_elem = _force_beam_column2d_element_force_global(
-                            elem_index,
-                            elem,
-                            nodes,
-                            id_to_index,
-                            ndf,
-                            u,
-                            fiber_section_defs,
-                            fiber_section_cells,
-                            fiber_section_index_by_id,
-                            uniaxial_defs,
-                            uniaxial_states,
-                            elem_uniaxial_offsets,
-                            elem_uniaxial_counts,
-                            elem_uniaxial_state_ids,
-                        )
-                    elif elem_type == "truss":
-                        f_elem = _truss_element_force_global(
-                            elem_index,
-                            elem,
-                            nodes,
-                            id_to_index,
-                            ndf,
-                            uniaxial_states,
-                            elem_uniaxial_offsets,
-                            elem_uniaxial_counts,
-                            elem_uniaxial_state_ids,
-                        )
-                    else:
-                        abort(
-                            "element_force recorder supports truss, "
-                            "elasticBeamColumn2d, or forceBeamColumn2d only"
-                        )
-                    var line = String()
-                    for j in range(len(f_elem)):
-                        if j > 0:
-                            line += " "
-                        line += String(f_elem[j])
-                    line += "\n"
+                    var f_elem = _element_force_global_for_recorder(
+                        elem_index,
+                        elem,
+                        nodes,
+                        sections_by_id,
+                        id_to_index,
+                        ndf,
+                        u,
+                        fiber_section_defs,
+                        fiber_section_cells,
+                        fiber_section_index_by_id,
+                        uniaxial_defs,
+                        uniaxial_states,
+                        elem_uniaxial_offsets,
+                        elem_uniaxial_counts,
+                        elem_uniaxial_state_ids,
+                    )
+                    var line = _format_values_line(f_elem)
                     var filename = output + "_ele" + String(elem_id) + ".out"
                     var file_path = out_dir.joinpath(filename)
                     file_path.write_text(PythonObject(line))
+            elif rec_type == "node_reaction":
+                var output = String(rec.get("output", "reaction"))
+                var nodes_out = rec["nodes"]
+                var dofs = rec["dofs"]
+                for nidx in range(py_len(nodes_out)):
+                    var node_id = Int(nodes_out[nidx])
+                    var i = id_to_index[node_id]
+                    var values: List[Float64] = []
+                    values.resize(py_len(dofs), 0.0)
+                    for j in range(py_len(dofs)):
+                        var dof = Int(dofs[j])
+                        require_dof_in_range(dof, ndf, "recorder")
+                        var idx = node_dof_index(i, dof, ndf)
+                        values[j] = F_int_reaction[idx] - F_ext_reaction[idx]
+                    var filename = output + "_node" + String(node_id) + ".out"
+                    var file_path = out_dir.joinpath(filename)
+                    file_path.write_text(PythonObject(_format_values_line(values)))
+            elif rec_type == "drift":
+                var output = String(rec.get("output", "drift"))
+                var i_node = Int(rec["i_node"])
+                var j_node = Int(rec["j_node"])
+                var value = _drift_value(rec, nodes, id_to_index, ndf, u)
+                var filename = (
+                    output
+                    + "_i"
+                    + String(i_node)
+                    + "_j"
+                    + String(j_node)
+                    + ".out"
+                )
+                var file_path = out_dir.joinpath(filename)
+                file_path.write_text(PythonObject(_format_values_line([value])))
+            elif rec_type == "envelope_element_force":
+                var output = String(rec.get("output", "envelope_element_force"))
+                var elements_out = rec["elements"]
+                for eidx in range(py_len(elements_out)):
+                    var elem_id = Int(elements_out[eidx])
+                    if elem_id >= len(elem_id_to_index) or elem_id_to_index[elem_id] < 0:
+                        abort("recorder element not found")
+                    var elem_index = elem_id_to_index[elem_id]
+                    var elem = elements[elem_index]
+                    var f_elem = _element_force_global_for_recorder(
+                        elem_index,
+                        elem,
+                        nodes,
+                        sections_by_id,
+                        id_to_index,
+                        ndf,
+                        u,
+                        fiber_section_defs,
+                        fiber_section_cells,
+                        fiber_section_index_by_id,
+                        uniaxial_defs,
+                        uniaxial_states,
+                        elem_uniaxial_offsets,
+                        elem_uniaxial_counts,
+                        elem_uniaxial_state_ids,
+                    )
+                    var filename = output + "_ele" + String(elem_id) + ".out"
+                    _update_envelope(
+                        filename,
+                        f_elem,
+                        envelope_files,
+                        envelope_min,
+                        envelope_max,
+                        envelope_abs,
+                    )
             else:
                 abort("unsupported recorder type")
+        for i in range(len(envelope_files)):
+            var line = String()
+            line += _format_values_line(envelope_min[i])
+            line += _format_values_line(envelope_max[i])
+            line += _format_values_line(envelope_abs[i])
+            var file_path = out_dir.joinpath(envelope_files[i])
+            file_path.write_text(PythonObject(line))
 
     var t2 = Int(time.perf_counter_ns())
     if do_profile:

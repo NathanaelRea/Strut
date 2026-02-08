@@ -85,8 +85,16 @@ def test_json_case_regressions():
             _run_mojo_case(case_data, out_dir)
 
             for rec in case_data.get("recorders", []):
-                if rec["type"] != "node_displacement":
+                if rec["type"] not in {
+                    "node_displacement",
+                    "element_force",
+                    "node_reaction",
+                    "drift",
+                    "envelope_element_force",
+                }:
                     raise ValueError(f"unsupported recorder type: {rec['type']}")
+                if rec["type"] != "node_displacement":
+                    continue
                 output = rec.get("output", "node_disp")
                 for node_id in rec["nodes"]:
                     ref_file = case_root / "reference" / f"{output}_node{node_id}.out"

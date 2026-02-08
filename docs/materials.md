@@ -68,9 +68,9 @@ analyses continue to use elastic tangents only.
 
 ## Stress-Strain Curves
 
-Material curve cases are defined in `scripts/plot_material_curves.py` as a list of
+Material curve cases are defined in `scripts/plot_materials.py` as a list of
 materials with params and strain targets. The script generates displacement-control
 JSON cases in memory and writes temporary files under `build/material_curves/`
 before running OpenSees/Mojo through the same JSON -> Tcl -> solver path. Use
-`scripts/plot_material_curves.py` to generate plots and CSV outputs under
+`scripts/plot_materials.py` to generate plots and CSV outputs under
 `build/material_curves/`.

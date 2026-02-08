@@ -141,6 +141,99 @@ def main():
                     if not ok:
                         failures.append(f"element {elem_id} mismatch")
                         failures.extend([f"  {err}" for err in errors])
+        elif rec_type == "node_reaction":
+            output = rec.get("output", "reaction")
+            for node_id in rec["nodes"]:
+                ref_file = ref_dir / f"{output}_node{node_id}.out"
+                mojo_file = mojo_dir / f"{output}_node{node_id}.out"
+                if not ref_file.exists():
+                    failures.append(f"missing reference output: {ref_file}")
+                    continue
+                if not mojo_file.exists():
+                    failures.append(f"missing mojo output: {mojo_file}")
+                    continue
+                if is_transient:
+                    ref_vals = _load_all_values(ref_file)
+                    mojo_vals = _load_all_values(mojo_file)
+                    if len(ref_vals) != len(mojo_vals):
+                        failures.append(
+                            f"reaction node {node_id} step count mismatch: {len(ref_vals)} != {len(mojo_vals)}"
+                        )
+                        continue
+                    for step, (rvec, gvec) in enumerate(zip(ref_vals, mojo_vals), start=1):
+                        ok, errors = _compare_vectors(rvec, gvec, rtol=rtol, atol=atol)
+                        if not ok:
+                            failures.append(f"reaction node {node_id} mismatch at step {step}")
+                            failures.extend([f"  {err}" for err in errors])
+                            break
+                else:
+                    ref_vals = _load_last_values(ref_file)
+                    mojo_vals = _load_last_values(mojo_file)
+                    ok, errors = _compare_vectors(ref_vals, mojo_vals, rtol=rtol, atol=atol)
+                    if not ok:
+                        failures.append(f"reaction node {node_id} mismatch")
+                        failures.extend([f"  {err}" for err in errors])
+        elif rec_type == "drift":
+            output = rec.get("output", "drift")
+            i_node = int(rec["i_node"])
+            j_node = int(rec["j_node"])
+            ref_file = ref_dir / f"{output}_i{i_node}_j{j_node}.out"
+            mojo_file = mojo_dir / f"{output}_i{i_node}_j{j_node}.out"
+            if not ref_file.exists():
+                failures.append(f"missing reference output: {ref_file}")
+                continue
+            if not mojo_file.exists():
+                failures.append(f"missing mojo output: {mojo_file}")
+                continue
+            if is_transient:
+                ref_vals = _load_all_values(ref_file)
+                mojo_vals = _load_all_values(mojo_file)
+                if len(ref_vals) != len(mojo_vals):
+                    failures.append(
+                        f"drift i{i_node}-j{j_node} step count mismatch: {len(ref_vals)} != {len(mojo_vals)}"
+                    )
+                    continue
+                for step, (rvec, gvec) in enumerate(zip(ref_vals, mojo_vals), start=1):
+                    ok, errors = _compare_vectors(rvec, gvec, rtol=rtol, atol=atol)
+                    if not ok:
+                        failures.append(
+                            f"drift i{i_node}-j{j_node} mismatch at step {step}"
+                        )
+                        failures.extend([f"  {err}" for err in errors])
+                        break
+            else:
+                ref_vals = _load_last_values(ref_file)
+                mojo_vals = _load_last_values(mojo_file)
+                ok, errors = _compare_vectors(ref_vals, mojo_vals, rtol=rtol, atol=atol)
+                if not ok:
+                    failures.append(f"drift i{i_node}-j{j_node} mismatch")
+                    failures.extend([f"  {err}" for err in errors])
+        elif rec_type == "envelope_element_force":
+            output = rec.get("output", "envelope_element_force")
+            for elem_id in rec["elements"]:
+                ref_file = ref_dir / f"{output}_ele{elem_id}.out"
+                mojo_file = mojo_dir / f"{output}_ele{elem_id}.out"
+                if not ref_file.exists():
+                    failures.append(f"missing reference output: {ref_file}")
+                    continue
+                if not mojo_file.exists():
+                    failures.append(f"missing mojo output: {mojo_file}")
+                    continue
+                ref_vals = _load_all_values(ref_file)
+                mojo_vals = _load_all_values(mojo_file)
+                if len(ref_vals) != len(mojo_vals):
+                    failures.append(
+                        f"envelope element {elem_id} row count mismatch: {len(ref_vals)} != {len(mojo_vals)}"
+                    )
+                    continue
+                for row_idx, (rvec, gvec) in enumerate(zip(ref_vals, mojo_vals), start=1):
+                    ok, errors = _compare_vectors(rvec, gvec, rtol=rtol, atol=atol)
+                    if not ok:
+                        failures.append(
+                            f"envelope element {elem_id} mismatch at row {row_idx}"
+                        )
+                        failures.extend([f"  {err}" for err in errors])
+                        break
         else:
             raise ValueError(f"unsupported recorder type: {rec_type}")
 

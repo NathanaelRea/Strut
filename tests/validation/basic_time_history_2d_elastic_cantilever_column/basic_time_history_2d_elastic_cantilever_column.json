@@ -139,6 +139,33 @@
         3
       ],
       "output": "node_disp"
+    },
+    {
+      "type": "node_reaction",
+      "nodes": [
+        1
+      ],
+      "dofs": [
+        1,
+        2,
+        3
+      ],
+      "output": "reaction"
+    },
+    {
+      "type": "drift",
+      "i_node": 1,
+      "j_node": 2,
+      "dof": 2,
+      "perp_dirn": 1,
+      "output": "drift"
+    },
+    {
+      "type": "element_force",
+      "elements": [
+        1
+      ],
+      "output": "element_force"
     }
   ]
 }

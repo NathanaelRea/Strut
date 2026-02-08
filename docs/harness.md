@@ -49,6 +49,9 @@ Minimum required fields (v1.0):
 - `recorders`: list of
   - `{ type: "node_displacement", nodes, dofs, output }` (`dofs` in `1..ndf`)
   - `{ type: "element_force", elements, output }` (`truss`, `elasticBeamColumn2d`, `forceBeamColumn2d`)
+  - `{ type: "node_reaction", nodes, dofs, output }` (`dofs` in `1..ndf`)
+  - `{ type: "drift", i_node, j_node, dof, perp_dirn, output }`
+  - `{ type: "envelope_element_force", elements, output }` (`truss`, `elasticBeamColumn2d`, `forceBeamColumn2d`)
 
 Current limitation: `forceBeamColumn2d` is v1 only:
 - `geomTransf: Linear`
@@ -76,6 +79,15 @@ For OpenSees, the Tcl recorder writes a space-separated vector per line. The com
 
 Element force outputs are written as space-separated values with one row per analysis step. For `elasticBeamColumn2d` and `forceBeamColumn2d`,
 the vector contains 6 global end forces (3 at node 1, 3 at node 2) in the OpenSees "force" recorder ordering.
+
+Node reaction outputs are written as space-separated values with one row per analysis step. Each row contains requested reaction DOFs at the requested node.
+
+Drift outputs are written as one scalar per row (one row per analysis step).
+
+Envelope element force outputs are written with 3 rows:
+- row 1: component-wise minima
+- row 2: component-wise maxima
+- row 3: component-wise absolute maxima
 
 ## Tolerances (Phase 1)
 

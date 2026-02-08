@@ -633,6 +633,31 @@ def main():
                 for elem_id in rec["elements"]:
                     filename = f"{output}_ele{elem_id}.out"
                     f.write(f"recorder Element -file {filename} -ele {elem_id} force\n")
+            elif rec_type == "node_reaction":
+                dofs = rec["dofs"]
+                output = rec.get("output", "reaction")
+                for node_id in rec["nodes"]:
+                    filename = f"{output}_node{node_id}.out"
+                    f.write(
+                        f"recorder Node -file {filename} -node {node_id} -dof {' '.join(str(d) for d in dofs)} reaction\n"
+                    )
+            elif rec_type == "drift":
+                i_node = rec["i_node"]
+                j_node = rec["j_node"]
+                dof = rec["dof"]
+                perp_dirn = rec["perp_dirn"]
+                output = rec.get("output", "drift")
+                filename = f"{output}_i{i_node}_j{j_node}.out"
+                f.write(
+                    f"recorder Drift -file {filename} -iNode {i_node} -jNode {j_node} -dof {dof} -perpDirn {perp_dirn}\n"
+                )
+            elif rec_type == "envelope_element_force":
+                output = rec.get("output", "envelope_element_force")
+                for elem_id in rec["elements"]:
+                    filename = f"{output}_ele{elem_id}.out"
+                    f.write(
+                        f"recorder EnvelopeElement -file {filename} -ele {elem_id} forces\n"
+                    )
             else:
                 raise ValueError(f"unsupported recorder type: {rec_type}")
 

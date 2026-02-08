@@ -277,6 +277,190 @@ fn _append_output(
     buffers.append(line)
 
 
+fn _has_recorder_type(recorders: PythonObject, wanted: String) raises -> Bool:
+    for r in range(py_len(recorders)):
+        var rec = recorders[r]
+        if String(rec["type"]) == wanted:
+            return True
+    return False
+
+
+fn _format_values_line(values: List[Float64]) -> String:
+    var line = String()
+    for i in range(len(values)):
+        if i > 0:
+            line += " "
+        line += String(values[i])
+    line += "\n"
+    return line
+
+
+fn _element_force_global_for_recorder(
+    elem_index: Int,
+    elem: PythonObject,
+    nodes: PythonObject,
+    sections_by_id: List[PythonObject],
+    id_to_index: List[Int],
+    ndf: Int,
+    u: List[Float64],
+    fiber_section_defs: List[FiberSection2dDef],
+    fiber_section_cells: List[FiberCell],
+    fiber_section_index_by_id: List[Int],
+    uniaxial_defs: List[UniMaterialDef],
+    mut uniaxial_states: List[UniMaterialState],
+    elem_uniaxial_offsets: List[Int],
+    elem_uniaxial_counts: List[Int],
+    elem_uniaxial_state_ids: List[Int],
+) raises -> List[Float64]:
+    var elem_type = String(elem["type"])
+    if elem_type == "elasticBeamColumn2d":
+        return _beam2d_element_force_global(
+            elem,
+            nodes,
+            sections_by_id,
+            id_to_index,
+            ndf,
+            u,
+        )
+    if elem_type == "forceBeamColumn2d":
+        return _force_beam_column2d_element_force_global(
+            elem_index,
+            elem,
+            nodes,
+            id_to_index,
+            ndf,
+            u,
+            fiber_section_defs,
+            fiber_section_cells,
+            fiber_section_index_by_id,
+            uniaxial_defs,
+            uniaxial_states,
+            elem_uniaxial_offsets,
+            elem_uniaxial_counts,
+            elem_uniaxial_state_ids,
+        )
+    if elem_type == "truss":
+        return _truss_element_force_global(
+            elem_index,
+            elem,
+            nodes,
+            id_to_index,
+            ndf,
+            uniaxial_states,
+            elem_uniaxial_offsets,
+            elem_uniaxial_counts,
+            elem_uniaxial_state_ids,
+        )
+    abort(
+        "element_force recorder supports truss, "
+        "elasticBeamColumn2d, or forceBeamColumn2d only"
+    )
+    return []
+
+
+fn _node_coordinate(node: PythonObject, coord_index: Int) raises -> Float64:
+    if coord_index == 1:
+        return Float64(node["x"])
+    if coord_index == 2:
+        return Float64(node["y"])
+    if coord_index == 3:
+        return Float64(node["z"])
+    abort("coordinate index out of range")
+    return 0.0
+
+
+fn _drift_value(
+    rec: PythonObject,
+    nodes: PythonObject,
+    id_to_index: List[Int],
+    ndf: Int,
+    u: List[Float64],
+) raises -> Float64:
+    var i_node = Int(rec["i_node"])
+    var j_node = Int(rec["j_node"])
+    if i_node >= len(id_to_index) or id_to_index[i_node] < 0:
+        abort("drift i_node not found")
+    if j_node >= len(id_to_index) or id_to_index[j_node] < 0:
+        abort("drift j_node not found")
+    var dof = Int(rec["dof"])
+    var perp_dirn = Int(rec["perp_dirn"])
+    require_dof_in_range(dof, ndf, "drift recorder dof")
+    if perp_dirn < 1 or perp_dirn > 3:
+        abort("drift perp_dirn must be in 1..3")
+    var i_idx = id_to_index[i_node]
+    var j_idx = id_to_index[j_node]
+    var node_i = nodes[i_idx]
+    var node_j = nodes[j_idx]
+    if perp_dirn == 3 and (not node_i.__contains__("z") or not node_j.__contains__("z")):
+        abort("drift perp_dirn=3 requires z coordinates")
+    var dof_i = node_dof_index(i_idx, dof, ndf)
+    var dof_j = node_dof_index(j_idx, dof, ndf)
+    var dx = _node_coordinate(node_j, perp_dirn) - _node_coordinate(node_i, perp_dirn)
+    if dx == 0.0:
+        abort("drift denominator is zero")
+    return (u[dof_j] - u[dof_i]) / dx
+
+
+fn _scaled_forces(F_total: List[Float64], scale: Float64) -> List[Float64]:
+    var scaled: List[Float64] = []
+    scaled.resize(len(F_total), 0.0)
+    for i in range(len(F_total)):
+        scaled[i] = F_total[i] * scale
+    return scaled^
+
+
+fn _update_envelope(
+    filename: String,
+    values: List[Float64],
+    mut envelope_files: List[String],
+    mut envelope_min: List[List[Float64]],
+    mut envelope_max: List[List[Float64]],
+    mut envelope_abs: List[List[Float64]],
+):
+    for i in range(len(envelope_files)):
+        if envelope_files[i] == filename:
+            for j in range(len(values)):
+                var value = values[j]
+                if value < envelope_min[i][j]:
+                    envelope_min[i][j] = value
+                if value > envelope_max[i][j]:
+                    envelope_max[i][j] = value
+                var abs_val = abs(value)
+                if abs_val > envelope_abs[i][j]:
+                    envelope_abs[i][j] = abs_val
+            return
+    var mins: List[Float64] = []
+    var maxs: List[Float64] = []
+    var abss: List[Float64] = []
+    mins.resize(len(values), 0.0)
+    maxs.resize(len(values), 0.0)
+    abss.resize(len(values), 0.0)
+    for j in range(len(values)):
+        mins[j] = values[j]
+        maxs[j] = values[j]
+        abss[j] = abs(values[j])
+    envelope_files.append(filename)
+    envelope_min.append(mins^)
+    envelope_max.append(maxs^)
+    envelope_abs.append(abss^)
+
+
+fn _flush_envelope_outputs(
+    envelope_files: List[String],
+    envelope_min: List[List[Float64]],
+    envelope_max: List[List[Float64]],
+    envelope_abs: List[List[Float64]],
+    mut output_files: List[String],
+    mut output_buffers: List[String],
+):
+    for i in range(len(envelope_files)):
+        var line = String()
+        line += _format_values_line(envelope_min[i])
+        line += _format_values_line(envelope_max[i])
+        line += _format_values_line(envelope_abs[i])
+        _append_output(output_files, output_buffers, envelope_files[i], line)
+
+
 fn _solve_linear_system(
     mut A: List[List[Float64]], mut b: List[Float64], mut x: List[Float64]
 ) -> Bool:
@@ -326,5 +510,3 @@ fn _solve_linear_system(
             s -= A[i][j] * x[j]
         x[i] = s
     return True
-
-

@@ -1103,6 +1103,177 @@ def main() -> None:
                                     f"{case_name}: element {elem_id} mismatch"
                                 )
                                 parity_failures.extend([f"  {err}" for err in errors])
+                elif rec_type == "node_reaction":
+                    output = rec.get("output", "reaction")
+                    for node_id in rec.get("nodes", []):
+                        ref_file = (
+                            results_root
+                            / "opensees"
+                            / case_name
+                            / f"{output}_node{node_id}.out"
+                        )
+                        mojo_file = (
+                            results_root
+                            / "mojo"
+                            / case_name
+                            / f"{output}_node{node_id}.out"
+                        )
+                        if not ref_file.exists():
+                            parity_failures.append(
+                                f"{case_name}: missing OpenSees output: {ref_file}"
+                            )
+                            continue
+                        if not mojo_file.exists():
+                            parity_failures.append(
+                                f"{case_name}: missing Mojo output: {mojo_file}"
+                            )
+                            continue
+                        try:
+                            if is_transient:
+                                ref_vals = _load_all_values(ref_file)
+                                mojo_vals = _load_all_values(mojo_file)
+                            else:
+                                ref_vals = _load_last_values(ref_file)
+                                mojo_vals = _load_last_values(mojo_file)
+                        except ValueError as exc:
+                            parity_failures.append(f"{case_name}: {exc}")
+                            continue
+                        if is_transient:
+                            if len(ref_vals) != len(mojo_vals):
+                                parity_failures.append(
+                                    f"{case_name}: reaction node {node_id} step count mismatch: {len(ref_vals)} != {len(mojo_vals)}"
+                                )
+                                continue
+                            for step, (rvec, gvec) in enumerate(
+                                zip(ref_vals, mojo_vals), start=1
+                            ):
+                                ok, errors = _compare_vectors(
+                                    rvec, gvec, rtol=rtol, atol=atol
+                                )
+                                if not ok:
+                                    parity_failures.append(
+                                        f"{case_name}: reaction node {node_id} mismatch at step {step}"
+                                    )
+                                    parity_failures.extend([f"  {err}" for err in errors])
+                                    break
+                        else:
+                            ok, errors = _compare_vectors(
+                                ref_vals, mojo_vals, rtol=rtol, atol=atol
+                            )
+                            if not ok:
+                                parity_failures.append(
+                                    f"{case_name}: reaction node {node_id} mismatch"
+                                )
+                                parity_failures.extend([f"  {err}" for err in errors])
+                elif rec_type == "drift":
+                    output = rec.get("output", "drift")
+                    i_node = int(rec["i_node"])
+                    j_node = int(rec["j_node"])
+                    ref_file = (
+                        results_root
+                        / "opensees"
+                        / case_name
+                        / f"{output}_i{i_node}_j{j_node}.out"
+                    )
+                    mojo_file = (
+                        results_root
+                        / "mojo"
+                        / case_name
+                        / f"{output}_i{i_node}_j{j_node}.out"
+                    )
+                    if not ref_file.exists():
+                        parity_failures.append(
+                            f"{case_name}: missing OpenSees output: {ref_file}"
+                        )
+                        continue
+                    if not mojo_file.exists():
+                        parity_failures.append(
+                            f"{case_name}: missing Mojo output: {mojo_file}"
+                        )
+                        continue
+                    try:
+                        if is_transient:
+                            ref_vals = _load_all_values(ref_file)
+                            mojo_vals = _load_all_values(mojo_file)
+                        else:
+                            ref_vals = _load_last_values(ref_file)
+                            mojo_vals = _load_last_values(mojo_file)
+                    except ValueError as exc:
+                        parity_failures.append(f"{case_name}: {exc}")
+                        continue
+                    if is_transient:
+                        if len(ref_vals) != len(mojo_vals):
+                            parity_failures.append(
+                                f"{case_name}: drift i{i_node}-j{j_node} step count mismatch: {len(ref_vals)} != {len(mojo_vals)}"
+                            )
+                            continue
+                        for step, (rvec, gvec) in enumerate(
+                            zip(ref_vals, mojo_vals), start=1
+                        ):
+                            ok, errors = _compare_vectors(
+                                rvec, gvec, rtol=rtol, atol=atol
+                            )
+                            if not ok:
+                                parity_failures.append(
+                                    f"{case_name}: drift i{i_node}-j{j_node} mismatch at step {step}"
+                                )
+                                parity_failures.extend([f"  {err}" for err in errors])
+                                break
+                    else:
+                        ok, errors = _compare_vectors(
+                            ref_vals, mojo_vals, rtol=rtol, atol=atol
+                        )
+                        if not ok:
+                            parity_failures.append(
+                                f"{case_name}: drift i{i_node}-j{j_node} mismatch"
+                            )
+                            parity_failures.extend([f"  {err}" for err in errors])
+                elif rec_type == "envelope_element_force":
+                    output = rec.get("output", "envelope_element_force")
+                    for elem_id in rec.get("elements", []):
+                        ref_file = (
+                            results_root
+                            / "opensees"
+                            / case_name
+                            / f"{output}_ele{elem_id}.out"
+                        )
+                        mojo_file = (
+                            results_root
+                            / "mojo"
+                            / case_name
+                            / f"{output}_ele{elem_id}.out"
+                        )
+                        if not ref_file.exists():
+                            parity_failures.append(
+                                f"{case_name}: missing OpenSees output: {ref_file}"
+                            )
+                            continue
+                        if not mojo_file.exists():
+                            parity_failures.append(
+                                f"{case_name}: missing Mojo output: {mojo_file}"
+                            )
+                            continue
+                        try:
+                            ref_vals = _load_all_values(ref_file)
+                            mojo_vals = _load_all_values(mojo_file)
+                        except ValueError as exc:
+                            parity_failures.append(f"{case_name}: {exc}")
+                            continue
+                        if len(ref_vals) != len(mojo_vals):
+                            parity_failures.append(
+                                f"{case_name}: envelope element {elem_id} row count mismatch: {len(ref_vals)} != {len(mojo_vals)}"
+                            )
+                            continue
+                        for row, (rvec, gvec) in enumerate(zip(ref_vals, mojo_vals), start=1):
+                            ok, errors = _compare_vectors(
+                                rvec, gvec, rtol=rtol, atol=atol
+                            )
+                            if not ok:
+                                parity_failures.append(
+                                    f"{case_name}: envelope element {elem_id} mismatch at row {row}"
+                                )
+                                parity_failures.extend([f"  {err}" for err in errors])
+                                break
                 else:
                     parity_failures.append(
                         f"{case_name}: unsupported recorder type: {rec_type}"

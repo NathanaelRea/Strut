@@ -1,0 +1,67 @@
+import json
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+
+repo_root = Path(__file__).resolve().parents[2]
+
+
+def _run_json_to_tcl(case_data):
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_dir = Path(tmp)
+        case_path = tmp_dir / "case.json"
+        tcl_path = tmp_dir / "model.tcl"
+        case_path.write_text(json.dumps(case_data), encoding="utf-8")
+        subprocess.check_call(
+            [
+                sys.executable,
+                str(repo_root / "scripts" / "json_to_tcl.py"),
+                str(case_path),
+                str(tcl_path),
+            ]
+        )
+        return tcl_path.read_text(encoding="utf-8")
+
+
+def test_json_to_tcl_emits_reaction_drift_and_envelope_recorders():
+    case = {
+        "schema_version": "1.0",
+        "metadata": {"name": "recorder_tcl_unit", "units": "SI"},
+        "model": {"ndm": 2, "ndf": 3},
+        "nodes": [
+            {"id": 1, "x": 0.0, "y": 0.0, "constraints": [1, 2, 3]},
+            {"id": 2, "x": 0.0, "y": 3.0},
+        ],
+        "materials": [{"id": 1, "type": "Elastic", "params": {"E": 2.0e11}}],
+        "sections": [
+            {
+                "id": 1,
+                "type": "ElasticSection2d",
+                "params": {"E": 2.0e11, "A": 0.02, "I": 8.0e-5},
+            }
+        ],
+        "elements": [
+            {
+                "id": 1,
+                "type": "elasticBeamColumn2d",
+                "nodes": [1, 2],
+                "section": 1,
+                "geomTransf": "Linear",
+            }
+        ],
+        "loads": [{"node": 2, "dof": 1, "value": 1.0}],
+        "analysis": {"type": "static_linear", "steps": 1},
+        "recorders": [
+            {"type": "node_reaction", "nodes": [1], "dofs": [1, 2, 3], "output": "reaction"},
+            {"type": "drift", "i_node": 1, "j_node": 2, "dof": 1, "perp_dirn": 2, "output": "drift"},
+            {"type": "envelope_element_force", "elements": [1], "output": "env_force"},
+        ],
+    }
+
+    text = _run_json_to_tcl(case)
+
+    assert "recorder Node -file reaction_node1.out -node 1 -dof 1 2 3 reaction\n" in text
+    assert "recorder Drift -file drift_i1_j2.out -iNode 1 -jNode 2 -dof 1 -perpDirn 2\n" in text
+    assert "recorder EnvelopeElement -file env_force_ele1.out -ele 1 forces\n" in text
