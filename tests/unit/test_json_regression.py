@@ -68,6 +68,7 @@ def test_json_case_regressions():
         "elastic_beam_cantilever",
         "elastic_frame_portal",
         "elastic_frame_two_bay",
+        "steel01_truss_bilinear",
     ]
 
     validation_root = repo_root / "tests" / "validation"

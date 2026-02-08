@@ -9,6 +9,13 @@ from elements import (
     beam_uniform_load_global,
 )
 from linalg import gaussian_elimination
+from materials import (
+    UniMaterialDef,
+    UniMaterialState,
+    uni_mat_is_elastic,
+    uniaxial_commit_all,
+    uniaxial_revert_trial_all,
+)
 from solver.assembly import (
     assemble_global_stiffness,
     assemble_global_stiffness_banded,
@@ -211,6 +218,41 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
         if mid >= len(materials_by_id):
             materials_by_id.resize(mid + 1, None)
         materials_by_id[mid] = mat
+    var uniaxial_defs: List[UniMaterialDef] = []
+    var uniaxial_def_by_id: List[Int] = []
+    uniaxial_def_by_id.resize(len(materials_by_id), -1)
+    for i in range(py_len(materials)):
+        var mat = materials[i]
+        var mid = Int(mat["id"])
+        if mid >= len(uniaxial_def_by_id):
+            uniaxial_def_by_id.resize(mid + 1, -1)
+        var mat_type = String(mat["type"])
+        if mat_type == "Elastic":
+            var params = mat["params"]
+            var E = Float64(params["E"])
+            if E <= 0.0:
+                abort("Elastic material E must be > 0")
+            var mat_def = UniMaterialDef(0, E, 0.0, 0.0, 0.0)
+            uniaxial_def_by_id[mid] = len(uniaxial_defs)
+            uniaxial_defs.append(mat_def)
+        elif mat_type == "Steel01":
+            var params = mat["params"]
+            var Fy = Float64(params["Fy"])
+            var E0 = Float64(params["E0"])
+            var b = Float64(params["b"])
+            if Fy <= 0.0:
+                abort("Steel01 Fy must be > 0")
+            if E0 <= 0.0:
+                abort("Steel01 E0 must be > 0")
+            if b < 0.0 or b >= 1.0:
+                abort("Steel01 b must be in [0, 1)")
+            var mat_def = UniMaterialDef(1, Fy, E0, b, 0.0)
+            uniaxial_def_by_id[mid] = len(uniaxial_defs)
+            uniaxial_defs.append(mat_def)
+        elif mat_type == "ElasticIsotropic":
+            continue
+        else:
+            abort("unsupported material type: " + mat_type)
     var elements = data["elements"]
     var elem_count = py_len(elements)
     var elem_ids: List[Int] = []
@@ -224,6 +266,51 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
         if eid >= len(elem_id_to_index):
             elem_id_to_index.resize(eid + 1, -1)
         elem_id_to_index[eid] = i
+
+    var uniaxial_states: List[UniMaterialState] = []
+    var uniaxial_state_defs: List[Int] = []
+    var elem_uniaxial_offsets: List[Int] = []
+    var elem_uniaxial_counts: List[Int] = []
+    var elem_uniaxial_state_ids: List[Int] = []
+    elem_uniaxial_offsets.resize(elem_count, 0)
+    elem_uniaxial_counts.resize(elem_count, 0)
+    var used_nonelastic_uniaxial = False
+    for e in range(elem_count):
+        var elem = elements[e]
+        var elem_type = String(elem["type"])
+        if elem_type == "truss":
+            var mat_id = Int(elem["material"])
+            if mat_id >= len(uniaxial_def_by_id) or uniaxial_def_by_id[mat_id] < 0:
+                abort("truss requires uniaxial material")
+            var def_index = uniaxial_def_by_id[mat_id]
+            var mat_def = uniaxial_defs[def_index]
+            var state_index = len(uniaxial_states)
+            uniaxial_states.append(UniMaterialState(mat_def))
+            uniaxial_state_defs.append(def_index)
+            elem_uniaxial_offsets[e] = len(elem_uniaxial_state_ids)
+            elem_uniaxial_counts[e] = 1
+            elem_uniaxial_state_ids.append(state_index)
+            if not uni_mat_is_elastic(mat_def):
+                used_nonelastic_uniaxial = True
+        elif elem_type == "zeroLength" or elem_type == "twoNodeLink":
+            var elem_mats = elem["materials"]
+            elem_uniaxial_offsets[e] = len(elem_uniaxial_state_ids)
+            elem_uniaxial_counts[e] = py_len(elem_mats)
+            for m in range(py_len(elem_mats)):
+                var mat_id = Int(elem_mats[m])
+                if mat_id >= len(uniaxial_def_by_id) or uniaxial_def_by_id[mat_id] < 0:
+                    abort("zeroLength/twoNodeLink requires uniaxial material")
+                var def_index = uniaxial_def_by_id[mat_id]
+                var mat_def = uniaxial_defs[def_index]
+                var state_index = len(uniaxial_states)
+                uniaxial_states.append(UniMaterialState(mat_def))
+                uniaxial_state_defs.append(def_index)
+                elem_uniaxial_state_ids.append(state_index)
+                if not uni_mat_is_elastic(mat_def):
+                    used_nonelastic_uniaxial = True
+        else:
+            elem_uniaxial_offsets[e] = len(elem_uniaxial_state_ids)
+            elem_uniaxial_counts[e] = 0
 
     var total_dofs = node_count * ndf
     var F_total: List[Float64] = []
@@ -297,6 +384,8 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
     var steps = Int(analysis.get("steps", 1))
     if steps < 1:
         abort("analysis steps must be >= 1")
+    if analysis_type != "static_nonlinear" and used_nonelastic_uniaxial:
+        abort("nonlinear uniaxial materials require static_nonlinear analysis")
 
     var solver_pref = String(analysis.get("system", analysis.get("solver", "auto")))
     if solver_pref == "":
@@ -410,6 +499,11 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
                 ndf,
                 ndm,
                 u,
+                uniaxial_defs,
+                uniaxial_state_defs,
+                elem_uniaxial_offsets,
+                elem_uniaxial_counts,
+                elem_uniaxial_state_ids,
                 free_index,
                 len(free),
                 bw,
@@ -425,6 +519,11 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
                 ndf,
                 ndm,
                 u,
+                uniaxial_defs,
+                uniaxial_state_defs,
+                elem_uniaxial_offsets,
+                elem_uniaxial_counts,
+                elem_uniaxial_state_ids,
             )
         if do_profile:
             var t_asm_end = Int(time.perf_counter_ns())
@@ -523,6 +622,7 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
                         frame_nonlinear_iter,
                         iter_start_us,
                     )
+                uniaxial_revert_trial_all(uniaxial_states)
                 if do_profile:
                     var t_asm_start = Int(time.perf_counter_ns())
                     var asm_start_us = (t_asm_start - t0) // 1000
@@ -543,6 +643,12 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
                     ndf,
                     ndm,
                     u,
+                    uniaxial_defs,
+                    uniaxial_state_defs,
+                    uniaxial_states,
+                    elem_uniaxial_offsets,
+                    elem_uniaxial_counts,
+                    elem_uniaxial_state_ids,
                     K,
                     F_int,
                 )
@@ -637,6 +743,8 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
                 _append_event(
                     events, events_need_comma, "C", frame_nonlinear_step, step_end_us
                 )
+            if converged:
+                uniaxial_commit_all(uniaxial_states)
             if not converged:
                 abort("static_nonlinear did not converge")
     elif analysis_type == "transient_linear":
@@ -674,6 +782,11 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
             ndf,
             ndm,
             u,
+            uniaxial_defs,
+            uniaxial_state_defs,
+            elem_uniaxial_offsets,
+            elem_uniaxial_counts,
+            elem_uniaxial_state_ids,
         )
         var K_ff: List[List[Float64]] = []
         for _ in range(free_count):

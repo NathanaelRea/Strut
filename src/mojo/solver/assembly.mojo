@@ -1,4 +1,5 @@
 from collections import List
+from math import hypot, sqrt
 from os import abort
 from python import PythonObject
 
@@ -13,6 +14,12 @@ from elements import (
     shell4_mindlin_stiffness,
     truss_global_stiffness,
     truss3d_global_stiffness,
+)
+from materials import (
+    UniMaterialDef,
+    UniMaterialState,
+    uni_mat_initial_tangent,
+    uniaxial_set_trial_strain,
 )
 from solver.banded import banded_add, banded_matrix
 from solver.dof import node_dof_index
@@ -40,6 +47,11 @@ fn assemble_global_stiffness(
     ndf: Int,
     ndm: Int,
     u: List[Float64],
+    uniaxial_defs: List[UniMaterialDef],
+    uniaxial_state_defs: List[Int],
+    elem_uniaxial_offsets: List[Int],
+    elem_uniaxial_counts: List[Int],
+    elem_uniaxial_state_ids: List[Int],
 ) raises -> List[List[Float64]]:
     var total_dofs = node_count * ndf
     var K: List[List[Float64]] = []
@@ -218,15 +230,14 @@ fn assemble_global_stiffness(
             var node1 = nodes[i1]
             var node2 = nodes[i2]
 
-            var mat_id = Int(elem["material"])
-            if mat_id >= len(materials_by_id):
-                abort("material not found")
-            var mat = materials_by_id[mat_id]
-            if mat is None:
-                abort("material not found")
-
-            var params = mat["params"]
-            var E = Float64(params["E"])
+            var offset = elem_uniaxial_offsets[e]
+            var count = elem_uniaxial_counts[e]
+            if count != 1:
+                abort("truss requires one uniaxial material")
+            var state_index = elem_uniaxial_state_ids[offset]
+            var def_index = uniaxial_state_defs[state_index]
+            var mat_def = uniaxial_defs[def_index]
+            var E = uni_mat_initial_tangent(mat_def)
             var A = Float64(elem["area"])
 
             if ndf == 2:
@@ -287,21 +298,19 @@ fn assemble_global_stiffness(
                 abort("zeroLength/twoNodeLink materials/dirs mismatch")
 
             var ks: List[Float64] = []
-            ks.resize(py_len(elem_mats), 0.0)
+            var offset = elem_uniaxial_offsets[e]
+            var count = elem_uniaxial_counts[e]
+            if count != py_len(elem_mats):
+                abort("zeroLength/twoNodeLink material count mismatch")
+            ks.resize(count, 0.0)
             var dirs: List[Int] = []
-            dirs.resize(py_len(elem_dirs), 0)
+            dirs.resize(count, 0)
 
-            for m in range(py_len(elem_mats)):
-                var mat_id = Int(elem_mats[m])
-                if mat_id >= len(materials_by_id):
-                    abort("material not found")
-                var mat = materials_by_id[mat_id]
-                if mat is None:
-                    abort("material not found")
-                if String(mat["type"]) != "Elastic":
-                    abort("only Elastic uniaxial material supported")
-                var params = mat["params"]
-                ks[m] = Float64(params["E"])
+            for m in range(count):
+                var state_index = elem_uniaxial_state_ids[offset + m]
+                var def_index = uniaxial_state_defs[state_index]
+                var mat_def = uniaxial_defs[def_index]
+                ks[m] = uni_mat_initial_tangent(mat_def)
                 dirs[m] = Int(elem_dirs[m])
 
             var k_global = link_global_stiffness(dirs, ks)
@@ -472,6 +481,12 @@ fn assemble_internal_forces(
     ndf: Int,
     ndm: Int,
     u: List[Float64],
+    uniaxial_defs: List[UniMaterialDef],
+    uniaxial_state_defs: List[Int],
+    mut uniaxial_states: List[UniMaterialState],
+    elem_uniaxial_offsets: List[Int],
+    elem_uniaxial_counts: List[Int],
+    elem_uniaxial_state_ids: List[Int],
 ) raises -> List[Float64]:
     var total_dofs = node_count * ndf
     var F_int: List[Float64] = []
@@ -648,48 +663,51 @@ fn assemble_internal_forces(
             var node1 = nodes[i1]
             var node2 = nodes[i2]
 
-            var mat_id = Int(elem["material"])
-            if mat_id >= len(materials_by_id):
-                abort("material not found")
-            var mat = materials_by_id[mat_id]
-            if mat is None:
-                abort("material not found")
-
-            var params = mat["params"]
-            var E = Float64(params["E"])
+            var offset = elem_uniaxial_offsets[e]
+            var count = elem_uniaxial_counts[e]
+            if count != 1:
+                abort("truss requires one uniaxial material")
+            var state_index = elem_uniaxial_state_ids[offset]
+            var def_index = uniaxial_state_defs[state_index]
+            var mat_def = uniaxial_defs[def_index]
+            var state = uniaxial_states[state_index]
             var A = Float64(elem["area"])
 
             if ndf == 2:
-                var k_global = truss_global_stiffness(
-                    E,
-                    A,
-                    Float64(node1["x"]),
-                    Float64(node1["y"]),
-                    Float64(node2["x"]),
-                    Float64(node2["y"]),
-                )
+                var dx = Float64(node2["x"]) - Float64(node1["x"])
+                var dy = Float64(node2["y"]) - Float64(node1["y"])
+                var L = hypot(dx, dy)
+                if L == 0.0:
+                    abort("zero-length element")
+                var c = dx / L
+                var s = dy / L
                 var dof_map = [
                     node_dof_index(i1, 1, ndf),
                     node_dof_index(i1, 2, ndf),
                     node_dof_index(i2, 1, ndf),
                     node_dof_index(i2, 2, ndf),
                 ]
-                for a in range(4):
-                    var sum = 0.0
-                    for b in range(4):
-                        sum += k_global[a][b] * u[dof_map[b]]
-                    F_int[dof_map[a]] += sum
+                var du = (u[dof_map[2]] - u[dof_map[0]]) * c + (
+                    u[dof_map[3]] - u[dof_map[1]]
+                ) * s
+                var eps = du / L
+                uniaxial_set_trial_strain(mat_def, state, eps)
+                uniaxial_states[state_index] = state
+                var N = state.sig_t * A
+                F_int[dof_map[0]] -= N * c
+                F_int[dof_map[1]] -= N * s
+                F_int[dof_map[2]] += N * c
+                F_int[dof_map[3]] += N * s
             else:
-                var k_global = truss3d_global_stiffness(
-                    E,
-                    A,
-                    Float64(node1["x"]),
-                    Float64(node1["y"]),
-                    Float64(node1["z"]),
-                    Float64(node2["x"]),
-                    Float64(node2["y"]),
-                    Float64(node2["z"]),
-                )
+                var dx = Float64(node2["x"]) - Float64(node1["x"])
+                var dy = Float64(node2["y"]) - Float64(node1["y"])
+                var dz = Float64(node2["z"]) - Float64(node1["z"])
+                var L = sqrt(dx * dx + dy * dy + dz * dz)
+                if L == 0.0:
+                    abort("zero-length element")
+                var l = dx / L
+                var m = dy / L
+                var n = dz / L
                 var dof_map = [
                     node_dof_index(i1, 1, ndf),
                     node_dof_index(i1, 2, ndf),
@@ -698,11 +716,19 @@ fn assemble_internal_forces(
                     node_dof_index(i2, 2, ndf),
                     node_dof_index(i2, 3, ndf),
                 ]
-                for a in range(6):
-                    var sum = 0.0
-                    for b in range(6):
-                        sum += k_global[a][b] * u[dof_map[b]]
-                    F_int[dof_map[a]] += sum
+                var du = (u[dof_map[3]] - u[dof_map[0]]) * l + (
+                    u[dof_map[4]] - u[dof_map[1]]
+                ) * m + (u[dof_map[5]] - u[dof_map[2]]) * n
+                var eps = du / L
+                uniaxial_set_trial_strain(mat_def, state, eps)
+                uniaxial_states[state_index] = state
+                var N = state.sig_t * A
+                F_int[dof_map[0]] -= N * l
+                F_int[dof_map[1]] -= N * m
+                F_int[dof_map[2]] -= N * n
+                F_int[dof_map[3]] += N * l
+                F_int[dof_map[4]] += N * m
+                F_int[dof_map[5]] += N * n
         elif elem_type == "zeroLength" or elem_type == "twoNodeLink":
             if ndf != 2:
                 abort("zeroLength/twoNodeLink requires ndf=2")
@@ -715,37 +741,39 @@ fn assemble_internal_forces(
             var elem_dirs = elem["dirs"]
             if py_len(elem_mats) != py_len(elem_dirs):
                 abort("zeroLength/twoNodeLink materials/dirs mismatch")
-
-            var ks: List[Float64] = []
-            ks.resize(py_len(elem_mats), 0.0)
-            var dirs: List[Int] = []
-            dirs.resize(py_len(elem_dirs), 0)
-
-            for m in range(py_len(elem_mats)):
-                var mat_id = Int(elem_mats[m])
-                if mat_id >= len(materials_by_id):
-                    abort("material not found")
-                var mat = materials_by_id[mat_id]
-                if mat is None:
-                    abort("material not found")
-                if String(mat["type"]) != "Elastic":
-                    abort("only Elastic uniaxial material supported")
-                var params = mat["params"]
-                ks[m] = Float64(params["E"])
-                dirs[m] = Int(elem_dirs[m])
-
-            var k_global = link_global_stiffness(dirs, ks)
             var dof_map = [
                 node_dof_index(i1, 1, ndf),
                 node_dof_index(i1, 2, ndf),
                 node_dof_index(i2, 1, ndf),
                 node_dof_index(i2, 2, ndf),
             ]
-            for a in range(4):
-                var sum = 0.0
-                for b in range(4):
-                    sum += k_global[a][b] * u[dof_map[b]]
-                F_int[dof_map[a]] += sum
+            var offset = elem_uniaxial_offsets[e]
+            var count = elem_uniaxial_counts[e]
+            if count != py_len(elem_mats):
+                abort("zeroLength/twoNodeLink material count mismatch")
+
+            for m in range(count):
+                var state_index = elem_uniaxial_state_ids[offset + m]
+                var def_index = uniaxial_state_defs[state_index]
+                var mat_def = uniaxial_defs[def_index]
+                var state = uniaxial_states[state_index]
+                var dir = Int(elem_dirs[m])
+                var a = -1
+                var b = -1
+                if dir == 1:
+                    a = 0
+                    b = 2
+                elif dir == 2:
+                    a = 1
+                    b = 3
+                else:
+                    abort("unsupported link dir")
+                var delta = u[dof_map[b]] - u[dof_map[a]]
+                uniaxial_set_trial_strain(mat_def, state, delta)
+                uniaxial_states[state_index] = state
+                var force = state.sig_t
+                F_int[dof_map[a]] -= force
+                F_int[dof_map[b]] += force
         elif elem_type == "fourNodeQuad":
             if ndm != 2 or ndf != 2:
                 abort("fourNodeQuad requires ndm=2, ndf=2")
@@ -902,6 +930,12 @@ fn assemble_global_stiffness_and_internal(
     ndf: Int,
     ndm: Int,
     u: List[Float64],
+    uniaxial_defs: List[UniMaterialDef],
+    uniaxial_state_defs: List[Int],
+    mut uniaxial_states: List[UniMaterialState],
+    elem_uniaxial_offsets: List[Int],
+    elem_uniaxial_counts: List[Int],
+    elem_uniaxial_state_ids: List[Int],
     mut K: List[List[Float64]],
     mut F_int: List[Float64],
 ) raises:
@@ -1089,52 +1123,63 @@ fn assemble_global_stiffness_and_internal(
             var node1 = nodes[i1]
             var node2 = nodes[i2]
 
-            var mat_id = Int(elem["material"])
-            if mat_id >= len(materials_by_id):
-                abort("material not found")
-            var mat = materials_by_id[mat_id]
-            if mat is None:
-                abort("material not found")
-
-            var params = mat["params"]
-            var E = Float64(params["E"])
+            var offset = elem_uniaxial_offsets[e]
+            var count = elem_uniaxial_counts[e]
+            if count != 1:
+                abort("truss requires one uniaxial material")
+            var state_index = elem_uniaxial_state_ids[offset]
+            var def_index = uniaxial_state_defs[state_index]
+            var mat_def = uniaxial_defs[def_index]
+            var state = uniaxial_states[state_index]
             var A = Float64(elem["area"])
 
             if ndf == 2:
-                var k_global = truss_global_stiffness(
-                    E,
-                    A,
-                    Float64(node1["x"]),
-                    Float64(node1["y"]),
-                    Float64(node2["x"]),
-                    Float64(node2["y"]),
-                )
+                var dx = Float64(node2["x"]) - Float64(node1["x"])
+                var dy = Float64(node2["y"]) - Float64(node1["y"])
+                var L = hypot(dx, dy)
+                if L == 0.0:
+                    abort("zero-length element")
+                var c = dx / L
+                var s = dy / L
                 var dof_map = [
                     node_dof_index(i1, 1, ndf),
                     node_dof_index(i1, 2, ndf),
                     node_dof_index(i2, 1, ndf),
                     node_dof_index(i2, 2, ndf),
                 ]
+                var du = (u[dof_map[2]] - u[dof_map[0]]) * c + (
+                    u[dof_map[3]] - u[dof_map[1]]
+                ) * s
+                var eps = du / L
+                uniaxial_set_trial_strain(mat_def, state, eps)
+                uniaxial_states[state_index] = state
+                var N = state.sig_t * A
+                var k = state.tangent_t * A / L
+                var k_global = [
+                    [k * c * c, k * c * s, -k * c * c, -k * c * s],
+                    [k * c * s, k * s * s, -k * c * s, -k * s * s],
+                    [-k * c * c, -k * c * s, k * c * c, k * c * s],
+                    [-k * c * s, -k * s * s, k * c * s, k * s * s],
+                ]
                 for a in range(4):
                     var Aidx = dof_map[a]
-                    var sum = 0.0
                     for b in range(4):
                         var Bidx = dof_map[b]
-                        var kval = k_global[a][b]
-                        K[Aidx][Bidx] += kval
-                        sum += kval * u[Bidx]
-                    F_int[Aidx] += sum
+                        K[Aidx][Bidx] += k_global[a][b]
+                F_int[dof_map[0]] -= N * c
+                F_int[dof_map[1]] -= N * s
+                F_int[dof_map[2]] += N * c
+                F_int[dof_map[3]] += N * s
             else:
-                var k_global = truss3d_global_stiffness(
-                    E,
-                    A,
-                    Float64(node1["x"]),
-                    Float64(node1["y"]),
-                    Float64(node1["z"]),
-                    Float64(node2["x"]),
-                    Float64(node2["y"]),
-                    Float64(node2["z"]),
-                )
+                var dx = Float64(node2["x"]) - Float64(node1["x"])
+                var dy = Float64(node2["y"]) - Float64(node1["y"])
+                var dz = Float64(node2["z"]) - Float64(node1["z"])
+                var L = sqrt(dx * dx + dy * dy + dz * dz)
+                if L == 0.0:
+                    abort("zero-length element")
+                var l = dx / L
+                var m = dy / L
+                var n = dz / L
                 var dof_map = [
                     node_dof_index(i1, 1, ndf),
                     node_dof_index(i1, 2, ndf),
@@ -1143,15 +1188,33 @@ fn assemble_global_stiffness_and_internal(
                     node_dof_index(i2, 2, ndf),
                     node_dof_index(i2, 3, ndf),
                 ]
+                var du = (u[dof_map[3]] - u[dof_map[0]]) * l + (
+                    u[dof_map[4]] - u[dof_map[1]]
+                ) * m + (u[dof_map[5]] - u[dof_map[2]]) * n
+                var eps = du / L
+                uniaxial_set_trial_strain(mat_def, state, eps)
+                uniaxial_states[state_index] = state
+                var N = state.sig_t * A
+                var k = state.tangent_t * A / L
+                var k_global = [
+                    [k * l * l, k * l * m, k * l * n, -k * l * l, -k * l * m, -k * l * n],
+                    [k * l * m, k * m * m, k * m * n, -k * l * m, -k * m * m, -k * m * n],
+                    [k * l * n, k * m * n, k * n * n, -k * l * n, -k * m * n, -k * n * n],
+                    [-k * l * l, -k * l * m, -k * l * n, k * l * l, k * l * m, k * l * n],
+                    [-k * l * m, -k * m * m, -k * m * n, k * l * m, k * m * m, k * m * n],
+                    [-k * l * n, -k * m * n, -k * n * n, k * l * n, k * m * n, k * n * n],
+                ]
                 for a in range(6):
                     var Aidx = dof_map[a]
-                    var sum = 0.0
                     for b in range(6):
                         var Bidx = dof_map[b]
-                        var kval = k_global[a][b]
-                        K[Aidx][Bidx] += kval
-                        sum += kval * u[Bidx]
-                    F_int[Aidx] += sum
+                        K[Aidx][Bidx] += k_global[a][b]
+                F_int[dof_map[0]] -= N * l
+                F_int[dof_map[1]] -= N * m
+                F_int[dof_map[2]] -= N * n
+                F_int[dof_map[3]] += N * l
+                F_int[dof_map[4]] += N * m
+                F_int[dof_map[5]] += N * n
         elif elem_type == "zeroLength" or elem_type == "twoNodeLink":
             if ndf != 2:
                 abort("zeroLength/twoNodeLink requires ndf=2")
@@ -1164,39 +1227,44 @@ fn assemble_global_stiffness_and_internal(
             var elem_dirs = elem["dirs"]
             if py_len(elem_mats) != py_len(elem_dirs):
                 abort("zeroLength/twoNodeLink materials/dirs mismatch")
-            var ks: List[Float64] = []
-            ks.resize(py_len(elem_mats), 0.0)
-            var dirs: List[Int] = []
-            dirs.resize(py_len(elem_dirs), 0)
-            for i in range(py_len(elem_mats)):
-                var mat_id = Int(elem_mats[i])
-                if mat_id >= len(materials_by_id):
-                    abort("material not found")
-                var mat = materials_by_id[mat_id]
-                if mat is None:
-                    abort("material not found")
-                if String(mat["type"]) != "Elastic":
-                    abort("only Elastic uniaxial material supported")
-                var params = mat["params"]
-                ks[i] = Float64(params["E"])
-                dirs[i] = Int(elem_dirs[i])
-
-            var k_global = link_global_stiffness(dirs, ks)
             var dof_map = [
                 node_dof_index(i1, 1, ndf),
                 node_dof_index(i1, 2, ndf),
                 node_dof_index(i2, 1, ndf),
                 node_dof_index(i2, 2, ndf),
             ]
-            for a in range(4):
-                var Aidx = dof_map[a]
-                var sum = 0.0
-                for b in range(4):
-                    var Bidx = dof_map[b]
-                    var kval = k_global[a][b]
-                    K[Aidx][Bidx] += kval
-                    sum += kval * u[Bidx]
-                F_int[Aidx] += sum
+            var offset = elem_uniaxial_offsets[e]
+            var count = elem_uniaxial_counts[e]
+            if count != py_len(elem_mats):
+                abort("zeroLength/twoNodeLink material count mismatch")
+
+            for m in range(count):
+                var state_index = elem_uniaxial_state_ids[offset + m]
+                var def_index = uniaxial_state_defs[state_index]
+                var mat_def = uniaxial_defs[def_index]
+                var state = uniaxial_states[state_index]
+                var dir = Int(elem_dirs[m])
+                var a = -1
+                var b = -1
+                if dir == 1:
+                    a = 0
+                    b = 2
+                elif dir == 2:
+                    a = 1
+                    b = 3
+                else:
+                    abort("unsupported link dir")
+                var delta = u[dof_map[b]] - u[dof_map[a]]
+                uniaxial_set_trial_strain(mat_def, state, delta)
+                uniaxial_states[state_index] = state
+                var force = state.sig_t
+                var k = state.tangent_t
+                K[dof_map[a]][dof_map[a]] += k
+                K[dof_map[b]][dof_map[b]] += k
+                K[dof_map[a]][dof_map[b]] -= k
+                K[dof_map[b]][dof_map[a]] -= k
+                F_int[dof_map[a]] -= force
+                F_int[dof_map[b]] += force
         elif elem_type == "fourNodeQuad":
             if ndm != 2 or ndf != 2:
                 abort("fourNodeQuad requires ndm=2, ndf=2")
@@ -1360,6 +1428,11 @@ fn assemble_global_stiffness_banded(
     ndf: Int,
     ndm: Int,
     u: List[Float64],
+    uniaxial_defs: List[UniMaterialDef],
+    uniaxial_state_defs: List[Int],
+    elem_uniaxial_offsets: List[Int],
+    elem_uniaxial_counts: List[Int],
+    elem_uniaxial_state_ids: List[Int],
     free_index: List[Int],
     free_count: Int,
     bw: Int,
@@ -1552,17 +1625,15 @@ fn assemble_global_stiffness_banded(
             var node1 = nodes[i1]
             var node2 = nodes[i2]
 
-            var mat_id = Int(elem["material"])
-            if mat_id >= len(materials_by_id):
-                abort("material not found")
-            var mat = materials_by_id[mat_id]
-            if mat is None:
-                abort("material not found")
-            if String(mat["type"]) != "Elastic":
-                abort("only Elastic uniaxial material supported")
-            var params = mat["params"]
-            var E = Float64(params["E"])
-            var A = Float64(params["A"])
+            var offset = elem_uniaxial_offsets[e]
+            var count = elem_uniaxial_counts[e]
+            if count != 1:
+                abort("truss requires one uniaxial material")
+            var state_index = elem_uniaxial_state_ids[offset]
+            var def_index = uniaxial_state_defs[state_index]
+            var mat_def = uniaxial_defs[def_index]
+            var E = uni_mat_initial_tangent(mat_def)
+            var A = Float64(elem["area"])
 
             if ndf == 2:
                 var k_global = truss_global_stiffness(
@@ -1638,21 +1709,19 @@ fn assemble_global_stiffness_banded(
                 abort("zeroLength/twoNodeLink materials/dirs mismatch")
 
             var ks: List[Float64] = []
-            ks.resize(py_len(elem_mats), 0.0)
+            var offset = elem_uniaxial_offsets[e]
+            var count = elem_uniaxial_counts[e]
+            if count != py_len(elem_mats):
+                abort("zeroLength/twoNodeLink material count mismatch")
+            ks.resize(count, 0.0)
             var dirs: List[Int] = []
-            dirs.resize(py_len(elem_dirs), 0)
+            dirs.resize(count, 0)
 
-            for m in range(py_len(elem_mats)):
-                var mat_id = Int(elem_mats[m])
-                if mat_id >= len(materials_by_id):
-                    abort("material not found")
-                var mat = materials_by_id[mat_id]
-                if mat is None:
-                    abort("material not found")
-                if String(mat["type"]) != "Elastic":
-                    abort("only Elastic uniaxial material supported")
-                var params = mat["params"]
-                ks[m] = Float64(params["E"])
+            for m in range(count):
+                var state_index = elem_uniaxial_state_ids[offset + m]
+                var def_index = uniaxial_state_defs[state_index]
+                var mat_def = uniaxial_defs[def_index]
+                ks[m] = uni_mat_initial_tangent(mat_def)
                 dirs[m] = Int(elem_dirs[m])
 
             var k_global = link_global_stiffness(dirs, ks)
