@@ -11,8 +11,10 @@ from elements import (
 from linalg import gaussian_elimination
 from solver.assembly import (
     assemble_global_stiffness,
+    assemble_global_stiffness_banded,
     assemble_global_stiffness_and_internal,
 )
+from solver.banded import banded_gaussian_elimination, estimate_bandwidth
 from solver.dof import node_dof_index, require_dof_in_range
 from solver.profile import (
     _append_event,
@@ -20,6 +22,7 @@ from solver.profile import (
     _profile_enabled,
     _write_speedscope,
 )
+from solver.reorder import build_node_adjacency, rcm_order
 from solver.time_series import eval_time_series, find_time_series, parse_time_series
 from strut_io import py_len
 
@@ -289,13 +292,51 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
             var idx = node_dof_index(i, dof, ndf)
             constrained[idx] = True
 
-    var free: List[Int] = []
+    var analysis = data.get("analysis", {"type": "static_linear", "steps": 1})
+    var analysis_type = String(analysis.get("type", "static_linear"))
+    var steps = Int(analysis.get("steps", 1))
+    if steps < 1:
+        abort("analysis steps must be >= 1")
+
+    var solver_pref = String(analysis.get("system", analysis.get("solver", "auto")))
+    if solver_pref == "":
+        solver_pref = "auto"
+    if solver_pref != "auto" and solver_pref != "dense" and solver_pref != "banded":
+        abort("unsupported analysis system: " + solver_pref)
+    var band_threshold = Int(analysis.get("band_threshold", 128))
+    if band_threshold < 0:
+        band_threshold = 0
+
+    var free_count = 0
     for i in range(total_dofs):
         if not constrained[i]:
-            free.append(i)
+            free_count += 1
 
-    if len(free) == 0:
+    if free_count == 0:
         abort("no free dofs")
+
+    var use_banded = False
+    if analysis_type == "static_linear":
+        if solver_pref == "banded" or (solver_pref == "auto" and free_count > band_threshold):
+            use_banded = True
+
+    var free: List[Int] = []
+    var free_index: List[Int] = []
+    if use_banded:
+        var adjacency = build_node_adjacency(elements, node_count, id_to_index)
+        var node_order = rcm_order(adjacency)
+        free_index.resize(total_dofs, -1)
+        for i in range(len(node_order)):
+            var node_idx = node_order[i]
+            for dof in range(1, ndf + 1):
+                var idx = node_dof_index(node_idx, dof, ndf)
+                if not constrained[idx]:
+                    free_index[idx] = len(free)
+                    free.append(idx)
+    else:
+        for i in range(total_dofs):
+            if not constrained[i]:
+                free.append(i)
 
     var M_total: List[Float64] = []
     M_total.resize(total_dofs, 0.0)
@@ -307,12 +348,6 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
         require_dof_in_range(dof, ndf, "mass")
         var idx = node_dof_index(id_to_index[node_id], dof, ndf)
         M_total[idx] += Float64(mass["value"])
-
-    var analysis = data.get("analysis", {"type": "static_linear", "steps": 1})
-    var analysis_type = String(analysis.get("type", "static_linear"))
-    var steps = Int(analysis.get("steps", 1))
-    if steps < 1:
-        abort("analysis steps must be >= 1")
 
     var time_series = parse_time_series(data)
     var ts_index = -1
@@ -358,24 +393,45 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
             _append_event(
                 events, events_need_comma, "O", frame_assemble_stiffness, asm_start_us
             )
-        var K = assemble_global_stiffness(
-            nodes,
-            elements,
-            sections_by_id,
-            materials_by_id,
-            id_to_index,
-            node_count,
-            ndf,
-            ndm,
-            u,
-        )
+        var bw = 0
+        var K_ff_banded: List[List[Float64]] = []
+        var K: List[List[Float64]] = []
+        if use_banded:
+            bw = estimate_bandwidth(elements, id_to_index, ndf, free_index)
+            if bw > len(free) - 1:
+                bw = len(free) - 1
+            K_ff_banded = assemble_global_stiffness_banded(
+                nodes,
+                elements,
+                sections_by_id,
+                materials_by_id,
+                id_to_index,
+                node_count,
+                ndf,
+                ndm,
+                u,
+                free_index,
+                len(free),
+                bw,
+            )
+        else:
+            K = assemble_global_stiffness(
+                nodes,
+                elements,
+                sections_by_id,
+                materials_by_id,
+                id_to_index,
+                node_count,
+                ndf,
+                ndm,
+                u,
+            )
         if do_profile:
             var t_asm_end = Int(time.perf_counter_ns())
             var asm_end_us = (t_asm_end - t0) // 1000
             _append_event(
                 events, events_need_comma, "C", frame_assemble_stiffness, asm_end_us
             )
-        var K_ff: List[List[Float64]] = []
         var F_f: List[Float64] = []
         F_f.resize(len(free), 0.0)
         if do_profile:
@@ -385,13 +441,16 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
                 events, events_need_comma, "O", frame_kff_extract, kff_start_us
             )
         for i in range(len(free)):
-            var row: List[Float64] = []
-            row.resize(len(free), 0.0)
-            K_ff.append(row^)
             F_f[i] = F_total[free[i]]
-        for i in range(len(free)):
-            for j in range(len(free)):
-                K_ff[i][j] = K[free[i]][free[j]]
+        var K_ff: List[List[Float64]] = []
+        if not use_banded:
+            for _ in range(len(free)):
+                var row: List[Float64] = []
+                row.resize(len(free), 0.0)
+                K_ff.append(row^)
+            for i in range(len(free)):
+                for j in range(len(free)):
+                    K_ff[i][j] = K[free[i]][free[j]]
         if do_profile:
             var t_kff_end = Int(time.perf_counter_ns())
             var kff_end_us = (t_kff_end - t0) // 1000
@@ -402,7 +461,11 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
             _append_event(
                 events, events_need_comma, "O", frame_solve_linear, solve_lin_start_us
             )
-        var u_f = gaussian_elimination(K_ff, F_f)
+        var u_f: List[Float64]
+        if use_banded:
+            u_f = banded_gaussian_elimination(K_ff_banded, bw, F_f)
+        else:
+            u_f = gaussian_elimination(K_ff, F_f)
         if do_profile:
             var t_solve_lin_end = Int(time.perf_counter_ns())
             var solve_lin_end_us = (t_solve_lin_end - t0) // 1000

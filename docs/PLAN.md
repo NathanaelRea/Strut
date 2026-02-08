@@ -70,6 +70,11 @@ This document is a living roadmap for Strut (Mojo rewrite of OpenSees). It captu
 - [x] Add element loads: `beamUniform` for `elasticBeamColumn2d`.
 - [x] Support transient analysis workflow in JSON.
 
+### E. Performance (Near-Term)
+
+- [x] Add RCM-based banded solver path for large linear frames.
+- [x] Add generated large-frame benchmark (~1k DOF).
+
 ## Phase 3 (Mid-Term)
 
 ### A. Material Nonlinearity

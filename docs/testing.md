@@ -7,6 +7,9 @@ This document describes how Strut compares outputs and how tolerances are applie
 - `uv run run_tests.py`
 - `uv run run_tests.py --all`
 - `uv run run_tests.py --case tests/validation/elastic_beam_cantilever/elastic_beam_cantilever.json`
+- Generate a large frame benchmark case: `scripts/gen_frame_case.py --bays 18 --stories 17 --output /tmp/frame.json --disabled`
+- Benchmark a generated case: `uv run scripts/run_benchmarks.py --cases /tmp/frame.json --no-archive`
+- Benchmark with auto-generation: `uv run scripts/run_benchmarks.py --gen-frame-bays 18 --gen-frame-stories 17 --batch --no-archive`
 - When iterating on benchmarks, always include `--no-archive` to avoid polluting `benchmark/archive`. Runs with `--profile` default to `--no-archive`.
 
 Mojo is compiled on first run and cached at `build/mojo/strut`. To precompile:
