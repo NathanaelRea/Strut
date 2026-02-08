@@ -27,9 +27,8 @@ Newton updates.
 
 ## Extension Guidelines
 
-- **Concrete01**
-  - Add a uniaxial material type with parameters `{ fpc, epsc0, fpcu, epscu }`.
-  - Implement compression-only envelope with unloading as needed.
+- **Concrete01** (implemented)
+  - Parameters: `{ fpc, epsc0, fpcu, epscu }` (compression-only with unloading).
 - **Gap / Elastic-Plastic**
   - Support gap activation thresholds and plastic return mapping using the same
     state framework.

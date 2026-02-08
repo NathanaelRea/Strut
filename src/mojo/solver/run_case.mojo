@@ -1,4 +1,5 @@
 from collections import List
+from math import sqrt
 from os import abort
 from python import Python, PythonObject
 
@@ -124,6 +125,57 @@ fn _beam2d_element_force_global(
     return f_elem^
 
 
+fn _truss_element_force_global(
+    elem_index: Int,
+    elem: PythonObject,
+    nodes: PythonObject,
+    id_to_index: List[Int],
+    ndf: Int,
+    uniaxial_states: List[UniMaterialState],
+    elem_uniaxial_offsets: List[Int],
+    elem_uniaxial_counts: List[Int],
+    elem_uniaxial_state_ids: List[Int],
+) raises -> List[Float64]:
+    if ndf != 2 and ndf != 3:
+        abort("truss element_force requires ndf=2 or ndf=3")
+    var n1 = Int(elem["nodes"][0])
+    var n2 = Int(elem["nodes"][1])
+    var i1 = id_to_index[n1]
+    var i2 = id_to_index[n2]
+    var node1 = nodes[i1]
+    var node2 = nodes[i2]
+
+    var offset = elem_uniaxial_offsets[elem_index]
+    var count = elem_uniaxial_counts[elem_index]
+    if count != 1:
+        abort("truss requires one uniaxial material")
+    var state_index = elem_uniaxial_state_ids[offset]
+    var state = uniaxial_states[state_index]
+    var A = Float64(elem["area"])
+    var N = state.sig_c * A
+
+    if ndf == 2:
+        var dx = Float64(node2["x"]) - Float64(node1["x"])
+        var dy = Float64(node2["y"]) - Float64(node1["y"])
+        var L = sqrt(dx * dx + dy * dy)
+        if L == 0.0:
+            abort("zero-length element")
+        var c = dx / L
+        var s = dy / L
+        return [-N * c, -N * s, N * c, N * s]
+
+    var dx = Float64(node2["x"]) - Float64(node1["x"])
+    var dy = Float64(node2["y"]) - Float64(node1["y"])
+    var dz = Float64(node2["z"]) - Float64(node1["z"])
+    var L = sqrt(dx * dx + dy * dy + dz * dz)
+    if L == 0.0:
+        abort("zero-length element")
+    var l = dx / L
+    var m = dy / L
+    var n = dz / L
+    return [-N * l, -N * m, -N * n, N * l, N * m, N * n]
+
+
 fn _append_output(
     mut filenames: List[String],
     mut buffers: List[String],
@@ -247,6 +299,33 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
             if b < 0.0 or b >= 1.0:
                 abort("Steel01 b must be in [0, 1)")
             var mat_def = UniMaterialDef(1, Fy, E0, b, 0.0)
+            uniaxial_def_by_id[mid] = len(uniaxial_defs)
+            uniaxial_defs.append(mat_def)
+        elif mat_type == "Concrete01":
+            var params = mat["params"]
+            var fpc = Float64(params["fpc"])
+            var epsc0 = Float64(params["epsc0"])
+            var fpcu = Float64(params["fpcu"])
+            var epscu = Float64(params["epscu"])
+            if fpc > 0.0:
+                fpc = -fpc
+            if epsc0 > 0.0:
+                epsc0 = -epsc0
+            if fpcu > 0.0:
+                fpcu = -fpcu
+            if epscu > 0.0:
+                epscu = -epscu
+            if fpc >= 0.0:
+                abort("Concrete01 fpc must be < 0")
+            if epsc0 >= 0.0:
+                abort("Concrete01 epsc0 must be < 0")
+            if epscu >= 0.0:
+                abort("Concrete01 epscu must be < 0")
+            if epscu >= epsc0:
+                abort("Concrete01 epscu must be < epsc0")
+            if fpcu > 0.0 or fpcu < fpc:
+                abort("Concrete01 fpcu must be between fpc and 0")
+            var mat_def = UniMaterialDef(2, fpc, epsc0, fpcu, epscu)
             uniaxial_def_by_id[mid] = len(uniaxial_defs)
             uniaxial_defs.append(mat_def)
         elif mat_type == "ElasticIsotropic":
@@ -780,19 +859,35 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
                                 or elem_id_to_index[elem_id] < 0
                             ):
                                 abort("recorder element not found")
-                            var elem = elements[elem_id_to_index[elem_id]]
-                            if String(elem["type"]) != "elasticBeamColumn2d":
-                                abort("element_force recorder supports elasticBeamColumn2d only")
-                            var f_elem = _beam2d_element_force_global(
-                                elem,
-                                nodes,
-                                sections_by_id,
-                                id_to_index,
-                                ndf,
-                                u,
-                            )
+                            var elem_index = elem_id_to_index[elem_id]
+                            var elem = elements[elem_index]
+                            var elem_type = String(elem["type"])
+                            var f_elem: List[Float64] = []
+                            if elem_type == "elasticBeamColumn2d":
+                                f_elem = _beam2d_element_force_global(
+                                    elem,
+                                    nodes,
+                                    sections_by_id,
+                                    id_to_index,
+                                    ndf,
+                                    u,
+                                )
+                            elif elem_type == "truss":
+                                f_elem = _truss_element_force_global(
+                                    elem_index,
+                                    elem,
+                                    nodes,
+                                    id_to_index,
+                                    ndf,
+                                    uniaxial_states,
+                                    elem_uniaxial_offsets,
+                                    elem_uniaxial_counts,
+                                    elem_uniaxial_state_ids,
+                                )
+                            else:
+                                abort("element_force recorder supports truss or elasticBeamColumn2d only")
                             var line = String()
-                            for j in range(6):
+                            for j in range(len(f_elem)):
                                 if j > 0:
                                     line += " "
                                 line += String(f_elem[j])
@@ -938,19 +1033,35 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
                         var elem_id = Int(elements_out[eidx])
                         if elem_id >= len(elem_id_to_index) or elem_id_to_index[elem_id] < 0:
                             abort("recorder element not found")
-                        var elem = elements[elem_id_to_index[elem_id]]
-                        if String(elem["type"]) != "elasticBeamColumn2d":
-                            abort("element_force recorder supports elasticBeamColumn2d only")
-                        var f_elem = _beam2d_element_force_global(
-                            elem,
-                            nodes,
-                            sections_by_id,
-                            id_to_index,
-                            ndf,
-                            u,
-                        )
+                        var elem_index = elem_id_to_index[elem_id]
+                        var elem = elements[elem_index]
+                        var elem_type = String(elem["type"])
+                        var f_elem: List[Float64] = []
+                        if elem_type == "elasticBeamColumn2d":
+                            f_elem = _beam2d_element_force_global(
+                                elem,
+                                nodes,
+                                sections_by_id,
+                                id_to_index,
+                                ndf,
+                                u,
+                            )
+                        elif elem_type == "truss":
+                            f_elem = _truss_element_force_global(
+                                elem_index,
+                                elem,
+                                nodes,
+                                id_to_index,
+                                ndf,
+                                uniaxial_states,
+                                elem_uniaxial_offsets,
+                                elem_uniaxial_counts,
+                                elem_uniaxial_state_ids,
+                            )
+                        else:
+                            abort("element_force recorder supports truss or elasticBeamColumn2d only")
                         var line = String()
-                        for j in range(6):
+                        for j in range(len(f_elem)):
                             if j > 0:
                                 line += " "
                             line += String(f_elem[j])
@@ -1018,19 +1129,35 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
                     var elem_id = Int(elements_out[eidx])
                     if elem_id >= len(elem_id_to_index) or elem_id_to_index[elem_id] < 0:
                         abort("recorder element not found")
-                    var elem = elements[elem_id_to_index[elem_id]]
-                    if String(elem["type"]) != "elasticBeamColumn2d":
-                        abort("element_force recorder supports elasticBeamColumn2d only")
-                    var f_elem = _beam2d_element_force_global(
-                        elem,
-                        nodes,
-                        sections_by_id,
-                        id_to_index,
-                        ndf,
-                        u,
-                    )
+                    var elem_index = elem_id_to_index[elem_id]
+                    var elem = elements[elem_index]
+                    var elem_type = String(elem["type"])
+                    var f_elem: List[Float64] = []
+                    if elem_type == "elasticBeamColumn2d":
+                        f_elem = _beam2d_element_force_global(
+                            elem,
+                            nodes,
+                            sections_by_id,
+                            id_to_index,
+                            ndf,
+                            u,
+                        )
+                    elif elem_type == "truss":
+                        f_elem = _truss_element_force_global(
+                            elem_index,
+                            elem,
+                            nodes,
+                            id_to_index,
+                            ndf,
+                            uniaxial_states,
+                            elem_uniaxial_offsets,
+                            elem_uniaxial_counts,
+                            elem_uniaxial_state_ids,
+                        )
+                    else:
+                        abort("element_force recorder supports truss or elasticBeamColumn2d only")
                     var line = String()
-                    for j in range(6):
+                    for j in range(len(f_elem)):
                         if j > 0:
                             line += " "
                         line += String(f_elem[j])

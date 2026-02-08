@@ -172,7 +172,7 @@ def main():
                     raise ValueError(f"mass node {node_id} not found")
                 f.write(f"mass {node_id} {' '.join(str(v) for v in vec)}\n")
 
-        # Materials (Elastic/Steel01 uniaxial or ElasticIsotropic)
+        # Materials (Elastic/Steel01/Concrete01 uniaxial or ElasticIsotropic)
         for mat in materials.values():
             params = mat["params"]
             if mat["type"] == "Elastic":
@@ -183,6 +183,14 @@ def main():
                 E0 = params["E0"]
                 b = params["b"]
                 f.write(f"uniaxialMaterial Steel01 {mat['id']} {fy} {E0} {b}\n")
+            elif mat["type"] == "Concrete01":
+                fpc = params["fpc"]
+                epsc0 = params["epsc0"]
+                fpcu = params["fpcu"]
+                epscu = params["epscu"]
+                f.write(
+                    f"uniaxialMaterial Concrete01 {mat['id']} {fpc} {epsc0} {fpcu} {epscu}\n"
+                )
             elif mat["type"] == "ElasticIsotropic":
                 E = params["E"]
                 nu = params["nu"]

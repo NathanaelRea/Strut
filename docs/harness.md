@@ -22,7 +22,7 @@ Minimum required fields (v1.0):
 - `nodes`: list of `{ id, x, y, z?, constraints? }`
   - `z` is required when `ndm=3`.
   - `constraints` DOF indices must be in `1..ndf`.
-- `materials`: list of `{ id, type, params }` (`Elastic`, `ElasticIsotropic`, `Steel01`)
+- `materials`: list of `{ id, type, params }` (`Elastic`, `ElasticIsotropic`, `Steel01`, `Concrete01`)
 - `sections`: list of `{ id, type, params }` (elastic section only in v1)
 - `elements`: list of `{ id, type, nodes, section, geomTransf }`
 - `time_series`: list of `{ type, tag, ... }` (optional; top-level)
