@@ -63,7 +63,7 @@ fn _beam2d_element_force_global(
     if String(sec["type"]) == "FiberSection2d":
         abort(
             "element_force for elasticBeamColumn2d with FiberSection2d requires "
-            "forceBeamColumn (not implemented)"
+            "forceBeamColumn2d"
         )
 
     var params = sec["params"]

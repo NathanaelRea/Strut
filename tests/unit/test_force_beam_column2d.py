@@ -158,6 +158,30 @@ def test_force_beam_column2d_static_linear_elastic_runs():
     assert all(math.isfinite(value) for value in rows[0])
 
 
+def test_force_beam_column2d_static_linear_elastic_unit_tip_load_equilibrium():
+    case_data = _base_force_beam_case(
+        {"id": 1, "type": "Elastic", "params": {"E": 30000000000.0}}
+    )
+    case_data["analysis"] = {
+        "type": "static_linear",
+        "steps": 1,
+        "force_beam_mode": "linear_if_elastic",
+    }
+
+    with tempfile.TemporaryDirectory() as tmp:
+        out_dir = Path(tmp)
+        _run_mojo_case(case_data, out_dir)
+        rows = _read_rows(out_dir / "element_force_ele1.out")
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert len(row) == 6
+    assert row[0] == pytest.approx(-row[3], abs=1e-9)
+    assert row[1] == pytest.approx(-row[4], abs=1e-9)
+    # Unit tip load should produce unit shear at the beam ends.
+    assert abs(row[1]) == pytest.approx(1.0, rel=1e-7, abs=1e-9)
+
+
 def test_force_beam_column2d_static_linear_nonelastic_rejected():
     case_data = _base_force_beam_case(
         {
