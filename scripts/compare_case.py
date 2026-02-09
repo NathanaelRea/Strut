@@ -70,6 +70,42 @@ def _compare_mode_shape_vectors(ref, got, rtol=REL_TOL, atol=ABS_TOL):
     return _compare_vectors(ref_unit, got_unit, rtol=rtol, atol=atol)
 
 
+def _max_abs_vector(rows):
+    if not rows:
+        raise ValueError("empty transient series")
+    width = len(rows[0])
+    peaks = [0.0] * width
+    for row in rows:
+        if len(row) != width:
+            raise ValueError("transient series row width mismatch")
+        for i, value in enumerate(row):
+            mag = abs(value)
+            if mag > peaks[i]:
+                peaks[i] = mag
+    return peaks
+
+
+def _compare_transient_rows(ref_vals, mojo_vals, label, failures, rtol, atol, parity_mode):
+    if len(ref_vals) != len(mojo_vals):
+        failures.append(f"{label} step count mismatch: {len(ref_vals)} != {len(mojo_vals)}")
+        return
+    if parity_mode == "max_abs":
+        ref_peak = _max_abs_vector(ref_vals)
+        mojo_peak = _max_abs_vector(mojo_vals)
+        ok, errors = _compare_vectors(ref_peak, mojo_peak, rtol=rtol, atol=atol)
+        if not ok:
+            failures.append(f"{label} max-abs mismatch")
+            failures.extend([f"  {err}" for err in errors])
+        return
+
+    for step, (rvec, gvec) in enumerate(zip(ref_vals, mojo_vals), start=1):
+        ok, errors = _compare_vectors(rvec, gvec, rtol=rtol, atol=atol)
+        if not ok:
+            failures.append(f"{label} mismatch at step {step}")
+            failures.extend([f"  {err}" for err in errors])
+            break
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--case", required=True)
@@ -86,6 +122,9 @@ def main():
     tol = data.get("parity_tolerance", {})
     rtol = tol.get("rtol", REL_TOL)
     atol = tol.get("atol", ABS_TOL)
+    parity_mode = str(data.get("parity_mode", "step")).strip().lower()
+    if parity_mode not in ("step", "max_abs"):
+        raise ValueError(f"unsupported parity_mode: {parity_mode} (expected step|max_abs)")
     analysis = data.get("analysis", {})
     analysis_type = analysis.get("type", "static_linear")
     is_transient = str(analysis_type).startswith("transient")
@@ -95,6 +134,8 @@ def main():
 
     failures = []
     for rec in recorders:
+        if rec.get("parity", True) is False:
+            continue
         rec_type = rec["type"]
         if rec_type == "node_displacement":
             output = rec.get("output", "node_disp")
@@ -110,17 +151,15 @@ def main():
                 if is_transient:
                     ref_vals = _load_all_values(ref_file)
                     mojo_vals = _load_all_values(mojo_file)
-                    if len(ref_vals) != len(mojo_vals):
-                        failures.append(
-                            f"node {node_id} step count mismatch: {len(ref_vals)} != {len(mojo_vals)}"
-                        )
-                        continue
-                    for step, (rvec, gvec) in enumerate(zip(ref_vals, mojo_vals), start=1):
-                        ok, errors = _compare_vectors(rvec, gvec, rtol=rtol, atol=atol)
-                        if not ok:
-                            failures.append(f"node {node_id} mismatch at step {step}")
-                            failures.extend([f"  {err}" for err in errors])
-                            break
+                    _compare_transient_rows(
+                        ref_vals,
+                        mojo_vals,
+                        f"node {node_id}",
+                        failures,
+                        rtol,
+                        atol,
+                        parity_mode,
+                    )
                 else:
                     ref_vals = _load_last_values(ref_file)
                     mojo_vals = _load_last_values(mojo_file)
@@ -144,17 +183,15 @@ def main():
                 if is_transient:
                     ref_vals = _load_all_values(ref_file)
                     mojo_vals = _load_all_values(mojo_file)
-                    if len(ref_vals) != len(mojo_vals):
-                        failures.append(
-                            f"element {elem_id} step count mismatch: {len(ref_vals)} != {len(mojo_vals)}"
-                        )
-                        continue
-                    for step, (rvec, gvec) in enumerate(zip(ref_vals, mojo_vals), start=1):
-                        ok, errors = _compare_vectors(rvec, gvec, rtol=rtol, atol=atol)
-                        if not ok:
-                            failures.append(f"element {elem_id} mismatch at step {step}")
-                            failures.extend([f"  {err}" for err in errors])
-                            break
+                    _compare_transient_rows(
+                        ref_vals,
+                        mojo_vals,
+                        f"element {elem_id}",
+                        failures,
+                        rtol,
+                        atol,
+                        parity_mode,
+                    )
                 else:
                     ref_vals = _load_last_values(ref_file)
                     mojo_vals = _load_last_values(mojo_file)
@@ -176,17 +213,15 @@ def main():
                 if is_transient:
                     ref_vals = _load_all_values(ref_file)
                     mojo_vals = _load_all_values(mojo_file)
-                    if len(ref_vals) != len(mojo_vals):
-                        failures.append(
-                            f"reaction node {node_id} step count mismatch: {len(ref_vals)} != {len(mojo_vals)}"
-                        )
-                        continue
-                    for step, (rvec, gvec) in enumerate(zip(ref_vals, mojo_vals), start=1):
-                        ok, errors = _compare_vectors(rvec, gvec, rtol=rtol, atol=atol)
-                        if not ok:
-                            failures.append(f"reaction node {node_id} mismatch at step {step}")
-                            failures.extend([f"  {err}" for err in errors])
-                            break
+                    _compare_transient_rows(
+                        ref_vals,
+                        mojo_vals,
+                        f"reaction node {node_id}",
+                        failures,
+                        rtol,
+                        atol,
+                        parity_mode,
+                    )
                 else:
                     ref_vals = _load_last_values(ref_file)
                     mojo_vals = _load_last_values(mojo_file)
@@ -209,19 +244,15 @@ def main():
             if is_transient:
                 ref_vals = _load_all_values(ref_file)
                 mojo_vals = _load_all_values(mojo_file)
-                if len(ref_vals) != len(mojo_vals):
-                    failures.append(
-                        f"drift i{i_node}-j{j_node} step count mismatch: {len(ref_vals)} != {len(mojo_vals)}"
-                    )
-                    continue
-                for step, (rvec, gvec) in enumerate(zip(ref_vals, mojo_vals), start=1):
-                    ok, errors = _compare_vectors(rvec, gvec, rtol=rtol, atol=atol)
-                    if not ok:
-                        failures.append(
-                            f"drift i{i_node}-j{j_node} mismatch at step {step}"
-                        )
-                        failures.extend([f"  {err}" for err in errors])
-                        break
+                _compare_transient_rows(
+                    ref_vals,
+                    mojo_vals,
+                    f"drift i{i_node}-j{j_node}",
+                    failures,
+                    rtol,
+                    atol,
+                    parity_mode,
+                )
             else:
                 ref_vals = _load_last_values(ref_file)
                 mojo_vals = _load_last_values(mojo_file)

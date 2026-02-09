@@ -75,6 +75,10 @@ def test_json_to_tcl_emits_modified_newton_algorithms():
     text = _run_json_to_tcl(case)
     assert "algorithm ModifiedNewton\n" in text
 
+    case["analysis"]["algorithm"] = "ModifiedNewtonInitial"
+    text_initial = _run_json_to_tcl(case)
+    assert "algorithm ModifiedNewton -initial\n" in text_initial
+
     case["pattern"] = {"type": "Plain", "tag": 1, "time_series": 2}
     case["loads"] = [{"node": 2, "dof": 1, "value": 1.0}]
     case["analysis"] = {
@@ -88,6 +92,25 @@ def test_json_to_tcl_emits_modified_newton_algorithms():
     text_static = _run_json_to_tcl(case)
     assert "algorithm ModifiedNewton\n" in text_static
     assert "analysis Static\n" in text_static
+
+
+def test_json_to_tcl_emits_transient_nonlinear_fallback_loop():
+    case = _base_uniform_case()
+    case["analysis"]["algorithm"] = "Newton"
+    case["analysis"]["test_type"] = "NormUnbalance"
+    case["analysis"]["fallback_algorithm"] = "ModifiedNewtonInitial"
+    case["analysis"]["fallback_test_type"] = "NormDispIncr"
+    case["analysis"]["fallback_tol"] = 1.0e-8
+    case["analysis"]["fallback_max_iters"] = 25
+
+    text = _run_json_to_tcl(case)
+
+    assert "set strut_tr_ok 0\n" in text
+    assert "set strut_tr_ok [analyze 1 0.1]\n" in text
+    assert "test NormDispIncr 1e-08 25\n" in text
+    assert "algorithm ModifiedNewton -initial\n" in text
+    assert "if {$strut_tr_ok != 0} {\n" in text
+    assert "analyze 2 0.1\n" not in text
 
 
 def test_json_to_tcl_rejects_uniform_excitation_with_nodal_loads():
@@ -108,3 +131,26 @@ def test_json_to_tcl_rejects_uniform_excitation_with_nodal_loads():
                     str(tcl_path),
                 ]
             )
+
+
+def test_json_to_tcl_loads_path_values_from_file():
+    case = _base_uniform_case()
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_dir = Path(tmp)
+        (tmp_dir / "A10000.tcl").write_text("1.0E+00 0.0D+00", encoding="utf-8")
+        case["time_series"] = [
+            {"type": "Path", "tag": 2, "dt": 0.1, "values_path": "A10000.tcl"}
+        ]
+        case_path = tmp_dir / "case.json"
+        tcl_path = tmp_dir / "model.tcl"
+        case_path.write_text(json.dumps(case), encoding="utf-8")
+        subprocess.check_call(
+            [
+                sys.executable,
+                str(repo_root / "scripts" / "json_to_tcl.py"),
+                str(case_path),
+                str(tcl_path),
+            ]
+        )
+        text = tcl_path.read_text(encoding="utf-8")
+    assert "timeSeries Path 2 -dt 0.1 -values {1.0 0.0} -factor 1.0\n" in text

@@ -18,9 +18,15 @@ fn py_len(obj: PythonObject) raises -> Int:
 fn load_json(path: String) raises -> PythonObject:
     var json = Python.import_module("json")
     var pathlib = Python.import_module("pathlib")
+    var builtins = Python.import_module("builtins")
     var path_obj = pathlib.Path(path)
+    var resolved = path_obj.resolve()
     var text = path_obj.read_text()
-    return json.loads(text)
+    var data = json.loads(text)
+    if Bool(builtins.isinstance(data, builtins.dict)):
+        data["__strut_case_json_path"] = PythonObject(String(resolved))
+        data["__strut_case_dir"] = PythonObject(String(resolved.parent))
+    return data
 
 
 fn parse_args() -> (String, String, String, String):

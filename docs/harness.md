@@ -35,7 +35,9 @@ Minimum required fields (v1.0):
 - `time_series`: list of `{ type, tag, ... }` (optional; top-level)
   - `Constant`: `{ tag, factor? }`
   - `Linear`: `{ tag, factor? }`
-  - `Path`: `{ tag, values, dt? | time?, factor?, use_last? }`
+  - `Path`: `{ tag, values | values_path | path, dt? | time?, factor?, use_last? }`
+    - `values_path`/`path` may be absolute or relative to the case JSON location.
+  - `PathFile` (alias): same fields as `Path`, emitted/evaluated as `Path`.
   - `Trig`: `{ tag, t_start, t_finish, period, phase_shift?, factor?, zero_shift? }`
 - `pattern`: (optional; top-level)
   - `Plain`: `{ type: "Plain", tag, time_series }`
@@ -54,7 +56,11 @@ Minimum required fields (v1.0):
   - `transient_linear` requires `dt > 0` and supports `integrator: { type: "Newmark", gamma?, beta? }`
   - `transient_nonlinear` requires `dt > 0` and supports:
     - `integrator: { type: "Newmark", gamma?, beta? }`
-    - `algorithm: "Newton"` (default) or `"ModifiedNewton"`
+    - `algorithm: "Newton"` (default), `"ModifiedNewton"`, or `"ModifiedNewtonInitial"`
+    - `test_type: "MaxDispIncr"` (default), `"NormDispIncr"`, or `"NormUnbalance"`
+    - optional fallback controls:
+      - `fallback_algorithm: "Newton" | "ModifiedNewton" | "ModifiedNewtonInitial"`
+      - `fallback_test_type`, `fallback_tol`, `fallback_rel_tol`, `fallback_max_iters`
 - `masses`: list of `{ node, dof, value }` (optional; nodal lumped masses for dynamics)
 - `recorders`: list of
   - `{ type: "node_displacement", nodes, dofs, output }` (`dofs` in `1..ndf`)
@@ -63,12 +69,16 @@ Minimum required fields (v1.0):
   - `{ type: "drift", i_node, j_node, dof, perp_dirn, output }`
   - `{ type: "envelope_element_force", elements, output }` (`truss`, `elasticBeamColumn2d`, `forceBeamColumn2d`)
   - `{ type: "modal_eigen", modes, nodes, dofs, output }`
+- `parity_mode`: `"step"` (default) or `"max_abs"` for transient comparisons (optional; top-level)
+  - `step`: strict step-by-step time-history comparison.
+  - `max_abs`: compare component-wise peak absolute response across the full history.
+- `benchmark_size`: `"small" | "medium" | "large"` (optional; top-level benchmark/plot override)
 
-Current limitation: `forceBeamColumn2d` is v1 only:
-- `geomTransf: Linear`
+Current limitation: `forceBeamColumn2d` support is currently limited to:
+- `geomTransf: Linear | PDelta`
 - `integration: Lobatto`
-- `num_int_pts: 3`
-- `analysis.type: static_nonlinear`
+- `num_int_pts: 3 | 5`
+- `analysis.type: static_linear | static_nonlinear | transient_nonlinear`
 
 ## Harness Workflow
 
@@ -77,6 +87,7 @@ Current limitation: `forceBeamColumn2d` is v1 only:
 3. `scripts/run_mojo_case.py` runs the current Strut implementation and writes outputs.
 4. `scripts/compare_case.py` compares displacement outputs with tolerances.
 5. `run_tests.py` provides a unified test runner for unit, schema, and parity checks.
+6. `scripts/run_and_plot_case.py <case.json>` runs a case and generates overlay plots for all comparable `.out` files/components.
 
 ## Output Format
 
@@ -116,6 +127,7 @@ Modal eigen outputs are written as:
 - Expand schema and harness only after parity is stable.
 - For static analyses with time series, Strut uses normalized pseudoTime `t = (step + 1) / steps` (static_linear uses `t = 1.0`).
 - Validation parity tests run only cases with `"enabled": true` by default (`STRUT_RUN_ALL_CASES=1` includes disabled cases). `STRUT_FORCE_CASE=1` forces a disabled case in `scripts/run_case.py`.
+- Recorder entries may set `"parity": false` to generate outputs but exclude that recorder from parity checks.
 - Benchmarks include `"enabled": true` cases and also disabled cases tagged with `"status": "benchmark"`.
 - `scripts/run_mojo_case.py` runs the Python solver by default and only uses Mojo when `STRUT_MOJO_SOLVER=1` and `mojo` is on `PATH`.
 - OpenSees reference outputs are cached by JSON content hash in `tests/validation/<case>/reference/.ref_hash`. Set `STRUT_REFRESH_REFERENCE=1` to regenerate.

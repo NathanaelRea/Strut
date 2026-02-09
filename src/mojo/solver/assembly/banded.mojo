@@ -165,14 +165,14 @@ fn assemble_global_stiffness_banded(
             if ndf != 3:
                 abort("forceBeamColumn2d requires ndf=3")
             var geom = String(elem.get("geomTransf", "Linear"))
-            if geom != "Linear":
-                abort("forceBeamColumn2d v1 supports geomTransf Linear only")
+            if geom != "Linear" and geom != "PDelta":
+                abort("forceBeamColumn2d supports geomTransf Linear or PDelta")
             var integration = String(elem.get("integration", "Lobatto"))
             if integration != "Lobatto":
-                abort("forceBeamColumn2d v1 supports Lobatto integration only")
+                abort("forceBeamColumn2d supports Lobatto integration only")
             var num_int_pts = Int(elem.get("num_int_pts", 3))
-            if num_int_pts != 3:
-                abort("forceBeamColumn2d v1 supports num_int_pts=3")
+            if num_int_pts != 3 and num_int_pts != 5:
+                abort("forceBeamColumn2d supports num_int_pts=3 or 5")
 
             var n1 = Int(elem["nodes"][0])
             var n2 = Int(elem["nodes"][1])

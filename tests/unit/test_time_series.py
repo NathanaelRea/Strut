@@ -141,6 +141,21 @@ def test_time_series_path():
     assert math.isclose(values[2], expected_theta * scale, rel_tol=1e-6, abs_tol=1e-12)
 
 
+def test_time_series_path_file():
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".tcl", delete=False) as tmp:
+        tmp.write("0.0 1.0 2.0")
+        tmp_path = Path(tmp.name)
+    try:
+        ts = {"type": "PathFile", "tag": 1, "dt": 0.5, "values_path": str(tmp_path)}
+        values = _run_with_time_series(ts)
+    finally:
+        tmp_path.unlink(missing_ok=True)
+    expected_v, expected_theta = _expected_cantilever()
+    scale = _time_series_factor({"type": "Path", "dt": 0.5, "values": [0.0, 1.0, 2.0]}, 1.0)
+    assert math.isclose(values[1], expected_v * scale, rel_tol=1e-6, abs_tol=1e-12)
+    assert math.isclose(values[2], expected_theta * scale, rel_tol=1e-6, abs_tol=1e-12)
+
+
 def test_time_series_trig():
     ts = {
         "type": "Trig",

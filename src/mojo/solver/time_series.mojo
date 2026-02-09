@@ -24,15 +24,72 @@ fn _as_list(obj: PythonObject) raises -> PythonObject:
     return lst
 
 
+fn _parse_path_values(data: PythonObject, ts: PythonObject) raises -> PythonObject:
+    var pathlib = Python.import_module("pathlib")
+    var re = Python.import_module("re")
+    var builtins = Python.import_module("builtins")
+
+    var values_path = ""
+    if ts.__contains__("values_path"):
+        values_path = String(ts["values_path"])
+    elif ts.__contains__("path"):
+        values_path = String(ts["path"])
+    else:
+        abort("Path time_series missing values_path")
+
+    var path_obj = pathlib.Path(values_path)
+    if not Bool(path_obj.is_absolute()) and data.__contains__("__strut_case_dir"):
+        var case_dir = pathlib.Path(String(data["__strut_case_dir"]))
+        var candidate = case_dir.joinpath(values_path)
+        if Bool(candidate.exists()):
+            path_obj = candidate
+    if not Bool(path_obj.exists()):
+        abort("Path time_series values_path not found: " + values_path)
+
+    var text = String(path_obj.read_text())
+    var token_pattern = "[-+]?(?:\\d+\\.?\\d*|\\.\\d+)(?:[eEdD][-+]?\\d+)?"
+    var tokens = re.findall(token_pattern, text)
+    if py_len(tokens) == 0:
+        abort("Path time_series values_path had no numeric values: " + String(path_obj))
+
+    var values = builtins.list()
+    for i in range(py_len(tokens)):
+        var token = String(tokens[i]).replace("D", "E").replace("d", "e")
+        values.append(builtins.float(token))
+    return values
+
+
+fn _normalize_path_time_series(data: PythonObject, ts_list: PythonObject) raises:
+    for i in range(py_len(ts_list)):
+        var ts = ts_list[i]
+        if not _is_dict(ts):
+            abort("time_series entry must be object")
+        var typ = String(ts.get("type", ""))
+        if typ == "PathFile":
+            ts["type"] = "Path"
+            typ = "Path"
+        if typ != "Path":
+            continue
+        if ts.__contains__("values") and (
+            ts.__contains__("values_path") or ts.__contains__("path")
+        ):
+            abort("Path time_series cannot specify both values and values_path/path")
+        if not ts.__contains__("values"):
+            ts["values"] = _parse_path_values(data, ts)
+
+
 fn parse_time_series(data: PythonObject) raises -> PythonObject:
     if not data.__contains__("time_series"):
         var builtins = Python.import_module("builtins")
         return builtins.list()
     var ts_obj = data["time_series"]
     if _is_list(ts_obj):
+        _normalize_path_time_series(data, ts_obj)
         return ts_obj
     if _is_dict(ts_obj):
-        return _as_list(ts_obj)
+        var ts_list = _as_list(ts_obj)
+        _normalize_path_time_series(data, ts_list)
+        return ts_list
     abort("time_series must be list or object")
     var builtins = Python.import_module("builtins")
     return builtins.list()

@@ -136,6 +136,31 @@ def _case_free_dofs(case: dict) -> Optional[int]:
     return total - constrained
 
 
+def _case_size_override(case: dict) -> Optional[str]:
+    label = case.get("size")
+    if isinstance(label, str):
+        normalized = label.strip().lower()
+        if normalized in {"small", "medium", "large"}:
+            return normalized
+    json_path = case.get("json")
+    if not json_path:
+        return None
+    path = Path(json_path)
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text())
+    except Exception:
+        return None
+    label = data.get("benchmark_size")
+    if not isinstance(label, str):
+        return None
+    normalized = label.strip().lower()
+    if normalized in {"small", "medium", "large"}:
+        return normalized
+    return None
+
+
 def _case_size_label(
     free_dofs: Optional[int], medium_threshold: int, large_threshold: int
 ) -> str:
@@ -170,10 +195,14 @@ def collect_archive_trend(
             values: List[float] = []
             for case in data.get("cases", []):
                 if size_filter:
-                    free_dofs = _case_free_dofs(case)
-                    label = _case_size_label(
-                        free_dofs, medium_threshold, large_threshold
-                    )
+                    override = _case_size_override(case)
+                    if override is not None:
+                        label = override
+                    else:
+                        free_dofs = _case_free_dofs(case)
+                        label = _case_size_label(
+                            free_dofs, medium_threshold, large_threshold
+                        )
                     if label != size_filter:
                         continue
                 value = _case_time_seconds(case, engine)
@@ -567,6 +596,16 @@ def main() -> None:
     medium_indices: List[int] = []
     large_indices: List[int] = []
     for idx, case in enumerate(cases):
+        override = _case_size_override(case)
+        if override == "large":
+            large_indices.append(idx)
+            continue
+        if override == "medium":
+            medium_indices.append(idx)
+            continue
+        if override == "small":
+            small_indices.append(idx)
+            continue
         free_dofs = _case_free_dofs(case)
         if free_dofs is not None:
             if free_dofs >= args.large_threshold:

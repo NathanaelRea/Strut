@@ -19,6 +19,27 @@ fn _beam2d_transform(c: Float64, s: Float64) -> List[List[Float64]]:
     ]
 
 
+fn _lobatto_xi_weight(num_int_pts: Int, ip: Int) -> (Float64, Float64):
+    if num_int_pts == 3:
+        if ip == 0:
+            return (0.0, 1.0 / 6.0)
+        if ip == 1:
+            return (0.5, 2.0 / 3.0)
+        return (1.0, 1.0 / 6.0)
+    if num_int_pts == 5:
+        if ip == 0:
+            return (0.0, 0.05)
+        if ip == 1:
+            return (0.1726731646460114, 0.2722222222222222)
+        if ip == 2:
+            return (0.5, 0.35555555555555557)
+        if ip == 3:
+            return (0.8273268353539886, 0.2722222222222222)
+        return (1.0, 0.05)
+    abort("forceBeamColumn2d supports Lobatto num_int_pts=3 or 5")
+    return (0.0, 0.0)
+
+
 fn _fiber_section2d_set_trial_from_offset(
     sec_def: FiberSection2dDef,
     fibers: List[FiberCell],
@@ -102,17 +123,15 @@ fn force_beam_column2d_global_tangent_and_internal(
     if elem_state_count != required_state_count:
         abort("forceBeamColumn2d element state count mismatch")
 
-    if num_int_pts != 3:
-        abort("forceBeamColumn2d v1 supports only num_int_pts=3")
     var b_axial: List[Float64] = [-1.0 / L, 0.0, 0.0, 1.0 / L, 0.0, 0.0]
-    var xis: List[Float64] = [0.0, 0.5, 1.0]
-    var weights: List[Float64] = [1.0 / 6.0, 2.0 / 3.0, 1.0 / 6.0]
     var k_local = _zero_matrix(6, 6)
     var f_local: List[Float64] = []
     f_local.resize(6, 0.0)
 
     for ip in range(num_int_pts):
-        var xi = xis[ip]
+        var xi_weight = _lobatto_xi_weight(num_int_pts, ip)
+        var xi = xi_weight[0]
+        var weight = xi_weight[1]
         var b_kappa: List[Float64] = [
             0.0,
             (-6.0 + 12.0 * xi) / (L * L),
@@ -139,7 +158,7 @@ fn force_beam_column2d_global_tangent_and_internal(
             eps0,
             kappa,
         )
-        var wL = weights[ip] * L
+        var wL = weight * L
 
         for a in range(6):
             var Ba_n = b_axial[a]

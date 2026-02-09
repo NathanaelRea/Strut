@@ -1,4 +1,5 @@
 from collections import List
+from math import sqrt
 from materials import (
     UniMaterialDef,
     UniMaterialState,
@@ -83,13 +84,36 @@ fn run_transient_nonlinear(
             abort("UniformExcitation missing accel time_series")
 
     var algorithm = String(analysis.get("algorithm", "Newton"))
-    var use_modified_newton = False
+    var primary_algorithm_mode = -1
     if algorithm == "Newton":
-        pass
+        primary_algorithm_mode = 0
     elif algorithm == "ModifiedNewton":
-        use_modified_newton = True
+        primary_algorithm_mode = 1
+    elif algorithm == "ModifiedNewtonInitial":
+        primary_algorithm_mode = 2
     else:
         abort("unsupported transient_nonlinear algorithm: " + algorithm)
+
+    var fallback_algorithm = String(analysis.get("fallback_algorithm", ""))
+    var has_fallback = False
+    var fallback_algorithm_mode = -1
+    if len(fallback_algorithm) > 0:
+        if fallback_algorithm == "Newton":
+            fallback_algorithm_mode = 0
+        elif fallback_algorithm == "ModifiedNewton":
+            fallback_algorithm_mode = 1
+        elif fallback_algorithm == "ModifiedNewtonInitial":
+            fallback_algorithm_mode = 2
+        else:
+            abort(
+                "unsupported transient_nonlinear fallback_algorithm: "
+                + fallback_algorithm
+            )
+        has_fallback = True
+    elif primary_algorithm_mode != 0:
+        # Preserve legacy fallback behavior for ModifiedNewton* primary modes.
+        fallback_algorithm_mode = 0
+        has_fallback = True
 
     var integrator = analysis.get("integrator", {"type": "Newmark"})
     var integrator_type = String(integrator.get("type", "Newmark"))
@@ -100,11 +124,34 @@ fn run_transient_nonlinear(
     if beta <= 0.0:
         abort("Newmark beta must be > 0")
 
+    var test_type = String(analysis.get("test_type", "MaxDispIncr"))
+    if (
+        test_type != "MaxDispIncr"
+        and test_type != "NormDispIncr"
+        and test_type != "NormUnbalance"
+    ):
+        abort("unsupported transient_nonlinear test_type: " + test_type)
+    var fallback_test_type = String(analysis.get("fallback_test_type", test_type))
+    if (
+        fallback_test_type != "MaxDispIncr"
+        and fallback_test_type != "NormDispIncr"
+        and fallback_test_type != "NormUnbalance"
+    ):
+        abort(
+            "unsupported transient_nonlinear fallback_test_type: "
+            + fallback_test_type
+        )
+
     var max_iters = Int(analysis.get("max_iters", 20))
     var tol = Float64(analysis.get("tol", 1.0e-10))
     var rel_tol = Float64(analysis.get("rel_tol", 1.0e-8))
+    var fallback_max_iters = Int(analysis.get("fallback_max_iters", max_iters))
+    var fallback_tol = Float64(analysis.get("fallback_tol", tol))
+    var fallback_rel_tol = Float64(analysis.get("fallback_rel_tol", rel_tol))
     if max_iters < 1:
         abort("transient_nonlinear max_iters must be >= 1")
+    if fallback_max_iters < 1:
+        abort("transient_nonlinear fallback_max_iters must be >= 1")
 
     var free_count = len(free)
     var M_f: List[Float64] = []
@@ -245,118 +292,169 @@ fn run_transient_nonlinear(
             P_ext_f[i] = F_ext_step[free[i]]
 
         var converged = False
-        var tangent_initialized = False
-        for _ in range(max_iters):
-            uniaxial_revert_trial_all(uniaxial_states)
-            assemble_global_stiffness_and_internal(
-                nodes,
-                elements,
-                sections_by_id,
-                materials_by_id,
-                id_to_index,
-                node_count,
-                ndf,
-                ndm,
-                u,
-                uniaxial_defs,
-                uniaxial_state_defs,
-                uniaxial_states,
-                elem_uniaxial_offsets,
-                elem_uniaxial_counts,
-                elem_uniaxial_state_ids,
-                fiber_section_defs,
-                fiber_section_cells,
-                fiber_section_index_by_id,
-                K,
-                F_int,
-            )
-            if has_transformation_mpc:
-                K = _collapse_matrix_by_rep(K, rep_dof)
-                F_int = _collapse_vector_by_rep(F_int, rep_dof)
-            if not use_modified_newton or not tangent_initialized:
+        var attempt_algorithm_mode = primary_algorithm_mode
+        var attempt_test_type = test_type
+        var attempt_max_iters = max_iters
+        var attempt_tol = tol
+        var attempt_rel_tol = rel_tol
+        for attempt in range(2):
+            if attempt == 1 and not has_fallback:
+                break
+            if attempt == 1:
                 for i in range(free_count):
-                    for j in range(free_count):
-                        K_ff[i][j] = K[free[i]][free[j]]
-                tangent_initialized = True
+                    u[free[i]] = u_n[i]
+                if has_transformation_mpc:
+                    _enforce_equal_dof_values(u, rep_dof, constrained)
+                attempt_algorithm_mode = fallback_algorithm_mode
+                attempt_test_type = fallback_test_type
+                attempt_max_iters = fallback_max_iters
+                attempt_tol = fallback_tol
+                attempt_rel_tol = fallback_rel_tol
 
-            for i in range(free_count):
-                for j in range(free_count):
-                    C_ff[i][j] = 0.0
-                C_ff[i][i] = rayleigh_alpha_m * M_f[i]
-            if rayleigh_beta_k != 0.0:
-                for i in range(free_count):
-                    for j in range(free_count):
-                        C_ff[i][j] += rayleigh_beta_k * K_ff[i][j]
-            if rayleigh_beta_k_init != 0.0:
-                for i in range(free_count):
-                    for j in range(free_count):
-                        C_ff[i][j] += rayleigh_beta_k_init * K_init_ff[i][j]
-            if rayleigh_beta_k_comm != 0.0:
-                for i in range(free_count):
-                    for j in range(free_count):
-                        C_ff[i][j] += rayleigh_beta_k_comm * K_comm_ff[i][j]
-
-            for i in range(free_count):
-                var idx = free[i]
-                a_trial[i] = a0 * (u[idx] - u_n[i]) - a2 * v_n[i] - a3 * a_n[i]
-                v_trial[i] = v_n[i] + dt * ((1.0 - gamma) * a_n[i] + gamma * a_trial[i])
-
-            for i in range(free_count):
-                var damping_force = 0.0
-                for j in range(free_count):
-                    damping_force += C_ff[i][j] * v_trial[j]
-                R_f[i] = (
-                    P_ext_f[i]
-                    - F_int[free[i]]
-                    - damping_force
-                    - M_f[i] * a_trial[i]
+            var tangent_initialized = False
+            for _ in range(attempt_max_iters):
+                uniaxial_revert_trial_all(uniaxial_states)
+                assemble_global_stiffness_and_internal(
+                    nodes,
+                    elements,
+                    sections_by_id,
+                    materials_by_id,
+                    id_to_index,
+                    node_count,
+                    ndf,
+                    ndm,
+                    u,
+                    uniaxial_defs,
+                    uniaxial_state_defs,
+                    uniaxial_states,
+                    elem_uniaxial_offsets,
+                    elem_uniaxial_counts,
+                    elem_uniaxial_state_ids,
+                    fiber_section_defs,
+                    fiber_section_cells,
+                    fiber_section_index_by_id,
+                    K,
+                    F_int,
                 )
+                if has_transformation_mpc:
+                    K = _collapse_matrix_by_rep(K, rep_dof)
+                    F_int = _collapse_vector_by_rep(F_int, rep_dof)
+                if attempt_algorithm_mode == 0:
+                    for i in range(free_count):
+                        for j in range(free_count):
+                            K_ff[i][j] = K[free[i]][free[j]]
+                elif attempt_algorithm_mode == 1:
+                    if not tangent_initialized:
+                        for i in range(free_count):
+                            for j in range(free_count):
+                                K_ff[i][j] = K[free[i]][free[j]]
+                        tangent_initialized = True
+                else:
+                    if not tangent_initialized:
+                        for i in range(free_count):
+                            for j in range(free_count):
+                                K_ff[i][j] = K_init_ff[i][j]
+                        tangent_initialized = True
 
-            for i in range(free_count):
-                for j in range(free_count):
-                    K_eff[i][j] = K_ff[i][j] + a1 * C_ff[i][j]
-                K_eff[i][i] += a0 * M_f[i]
+                for i in range(free_count):
+                    for j in range(free_count):
+                        C_ff[i][j] = 0.0
+                    C_ff[i][i] = rayleigh_alpha_m * M_f[i]
+                if rayleigh_beta_k != 0.0:
+                    for i in range(free_count):
+                        for j in range(free_count):
+                            C_ff[i][j] += rayleigh_beta_k * K_ff[i][j]
+                if rayleigh_beta_k_init != 0.0:
+                    for i in range(free_count):
+                        for j in range(free_count):
+                            C_ff[i][j] += rayleigh_beta_k_init * K_init_ff[i][j]
+                if rayleigh_beta_k_comm != 0.0:
+                    for i in range(free_count):
+                        for j in range(free_count):
+                            C_ff[i][j] += rayleigh_beta_k_comm * K_comm_ff[i][j]
 
-            var K_step: List[List[Float64]] = []
-            for i in range(free_count):
-                var row_step: List[Float64] = []
-                row_step.resize(free_count, 0.0)
-                K_step.append(row_step^)
-                for j in range(free_count):
-                    K_step[i][j] = K_eff[i][j]
-            var R_step: List[Float64] = []
-            R_step.resize(free_count, 0.0)
-            for i in range(free_count):
-                R_step[i] = R_f[i]
-            du_f = gaussian_elimination(K_step, R_step)
+                for i in range(free_count):
+                    var idx = free[i]
+                    a_trial[i] = a0 * (u[idx] - u_n[i]) - a2 * v_n[i] - a3 * a_n[i]
+                    v_trial[i] = v_n[i] + dt * (
+                        (1.0 - gamma) * a_n[i] + gamma * a_trial[i]
+                    )
 
-            var max_diff = 0.0
-            var max_u = 0.0
-            for i in range(free_count):
-                var idx = free[i]
-                var du = du_f[i]
-                var value = u[idx] + du
-                var diff = abs(du)
-                if diff > max_diff:
-                    max_diff = diff
-                var abs_val = abs(value)
-                if abs_val > max_u:
-                    max_u = abs_val
-            var scale_tol = rel_tol * max_u
-            if scale_tol < rel_tol:
-                scale_tol = rel_tol
+                for i in range(free_count):
+                    var damping_force = 0.0
+                    for j in range(free_count):
+                        damping_force += C_ff[i][j] * v_trial[j]
+                    R_f[i] = (
+                        P_ext_f[i]
+                        - F_int[free[i]]
+                        - damping_force
+                        - M_f[i] * a_trial[i]
+                    )
+                if attempt_test_type == "NormUnbalance":
+                    var residual_norm_sq = 0.0
+                    for i in range(free_count):
+                        residual_norm_sq += R_f[i] * R_f[i]
+                    var residual_norm = sqrt(residual_norm_sq)
+                    if residual_norm <= attempt_tol:
+                        converged = True
+                        break
 
-            for i in range(free_count):
-                u[free[i]] += du_f[i]
-            if has_transformation_mpc:
-                _enforce_equal_dof_values(u, rep_dof, constrained)
+                for i in range(free_count):
+                    for j in range(free_count):
+                        K_eff[i][j] = K_ff[i][j] + a1 * C_ff[i][j]
+                    K_eff[i][i] += a0 * M_f[i]
 
-            if max_diff <= tol or max_diff <= scale_tol:
-                converged = True
+                var K_step: List[List[Float64]] = []
+                for i in range(free_count):
+                    var row_step: List[Float64] = []
+                    row_step.resize(free_count, 0.0)
+                    K_step.append(row_step^)
+                    for j in range(free_count):
+                        K_step[i][j] = K_eff[i][j]
+                var R_step: List[Float64] = []
+                R_step.resize(free_count, 0.0)
+                for i in range(free_count):
+                    R_step[i] = R_f[i]
+                du_f = gaussian_elimination(K_step, R_step)
+
+                var max_diff = 0.0
+                var max_u = 0.0
+                for i in range(free_count):
+                    var idx = free[i]
+                    var du = du_f[i]
+                    var value = u[idx] + du
+                    var diff = abs(du)
+                    if diff > max_diff:
+                        max_diff = diff
+                    var abs_val = abs(value)
+                    if abs_val > max_u:
+                        max_u = abs_val
+                var disp_incr_norm_sq = 0.0
+                for i in range(free_count):
+                    disp_incr_norm_sq += du_f[i] * du_f[i]
+                var disp_incr_norm = sqrt(disp_incr_norm_sq)
+                var scale_tol = attempt_rel_tol * max_u
+                if scale_tol < attempt_rel_tol:
+                    scale_tol = attempt_rel_tol
+
+                for i in range(free_count):
+                    u[free[i]] += du_f[i]
+                if has_transformation_mpc:
+                    _enforce_equal_dof_values(u, rep_dof, constrained)
+
+                if attempt_test_type == "NormDispIncr":
+                    if disp_incr_norm <= attempt_tol:
+                        converged = True
+                        break
+                elif attempt_test_type == "MaxDispIncr":
+                    if max_diff <= attempt_tol or max_diff <= scale_tol:
+                        converged = True
+                        break
+            if converged:
                 break
 
         if not converged:
-            abort("transient_nonlinear did not converge")
+            abort("transient_nonlinear did not converge at step " + String(step + 1))
 
         uniaxial_revert_trial_all(uniaxial_states)
         assemble_global_stiffness_and_internal(

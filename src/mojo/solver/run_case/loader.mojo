@@ -397,14 +397,14 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
         if ndf != 3:
             abort("forceBeamColumn2d requires ndf=3")
         var geom = String(elem.get("geomTransf", "Linear"))
-        if geom != "Linear":
-            abort("forceBeamColumn2d v1 supports geomTransf Linear only")
+        if geom != "Linear" and geom != "PDelta":
+            abort("forceBeamColumn2d supports geomTransf Linear or PDelta")
         var integration = String(elem.get("integration", "Lobatto"))
         if integration != "Lobatto":
-            abort("forceBeamColumn2d v1 supports Lobatto integration only")
+            abort("forceBeamColumn2d supports Lobatto integration only")
         var num_int_pts = Int(elem.get("num_int_pts", 3))
-        if num_int_pts != 3:
-            abort("forceBeamColumn2d v1 supports num_int_pts=3")
+        if num_int_pts != 3 and num_int_pts != 5:
+            abort("forceBeamColumn2d supports num_int_pts=3 or 5")
         var sec_id = Int(elem["section"])
         if sec_id < 0 or sec_id >= len(fiber_section_index_by_id):
             abort("forceBeamColumn2d section not found")
@@ -584,22 +584,33 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
             + " (expected auto|linear_if_elastic|nonlinear)"
         )
     if has_force_beam_column2d:
-        if analysis_type != "static_linear" and analysis_type != "static_nonlinear":
-            abort("forceBeamColumn2d requires static_linear or static_nonlinear analysis")
-        if force_beam_mode == "nonlinear":
-            if analysis_type != "static_nonlinear":
-                abort("force_beam_mode=nonlinear requires static_nonlinear analysis")
-        elif force_beam_mode == "linear_if_elastic":
-            if force_beam_has_nonelastic:
+        if (
+            analysis_type != "static_linear"
+            and analysis_type != "static_nonlinear"
+            and analysis_type != "transient_nonlinear"
+        ):
+            abort(
+                "forceBeamColumn2d requires static_linear, static_nonlinear, "
+                "or transient_nonlinear analysis"
+            )
+        if analysis_type == "transient_nonlinear":
+            if force_beam_mode != "auto":
+                abort("force_beam_mode is only supported for static forceBeamColumn2d analyses")
+        else:
+            if force_beam_mode == "nonlinear":
                 if analysis_type != "static_nonlinear":
-                    abort("forceBeamColumn2d with non-elastic fibers requires static_nonlinear analysis")
-            elif analysis_type != "static_linear":
-                abort(
-                    "force_beam_mode=linear_if_elastic requires static_linear "
-                    "analysis for elastic forceBeamColumn2d"
-                )
-        elif analysis_type == "static_linear" and force_beam_has_nonelastic:
-            abort("forceBeamColumn2d with non-elastic fibers requires static_nonlinear analysis")
+                    abort("force_beam_mode=nonlinear requires static_nonlinear analysis")
+            elif force_beam_mode == "linear_if_elastic":
+                if force_beam_has_nonelastic:
+                    if analysis_type != "static_nonlinear":
+                        abort("forceBeamColumn2d with non-elastic fibers requires static_nonlinear analysis")
+                elif analysis_type != "static_linear":
+                    abort(
+                        "force_beam_mode=linear_if_elastic requires static_linear "
+                        "analysis for elastic forceBeamColumn2d"
+                    )
+            elif analysis_type == "static_linear" and force_beam_has_nonelastic:
+                abort("forceBeamColumn2d with non-elastic fibers requires static_nonlinear analysis")
     if (
         analysis_type != "static_nonlinear"
         and analysis_type != "transient_nonlinear"

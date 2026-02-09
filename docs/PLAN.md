@@ -113,7 +113,9 @@ This document is a living roadmap for Strut (Mojo rewrite of OpenSees). It captu
 - [x] Add validation/benchmark coverage for nonlinear algorithm selection (`Newton`, `ModifiedNewton`).
 - [x] Convergence tests and step control.
 - [x] Static nonlinear displacement-control integrator with augmented load-factor solve.
-- [ ] Rayleigh damping for dynamic analysis.
+- [x] Rayleigh damping for dynamic analysis.
+- [x] Add transient nonlinear fallback from `ModifiedNewton` to per-step `Newton` when convergence fails.
+- [x] Add OpenSees-aligned transient nonlinear controls: `ModifiedNewtonInitial`, selectable convergence test (`MaxDispIncr`/`NormDispIncr`/`NormUnbalance`), and configurable per-step fallback settings.
 
 ## Phase 4 (Long-Term)
 

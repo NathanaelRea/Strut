@@ -36,4 +36,9 @@ def test_nonlinear_algorithm_values(case_path: Path):
     if algorithm is None:
         return
 
-    assert algorithm in {"Newton", "ModifiedNewton"}
+    assert algorithm in {"Newton", "ModifiedNewton", "ModifiedNewtonInitial"}
+
+    fallback_algorithm = analysis.get("fallback_algorithm")
+    if fallback_algorithm is None:
+        return
+    assert fallback_algorithm in {"Newton", "ModifiedNewton", "ModifiedNewtonInitial"}

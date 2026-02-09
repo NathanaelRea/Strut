@@ -72,6 +72,20 @@ def _case_free_dofs(path: Path) -> Optional[int]:
     return total - constrained
 
 
+def _case_size_override(path: Path) -> Optional[str]:
+    try:
+        data = json.loads(path.read_text())
+    except Exception:
+        return None
+    label = data.get("benchmark_size")
+    if not isinstance(label, str):
+        return None
+    normalized = label.strip().lower()
+    if normalized in {"small", "medium", "large"}:
+        return normalized
+    return None
+
+
 def _load_case_flags(path: Path) -> Tuple[bool, bool]:
     data = json.loads(path.read_text())
     enabled = bool(data.get("enabled", True))
@@ -607,6 +621,9 @@ def main() -> None:
             "json": str(case.json_path),
             "dofs": _case_free_dofs(case.json_path),
         }
+        size_override = _case_size_override(case.json_path)
+        if size_override is not None:
+            case_entry["size"] = size_override
 
         tcl_out = results_root / "tcl" / f"{case_name}.tcl"
         run(

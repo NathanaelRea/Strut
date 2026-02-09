@@ -2,6 +2,7 @@
 import argparse
 import json
 import math
+import re
 from pathlib import Path
 
 def _constraints_to_fix(ndf, constraints):
@@ -67,7 +68,24 @@ def _format_list(values):
     return " ".join(str(v) for v in values)
 
 
-def _emit_time_series(f, ts):
+def _load_path_time_series_values(ts, case_dir: Path):
+    values_path = ts.get("values_path", ts.get("path"))
+    if values_path is None:
+        raise ValueError("Path time_series missing values_path")
+    src = Path(values_path)
+    if not src.is_absolute():
+        candidate = (case_dir / src).resolve()
+        src = candidate if candidate.exists() else Path(values_path)
+    if not src.exists():
+        raise ValueError(f"Path time_series values_path not found: {values_path}")
+    text = src.read_text(encoding="utf-8")
+    tokens = re.findall(r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eEdD][-+]?\d+)?", text)
+    if not tokens:
+        raise ValueError(f"Path time_series values_path had no numeric values: {src}")
+    return [float(tok.replace("D", "E").replace("d", "e")) for tok in tokens]
+
+
+def _emit_time_series(f, ts, case_dir: Path):
     ts_type = ts.get("type")
     tag = ts.get("tag")
     if ts_type is None or tag is None:
@@ -78,12 +96,14 @@ def _emit_time_series(f, ts):
         f.write(f"timeSeries Constant {tag} -factor {factor}\n")
     elif ts_type == "Linear":
         f.write(f"timeSeries Linear {tag} -factor {factor}\n")
-    elif ts_type == "Path":
+    elif ts_type in ("Path", "PathFile"):
         if "dt" in ts and "time" in ts:
             raise ValueError("Path time_series cannot specify both dt and time")
+        if "values" in ts and ("values_path" in ts or "path" in ts):
+            raise ValueError("Path time_series cannot specify both values and values_path/path")
         values = ts.get("values")
         if values is None:
-            raise ValueError("Path time_series missing values")
+            values = _load_path_time_series_values(ts, case_dir)
         line = f"timeSeries Path {tag} "
         if "dt" in ts:
             line += f"-dt {ts['dt']} "
@@ -116,7 +136,9 @@ def main():
     parser.add_argument("tcl_out")
     args = parser.parse_args()
 
-    data = json.loads(Path(args.json_file).read_text())
+    json_path = Path(args.json_file)
+    data = json.loads(json_path.read_text())
+    case_dir = json_path.parent
     schema_version = data.get("schema_version", "1.0")
     if schema_version != "1.0":
         raise ValueError(f"unsupported schema_version: {schema_version}")
@@ -399,7 +421,7 @@ def main():
                     f.write(f"geomTransf {name} {next_tag} {vx} {vy} {vz}\n")
                 next_tag += 1
 
-        # Beam integrations (forceBeamColumn2d v1: Lobatto only)
+        # Beam integrations (forceBeamColumn2d: Lobatto only)
         integration_tags = {}
         next_int_tag = 1
         for elem in elements:
@@ -409,14 +431,14 @@ def main():
             if sec["type"] != "FiberSection2d":
                 raise ValueError("forceBeamColumn2d requires FiberSection2d")
             geom = elem.get("geomTransf", "Linear")
-            if geom != "Linear":
-                raise ValueError("forceBeamColumn2d v1 supports geomTransf Linear only")
+            if geom not in ("Linear", "PDelta"):
+                raise ValueError("forceBeamColumn2d supports geomTransf Linear or PDelta")
             integration = elem.get("integration", "Lobatto")
             if integration != "Lobatto":
-                raise ValueError("forceBeamColumn2d v1 supports Lobatto integration only")
+                raise ValueError("forceBeamColumn2d supports Lobatto integration only")
             num_int_pts = int(elem.get("num_int_pts", 3))
-            if num_int_pts != 3:
-                raise ValueError("forceBeamColumn2d v1 supports num_int_pts=3")
+            if num_int_pts not in (3, 5):
+                raise ValueError("forceBeamColumn2d supports num_int_pts=3 or 5")
             key = (integration, elem["section"], num_int_pts)
             if key in integration_tags:
                 continue
@@ -516,7 +538,7 @@ def main():
             ts_tags = set()
             if ts_list:
                 for ts in ts_list:
-                    _emit_time_series(f, ts)
+                    _emit_time_series(f, ts, case_dir)
                 ts_tags = {ts["tag"] for ts in ts_list}
                 if pattern is None:
                     if len(ts_list) == 1:
@@ -528,7 +550,9 @@ def main():
                 if pattern_type == "UniformExcitation":
                     raise ValueError("UniformExcitation pattern requires time_series definitions")
                 if loads or element_loads:
-                    _emit_time_series(f, {"type": "Linear", "tag": 1, "factor": 1.0})
+                    _emit_time_series(
+                        f, {"type": "Linear", "tag": 1, "factor": 1.0}, case_dir
+                    )
                     ts_tags = {1}
                     if pattern is None:
                         pattern = {"type": "Plain", "tag": 1, "time_series": 1}
@@ -601,6 +625,7 @@ def main():
         constraints_handler = analysis.get("constraints", "Plain")
         dt = None
         static_nl_post_lines = None
+        transient_nonlinear_emits_analyze = True
         if steps < 1:
             raise ValueError("analysis steps must be >= 1")
         if constraints_handler not in ("Plain", "Transformation"):
@@ -686,21 +711,70 @@ def main():
             if dt is None or dt <= 0.0:
                 raise ValueError("transient_nonlinear requires dt > 0")
             algorithm = analysis.get("algorithm", "Newton")
-            if algorithm not in ("Newton", "ModifiedNewton"):
+            if algorithm not in ("Newton", "ModifiedNewton", "ModifiedNewtonInitial"):
                 raise ValueError(
                     f"unsupported transient_nonlinear algorithm: {algorithm}"
+                )
+            fallback_algorithm = analysis.get("fallback_algorithm")
+            if fallback_algorithm is not None and fallback_algorithm not in (
+                "Newton",
+                "ModifiedNewton",
+                "ModifiedNewtonInitial",
+            ):
+                raise ValueError(
+                    f"unsupported transient_nonlinear fallback_algorithm: {fallback_algorithm}"
                 )
             integrator = analysis.get("integrator", {"type": "Newmark"})
             if integrator.get("type", "Newmark") != "Newmark":
                 raise ValueError("transient_nonlinear only supports Newmark integrator")
             gamma = integrator.get("gamma", 0.5)
             beta = integrator.get("beta", 0.25)
+            test_type = analysis.get("test_type", "NormUnbalance")
+            if test_type not in ("NormUnbalance", "NormDispIncr"):
+                raise ValueError(
+                    "transient_nonlinear test_type must be NormUnbalance or NormDispIncr"
+                )
             tol = analysis.get("tol", 1.0e-10)
             max_iters = analysis.get("max_iters", 20)
-            f.write(f"test NormUnbalance {tol} {max_iters}\n")
-            f.write(f"algorithm {algorithm}\n")
+            primary_algorithm = (
+                "ModifiedNewton -initial"
+                if algorithm == "ModifiedNewtonInitial"
+                else algorithm
+            )
+            f.write(f"test {test_type} {tol} {max_iters}\n")
+            f.write(f"algorithm {primary_algorithm}\n")
             f.write(f"integrator Newmark {gamma} {beta}\n")
             f.write("analysis Transient\n")
+            if fallback_algorithm is not None:
+                fallback_test_type = analysis.get("fallback_test_type", test_type)
+                if fallback_test_type not in ("NormUnbalance", "NormDispIncr"):
+                    raise ValueError(
+                        "transient_nonlinear fallback_test_type must be NormUnbalance or NormDispIncr"
+                    )
+                fallback_tol = analysis.get("fallback_tol", tol)
+                fallback_max_iters = analysis.get("fallback_max_iters", max_iters)
+                fallback_algorithm_cmd = (
+                    "ModifiedNewton -initial"
+                    if fallback_algorithm == "ModifiedNewtonInitial"
+                    else fallback_algorithm
+                )
+                f.write("set strut_tr_ok 0\n")
+                f.write(
+                    f"for {{set strut_tr_step 0}} {{$strut_tr_step < {int(steps)} && $strut_tr_ok == 0}} {{incr strut_tr_step}} {{\n"
+                )
+                f.write(f"  set strut_tr_ok [analyze 1 {dt}]\n")
+                f.write("  if {$strut_tr_ok != 0} {\n")
+                f.write(f"    test {fallback_test_type} {fallback_tol} {fallback_max_iters}\n")
+                f.write(f"    algorithm {fallback_algorithm_cmd}\n")
+                f.write(f"    set strut_tr_ok [analyze 1 {dt}]\n")
+                f.write(f"    test {test_type} {tol} {max_iters}\n")
+                f.write(f"    algorithm {primary_algorithm}\n")
+                f.write("  }\n")
+                f.write("}\n")
+                f.write("if {$strut_tr_ok != 0} {\n")
+                f.write("  error \"analysis failed\"\n")
+                f.write("}\n")
+                transient_nonlinear_emits_analyze = False
         elif analysis_type == "modal_eigen":
             num_modes = int(analysis.get("num_modes", 0))
             if num_modes < 1:
@@ -755,7 +829,9 @@ def main():
             else:
                 raise ValueError(f"unsupported recorder type: {rec_type}")
 
-        if analysis_type == "transient_linear" or analysis_type == "transient_nonlinear":
+        if analysis_type == "transient_linear" or (
+            analysis_type == "transient_nonlinear" and transient_nonlinear_emits_analyze
+        ):
             f.write(f"analyze {steps} {dt}\n")
         elif analysis_type == "modal_eigen":
             num_modes = int(analysis.get("num_modes", 0))
