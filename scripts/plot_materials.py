@@ -441,6 +441,10 @@ def plot_material(
         "mojo": MOJO_ORANGE,
         "opensees": OPENSEES_BLUE,
     }
+    engine_linestyles = {
+        "mojo": "--",
+        "opensees": "-",
+    }
     for engine in ("opensees", "mojo"):
         series = data.get(engine)
         if not series:
@@ -454,9 +458,8 @@ def plot_material(
         xs = [pt[0] for pt in points]
         ys = [pt[1] for pt in points]
         line_color = engine_colors.get(engine, MOJO_ORANGE)
-        ax.plot(xs, ys, linestyle="-", color=line_color, label=engine, zorder=2)
-        if xs:
-            ax.scatter([xs[0], xs[-1]], [ys[0], ys[-1]], s=18, color=line_color, edgecolors="none", zorder=1)
+        line_style = engine_linestyles.get(engine, "-")
+        ax.plot(xs, ys, linestyle=line_style, color=line_color, label=engine, zorder=2)
     ax.axhline(0.0, color="#777777", linewidth=0.8)
     ax.axvline(0.0, color="#777777", linewidth=0.8)
     ax.set_xlabel("strain (-)")
@@ -484,6 +487,10 @@ def plot_hysteresis(
         "mojo": MOJO_ORANGE,
         "opensees": OPENSEES_BLUE,
     }
+    engine_linestyles = {
+        "mojo": "--",
+        "opensees": "-",
+    }
     for engine in ("opensees", "mojo"):
         series = data.get(engine)
         if not series:
@@ -491,7 +498,13 @@ def plot_hysteresis(
         strains, stresses = series
         if not strains:
             continue
-        ax.plot(strains, stresses, linestyle="-", color=engine_colors.get(engine, MOJO_ORANGE), label=engine)
+        ax.plot(
+            strains,
+            stresses,
+            linestyle=engine_linestyles.get(engine, "-"),
+            color=engine_colors.get(engine, MOJO_ORANGE),
+            label=engine,
+        )
     ax.axhline(0.0, color="#777777", linewidth=0.8)
     ax.axvline(0.0, color="#777777", linewidth=0.8)
     ax.set_xlabel("strain (-)")
