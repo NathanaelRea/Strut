@@ -9,7 +9,6 @@ Strut is a Mojo-based adaptation of OpenSees for high-performance finite element
 - Never run `python` or `pytest` directly; always run tools via `uv run <command>` (for example, `uv run run_tests.py`).
 - Always build the Mojo solver after Mojo changes and treat compiler warnings as required fixes (zero-warning target). Apply Mojo compiler recommendations, prefer allocation-light implementations, and structure for performance.
 - Do not stub or mock unless the user explicitly asks for it.
-- Keep `docs/PLAN.md` updated with progress and checkbox state.
 
 ## Non-Standard Commands
 

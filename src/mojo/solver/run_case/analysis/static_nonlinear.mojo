@@ -1,17 +1,27 @@
 from collections import List
 from materials import UniMaterialDef, UniMaterialState
 from os import abort
-from python import Python, PythonObject
+from python import Python
 
 from linalg import gaussian_elimination
 from materials import uniaxial_commit_all, uniaxial_revert_trial_all
-from solver.assembly import assemble_global_stiffness_and_internal, assemble_internal_forces
-from solver.banded import banded_gaussian_elimination, banded_matrix, estimate_bandwidth
+from solver.assembly import (
+    assemble_global_stiffness_and_internal,
+    assemble_internal_forces_typed,
+)
+from solver.banded import banded_gaussian_elimination, banded_matrix, estimate_bandwidth_typed
 from solver.dof import node_dof_index, require_dof_in_range
 from solver.profile import _append_event
-from solver.time_series import eval_time_series
+from solver.run_case.input_types import (
+    AnalysisInput,
+    ElementInput,
+    MaterialInput,
+    NodeInput,
+    RecorderInput,
+    SectionInput,
+)
+from solver.time_series import TimeSeriesInput, eval_time_series_input
 from sections import FiberCell, FiberSection2dDef
-from strut_io import py_len
 
 from solver.run_case.helpers import (
     _append_output,
@@ -29,14 +39,16 @@ from solver.run_case.helpers import (
 )
 
 fn run_static_nonlinear_load_control(
-    analysis: PythonObject,
+    analysis: AnalysisInput,
     steps: Int,
     ts_index: Int,
-    time_series: PythonObject,
-    nodes: PythonObject,
-    elements: PythonObject,
-    sections_by_id: List[PythonObject],
-    materials_by_id: List[PythonObject],
+    time_series: List[TimeSeriesInput],
+    time_series_values: List[Float64],
+    time_series_times: List[Float64],
+    typed_nodes: List[NodeInput],
+    typed_elements: List[ElementInput],
+    typed_sections_by_id: List[SectionInput],
+    typed_materials_by_id: List[MaterialInput],
     id_to_index: List[Int],
     node_count: Int,
     ndf: Int,
@@ -56,7 +68,10 @@ fn run_static_nonlinear_load_control(
     use_banded_nonlinear: Bool,
     free: List[Int],
     free_index: List[Int],
-    recorders: PythonObject,
+    recorders: List[RecorderInput],
+    recorder_nodes_pool: List[Int],
+    recorder_elements_pool: List[Int],
+    recorder_dofs_pool: List[Int],
     elem_id_to_index: List[Int],
     mut static_output_files: List[String],
     mut static_output_buffers: List[String],
@@ -74,10 +89,10 @@ fn run_static_nonlinear_load_control(
     constrained: List[Bool],
 ) raises:
     var time = Python.import_module("time")
-    var max_iters = Int(analysis.get("max_iters", 20))
-    var tol = Float64(analysis.get("tol", 1.0e-10))
-    var rel_tol = Float64(analysis.get("rel_tol", 1.0e-8))
-    var algorithm = String(analysis.get("algorithm", "Newton"))
+    var max_iters = analysis.max_iters
+    var tol = analysis.tol
+    var rel_tol = analysis.rel_tol
+    var algorithm = analysis.algorithm
     var use_modified_newton = False
     if algorithm == "Newton":
         pass
@@ -101,12 +116,13 @@ fn run_static_nonlinear_load_control(
     var F_int: List[Float64] = []
     F_int.resize(total_dofs, 0.0)
 
-    var integrator = analysis.get("integrator", {"type": "LoadControl"})
-    var integrator_type = String(integrator.get("type", "LoadControl"))
+    var integrator_type = analysis.integrator_type
+    if integrator_type == "":
+        integrator_type = "LoadControl"
     var use_banded_loadcontrol = use_banded_nonlinear and integrator_type == "LoadControl"
     var bw_nl = 0
     if use_banded_loadcontrol:
-        bw_nl = estimate_bandwidth(elements, id_to_index, ndf, free_index)
+        bw_nl = estimate_bandwidth_typed(typed_elements, free_index)
         if bw_nl > free_count - 1:
             bw_nl = free_count - 1
     var K_ff: List[List[Float64]] = []
@@ -120,7 +136,7 @@ fn run_static_nonlinear_load_control(
         K_ff_banded = banded_matrix(free_count, bw_nl)
     var F_f: List[Float64] = []
     F_f.resize(free_count, 0.0)
-    var has_reaction_recorder = _has_recorder_type(recorders, "node_reaction")
+    var has_reaction_recorder = _has_recorder_type(recorders, 3)
     var envelope_files: List[String] = []
     var envelope_min: List[List[Float64]] = []
     var envelope_max: List[List[Float64]] = []
@@ -136,7 +152,9 @@ fn run_static_nonlinear_load_control(
             _enforce_equal_dof_values(u, rep_dof, constrained)
         var scale = Float64(step + 1) / Float64(steps)
         if ts_index >= 0:
-            scale = eval_time_series(time_series[ts_index], scale)
+            scale = eval_time_series_input(
+                time_series[ts_index], scale, time_series_values, time_series_times
+            )
         var converged = False
         var tangent_initialized = False
         for _ in range(max_iters):
@@ -162,10 +180,10 @@ fn run_static_nonlinear_load_control(
                     asm_start_us,
                 )
             assemble_global_stiffness_and_internal(
-                nodes,
-                elements,
-                sections_by_id,
-                materials_by_id,
+                typed_nodes,
+                typed_elements,
+                typed_sections_by_id,
+                typed_materials_by_id,
                 id_to_index,
                 node_count,
                 ndf,
@@ -305,11 +323,11 @@ fn run_static_nonlinear_load_control(
         var F_int_reaction: List[Float64] = []
         var F_ext_reaction: List[Float64] = []
         if has_reaction_recorder:
-            F_int_reaction = assemble_internal_forces(
-                nodes,
-                elements,
-                sections_by_id,
-                materials_by_id,
+            F_int_reaction = assemble_internal_forces_typed(
+                typed_nodes,
+                typed_elements,
+                typed_sections_by_id,
+                typed_materials_by_id,
                 id_to_index,
                 node_count,
                 ndf,
@@ -321,51 +339,47 @@ fn run_static_nonlinear_load_control(
                 elem_uniaxial_offsets,
                 elem_uniaxial_counts,
                 elem_uniaxial_state_ids,
+                fiber_section_defs,
+                fiber_section_cells,
+                fiber_section_index_by_id,
             )
             F_ext_reaction = _scaled_forces(F_total, scale)
-        for r in range(py_len(recorders)):
+        for r in range(len(recorders)):
             var rec = recorders[r]
-            var rec_type = String(rec["type"])
-            if rec_type == "node_displacement":
-                var dofs = rec["dofs"]
-                var output = String(rec.get("output", "node_disp"))
-                var nodes_out = rec["nodes"]
-                for nidx in range(py_len(nodes_out)):
-                    var node_id = Int(nodes_out[nidx])
+            if rec.type_tag == 1:
+                for nidx in range(rec.node_count):
+                    var node_id = recorder_nodes_pool[rec.node_offset + nidx]
                     var i = id_to_index[node_id]
                     var line = String()
-                    for j in range(py_len(dofs)):
-                        var dof = Int(dofs[j])
+                    for j in range(rec.dof_count):
+                        var dof = recorder_dofs_pool[rec.dof_offset + j]
                         require_dof_in_range(dof, ndf, "recorder")
                         var value = u[node_dof_index(i, dof, ndf)]
                         if j > 0:
                             line += " "
                         line += String(value)
                     line += "\n"
-                    var filename = output + "_node" + String(node_id) + ".out"
+                    var filename = rec.output + "_node" + String(node_id) + ".out"
                     _append_output(
                         static_output_files, static_output_buffers, filename, line
                     )
-            elif rec_type == "element_force":
-                var output = String(rec.get("output", "element_force"))
-                var elements_out = rec["elements"]
-                for eidx in range(py_len(elements_out)):
-                    var elem_id = Int(elements_out[eidx])
+            elif rec.type_tag == 2:
+                for eidx in range(rec.element_count):
+                    var elem_id = recorder_elements_pool[rec.element_offset + eidx]
                     if (
                         elem_id >= len(elem_id_to_index)
                         or elem_id_to_index[elem_id] < 0
                     ):
                         abort("recorder element not found")
                     var elem_index = elem_id_to_index[elem_id]
-                    var elem = elements[elem_index]
+                    var elem = typed_elements[elem_index]
                     var f_elem = _element_force_global_for_recorder(
                         elem_index,
                         elem,
-                        nodes,
-                        sections_by_id,
-                        id_to_index,
                         ndf,
                         u,
+                        typed_nodes,
+                        typed_sections_by_id,
                         fiber_section_defs,
                         fiber_section_cells,
                         fiber_section_index_by_id,
@@ -376,38 +390,34 @@ fn run_static_nonlinear_load_control(
                         elem_uniaxial_state_ids,
                     )
                     var line = _format_values_line(f_elem)
-                    var filename = output + "_ele" + String(elem_id) + ".out"
+                    var filename = rec.output + "_ele" + String(elem_id) + ".out"
                     _append_output(
                         static_output_files, static_output_buffers, filename, line
                     )
-            elif rec_type == "node_reaction":
-                var output = String(rec.get("output", "reaction"))
-                var nodes_out = rec["nodes"]
-                var dofs = rec["dofs"]
-                for nidx in range(py_len(nodes_out)):
-                    var node_id = Int(nodes_out[nidx])
+            elif rec.type_tag == 3:
+                for nidx in range(rec.node_count):
+                    var node_id = recorder_nodes_pool[rec.node_offset + nidx]
                     var i = id_to_index[node_id]
                     var values: List[Float64] = []
-                    values.resize(py_len(dofs), 0.0)
-                    for j in range(py_len(dofs)):
-                        var dof = Int(dofs[j])
+                    values.resize(rec.dof_count, 0.0)
+                    for j in range(rec.dof_count):
+                        var dof = recorder_dofs_pool[rec.dof_offset + j]
                         require_dof_in_range(dof, ndf, "recorder")
                         var idx = node_dof_index(i, dof, ndf)
                         values[j] = F_int_reaction[idx] - F_ext_reaction[idx]
-                    var filename = output + "_node" + String(node_id) + ".out"
+                    var filename = rec.output + "_node" + String(node_id) + ".out"
                     _append_output(
                         static_output_files,
                         static_output_buffers,
                         filename,
                         _format_values_line(values),
                     )
-            elif rec_type == "drift":
-                var output = String(rec.get("output", "drift"))
-                var i_node = Int(rec["i_node"])
-                var j_node = Int(rec["j_node"])
-                var value = _drift_value(rec, nodes, id_to_index, ndf, u)
+            elif rec.type_tag == 4:
+                var i_node = rec.i_node
+                var j_node = rec.j_node
+                var value = _drift_value(rec, typed_nodes, id_to_index, ndf, u)
                 var filename = (
-                    output
+                    rec.output
                     + "_i"
                     + String(i_node)
                     + "_j"
@@ -420,26 +430,23 @@ fn run_static_nonlinear_load_control(
                     filename,
                     _format_values_line([value]),
                 )
-            elif rec_type == "envelope_element_force":
-                var output = String(rec.get("output", "envelope_element_force"))
-                var elements_out = rec["elements"]
-                for eidx in range(py_len(elements_out)):
-                    var elem_id = Int(elements_out[eidx])
+            elif rec.type_tag == 5:
+                for eidx in range(rec.element_count):
+                    var elem_id = recorder_elements_pool[rec.element_offset + eidx]
                     if (
                         elem_id >= len(elem_id_to_index)
                         or elem_id_to_index[elem_id] < 0
                     ):
                         abort("recorder element not found")
                     var elem_index = elem_id_to_index[elem_id]
-                    var elem = elements[elem_index]
+                    var elem = typed_elements[elem_index]
                     var f_elem = _element_force_global_for_recorder(
                         elem_index,
                         elem,
-                        nodes,
-                        sections_by_id,
-                        id_to_index,
                         ndf,
                         u,
+                        typed_nodes,
+                        typed_sections_by_id,
                         fiber_section_defs,
                         fiber_section_cells,
                         fiber_section_index_by_id,
@@ -449,7 +456,7 @@ fn run_static_nonlinear_load_control(
                         elem_uniaxial_counts,
                         elem_uniaxial_state_ids,
                     )
-                    var filename = output + "_ele" + String(elem_id) + ".out"
+                    var filename = rec.output + "_ele" + String(elem_id) + ".out"
                     _update_envelope(
                         filename,
                         f_elem,
@@ -470,13 +477,14 @@ fn run_static_nonlinear_load_control(
     )
 
 fn run_static_nonlinear_displacement_control(
-    analysis: PythonObject,
+    analysis: AnalysisInput,
     mut steps: Int,
     ts_index: Int,
-    nodes: PythonObject,
-    elements: PythonObject,
-    sections_by_id: List[PythonObject],
-    materials_by_id: List[PythonObject],
+    analysis_integrator_targets_pool: List[Float64],
+    typed_nodes: List[NodeInput],
+    typed_elements: List[ElementInput],
+    typed_sections_by_id: List[SectionInput],
+    typed_materials_by_id: List[MaterialInput],
     id_to_index: List[Int],
     node_count: Int,
     ndf: Int,
@@ -495,7 +503,10 @@ fn run_static_nonlinear_displacement_control(
     mut F_total: List[Float64],
     constrained: List[Bool],
     free: List[Int],
-    recorders: PythonObject,
+    recorders: List[RecorderInput],
+    recorder_nodes_pool: List[Int],
+    recorder_elements_pool: List[Int],
+    recorder_dofs_pool: List[Int],
     elem_id_to_index: List[Int],
     mut static_output_files: List[String],
     mut static_output_buffers: List[String],
@@ -512,10 +523,10 @@ fn run_static_nonlinear_displacement_control(
     rep_dof: List[Int],
 ) raises:
     var time = Python.import_module("time")
-    var max_iters = Int(analysis.get("max_iters", 20))
-    var tol = Float64(analysis.get("tol", 1.0e-10))
-    var rel_tol = Float64(analysis.get("rel_tol", 1.0e-8))
-    var algorithm = String(analysis.get("algorithm", "Newton"))
+    var max_iters = analysis.max_iters
+    var tol = analysis.tol
+    var rel_tol = analysis.rel_tol
+    var algorithm = analysis.algorithm
     var use_modified_newton = False
     if algorithm == "Newton":
         pass
@@ -545,13 +556,12 @@ fn run_static_nonlinear_displacement_control(
         row_ff.resize(free_count, 0.0)
         K_ff.append(row_ff^)
 
-    var integrator = analysis.get("integrator", {"type": "LoadControl"})
     if ts_index >= 0:
         abort("DisplacementControl does not support time_series scaling")
-    if not integrator.__contains__("node") or not integrator.__contains__("dof"):
+    if analysis.integrator_node < 0 or analysis.integrator_dof < 0:
         abort("DisplacementControl requires node and dof")
-    var control_node = Int(integrator["node"])
-    var control_dof = Int(integrator["dof"])
+    var control_node = analysis.integrator_node
+    var control_dof = analysis.integrator_dof
     require_dof_in_range(control_dof, ndf, "DisplacementControl")
     if control_node >= len(id_to_index) or id_to_index[control_node] < 0:
         abort("DisplacementControl node not found")
@@ -568,11 +578,9 @@ fn run_static_nonlinear_displacement_control(
     if control_free < 0:
         abort("DisplacementControl dof is not free")
 
-    var cutback = Float64(integrator.get("cutback", analysis.get("cutback", 0.5)))
-    var max_cutbacks = Int(
-        integrator.get("max_cutbacks", analysis.get("max_cutbacks", 8))
-    )
-    var min_du = Float64(integrator.get("min_du", analysis.get("min_du", 1.0e-10)))
+    var cutback = analysis.integrator_cutback
+    var max_cutbacks = analysis.integrator_max_cutbacks
+    var min_du = analysis.integrator_min_du
     if cutback <= 0.0 or cutback >= 1.0:
         abort("DisplacementControl cutback must be in (0, 1)")
     if max_cutbacks < 0:
@@ -581,17 +589,18 @@ fn run_static_nonlinear_displacement_control(
         abort("DisplacementControl min_du must be > 0")
 
     var target_disps: List[Float64] = []
-    if integrator.__contains__("targets"):
-        var targets = integrator["targets"]
-        for i in range(py_len(targets)):
-            target_disps.append(Float64(targets[i]))
+    if analysis.integrator_targets_count > 0:
+        for i in range(analysis.integrator_targets_count):
+            target_disps.append(
+                analysis_integrator_targets_pool[analysis.integrator_targets_offset + i]
+            )
         if len(target_disps) == 0:
             abort("DisplacementControl targets must not be empty")
         steps = len(target_disps)
     else:
-        if not integrator.__contains__("du"):
+        if not analysis.has_integrator_du:
             abort("DisplacementControl requires du or targets")
-        var du_step = Float64(integrator["du"])
+        var du_step = analysis.integrator_du
         if du_step == 0.0:
             abort("DisplacementControl du must be nonzero")
         for i in range(steps):
@@ -610,7 +619,7 @@ fn run_static_nonlinear_displacement_control(
     rhs_aug.resize(aug_size, 0.0)
     var sol_aug: List[Float64] = []
     sol_aug.resize(aug_size, 0.0)
-    var has_reaction_recorder = _has_recorder_type(recorders, "node_reaction")
+    var has_reaction_recorder = _has_recorder_type(recorders, 3)
     var envelope_files: List[String] = []
     var envelope_min: List[List[Float64]] = []
     var envelope_max: List[List[Float64]] = []
@@ -667,10 +676,10 @@ fn run_static_nonlinear_displacement_control(
                             asm_start_us,
                         )
                     assemble_global_stiffness_and_internal(
-                        nodes,
-                        elements,
-                        sections_by_id,
-                        materials_by_id,
+                        typed_nodes,
+                        typed_elements,
+                        typed_sections_by_id,
+                        typed_materials_by_id,
                         id_to_index,
                         node_count,
                         ndf,
@@ -817,11 +826,11 @@ fn run_static_nonlinear_displacement_control(
         var F_int_reaction: List[Float64] = []
         var F_ext_reaction: List[Float64] = []
         if has_reaction_recorder:
-            F_int_reaction = assemble_internal_forces(
-                nodes,
-                elements,
-                sections_by_id,
-                materials_by_id,
+            F_int_reaction = assemble_internal_forces_typed(
+                typed_nodes,
+                typed_elements,
+                typed_sections_by_id,
+                typed_materials_by_id,
                 id_to_index,
                 node_count,
                 ndf,
@@ -833,52 +842,48 @@ fn run_static_nonlinear_displacement_control(
                 elem_uniaxial_offsets,
                 elem_uniaxial_counts,
                 elem_uniaxial_state_ids,
+                fiber_section_defs,
+                fiber_section_cells,
+                fiber_section_index_by_id,
             )
             F_ext_reaction = _scaled_forces(F_total, load_factor)
 
-        for r in range(py_len(recorders)):
+        for r in range(len(recorders)):
             var rec = recorders[r]
-            var rec_type = String(rec["type"])
-            if rec_type == "node_displacement":
-                var dofs = rec["dofs"]
-                var output = String(rec.get("output", "node_disp"))
-                var nodes_out = rec["nodes"]
-                for nidx in range(py_len(nodes_out)):
-                    var node_id = Int(nodes_out[nidx])
+            if rec.type_tag == 1:
+                for nidx in range(rec.node_count):
+                    var node_id = recorder_nodes_pool[rec.node_offset + nidx]
                     var i = id_to_index[node_id]
                     var line = String()
-                    for j in range(py_len(dofs)):
-                        var dof = Int(dofs[j])
+                    for j in range(rec.dof_count):
+                        var dof = recorder_dofs_pool[rec.dof_offset + j]
                         require_dof_in_range(dof, ndf, "recorder")
                         var value = u[node_dof_index(i, dof, ndf)]
                         if j > 0:
                             line += " "
                         line += String(value)
                     line += "\n"
-                    var filename = output + "_node" + String(node_id) + ".out"
+                    var filename = rec.output + "_node" + String(node_id) + ".out"
                     _append_output(
                         static_output_files, static_output_buffers, filename, line
                     )
-            elif rec_type == "element_force":
-                var output = String(rec.get("output", "element_force"))
-                var elements_out = rec["elements"]
-                for eidx in range(py_len(elements_out)):
-                    var elem_id = Int(elements_out[eidx])
+            elif rec.type_tag == 2:
+                for eidx in range(rec.element_count):
+                    var elem_id = recorder_elements_pool[rec.element_offset + eidx]
                     if (
                         elem_id >= len(elem_id_to_index)
                         or elem_id_to_index[elem_id] < 0
                     ):
                         abort("recorder element not found")
                     var elem_index = elem_id_to_index[elem_id]
-                    var elem = elements[elem_index]
+                    var elem = typed_elements[elem_index]
                     var f_elem = _element_force_global_for_recorder(
                         elem_index,
                         elem,
-                        nodes,
-                        sections_by_id,
-                        id_to_index,
                         ndf,
                         u,
+                        typed_nodes,
+                        typed_sections_by_id,
                         fiber_section_defs,
                         fiber_section_cells,
                         fiber_section_index_by_id,
@@ -889,38 +894,34 @@ fn run_static_nonlinear_displacement_control(
                         elem_uniaxial_state_ids,
                     )
                     var line = _format_values_line(f_elem)
-                    var filename = output + "_ele" + String(elem_id) + ".out"
+                    var filename = rec.output + "_ele" + String(elem_id) + ".out"
                     _append_output(
                         static_output_files, static_output_buffers, filename, line
                     )
-            elif rec_type == "node_reaction":
-                var output = String(rec.get("output", "reaction"))
-                var nodes_out = rec["nodes"]
-                var dofs = rec["dofs"]
-                for nidx in range(py_len(nodes_out)):
-                    var node_id = Int(nodes_out[nidx])
+            elif rec.type_tag == 3:
+                for nidx in range(rec.node_count):
+                    var node_id = recorder_nodes_pool[rec.node_offset + nidx]
                     var i = id_to_index[node_id]
                     var values: List[Float64] = []
-                    values.resize(py_len(dofs), 0.0)
-                    for j in range(py_len(dofs)):
-                        var dof = Int(dofs[j])
+                    values.resize(rec.dof_count, 0.0)
+                    for j in range(rec.dof_count):
+                        var dof = recorder_dofs_pool[rec.dof_offset + j]
                         require_dof_in_range(dof, ndf, "recorder")
                         var idx = node_dof_index(i, dof, ndf)
                         values[j] = F_int_reaction[idx] - F_ext_reaction[idx]
-                    var filename = output + "_node" + String(node_id) + ".out"
+                    var filename = rec.output + "_node" + String(node_id) + ".out"
                     _append_output(
                         static_output_files,
                         static_output_buffers,
                         filename,
                         _format_values_line(values),
                     )
-            elif rec_type == "drift":
-                var output = String(rec.get("output", "drift"))
-                var i_node = Int(rec["i_node"])
-                var j_node = Int(rec["j_node"])
-                var value = _drift_value(rec, nodes, id_to_index, ndf, u)
+            elif rec.type_tag == 4:
+                var i_node = rec.i_node
+                var j_node = rec.j_node
+                var value = _drift_value(rec, typed_nodes, id_to_index, ndf, u)
                 var filename = (
-                    output
+                    rec.output
                     + "_i"
                     + String(i_node)
                     + "_j"
@@ -933,26 +934,23 @@ fn run_static_nonlinear_displacement_control(
                     filename,
                     _format_values_line([value]),
                 )
-            elif rec_type == "envelope_element_force":
-                var output = String(rec.get("output", "envelope_element_force"))
-                var elements_out = rec["elements"]
-                for eidx in range(py_len(elements_out)):
-                    var elem_id = Int(elements_out[eidx])
+            elif rec.type_tag == 5:
+                for eidx in range(rec.element_count):
+                    var elem_id = recorder_elements_pool[rec.element_offset + eidx]
                     if (
                         elem_id >= len(elem_id_to_index)
                         or elem_id_to_index[elem_id] < 0
                     ):
                         abort("recorder element not found")
                     var elem_index = elem_id_to_index[elem_id]
-                    var elem = elements[elem_index]
+                    var elem = typed_elements[elem_index]
                     var f_elem = _element_force_global_for_recorder(
                         elem_index,
                         elem,
-                        nodes,
-                        sections_by_id,
-                        id_to_index,
                         ndf,
                         u,
+                        typed_nodes,
+                        typed_sections_by_id,
                         fiber_section_defs,
                         fiber_section_cells,
                         fiber_section_index_by_id,
@@ -962,7 +960,7 @@ fn run_static_nonlinear_displacement_control(
                         elem_uniaxial_counts,
                         elem_uniaxial_state_ids,
                     )
-                    var filename = output + "_ele" + String(elem_id) + ".out"
+                    var filename = rec.output + "_ele" + String(elem_id) + ".out"
                     _update_envelope(
                         filename,
                         f_elem,

@@ -1,75 +1,53 @@
 from collections import List
 from math import sqrt
 from os import abort
-from python import Python, PythonObject
 
 from elements import (
     beam2d_corotational_global_internal_force,
     beam2d_pdelta_global_stiffness,
     beam_global_stiffness,
-    beam_uniform_load_global,
     force_beam_column2d_global_tangent_and_internal,
 )
-from linalg import gaussian_elimination
-from materials import (
-    UniMaterialDef,
-    UniMaterialState,
-    uni_mat_is_elastic,
-    uniaxial_commit_all,
-    uniaxial_revert_trial_all,
-)
-from solver.assembly import (
-    assemble_global_stiffness,
-    assemble_global_stiffness_banded,
-    assemble_global_stiffness_and_internal,
-)
-from solver.banded import banded_gaussian_elimination, banded_matrix, estimate_bandwidth
+from materials import UniMaterialDef, UniMaterialState
 from solver.dof import node_dof_index, require_dof_in_range
-from solver.profile import (
-    _append_event,
-    _append_frame,
-    _profile_enabled,
-    _write_speedscope,
+from solver.run_case.input_types import (
+    ElementInput,
+    NodeInput,
+    RecorderInput,
+    SectionInput,
 )
-from solver.reorder import build_node_adjacency, rcm_order
-from solver.time_series import eval_time_series, find_time_series, parse_time_series
-from sections import FiberCell, FiberSection2dDef, append_fiber_section2d_from_json
-from strut_io import py_len
+from sections import FiberCell, FiberSection2dDef
 
 
 fn _beam2d_element_force_global(
-    elem: PythonObject,
-    nodes: PythonObject,
-    sections_by_id: List[PythonObject],
-    id_to_index: List[Int],
+    elem: ElementInput,
+    nodes: List[NodeInput],
+    sections_by_id: List[SectionInput],
     ndf: Int,
     u: List[Float64],
 ) raises -> List[Float64]:
     if ndf != 3:
         abort("elasticBeamColumn2d requires ndf=3")
-    var n1 = Int(elem["nodes"][0])
-    var n2 = Int(elem["nodes"][1])
-    var i1 = id_to_index[n1]
-    var i2 = id_to_index[n2]
+    var i1 = elem.node_index_1
+    var i2 = elem.node_index_2
     var node1 = nodes[i1]
     var node2 = nodes[i2]
 
-    var sec_id = Int(elem["section"])
+    var sec_id = elem.section
     if sec_id >= len(sections_by_id):
         abort("section not found")
     var sec = sections_by_id[sec_id]
-    if sec is None:
+    if sec.id < 0:
         abort("section not found")
-    if String(sec["type"]) == "FiberSection2d":
+    if sec.type == "FiberSection2d":
         abort(
             "element_force for elasticBeamColumn2d with FiberSection2d requires "
             "forceBeamColumn2d"
         )
 
-    var params = sec["params"]
-    var E = Float64(params["E"])
-    var A = Float64(params["A"])
-    var I = Float64(params["I"])
+    var E = sec.E
+    var A = sec.A
+    var I = sec.I
 
     var dof_map = [
         node_dof_index(i1, 1, ndf),
@@ -84,16 +62,16 @@ fn _beam2d_element_force_global(
     for i in range(6):
         u_elem[i] = u[dof_map[i]]
 
-    var geom = String(elem.get("geomTransf", "Linear"))
+    var geom = elem.geom_transf
     if geom == "Corotational":
         return beam2d_corotational_global_internal_force(
             E,
             A,
             I,
-            Float64(node1["x"]),
-            Float64(node1["y"]),
-            Float64(node2["x"]),
-            Float64(node2["y"]),
+            node1.x,
+            node1.y,
+            node2.x,
+            node2.y,
             u_elem,
         )
 
@@ -103,20 +81,20 @@ fn _beam2d_element_force_global(
             E,
             A,
             I,
-            Float64(node1["x"]),
-            Float64(node1["y"]),
-            Float64(node2["x"]),
-            Float64(node2["y"]),
+            node1.x,
+            node1.y,
+            node2.x,
+            node2.y,
         )
     elif geom == "PDelta":
         k_global = beam2d_pdelta_global_stiffness(
             E,
             A,
             I,
-            Float64(node1["x"]),
-            Float64(node1["y"]),
-            Float64(node2["x"]),
-            Float64(node2["y"]),
+            node1.x,
+            node1.y,
+            node2.x,
+            node2.y,
             u_elem,
         )
     else:
@@ -134,9 +112,8 @@ fn _beam2d_element_force_global(
 
 fn _truss_element_force_global(
     elem_index: Int,
-    elem: PythonObject,
-    nodes: PythonObject,
-    id_to_index: List[Int],
+    elem: ElementInput,
+    nodes: List[NodeInput],
     ndf: Int,
     uniaxial_states: List[UniMaterialState],
     elem_uniaxial_offsets: List[Int],
@@ -145,10 +122,8 @@ fn _truss_element_force_global(
 ) raises -> List[Float64]:
     if ndf != 2 and ndf != 3:
         abort("truss element_force requires ndf=2 or ndf=3")
-    var n1 = Int(elem["nodes"][0])
-    var n2 = Int(elem["nodes"][1])
-    var i1 = id_to_index[n1]
-    var i2 = id_to_index[n2]
+    var i1 = elem.node_index_1
+    var i2 = elem.node_index_2
     var node1 = nodes[i1]
     var node2 = nodes[i2]
 
@@ -158,12 +133,12 @@ fn _truss_element_force_global(
         abort("truss requires one uniaxial material")
     var state_index = elem_uniaxial_state_ids[offset]
     var state = uniaxial_states[state_index]
-    var A = Float64(elem["area"])
+    var A = elem.area
     var N = state.sig_c * A
 
     if ndf == 2:
-        var dx = Float64(node2["x"]) - Float64(node1["x"])
-        var dy = Float64(node2["y"]) - Float64(node1["y"])
+        var dx = node2.x - node1.x
+        var dy = node2.y - node1.y
         var L = sqrt(dx * dx + dy * dy)
         if L == 0.0:
             abort("zero-length element")
@@ -171,9 +146,9 @@ fn _truss_element_force_global(
         var s = dy / L
         return [-N * c, -N * s, N * c, N * s]
 
-    var dx = Float64(node2["x"]) - Float64(node1["x"])
-    var dy = Float64(node2["y"]) - Float64(node1["y"])
-    var dz = Float64(node2["z"]) - Float64(node1["z"])
+    var dx = node2.x - node1.x
+    var dy = node2.y - node1.y
+    var dz = node2.z - node1.z
     var L = sqrt(dx * dx + dy * dy + dz * dz)
     if L == 0.0:
         abort("zero-length element")
@@ -185,9 +160,8 @@ fn _truss_element_force_global(
 
 fn _force_beam_column2d_element_force_global(
     elem_index: Int,
-    elem: PythonObject,
-    nodes: PythonObject,
-    id_to_index: List[Int],
+    elem: ElementInput,
+    nodes: List[NodeInput],
     ndf: Int,
     u: List[Float64],
     fiber_section_defs: List[FiberSection2dDef],
@@ -201,24 +175,22 @@ fn _force_beam_column2d_element_force_global(
 ) raises -> List[Float64]:
     if ndf != 3:
         abort("forceBeamColumn2d requires ndf=3")
-    var geom = String(elem.get("geomTransf", "Linear"))
+    var geom = elem.geom_transf
     if geom != "Linear" and geom != "PDelta":
         abort("forceBeamColumn2d supports geomTransf Linear or PDelta")
-    var integration = String(elem.get("integration", "Lobatto"))
+    var integration = elem.integration
     if integration != "Lobatto":
         abort("forceBeamColumn2d supports Lobatto integration only")
-    var num_int_pts = Int(elem.get("num_int_pts", 3))
+    var num_int_pts = elem.num_int_pts
     if num_int_pts != 3 and num_int_pts != 5:
         abort("forceBeamColumn2d supports num_int_pts=3 or 5")
 
-    var n1 = Int(elem["nodes"][0])
-    var n2 = Int(elem["nodes"][1])
-    var i1 = id_to_index[n1]
-    var i2 = id_to_index[n2]
+    var i1 = elem.node_index_1
+    var i2 = elem.node_index_2
     var node1 = nodes[i1]
     var node2 = nodes[i2]
 
-    var sec_id = Int(elem["section"])
+    var sec_id = elem.section
     if sec_id >= len(fiber_section_index_by_id):
         abort("forceBeamColumn2d section not found")
     var sec_index = fiber_section_index_by_id[sec_id]
@@ -244,10 +216,10 @@ fn _force_beam_column2d_element_force_global(
     var k_dummy: List[List[Float64]] = []
     var f_global: List[Float64] = []
     force_beam_column2d_global_tangent_and_internal(
-        Float64(node1["x"]),
-        Float64(node1["y"]),
-        Float64(node2["x"]),
-        Float64(node2["y"]),
+        node1.x,
+        node1.y,
+        node2.x,
+        node2.y,
         u_elem,
         sec_def,
         fiber_section_cells,
@@ -277,10 +249,9 @@ fn _append_output(
     buffers.append(line)
 
 
-fn _has_recorder_type(recorders: PythonObject, wanted: String) raises -> Bool:
-    for r in range(py_len(recorders)):
-        var rec = recorders[r]
-        if String(rec["type"]) == wanted:
+fn _has_recorder_type(recorders: List[RecorderInput], wanted_tag: Int) -> Bool:
+    for r in range(len(recorders)):
+        if recorders[r].type_tag == wanted_tag:
             return True
     return False
 
@@ -297,12 +268,11 @@ fn _format_values_line(values: List[Float64]) -> String:
 
 fn _element_force_global_for_recorder(
     elem_index: Int,
-    elem: PythonObject,
-    nodes: PythonObject,
-    sections_by_id: List[PythonObject],
-    id_to_index: List[Int],
+    elem: ElementInput,
     ndf: Int,
     u: List[Float64],
+    nodes: List[NodeInput],
+    sections_by_id: List[SectionInput],
     fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
@@ -312,22 +282,19 @@ fn _element_force_global_for_recorder(
     elem_uniaxial_counts: List[Int],
     elem_uniaxial_state_ids: List[Int],
 ) raises -> List[Float64]:
-    var elem_type = String(elem["type"])
-    if elem_type == "elasticBeamColumn2d":
+    if elem.type_tag == 1:
         return _beam2d_element_force_global(
             elem,
             nodes,
             sections_by_id,
-            id_to_index,
             ndf,
             u,
         )
-    if elem_type == "forceBeamColumn2d":
+    if elem.type_tag == 2:
         return _force_beam_column2d_element_force_global(
             elem_index,
             elem,
             nodes,
-            id_to_index,
             ndf,
             u,
             fiber_section_defs,
@@ -339,12 +306,11 @@ fn _element_force_global_for_recorder(
             elem_uniaxial_counts,
             elem_uniaxial_state_ids,
         )
-    if elem_type == "truss":
+    if elem.type_tag == 4:
         return _truss_element_force_global(
             elem_index,
             elem,
             nodes,
-            id_to_index,
             ndf,
             uniaxial_states,
             elem_uniaxial_offsets,
@@ -358,32 +324,32 @@ fn _element_force_global_for_recorder(
     return []
 
 
-fn _node_coordinate(node: PythonObject, coord_index: Int) raises -> Float64:
+fn _node_coordinate(node: NodeInput, coord_index: Int) raises -> Float64:
     if coord_index == 1:
-        return Float64(node["x"])
+        return node.x
     if coord_index == 2:
-        return Float64(node["y"])
+        return node.y
     if coord_index == 3:
-        return Float64(node["z"])
+        return node.z
     abort("coordinate index out of range")
     return 0.0
 
 
 fn _drift_value(
-    rec: PythonObject,
-    nodes: PythonObject,
+    rec: RecorderInput,
+    nodes: List[NodeInput],
     id_to_index: List[Int],
     ndf: Int,
     u: List[Float64],
 ) raises -> Float64:
-    var i_node = Int(rec["i_node"])
-    var j_node = Int(rec["j_node"])
+    var i_node = rec.i_node
+    var j_node = rec.j_node
     if i_node >= len(id_to_index) or id_to_index[i_node] < 0:
         abort("drift i_node not found")
     if j_node >= len(id_to_index) or id_to_index[j_node] < 0:
         abort("drift j_node not found")
-    var dof = Int(rec["dof"])
-    var perp_dirn = Int(rec["perp_dirn"])
+    var dof = rec.drift_dof
+    var perp_dirn = rec.perp_dirn
     require_dof_in_range(dof, ndf, "drift recorder dof")
     if perp_dirn < 1 or perp_dirn > 3:
         abort("drift perp_dirn must be in 1..3")
@@ -391,7 +357,7 @@ fn _drift_value(
     var j_idx = id_to_index[j_node]
     var node_i = nodes[i_idx]
     var node_j = nodes[j_idx]
-    if perp_dirn == 3 and (not node_i.__contains__("z") or not node_j.__contains__("z")):
+    if perp_dirn == 3 and (not node_i.has_z or not node_j.has_z):
         abort("drift perp_dirn=3 requires z coordinates")
     var dof_i = node_dof_index(i_idx, dof, ndf)
     var dof_j = node_dof_index(j_idx, dof, ndf)

@@ -2,7 +2,7 @@ from collections import List
 from os import abort
 from python import Python, PythonObject
 
-from solver.assembly import assemble_internal_forces
+from solver.assembly import assemble_internal_forces_typed
 from solver.dof import node_dof_index, require_dof_in_range
 from solver.profile import (
     _append_event,
@@ -10,7 +10,6 @@ from solver.profile import (
     _profile_enabled,
     _write_speedscope,
 )
-from strut_io import py_len
 
 from solver.run_case.analysis.static_linear import run_static_linear
 from solver.run_case.analysis.static_nonlinear import (
@@ -70,9 +69,9 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
 
     var ndm = state.ndm
     var ndf = state.ndf
-    var nodes = state.nodes
+    var typed_nodes = state.typed_nodes.copy()
     var node_count = state.node_count
-    var elements = state.elements
+    var typed_elements = state.typed_elements.copy()
     var total_dofs = state.total_dofs
     var analysis = state.analysis
     var analysis_type = state.analysis_type
@@ -81,7 +80,9 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
     var use_banded_linear = state.use_banded_linear
     var use_banded_nonlinear = state.use_banded_nonlinear
     var has_transformation_mpc = state.has_transformation_mpc
-    var time_series = state.time_series
+    var time_series = state.time_series.copy()
+    var time_series_values = state.time_series_values.copy()
+    var time_series_times = state.time_series_times.copy()
     var ts_index = state.ts_index
     var pattern_type = state.pattern_type
     var uniform_excitation_direction = state.uniform_excitation_direction
@@ -90,11 +91,15 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
     var rayleigh_beta_k = state.rayleigh_beta_k
     var rayleigh_beta_k_init = state.rayleigh_beta_k_init
     var rayleigh_beta_k_comm = state.rayleigh_beta_k_comm
-    var recorders = state.recorders
+    var recorder_nodes_pool = state.recorder_nodes_pool.copy()
+    var recorder_elements_pool = state.recorder_elements_pool.copy()
+    var recorder_dofs_pool = state.recorder_dofs_pool.copy()
+    var recorder_modes_pool = state.recorder_modes_pool.copy()
+    var recorders = state.recorders.copy()
 
     var id_to_index = state.id_to_index.copy()
-    var sections_by_id = state.sections_by_id.copy()
-    var materials_by_id = state.materials_by_id.copy()
+    var typed_sections_by_id = state.typed_sections_by_id.copy()
+    var typed_materials_by_id = state.typed_materials_by_id.copy()
     var uniaxial_defs = state.uniaxial_defs.copy()
     var uniaxial_state_defs = state.uniaxial_state_defs.copy()
     var uniaxial_states = state.uniaxial_states.copy()
@@ -111,6 +116,9 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
     var free_index = state.free_index.copy()
     var rep_dof = state.rep_dof.copy()
     var M_total = state.M_total.copy()
+    var analysis_integrator_targets_pool = (
+        state.analysis_integrator_targets_pool.copy()
+    )
 
     var u: List[Float64] = []
     u.resize(total_dofs, 0.0)
@@ -127,10 +135,10 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
 
     if analysis_type == "static_linear":
         run_static_linear(
-            nodes,
-            elements,
-            sections_by_id,
-            materials_by_id,
+            typed_nodes,
+            typed_elements,
+            typed_sections_by_id,
+            typed_materials_by_id,
             id_to_index,
             node_count,
             ndf,
@@ -151,6 +159,8 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
             free,
             ts_index,
             time_series,
+            time_series_values,
+            time_series_times,
             do_profile,
             t0,
             events,
@@ -164,18 +174,21 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
             constrained,
         )
     elif analysis_type == "static_nonlinear":
-        var integrator = analysis.get("integrator", {"type": "LoadControl"})
-        var integrator_type = String(integrator.get("type", "LoadControl"))
+        var integrator_type = analysis.integrator_type
+        if integrator_type == "":
+            integrator_type = "LoadControl"
         if integrator_type == "LoadControl":
             run_static_nonlinear_load_control(
                 analysis,
                 steps,
                 ts_index,
                 time_series,
-                nodes,
-                elements,
-                sections_by_id,
-                materials_by_id,
+                time_series_values,
+                time_series_times,
+                typed_nodes,
+                typed_elements,
+                typed_sections_by_id,
+                typed_materials_by_id,
                 id_to_index,
                 node_count,
                 ndf,
@@ -196,6 +209,9 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
                 free,
                 free_index,
                 recorders,
+                recorder_nodes_pool,
+                recorder_elements_pool,
+                recorder_dofs_pool,
                 elem_id_to_index,
                 static_output_files,
                 static_output_buffers,
@@ -217,10 +233,11 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
                 analysis,
                 steps,
                 ts_index,
-                nodes,
-                elements,
-                sections_by_id,
-                materials_by_id,
+                analysis_integrator_targets_pool,
+                typed_nodes,
+                typed_elements,
+                typed_sections_by_id,
+                typed_materials_by_id,
                 id_to_index,
                 node_count,
                 ndf,
@@ -240,6 +257,9 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
                 constrained,
                 free,
                 recorders,
+                recorder_nodes_pool,
+                recorder_elements_pool,
+                recorder_dofs_pool,
                 elem_id_to_index,
                 static_output_files,
                 static_output_buffers,
@@ -263,6 +283,8 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
             steps,
             ts_index,
             time_series,
+            time_series_values,
+            time_series_times,
             pattern_type,
             uniform_excitation_direction,
             uniform_accel_ts_index,
@@ -270,10 +292,10 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
             rayleigh_beta_k,
             rayleigh_beta_k_init,
             rayleigh_beta_k_comm,
-            nodes,
-            elements,
-            sections_by_id,
-            materials_by_id,
+            typed_nodes,
+            typed_elements,
+            typed_sections_by_id,
+            typed_materials_by_id,
             id_to_index,
             node_count,
             ndf,
@@ -290,6 +312,9 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
             M_total,
             free,
             recorders,
+            recorder_nodes_pool,
+            recorder_elements_pool,
+            recorder_dofs_pool,
             elem_id_to_index,
             fiber_section_defs,
             fiber_section_cells,
@@ -306,6 +331,8 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
             steps,
             ts_index,
             time_series,
+            time_series_values,
+            time_series_times,
             pattern_type,
             uniform_excitation_direction,
             uniform_accel_ts_index,
@@ -313,10 +340,10 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
             rayleigh_beta_k,
             rayleigh_beta_k_init,
             rayleigh_beta_k_comm,
-            nodes,
-            elements,
-            sections_by_id,
-            materials_by_id,
+            typed_nodes,
+            typed_elements,
+            typed_sections_by_id,
+            typed_materials_by_id,
             id_to_index,
             node_count,
             ndf,
@@ -333,6 +360,9 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
             M_total,
             free,
             recorders,
+            recorder_nodes_pool,
+            recorder_elements_pool,
+            recorder_dofs_pool,
             elem_id_to_index,
             fiber_section_defs,
             fiber_section_cells,
@@ -345,12 +375,11 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
         )
     elif analysis_type == "modal_eigen":
         run_modal_eigen(
-            analysis,
             modal_num_modes,
-            nodes,
-            elements,
-            sections_by_id,
-            materials_by_id,
+            typed_nodes,
+            typed_elements,
+            typed_sections_by_id,
+            typed_materials_by_id,
             id_to_index,
             node_count,
             ndf,
@@ -372,6 +401,9 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
             has_transformation_mpc,
             rep_dof,
             recorders,
+            recorder_nodes_pool,
+            recorder_dofs_pool,
+            recorder_modes_pool,
             static_output_files,
             static_output_buffers,
         )
@@ -409,15 +441,15 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
     else:
         if has_transformation_mpc:
             _enforce_equal_dof_values(u, rep_dof, constrained)
-        var has_reaction_recorder = _has_recorder_type(recorders, "node_reaction")
+        var has_reaction_recorder = _has_recorder_type(recorders, 3)
         var F_int_reaction: List[Float64] = []
         var F_ext_reaction: List[Float64] = []
         if has_reaction_recorder:
-            F_int_reaction = assemble_internal_forces(
-                nodes,
-                elements,
-                sections_by_id,
-                materials_by_id,
+            F_int_reaction = assemble_internal_forces_typed(
+                typed_nodes,
+                typed_elements,
+                typed_sections_by_id,
+                typed_materials_by_id,
                 id_to_index,
                 node_count,
                 ndf,
@@ -429,51 +461,47 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
                 elem_uniaxial_offsets,
                 elem_uniaxial_counts,
                 elem_uniaxial_state_ids,
+                fiber_section_defs,
+                fiber_section_cells,
+                fiber_section_index_by_id,
             )
             F_ext_reaction = _scaled_forces(F_total, 1.0)
         var envelope_files: List[String] = []
         var envelope_min: List[List[Float64]] = []
         var envelope_max: List[List[Float64]] = []
         var envelope_abs: List[List[Float64]] = []
-        for r in range(py_len(recorders)):
+        for r in range(len(recorders)):
             var rec = recorders[r]
-            var rec_type = String(rec["type"])
-            if rec_type == "node_displacement":
-                var dofs = rec["dofs"]
-                var output = String(rec.get("output", "node_disp"))
-                var nodes_out = rec["nodes"]
-                for nidx in range(py_len(nodes_out)):
-                    var node_id = Int(nodes_out[nidx])
+            if rec.type_tag == 1:
+                for nidx in range(rec.node_count):
+                    var node_id = recorder_nodes_pool[rec.node_offset + nidx]
                     var i = id_to_index[node_id]
                     var line = String()
-                    for j in range(py_len(dofs)):
-                        var dof = Int(dofs[j])
+                    for j in range(rec.dof_count):
+                        var dof = recorder_dofs_pool[rec.dof_offset + j]
                         require_dof_in_range(dof, ndf, "recorder")
                         var value = u[node_dof_index(i, dof, ndf)]
                         if j > 0:
                             line += " "
                         line += String(value)
                     line += "\n"
-                    var filename = output + "_node" + String(node_id) + ".out"
+                    var filename = rec.output + "_node" + String(node_id) + ".out"
                     var file_path = out_dir.joinpath(filename)
                     file_path.write_text(PythonObject(line))
-            elif rec_type == "element_force":
-                var output = String(rec.get("output", "element_force"))
-                var elements_out = rec["elements"]
-                for eidx in range(py_len(elements_out)):
-                    var elem_id = Int(elements_out[eidx])
+            elif rec.type_tag == 2:
+                for eidx in range(rec.element_count):
+                    var elem_id = recorder_elements_pool[rec.element_offset + eidx]
                     if elem_id >= len(elem_id_to_index) or elem_id_to_index[elem_id] < 0:
                         abort("recorder element not found")
                     var elem_index = elem_id_to_index[elem_id]
-                    var elem = elements[elem_index]
+                    var elem = typed_elements[elem_index]
                     var f_elem = _element_force_global_for_recorder(
                         elem_index,
                         elem,
-                        nodes,
-                        sections_by_id,
-                        id_to_index,
                         ndf,
                         u,
+                        typed_nodes,
+                        typed_sections_by_id,
                         fiber_section_defs,
                         fiber_section_cells,
                         fiber_section_index_by_id,
@@ -484,33 +512,29 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
                         elem_uniaxial_state_ids,
                     )
                     var line = _format_values_line(f_elem)
-                    var filename = output + "_ele" + String(elem_id) + ".out"
+                    var filename = rec.output + "_ele" + String(elem_id) + ".out"
                     var file_path = out_dir.joinpath(filename)
                     file_path.write_text(PythonObject(line))
-            elif rec_type == "node_reaction":
-                var output = String(rec.get("output", "reaction"))
-                var nodes_out = rec["nodes"]
-                var dofs = rec["dofs"]
-                for nidx in range(py_len(nodes_out)):
-                    var node_id = Int(nodes_out[nidx])
+            elif rec.type_tag == 3:
+                for nidx in range(rec.node_count):
+                    var node_id = recorder_nodes_pool[rec.node_offset + nidx]
                     var i = id_to_index[node_id]
                     var values: List[Float64] = []
-                    values.resize(py_len(dofs), 0.0)
-                    for j in range(py_len(dofs)):
-                        var dof = Int(dofs[j])
+                    values.resize(rec.dof_count, 0.0)
+                    for j in range(rec.dof_count):
+                        var dof = recorder_dofs_pool[rec.dof_offset + j]
                         require_dof_in_range(dof, ndf, "recorder")
                         var idx = node_dof_index(i, dof, ndf)
                         values[j] = F_int_reaction[idx] - F_ext_reaction[idx]
-                    var filename = output + "_node" + String(node_id) + ".out"
+                    var filename = rec.output + "_node" + String(node_id) + ".out"
                     var file_path = out_dir.joinpath(filename)
                     file_path.write_text(PythonObject(_format_values_line(values)))
-            elif rec_type == "drift":
-                var output = String(rec.get("output", "drift"))
-                var i_node = Int(rec["i_node"])
-                var j_node = Int(rec["j_node"])
-                var value = _drift_value(rec, nodes, id_to_index, ndf, u)
+            elif rec.type_tag == 4:
+                var i_node = rec.i_node
+                var j_node = rec.j_node
+                var value = _drift_value(rec, typed_nodes, id_to_index, ndf, u)
                 var filename = (
-                    output
+                    rec.output
                     + "_i"
                     + String(i_node)
                     + "_j"
@@ -519,23 +543,20 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
                 )
                 var file_path = out_dir.joinpath(filename)
                 file_path.write_text(PythonObject(_format_values_line([value])))
-            elif rec_type == "envelope_element_force":
-                var output = String(rec.get("output", "envelope_element_force"))
-                var elements_out = rec["elements"]
-                for eidx in range(py_len(elements_out)):
-                    var elem_id = Int(elements_out[eidx])
+            elif rec.type_tag == 5:
+                for eidx in range(rec.element_count):
+                    var elem_id = recorder_elements_pool[rec.element_offset + eidx]
                     if elem_id >= len(elem_id_to_index) or elem_id_to_index[elem_id] < 0:
                         abort("recorder element not found")
                     var elem_index = elem_id_to_index[elem_id]
-                    var elem = elements[elem_index]
+                    var elem = typed_elements[elem_index]
                     var f_elem = _element_force_global_for_recorder(
                         elem_index,
                         elem,
-                        nodes,
-                        sections_by_id,
-                        id_to_index,
                         ndf,
                         u,
+                        typed_nodes,
+                        typed_sections_by_id,
                         fiber_section_defs,
                         fiber_section_cells,
                         fiber_section_index_by_id,
@@ -545,7 +566,7 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
                         elem_uniaxial_counts,
                         elem_uniaxial_state_ids,
                     )
-                    var filename = output + "_ele" + String(elem_id) + ".out"
+                    var filename = rec.output + "_ele" + String(elem_id) + ".out"
                     _update_envelope(
                         filename,
                         f_elem,

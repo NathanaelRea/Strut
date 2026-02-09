@@ -5,8 +5,21 @@ from python import PythonObject
 
 from materials import UniMaterialDef, UniMaterialState, uni_mat_is_elastic
 from solver.dof import node_dof_index, require_dof_in_range
-from solver.reorder import build_node_adjacency, rcm_order
-from solver.time_series import find_time_series, parse_time_series
+from solver.reorder import build_node_adjacency_typed, rcm_order
+from solver.run_case.input_types import (
+    AnalysisInput,
+    ElementInput,
+    MaterialInput,
+    NodeInput,
+    RecorderInput,
+    SectionInput,
+    parse_case_input,
+)
+from solver.time_series import (
+    TimeSeriesInput,
+    find_time_series_input,
+    parse_time_series_inputs,
+)
 from sections import FiberCell, FiberSection2dDef, append_fiber_section2d_from_json
 from strut_io import py_len
 
@@ -14,12 +27,12 @@ struct RunCaseState(Movable):
     var ndm: Int
     var ndf: Int
 
-    var nodes: PythonObject
+    var typed_nodes: List[NodeInput]
     var node_count: Int
     var id_to_index: List[Int]
 
-    var sections_by_id: List[PythonObject]
-    var materials_by_id: List[PythonObject]
+    var typed_sections_by_id: List[SectionInput]
+    var typed_materials_by_id: List[MaterialInput]
 
     var uniaxial_defs: List[UniMaterialDef]
     var uniaxial_state_defs: List[Int]
@@ -29,7 +42,7 @@ struct RunCaseState(Movable):
     var fiber_section_cells: List[FiberCell]
     var fiber_section_index_by_id: List[Int]
 
-    var elements: PythonObject
+    var typed_elements: List[ElementInput]
     var elem_count: Int
     var elem_id_to_index: List[Int]
     var elem_uniaxial_offsets: List[Int]
@@ -40,7 +53,7 @@ struct RunCaseState(Movable):
     var F_total: List[Float64]
     var constrained: List[Bool]
 
-    var analysis: PythonObject
+    var analysis: AnalysisInput
     var analysis_type: String
     var steps: Int
     var modal_num_modes: Int
@@ -55,7 +68,10 @@ struct RunCaseState(Movable):
     var active_index_by_dof: List[Int]
 
     var M_total: List[Float64]
-    var time_series: PythonObject
+    var analysis_integrator_targets_pool: List[Float64]
+    var time_series: List[TimeSeriesInput]
+    var time_series_values: List[Float64]
+    var time_series_times: List[Float64]
     var ts_index: Int
     var pattern_type: String
     var uniform_excitation_direction: Int
@@ -64,23 +80,27 @@ struct RunCaseState(Movable):
     var rayleigh_beta_k: Float64
     var rayleigh_beta_k_init: Float64
     var rayleigh_beta_k_comm: Float64
-    var recorders: PythonObject
+    var recorder_nodes_pool: List[Int]
+    var recorder_elements_pool: List[Int]
+    var recorder_dofs_pool: List[Int]
+    var recorder_modes_pool: List[Int]
+    var recorders: List[RecorderInput]
 
     fn __init__(out self):
         self.ndm = 0
         self.ndf = 0
-        self.nodes = None
+        self.typed_nodes = []
         self.node_count = 0
         self.id_to_index = []
-        self.sections_by_id = []
-        self.materials_by_id = []
+        self.typed_sections_by_id = []
+        self.typed_materials_by_id = []
         self.uniaxial_defs = []
         self.uniaxial_state_defs = []
         self.uniaxial_states = []
         self.fiber_section_defs = []
         self.fiber_section_cells = []
         self.fiber_section_index_by_id = []
-        self.elements = None
+        self.typed_elements = []
         self.elem_count = 0
         self.elem_id_to_index = []
         self.elem_uniaxial_offsets = []
@@ -89,7 +109,7 @@ struct RunCaseState(Movable):
         self.total_dofs = 0
         self.F_total = []
         self.constrained = []
-        self.analysis = None
+        self.analysis = AnalysisInput()
         self.analysis_type = ""
         self.steps = 0
         self.modal_num_modes = 0
@@ -102,7 +122,10 @@ struct RunCaseState(Movable):
         self.rep_dof = []
         self.active_index_by_dof = []
         self.M_total = []
-        self.time_series = None
+        self.analysis_integrator_targets_pool = []
+        self.time_series = []
+        self.time_series_values = []
+        self.time_series_times = []
         self.ts_index = -1
         self.pattern_type = "Plain"
         self.uniform_excitation_direction = 0
@@ -111,31 +134,113 @@ struct RunCaseState(Movable):
         self.rayleigh_beta_k = 0.0
         self.rayleigh_beta_k_init = 0.0
         self.rayleigh_beta_k_comm = 0.0
-        self.recorders = None
+        self.recorder_nodes_pool = []
+        self.recorder_elements_pool = []
+        self.recorder_dofs_pool = []
+        self.recorder_modes_pool = []
+        self.recorders = []
+
+
+fn _set_elem_dof(mut elem: ElementInput, idx: Int, value: Int):
+    if idx == 0:
+        elem.dof_1 = value
+    elif idx == 1:
+        elem.dof_2 = value
+    elif idx == 2:
+        elem.dof_3 = value
+    elif idx == 3:
+        elem.dof_4 = value
+    elif idx == 4:
+        elem.dof_5 = value
+    elif idx == 5:
+        elem.dof_6 = value
+    elif idx == 6:
+        elem.dof_7 = value
+    elif idx == 7:
+        elem.dof_8 = value
+    elif idx == 8:
+        elem.dof_9 = value
+    elif idx == 9:
+        elem.dof_10 = value
+    elif idx == 10:
+        elem.dof_11 = value
+    elif idx == 11:
+        elem.dof_12 = value
+    elif idx == 12:
+        elem.dof_13 = value
+    elif idx == 13:
+        elem.dof_14 = value
+    elif idx == 14:
+        elem.dof_15 = value
+    elif idx == 15:
+        elem.dof_16 = value
+    elif idx == 16:
+        elem.dof_17 = value
+    elif idx == 17:
+        elem.dof_18 = value
+    elif idx == 18:
+        elem.dof_19 = value
+    elif idx == 19:
+        elem.dof_20 = value
+    elif idx == 20:
+        elem.dof_21 = value
+    elif idx == 21:
+        elem.dof_22 = value
+    elif idx == 22:
+        elem.dof_23 = value
+    else:
+        elem.dof_24 = value
+
+
+fn _elem_material(elem: ElementInput, idx: Int) -> Int:
+    if idx == 0:
+        return elem.material_1
+    if idx == 1:
+        return elem.material_2
+    if idx == 2:
+        return elem.material_3
+    if idx == 3:
+        return elem.material_4
+    if idx == 4:
+        return elem.material_5
+    return elem.material_6
+
+
+fn _elem_dir(elem: ElementInput, idx: Int) -> Int:
+    if idx == 0:
+        return elem.dir_1
+    if idx == 1:
+        return elem.dir_2
+    if idx == 2:
+        return elem.dir_3
+    if idx == 3:
+        return elem.dir_4
+    if idx == 4:
+        return elem.dir_5
+    return elem.dir_6
 
 
 fn load_case_state(data: PythonObject) raises -> RunCaseState:
     var state = RunCaseState()
+    var input = parse_case_input(data)
 
-    var model = data["model"]
-    var ndm = Int(model["ndm"])
-    var ndf = Int(model["ndf"])
+    var ndm = input.model.ndm
+    var ndf = input.model.ndf
     var is_2d = ndm == 2 and (ndf == 2 or ndf == 3)
     var is_3d_truss = ndm == 3 and ndf == 3
     var is_3d_shell = ndm == 3 and ndf == 6
     if not is_2d and not is_3d_truss and not is_3d_shell:
         abort("only ndm=2 ndf=2/3 and ndm=3 ndf=3/6 supported")
 
-    var nodes = data["nodes"]
-    var node_count = py_len(nodes)
+    var node_count = len(input.nodes)
     var node_ids: List[Int] = []
     node_ids.resize(node_count, 0)
 
     for i in range(node_count):
-        var node = nodes[i]
-        if ndm == 3 and not node.__contains__("z"):
+        var node = input.nodes[i]
+        if ndm == 3 and not node.has_z:
             abort("ndm=3 requires node z coordinate")
-        node_ids[i] = Int(node["id"])
+        node_ids[i] = node.id
 
     var id_to_index: List[Int] = []
     id_to_index.resize(10000, -1)
@@ -146,46 +251,39 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
         id_to_index[nid] = i
 
     var sections = data.get("sections", [])
-    var materials = data.get("materials", [])
-    var sections_by_id: List[PythonObject] = []
-    sections_by_id.resize(0, None)
-    for i in range(py_len(sections)):
-        var sec = sections[i]
-        var sid = Int(sec["id"])
-        if sid >= len(sections_by_id):
-            sections_by_id.resize(sid + 1, None)
-        sections_by_id[sid] = sec
-    var materials_by_id: List[PythonObject] = []
-    materials_by_id.resize(0, None)
-    for i in range(py_len(materials)):
-        var mat = materials[i]
-        var mid = Int(mat["id"])
-        if mid >= len(materials_by_id):
-            materials_by_id.resize(mid + 1, None)
-        materials_by_id[mid] = mat
+    var typed_sections_by_id: List[SectionInput] = []
+    for i in range(len(input.sections)):
+        var sid = input.sections[i].id
+        if sid >= len(typed_sections_by_id):
+            typed_sections_by_id.resize(sid + 1, SectionInput())
+        typed_sections_by_id[sid] = input.sections[i]
+    var typed_materials_by_id: List[MaterialInput] = []
+    for i in range(len(input.materials)):
+        var mid = input.materials[i].id
+        if mid >= len(typed_materials_by_id):
+            typed_materials_by_id.resize(mid + 1, MaterialInput())
+        typed_materials_by_id[mid] = input.materials[i]
 
     var uniaxial_defs: List[UniMaterialDef] = []
     var uniaxial_def_by_id: List[Int] = []
-    uniaxial_def_by_id.resize(len(materials_by_id), -1)
-    for i in range(py_len(materials)):
-        var mat = materials[i]
-        var mid = Int(mat["id"])
+    uniaxial_def_by_id.resize(len(typed_materials_by_id), -1)
+    for i in range(len(input.materials)):
+        var mat = input.materials[i]
+        var mid = mat.id
         if mid >= len(uniaxial_def_by_id):
             uniaxial_def_by_id.resize(mid + 1, -1)
-        var mat_type = String(mat["type"])
+        var mat_type = mat.type
         if mat_type == "Elastic":
-            var params = mat["params"]
-            var E = Float64(params["E"])
+            var E = mat.E
             if E <= 0.0:
                 abort("Elastic material E must be > 0")
             var mat_def = UniMaterialDef(0, E, 0.0, 0.0, 0.0)
             uniaxial_def_by_id[mid] = len(uniaxial_defs)
             uniaxial_defs.append(mat_def)
         elif mat_type == "Steel01":
-            var params = mat["params"]
-            var Fy = Float64(params["Fy"])
-            var E0 = Float64(params["E0"])
-            var b = Float64(params["b"])
+            var Fy = mat.Fy
+            var E0 = mat.E0
+            var b = mat.b
             if Fy <= 0.0:
                 abort("Steel01 Fy must be > 0")
             if E0 <= 0.0:
@@ -196,11 +294,10 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
             uniaxial_def_by_id[mid] = len(uniaxial_defs)
             uniaxial_defs.append(mat_def)
         elif mat_type == "Concrete01":
-            var params = mat["params"]
-            var fpc = Float64(params["fpc"])
-            var epsc0 = Float64(params["epsc0"])
-            var fpcu = Float64(params["fpcu"])
-            var epscu = Float64(params["epscu"])
+            var fpc = mat.fpc
+            var epsc0 = mat.epsc0
+            var fpcu = mat.fpcu
+            var epscu = mat.epscu
             if fpc > 0.0:
                 fpc = -fpc
             if epsc0 > 0.0:
@@ -223,10 +320,9 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
             uniaxial_def_by_id[mid] = len(uniaxial_defs)
             uniaxial_defs.append(mat_def)
         elif mat_type == "Steel02":
-            var params = mat["params"]
-            var Fy = Float64(params["Fy"])
-            var E0 = Float64(params["E0"])
-            var b = Float64(params["b"])
+            var Fy = mat.Fy
+            var E0 = mat.E0
+            var b = mat.b
             if Fy <= 0.0:
                 abort("Steel02 Fy must be > 0")
             if E0 <= 0.0:
@@ -234,14 +330,14 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
             if b < 0.0 or b >= 1.0:
                 abort("Steel02 b must be in [0, 1)")
 
-            var has_r0 = params.__contains__("R0")
-            var has_cr1 = params.__contains__("cR1")
-            var has_cr2 = params.__contains__("cR2")
-            var has_a1 = params.__contains__("a1")
-            var has_a2 = params.__contains__("a2")
-            var has_a3 = params.__contains__("a3")
-            var has_a4 = params.__contains__("a4")
-            var has_siginit = params.__contains__("sigInit")
+            var has_r0 = mat.has_r0
+            var has_cr1 = mat.has_cr1
+            var has_cr2 = mat.has_cr2
+            var has_a1 = mat.has_a1
+            var has_a2 = mat.has_a2
+            var has_a3 = mat.has_a3
+            var has_a4 = mat.has_a4
+            var has_siginit = mat.has_siginit
 
             if has_r0 != has_cr1 or has_r0 != has_cr2:
                 abort("Steel02 requires R0, cR1, cR2 together")
@@ -256,9 +352,9 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
             var cR1 = 0.925
             var cR2 = 0.15
             if has_r0:
-                R0 = Float64(params["R0"])
-                cR1 = Float64(params["cR1"])
-                cR2 = Float64(params["cR2"])
+                R0 = mat.R0
+                cR1 = mat.cR1
+                cR2 = mat.cR2
             if R0 <= 0.0:
                 abort("Steel02 R0 must be > 0")
             if cR2 <= 0.0:
@@ -269,10 +365,10 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
             var a3 = 0.0
             var a4 = 1.0
             if has_a1:
-                a1 = Float64(params["a1"])
-                a2 = Float64(params["a2"])
-                a3 = Float64(params["a3"])
-                a4 = Float64(params["a4"])
+                a1 = mat.a1
+                a2 = mat.a2
+                a3 = mat.a3
+                a4 = mat.a4
             if a2 <= 0.0:
                 abort("Steel02 a2 must be > 0")
             if a4 <= 0.0:
@@ -280,7 +376,7 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
 
             var sig_init = 0.0
             if has_siginit:
-                sig_init = Float64(params["sigInit"])
+                sig_init = mat.sigInit
 
             var mat_def = UniMaterialDef(
                 3, Fy, E0, b, R0, cR1, cR2, a1, a2, a3, a4, sig_init
@@ -288,11 +384,10 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
             uniaxial_def_by_id[mid] = len(uniaxial_defs)
             uniaxial_defs.append(mat_def)
         elif mat_type == "Concrete02":
-            var params = mat["params"]
-            var fpc = Float64(params["fpc"])
-            var epsc0 = Float64(params["epsc0"])
-            var fpcu = Float64(params["fpcu"])
-            var epscu = Float64(params["epscu"])
+            var fpc = mat.fpc
+            var epsc0 = mat.epsc0
+            var fpcu = mat.fpcu
+            var epscu = mat.epscu
             if fpc > 0.0:
                 fpc = -fpc
             if epsc0 > 0.0:
@@ -312,9 +407,9 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
             if fpcu > 0.0 or fpcu < fpc:
                 abort("Concrete02 fpcu must be between fpc and 0")
 
-            var has_rat = params.__contains__("rat")
-            var has_ft = params.__contains__("ft")
-            var has_ets = params.__contains__("Ets")
+            var has_rat = mat.has_rat
+            var has_ft = mat.has_ft
+            var has_ets = mat.has_ets
             if has_rat != has_ft or has_rat != has_ets:
                 abort("Concrete02 requires rat, ft, Ets together")
 
@@ -324,9 +419,9 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
                 ft = -ft
             var Ets = 0.1 * fpc / epsc0
             if has_rat:
-                rat = Float64(params["rat"])
-                ft = Float64(params["ft"])
-                Ets = Float64(params["Ets"])
+                rat = mat.rat
+                ft = mat.ft
+                Ets = mat.Ets
 
             if rat == 1.0:
                 abort("Concrete02 rat must not be 1")
@@ -348,7 +443,7 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
     var fiber_section_defs: List[FiberSection2dDef] = []
     var fiber_section_cells: List[FiberCell] = []
     var fiber_section_index_by_id: List[Int] = []
-    fiber_section_index_by_id.resize(len(sections_by_id), -1)
+    fiber_section_index_by_id.resize(len(typed_sections_by_id), -1)
     for i in range(py_len(sections)):
         var sec = sections[i]
         var sec_type = String(sec["type"])
@@ -365,15 +460,14 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
         )
         fiber_section_index_by_id[sid] = len(fiber_section_defs) - 1
 
-    var elements = data["elements"]
-    var elem_count = py_len(elements)
+    var elem_count = len(input.elements)
+    var typed_elements = input.elements.copy()
     var elem_ids: List[Int] = []
     elem_ids.resize(elem_count, 0)
     var elem_id_to_index: List[Int] = []
     elem_id_to_index.resize(10000, -1)
     for i in range(elem_count):
-        var elem = elements[i]
-        var eid = Int(elem["id"])
+        var eid = typed_elements[i].id
         elem_ids[i] = eid
         if eid >= len(elem_id_to_index):
             elem_id_to_index.resize(eid + 1, -1)
@@ -381,35 +475,173 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
 
     var has_force_beam_column2d = False
     for i in range(elem_count):
-        var elem = elements[i]
-        var elem_type = String(elem["type"])
-        if elem_type == "elasticBeamColumn2d" or elem_type == "elasticBeamColumn3d":
-            var sec_id = Int(elem["section"])
-            if sec_id >= 0 and sec_id < len(fiber_section_index_by_id):
-                if fiber_section_index_by_id[sec_id] >= 0:
-                    abort(
-                        elem_type + " with FiberSection2d requires forceBeamColumn2d"
-                    )
-            continue
-        if elem_type != "forceBeamColumn2d":
-            continue
-        has_force_beam_column2d = True
-        if ndf != 3:
-            abort("forceBeamColumn2d requires ndf=3")
-        var geom = String(elem.get("geomTransf", "Linear"))
-        if geom != "Linear" and geom != "PDelta":
-            abort("forceBeamColumn2d supports geomTransf Linear or PDelta")
-        var integration = String(elem.get("integration", "Lobatto"))
-        if integration != "Lobatto":
-            abort("forceBeamColumn2d supports Lobatto integration only")
-        var num_int_pts = Int(elem.get("num_int_pts", 3))
-        if num_int_pts != 3 and num_int_pts != 5:
-            abort("forceBeamColumn2d supports num_int_pts=3 or 5")
-        var sec_id = Int(elem["section"])
-        if sec_id < 0 or sec_id >= len(fiber_section_index_by_id):
-            abort("forceBeamColumn2d section not found")
-        if fiber_section_index_by_id[sec_id] < 0:
-            abort("forceBeamColumn2d requires FiberSection2d")
+        var elem = typed_elements[i]
+        if elem.type_tag == 0:
+            abort("unsupported element type: " + elem.type)
+
+        if elem.node_1 >= len(id_to_index) or id_to_index[elem.node_1] < 0:
+            abort("element node not found")
+        if elem.node_2 >= len(id_to_index) or id_to_index[elem.node_2] < 0:
+            abort("element node not found")
+        elem.node_index_1 = id_to_index[elem.node_1]
+        elem.node_index_2 = id_to_index[elem.node_2]
+        if elem.node_count >= 3:
+            if elem.node_3 >= len(id_to_index) or id_to_index[elem.node_3] < 0:
+                abort("element node not found")
+            elem.node_index_3 = id_to_index[elem.node_3]
+        if elem.node_count >= 4:
+            if elem.node_4 >= len(id_to_index) or id_to_index[elem.node_4] < 0:
+                abort("element node not found")
+            elem.node_index_4 = id_to_index[elem.node_4]
+
+        if elem.type_tag == 1:
+            if ndm != 2 or ndf != 3:
+                abort("elasticBeamColumn2d requires ndm=2, ndf=3")
+            if elem.node_count != 2:
+                abort("elasticBeamColumn2d requires 2 nodes")
+            if elem.section < 0 or elem.section >= len(typed_sections_by_id):
+                abort("section not found")
+            var sec = typed_sections_by_id[elem.section]
+            if sec.id < 0:
+                abort("section not found")
+            if sec.type != "ElasticSection2d":
+                abort("elasticBeamColumn2d requires ElasticSection2d")
+            if elem.geom_tag < 1 or elem.geom_tag > 3:
+                abort("unsupported geomTransf: " + elem.geom_transf)
+            if elem.section < len(fiber_section_index_by_id):
+                if fiber_section_index_by_id[elem.section] >= 0:
+                    abort("elasticBeamColumn2d with FiberSection2d requires forceBeamColumn2d")
+            elem.dof_count = 6
+            _set_elem_dof(elem, 0, node_dof_index(elem.node_index_1, 1, ndf))
+            _set_elem_dof(elem, 1, node_dof_index(elem.node_index_1, 2, ndf))
+            _set_elem_dof(elem, 2, node_dof_index(elem.node_index_1, 3, ndf))
+            _set_elem_dof(elem, 3, node_dof_index(elem.node_index_2, 1, ndf))
+            _set_elem_dof(elem, 4, node_dof_index(elem.node_index_2, 2, ndf))
+            _set_elem_dof(elem, 5, node_dof_index(elem.node_index_2, 3, ndf))
+        elif elem.type_tag == 2:
+            has_force_beam_column2d = True
+            if ndm != 2 or ndf != 3:
+                abort("forceBeamColumn2d requires ndm=2, ndf=3")
+            if elem.node_count != 2:
+                abort("forceBeamColumn2d requires 2 nodes")
+            if elem.geom_tag != 1 and elem.geom_tag != 2:
+                abort("forceBeamColumn2d supports geomTransf Linear or PDelta")
+            if elem.integration != "Lobatto":
+                abort("forceBeamColumn2d supports Lobatto integration only")
+            if elem.num_int_pts != 3 and elem.num_int_pts != 5:
+                abort("forceBeamColumn2d supports num_int_pts=3 or 5")
+            if elem.section < 0 or elem.section >= len(fiber_section_index_by_id):
+                abort("forceBeamColumn2d section not found")
+            if fiber_section_index_by_id[elem.section] < 0:
+                abort("forceBeamColumn2d requires FiberSection2d")
+            elem.dof_count = 6
+            _set_elem_dof(elem, 0, node_dof_index(elem.node_index_1, 1, ndf))
+            _set_elem_dof(elem, 1, node_dof_index(elem.node_index_1, 2, ndf))
+            _set_elem_dof(elem, 2, node_dof_index(elem.node_index_1, 3, ndf))
+            _set_elem_dof(elem, 3, node_dof_index(elem.node_index_2, 1, ndf))
+            _set_elem_dof(elem, 4, node_dof_index(elem.node_index_2, 2, ndf))
+            _set_elem_dof(elem, 5, node_dof_index(elem.node_index_2, 3, ndf))
+        elif elem.type_tag == 3:
+            if ndm != 3 or ndf != 6:
+                abort("elasticBeamColumn3d requires ndm=3, ndf=6")
+            if elem.node_count != 2:
+                abort("elasticBeamColumn3d requires 2 nodes")
+            if elem.section < 0 or elem.section >= len(typed_sections_by_id):
+                abort("section not found")
+            var sec = typed_sections_by_id[elem.section]
+            if sec.id < 0:
+                abort("section not found")
+            if sec.type != "ElasticSection3d":
+                abort("elasticBeamColumn3d requires ElasticSection3d")
+            if elem.section < len(fiber_section_index_by_id):
+                if fiber_section_index_by_id[elem.section] >= 0:
+                    abort("elasticBeamColumn3d with FiberSection2d requires forceBeamColumn2d")
+            elem.dof_count = 12
+            for d in range(6):
+                _set_elem_dof(elem, d, node_dof_index(elem.node_index_1, d + 1, ndf))
+                _set_elem_dof(elem, d + 6, node_dof_index(elem.node_index_2, d + 1, ndf))
+        elif elem.type_tag == 4:
+            if elem.node_count != 2:
+                abort("truss requires 2 nodes")
+            if ndf != 2 and ndf != 3:
+                abort("truss requires ndf=2 or ndf=3")
+            if elem.area <= 0.0:
+                abort("truss requires area > 0")
+            if ndf == 2:
+                elem.dof_count = 4
+                _set_elem_dof(elem, 0, node_dof_index(elem.node_index_1, 1, ndf))
+                _set_elem_dof(elem, 1, node_dof_index(elem.node_index_1, 2, ndf))
+                _set_elem_dof(elem, 2, node_dof_index(elem.node_index_2, 1, ndf))
+                _set_elem_dof(elem, 3, node_dof_index(elem.node_index_2, 2, ndf))
+            else:
+                elem.dof_count = 6
+                _set_elem_dof(elem, 0, node_dof_index(elem.node_index_1, 1, ndf))
+                _set_elem_dof(elem, 1, node_dof_index(elem.node_index_1, 2, ndf))
+                _set_elem_dof(elem, 2, node_dof_index(elem.node_index_1, 3, ndf))
+                _set_elem_dof(elem, 3, node_dof_index(elem.node_index_2, 1, ndf))
+                _set_elem_dof(elem, 4, node_dof_index(elem.node_index_2, 2, ndf))
+                _set_elem_dof(elem, 5, node_dof_index(elem.node_index_2, 3, ndf))
+        elif elem.type_tag == 5:
+            if ndf != 2:
+                abort("zeroLength/twoNodeLink requires ndf=2")
+            if elem.node_count != 2:
+                abort("zeroLength/twoNodeLink requires 2 nodes")
+            if elem.material_count != elem.dir_count:
+                abort("zeroLength/twoNodeLink materials/dirs mismatch")
+            for d in range(elem.dir_count):
+                var dir = _elem_dir(elem, d)
+                if dir != 1 and dir != 2:
+                    abort("unsupported link dir")
+            elem.dof_count = 4
+            _set_elem_dof(elem, 0, node_dof_index(elem.node_index_1, 1, ndf))
+            _set_elem_dof(elem, 1, node_dof_index(elem.node_index_1, 2, ndf))
+            _set_elem_dof(elem, 2, node_dof_index(elem.node_index_2, 1, ndf))
+            _set_elem_dof(elem, 3, node_dof_index(elem.node_index_2, 2, ndf))
+        elif elem.type_tag == 6:
+            if ndm != 2 or ndf != 2:
+                abort("fourNodeQuad requires ndm=2, ndf=2")
+            if elem.node_count != 4:
+                abort("fourNodeQuad requires 4 nodes")
+            if elem.formulation != "PlaneStress":
+                abort("fourNodeQuad only supports PlaneStress formulation")
+            if elem.material < 0 or elem.material >= len(typed_materials_by_id):
+                abort("material not found")
+            var mat = typed_materials_by_id[elem.material]
+            if mat.id < 0:
+                abort("material not found")
+            if mat.type != "ElasticIsotropic":
+                abort("fourNodeQuad requires ElasticIsotropic material")
+            if elem.thickness <= 0.0:
+                abort("fourNodeQuad requires thickness > 0")
+            elem.dof_count = 8
+            _set_elem_dof(elem, 0, node_dof_index(elem.node_index_1, 1, ndf))
+            _set_elem_dof(elem, 1, node_dof_index(elem.node_index_1, 2, ndf))
+            _set_elem_dof(elem, 2, node_dof_index(elem.node_index_2, 1, ndf))
+            _set_elem_dof(elem, 3, node_dof_index(elem.node_index_2, 2, ndf))
+            _set_elem_dof(elem, 4, node_dof_index(elem.node_index_3, 1, ndf))
+            _set_elem_dof(elem, 5, node_dof_index(elem.node_index_3, 2, ndf))
+            _set_elem_dof(elem, 6, node_dof_index(elem.node_index_4, 1, ndf))
+            _set_elem_dof(elem, 7, node_dof_index(elem.node_index_4, 2, ndf))
+        else:
+            if ndm != 3 or ndf != 6:
+                abort("shell requires ndm=3, ndf=6")
+            if elem.node_count != 4:
+                abort("shell requires 4 nodes")
+            if elem.section < 0 or elem.section >= len(typed_sections_by_id):
+                abort("section not found")
+            var sec = typed_sections_by_id[elem.section]
+            if sec.id < 0:
+                abort("section not found")
+            if sec.type != "ElasticMembranePlateSection":
+                abort("shell requires ElasticMembranePlateSection")
+            elem.dof_count = 24
+            for d in range(6):
+                _set_elem_dof(elem, d, node_dof_index(elem.node_index_1, d + 1, ndf))
+                _set_elem_dof(elem, d + 6, node_dof_index(elem.node_index_2, d + 1, ndf))
+                _set_elem_dof(elem, d + 12, node_dof_index(elem.node_index_3, d + 1, ndf))
+                _set_elem_dof(elem, d + 18, node_dof_index(elem.node_index_4, d + 1, ndf))
+
+        typed_elements[i] = elem
 
     var uniaxial_states: List[UniMaterialState] = []
     var uniaxial_state_defs: List[Int] = []
@@ -421,10 +653,9 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
     var used_nonelastic_uniaxial = False
     var force_beam_has_nonelastic = False
     for e in range(elem_count):
-        var elem = elements[e]
-        var elem_type = String(elem["type"])
-        if elem_type == "truss":
-            var mat_id = Int(elem["material"])
+        var elem = typed_elements[e]
+        if elem.type_tag == 4:
+            var mat_id = elem.material
             if mat_id >= len(uniaxial_def_by_id) or uniaxial_def_by_id[mat_id] < 0:
                 abort("truss requires uniaxial material")
             var def_index = uniaxial_def_by_id[mat_id]
@@ -437,12 +668,11 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
             elem_uniaxial_state_ids.append(state_index)
             if not uni_mat_is_elastic(mat_def):
                 used_nonelastic_uniaxial = True
-        elif elem_type == "zeroLength" or elem_type == "twoNodeLink":
-            var elem_mats = elem["materials"]
+        elif elem.type_tag == 5:
             elem_uniaxial_offsets[e] = len(elem_uniaxial_state_ids)
-            elem_uniaxial_counts[e] = py_len(elem_mats)
-            for m in range(py_len(elem_mats)):
-                var mat_id = Int(elem_mats[m])
+            elem_uniaxial_counts[e] = elem.material_count
+            for m in range(elem.material_count):
+                var mat_id = _elem_material(elem, m)
                 if mat_id >= len(uniaxial_def_by_id) or uniaxial_def_by_id[mat_id] < 0:
                     abort("zeroLength/twoNodeLink requires uniaxial material")
                 var def_index = uniaxial_def_by_id[mat_id]
@@ -453,13 +683,13 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
                 elem_uniaxial_state_ids.append(state_index)
                 if not uni_mat_is_elastic(mat_def):
                     used_nonelastic_uniaxial = True
-        elif elem_type == "forceBeamColumn2d":
-            var sec_id = Int(elem["section"])
+        elif elem.type_tag == 2:
+            var sec_id = elem.section
             var sec_index = fiber_section_index_by_id[sec_id]
             if sec_index < 0 or sec_index >= len(fiber_section_defs):
                 abort("forceBeamColumn2d requires FiberSection2d")
             var sec_def = fiber_section_defs[sec_index]
-            var num_int_pts = Int(elem.get("num_int_pts", 3))
+            var num_int_pts = elem.num_int_pts
             var state_count = num_int_pts * sec_def.fiber_count
             elem_uniaxial_offsets[e] = len(elem_uniaxial_state_ids)
             elem_uniaxial_counts[e] = state_count
@@ -485,33 +715,29 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
     var F_total: List[Float64] = []
     F_total.resize(total_dofs, 0.0)
 
-    var element_loads = data.get("element_loads", [])
-    for i in range(py_len(element_loads)):
-        var load = element_loads[i]
-        var elem_id = Int(load["element"])
+    for i in range(len(input.element_loads)):
+        var load = input.element_loads[i]
+        var elem_id = load.element
         if elem_id >= len(elem_id_to_index) or elem_id_to_index[elem_id] < 0:
             abort("element load refers to unknown element")
-        var elem = elements[elem_id_to_index[elem_id]]
-        var elem_type = String(elem["type"])
-        var load_type = String(load["type"])
+        var elem = typed_elements[elem_id_to_index[elem_id]]
+        var elem_type = elem.type
+        var load_type = load.type
         if load_type == "beamUniform":
             if elem_type != "elasticBeamColumn2d":
                 abort("beamUniform requires elasticBeamColumn2d")
             if ndf != 3:
                 abort("beamUniform requires ndf=3")
-            var n1 = Int(elem["nodes"][0])
-            var n2 = Int(elem["nodes"][1])
-            var i1 = id_to_index[n1]
-            var i2 = id_to_index[n2]
-            var node1 = nodes[i1]
-            var node2 = nodes[i2]
-            var w = Float64(load["w"])
+            var i1 = elem.node_index_1
+            var i2 = elem.node_index_2
+            var node1 = input.nodes[i1]
+            var node2 = input.nodes[i2]
             var f_global = beam_uniform_load_global(
-                Float64(node1["x"]),
-                Float64(node1["y"]),
-                Float64(node2["x"]),
-                Float64(node2["y"]),
-                w,
+                node1.x,
+                node1.y,
+                node2.x,
+                node2.y,
+                load.w,
             )
             var dof_map = [
                 node_dof_index(i1, 1, ndf),
@@ -526,53 +752,74 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
         else:
             abort("unsupported element load type")
 
-    var loads = data.get("loads", [])
-    for i in range(py_len(loads)):
-        var load = loads[i]
-        var node_id = Int(load["node"])
-        var dof = Int(load["dof"])
+    for i in range(len(input.loads)):
+        var load = input.loads[i]
+        var node_id = load.node
+        var dof = load.dof
         require_dof_in_range(dof, ndf, "load")
         var idx = node_dof_index(id_to_index[node_id], dof, ndf)
-        F_total[idx] += Float64(load["value"])
+        F_total[idx] += load.value
 
     var M_total: List[Float64] = []
     M_total.resize(total_dofs, 0.0)
-    var masses = data.get("masses", [])
-    for i in range(py_len(masses)):
-        var mass = masses[i]
-        var node_id = Int(mass["node"])
-        var dof = Int(mass["dof"])
+    for i in range(len(input.masses)):
+        var mass = input.masses[i]
+        var node_id = mass.node
+        var dof = mass.dof
         require_dof_in_range(dof, ndf, "mass")
         var idx = node_dof_index(id_to_index[node_id], dof, ndf)
-        M_total[idx] += Float64(mass["value"])
+        M_total[idx] += mass.value
 
     var constrained: List[Bool] = []
     constrained.resize(total_dofs, False)
     for i in range(node_count):
-        var node = nodes[i]
-        if not node.__contains__("constraints"):
-            continue
-        var constraints = node["constraints"]
-        for j in range(py_len(constraints)):
-            var dof = Int(constraints[j])
-            require_dof_in_range(dof, ndf, "constraint")
-            var idx = node_dof_index(i, dof, ndf)
-            constrained[idx] = True
+        var node = input.nodes[i]
+        for j in range(node.constraint_count):
+            if j == 0:
+                var dof = node.constraint_1
+                require_dof_in_range(dof, ndf, "constraint")
+                var idx = node_dof_index(i, dof, ndf)
+                constrained[idx] = True
+            elif j == 1:
+                var dof = node.constraint_2
+                require_dof_in_range(dof, ndf, "constraint")
+                var idx = node_dof_index(i, dof, ndf)
+                constrained[idx] = True
+            elif j == 2:
+                var dof = node.constraint_3
+                require_dof_in_range(dof, ndf, "constraint")
+                var idx = node_dof_index(i, dof, ndf)
+                constrained[idx] = True
+            elif j == 3:
+                var dof = node.constraint_4
+                require_dof_in_range(dof, ndf, "constraint")
+                var idx = node_dof_index(i, dof, ndf)
+                constrained[idx] = True
+            elif j == 4:
+                var dof = node.constraint_5
+                require_dof_in_range(dof, ndf, "constraint")
+                var idx = node_dof_index(i, dof, ndf)
+                constrained[idx] = True
+            else:
+                var dof = node.constraint_6
+                require_dof_in_range(dof, ndf, "constraint")
+                var idx = node_dof_index(i, dof, ndf)
+                constrained[idx] = True
 
-    var analysis = data.get("analysis", {"type": "static_linear", "steps": 1})
-    var analysis_type = String(analysis.get("type", "static_linear"))
-    var constraints_handler = String(analysis.get("constraints", "Plain"))
+    var analysis_input = input.analysis
+    var analysis_type = analysis_input.type
+    var constraints_handler = analysis_input.constraints
     if constraints_handler != "Plain" and constraints_handler != "Transformation":
         abort("unsupported constraints handler: " + constraints_handler)
-    var steps = Int(analysis.get("steps", 1))
+    var steps = analysis_input.steps
     var modal_num_modes = 0
     if analysis_type == "modal_eigen":
-        modal_num_modes = Int(analysis.get("num_modes", 0))
+        modal_num_modes = analysis_input.num_modes
         if modal_num_modes < 1:
             abort("modal_eigen requires num_modes >= 1")
     if steps < 1:
         abort("analysis steps must be >= 1")
-    var force_beam_mode = String(analysis.get("force_beam_mode", "auto"))
+    var force_beam_mode = analysis_input.force_beam_mode
     if (
         force_beam_mode != "auto"
         and force_beam_mode != "linear_if_elastic"
@@ -619,12 +866,12 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
     ):
         abort("nonlinear uniaxial materials require static_nonlinear or transient_nonlinear analysis")
 
-    var solver_pref = String(analysis.get("system", analysis.get("solver", "auto")))
+    var solver_pref = analysis_input.solver
     if solver_pref == "":
         solver_pref = "auto"
     if solver_pref != "auto" and solver_pref != "dense" and solver_pref != "banded":
         abort("unsupported analysis system: " + solver_pref)
-    var band_threshold = Int(analysis.get("band_threshold", 128))
+    var band_threshold = analysis_input.band_threshold
     if band_threshold < 0:
         band_threshold = 0
 
@@ -634,33 +881,62 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
         rep_dof[i] = i
 
     var has_transformation_mpc = False
-    var mp_constraints = data.get("mp_constraints", [])
-    if py_len(mp_constraints) > 0:
+    if len(input.mp_constraints) > 0:
         if constraints_handler != "Transformation":
             abort("mp_constraints require analysis.constraints=Transformation")
         has_transformation_mpc = True
-    for i in range(py_len(mp_constraints)):
-        var mpc = mp_constraints[i]
-        var mpc_type = String(mpc.get("type", ""))
+    for i in range(len(input.mp_constraints)):
+        var mpc = input.mp_constraints[i]
+        var mpc_type = mpc.type
         if mpc_type != "equalDOF":
             abort("unsupported mp constraint type: " + mpc_type)
-        var retained_node = Int(mpc["retained_node"])
-        var constrained_node = Int(mpc["constrained_node"])
+        var retained_node = mpc.retained_node
+        var constrained_node = mpc.constrained_node
         if retained_node >= len(id_to_index) or id_to_index[retained_node] < 0:
             abort("equalDOF retained_node not found")
         if constrained_node >= len(id_to_index) or id_to_index[constrained_node] < 0:
             abort("equalDOF constrained_node not found")
         var retained_idx = id_to_index[retained_node]
         var constrained_idx = id_to_index[constrained_node]
-        var dofs = mpc.get("dofs", [])
-        if py_len(dofs) == 0:
+        if mpc.dof_count == 0:
             abort("equalDOF requires non-empty dofs")
-        for j in range(py_len(dofs)):
-            var dof = Int(dofs[j])
-            require_dof_in_range(dof, ndf, "equalDOF")
-            var retained_dof = node_dof_index(retained_idx, dof, ndf)
-            var constrained_dof = node_dof_index(constrained_idx, dof, ndf)
-            rep_dof[constrained_dof] = retained_dof
+        for j in range(mpc.dof_count):
+            if j == 0:
+                var dof = mpc.dof_1
+                require_dof_in_range(dof, ndf, "equalDOF")
+                var retained_dof = node_dof_index(retained_idx, dof, ndf)
+                var constrained_dof = node_dof_index(constrained_idx, dof, ndf)
+                rep_dof[constrained_dof] = retained_dof
+            elif j == 1:
+                var dof = mpc.dof_2
+                require_dof_in_range(dof, ndf, "equalDOF")
+                var retained_dof = node_dof_index(retained_idx, dof, ndf)
+                var constrained_dof = node_dof_index(constrained_idx, dof, ndf)
+                rep_dof[constrained_dof] = retained_dof
+            elif j == 2:
+                var dof = mpc.dof_3
+                require_dof_in_range(dof, ndf, "equalDOF")
+                var retained_dof = node_dof_index(retained_idx, dof, ndf)
+                var constrained_dof = node_dof_index(constrained_idx, dof, ndf)
+                rep_dof[constrained_dof] = retained_dof
+            elif j == 3:
+                var dof = mpc.dof_4
+                require_dof_in_range(dof, ndf, "equalDOF")
+                var retained_dof = node_dof_index(retained_idx, dof, ndf)
+                var constrained_dof = node_dof_index(constrained_idx, dof, ndf)
+                rep_dof[constrained_dof] = retained_dof
+            elif j == 4:
+                var dof = mpc.dof_5
+                require_dof_in_range(dof, ndf, "equalDOF")
+                var retained_dof = node_dof_index(retained_idx, dof, ndf)
+                var constrained_dof = node_dof_index(constrained_idx, dof, ndf)
+                rep_dof[constrained_dof] = retained_dof
+            else:
+                var dof = mpc.dof_6
+                require_dof_in_range(dof, ndf, "equalDOF")
+                var retained_dof = node_dof_index(retained_idx, dof, ndf)
+                var constrained_dof = node_dof_index(constrained_idx, dof, ndf)
+                rep_dof[constrained_dof] = retained_dof
 
     for i in range(total_dofs):
         var rep = i
@@ -709,7 +985,7 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
     var free: List[Int] = []
     var free_index: List[Int] = []
     if use_banded_linear or use_banded_nonlinear:
-        var adjacency = build_node_adjacency(elements, node_count, id_to_index)
+        var adjacency = build_node_adjacency_typed(typed_elements, node_count)
         var node_order = rcm_order(adjacency)
         free_index.resize(total_dofs, -1)
         for i in range(len(node_order)):
@@ -730,80 +1006,80 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
                 free_index[i] = len(free)
                 free.append(i)
 
-    var time_series = parse_time_series(data)
+    var time_series: List[TimeSeriesInput] = []
+    var time_series_values: List[Float64] = []
+    var time_series_times: List[Float64] = []
+    parse_time_series_inputs(data, time_series, time_series_values, time_series_times)
     var ts_index = -1
-    var pattern = data.get("pattern", None)
+    var pattern_input = input.pattern
     var pattern_type = "Plain"
     var uniform_excitation_direction = 0
     var uniform_accel_ts_index = -1
-    if pattern is not None:
-        pattern_type = String(pattern.get("type", "Plain"))
+    if pattern_input.has_pattern:
+        pattern_type = pattern_input.type
         if pattern_type != "Plain" and pattern_type != "UniformExcitation":
             abort("unsupported pattern type: " + pattern_type)
-    if py_len(time_series) > 0 or pattern is not None:
-        if pattern is None:
-            if py_len(time_series) == 1:
-                var ts_tag = Int(time_series[0]["tag"])
-                ts_index = find_time_series(time_series, ts_tag)
+    if len(time_series) > 0 or pattern_input.has_pattern:
+        if not pattern_input.has_pattern:
+            if len(time_series) == 1:
+                var ts_tag = time_series[0].tag
+                ts_index = find_time_series_input(time_series, ts_tag)
                 if ts_index < 0:
                     abort("time_series tag not found")
             else:
                 abort("pattern missing for multiple time_series")
         elif pattern_type == "Plain":
-            if not pattern.__contains__("time_series"):
+            if not pattern_input.has_time_series:
                 abort("pattern missing time_series")
-            var ts_tag = Int(pattern["time_series"])
-            ts_index = find_time_series(time_series, ts_tag)
+            var ts_tag = pattern_input.time_series
+            ts_index = find_time_series_input(time_series, ts_tag)
             if ts_index < 0:
                 abort("time_series tag not found")
         else:
             if analysis_type != "transient_linear" and analysis_type != "transient_nonlinear":
                 abort("UniformExcitation requires transient analysis")
-            if not pattern.__contains__("direction"):
+            if not pattern_input.has_direction:
                 abort("UniformExcitation pattern missing direction")
-            uniform_excitation_direction = Int(pattern["direction"])
+            uniform_excitation_direction = pattern_input.direction
             if uniform_excitation_direction < 1 or uniform_excitation_direction > ndm:
                 abort("UniformExcitation direction out of range 1..ndm")
             var accel_tag = -1
-            if pattern.__contains__("accel"):
-                accel_tag = Int(pattern["accel"])
-            elif pattern.__contains__("time_series"):
-                accel_tag = Int(pattern["time_series"])
+            if pattern_input.has_accel:
+                accel_tag = pattern_input.accel
+            elif pattern_input.has_time_series:
+                accel_tag = pattern_input.time_series
             else:
                 abort("UniformExcitation pattern missing accel time_series tag")
-            uniform_accel_ts_index = find_time_series(time_series, accel_tag)
+            uniform_accel_ts_index = find_time_series_input(time_series, accel_tag)
             if uniform_accel_ts_index < 0:
                 abort("UniformExcitation accel time_series tag not found")
-            if py_len(loads) > 0 or py_len(element_loads) > 0:
+            if len(input.loads) > 0 or len(input.element_loads) > 0:
                 abort("UniformExcitation does not support nodal/element loads")
 
     var rayleigh_alpha_m = 0.0
     var rayleigh_beta_k = 0.0
     var rayleigh_beta_k_init = 0.0
     var rayleigh_beta_k_comm = 0.0
-    var rayleigh = data.get("rayleigh", None)
-    if rayleigh is not None:
-        rayleigh_alpha_m = Float64(rayleigh.get("alphaM", 0.0))
-        rayleigh_beta_k = Float64(rayleigh.get("betaK", 0.0))
-        rayleigh_beta_k_init = Float64(rayleigh.get("betaKInit", 0.0))
-        rayleigh_beta_k_comm = Float64(rayleigh.get("betaKComm", 0.0))
-
-    var recorders = data.get("recorders", [])
+    if input.rayleigh.has_rayleigh:
+        rayleigh_alpha_m = input.rayleigh.alpha_m
+        rayleigh_beta_k = input.rayleigh.beta_k
+        rayleigh_beta_k_init = input.rayleigh.beta_k_init
+        rayleigh_beta_k_comm = input.rayleigh.beta_k_comm
 
     state.ndm = ndm
     state.ndf = ndf
-    state.nodes = nodes
+    state.typed_nodes = input.nodes.copy()
     state.node_count = node_count
     state.id_to_index = id_to_index^
-    state.sections_by_id = sections_by_id^
-    state.materials_by_id = materials_by_id^
+    state.typed_sections_by_id = typed_sections_by_id^
+    state.typed_materials_by_id = typed_materials_by_id^
     state.uniaxial_defs = uniaxial_defs^
     state.uniaxial_state_defs = uniaxial_state_defs^
     state.uniaxial_states = uniaxial_states^
     state.fiber_section_defs = fiber_section_defs^
     state.fiber_section_cells = fiber_section_cells^
     state.fiber_section_index_by_id = fiber_section_index_by_id^
-    state.elements = elements
+    state.typed_elements = typed_elements^
     state.elem_count = elem_count
     state.elem_id_to_index = elem_id_to_index^
     state.elem_uniaxial_offsets = elem_uniaxial_offsets^
@@ -812,7 +1088,7 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
     state.total_dofs = total_dofs
     state.F_total = F_total^
     state.constrained = constrained^
-    state.analysis = analysis
+    state.analysis = analysis_input
     state.analysis_type = analysis_type
     state.steps = steps
     state.modal_num_modes = modal_num_modes
@@ -825,7 +1101,12 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
     state.rep_dof = rep_dof^
     state.active_index_by_dof = active_index_by_dof^
     state.M_total = M_total^
-    state.time_series = time_series
+    state.analysis_integrator_targets_pool = (
+        input.analysis_integrator_targets_pool.copy()
+    )
+    state.time_series = time_series^
+    state.time_series_values = time_series_values^
+    state.time_series_times = time_series_times^
     state.ts_index = ts_index
     state.pattern_type = pattern_type
     state.uniform_excitation_direction = uniform_excitation_direction
@@ -834,6 +1115,10 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
     state.rayleigh_beta_k = rayleigh_beta_k
     state.rayleigh_beta_k_init = rayleigh_beta_k_init
     state.rayleigh_beta_k_comm = rayleigh_beta_k_comm
-    state.recorders = recorders
+    state.recorder_nodes_pool = input.recorder_nodes_pool.copy()
+    state.recorder_elements_pool = input.recorder_elements_pool.copy()
+    state.recorder_dofs_pool = input.recorder_dofs_pool.copy()
+    state.recorder_modes_pool = input.recorder_modes_pool.copy()
+    state.recorders = input.recorders.copy()
 
     return state^

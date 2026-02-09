@@ -1,14 +1,19 @@
 from collections import List
 from math import sqrt
 from os import abort
-from python import PythonObject
 
 from materials import UniMaterialDef, UniMaterialState
-from solver.assembly import assemble_global_stiffness
+from solver.assembly import assemble_global_stiffness_typed
 from solver.dof import node_dof_index, require_dof_in_range
 from solver.eigen import jacobi_symmetric_eigen
+from solver.run_case.input_types import (
+    ElementInput,
+    MaterialInput,
+    NodeInput,
+    RecorderInput,
+    SectionInput,
+)
 from sections import FiberCell, FiberSection2dDef
-from strut_io import py_len
 
 from solver.run_case.helpers import (
     _append_output,
@@ -40,12 +45,11 @@ fn _sorted_indices_ascending(values: List[Float64]) -> List[Int]:
 
 
 fn run_modal_eigen(
-    analysis: PythonObject,
     modal_num_modes: Int,
-    nodes: PythonObject,
-    elements: PythonObject,
-    sections_by_id: List[PythonObject],
-    materials_by_id: List[PythonObject],
+    typed_nodes: List[NodeInput],
+    typed_elements: List[ElementInput],
+    typed_sections_by_id: List[SectionInput],
+    typed_materials_by_id: List[MaterialInput],
     id_to_index: List[Int],
     node_count: Int,
     ndf: Int,
@@ -66,15 +70,18 @@ fn run_modal_eigen(
     free: List[Int],
     has_transformation_mpc: Bool,
     rep_dof: List[Int],
-    recorders: PythonObject,
+    recorders: List[RecorderInput],
+    recorder_nodes_pool: List[Int],
+    recorder_dofs_pool: List[Int],
+    recorder_modes_pool: List[Int],
     mut static_output_files: List[String],
     mut static_output_buffers: List[String],
 ) raises:
-    var K = assemble_global_stiffness(
-        nodes,
-        elements,
-        sections_by_id,
-        materials_by_id,
+    var K = assemble_global_stiffness_typed(
+        typed_nodes,
+        typed_elements,
+        typed_sections_by_id,
+        typed_materials_by_id,
         id_to_index,
         node_count,
         ndf,
@@ -126,12 +133,11 @@ fn run_modal_eigen(
     var order = _sorted_indices_ascending(eigvals_raw)
 
     var wrote_eigenvalues = False
-    for r in range(py_len(recorders)):
+    for r in range(len(recorders)):
         var rec = recorders[r]
-        var rec_type = String(rec["type"])
-        if rec_type != "modal_eigen":
+        if rec.type_tag != 6:
             continue
-        var output = String(rec.get("output", "modal"))
+        var output = rec.output
         if not wrote_eigenvalues:
             var eig_lines = String()
             for i in range(modal_num_modes):
@@ -145,14 +151,11 @@ fn run_modal_eigen(
             )
             wrote_eigenvalues = True
 
-        var modes = rec.get("modes", [])
-        if py_len(modes) == 0:
+        if rec.mode_count == 0:
             abort("modal_eigen recorder requires non-empty modes")
 
-        var nodes_out = rec["nodes"]
-        var dofs = rec["dofs"]
-        for m in range(py_len(modes)):
-            var mode_no = Int(modes[m])
+        for m in range(rec.mode_count):
+            var mode_no = recorder_modes_pool[rec.mode_offset + m]
             if mode_no < 1 or mode_no > modal_num_modes:
                 abort("modal_eigen recorder mode out of range")
             var col = order[mode_no - 1]
@@ -161,15 +164,15 @@ fn run_modal_eigen(
             for i in range(free_count):
                 full_mode[free[i]] = eigvecs[i][col] / sqrt(M_f[i])
             _enforce_equal_dof_values(full_mode, rep_dof, constrained)
-            for nidx in range(py_len(nodes_out)):
-                var node_id = Int(nodes_out[nidx])
+            for nidx in range(rec.node_count):
+                var node_id = recorder_nodes_pool[rec.node_offset + nidx]
                 if node_id >= len(id_to_index) or id_to_index[node_id] < 0:
                     abort("modal_eigen recorder node not found")
                 var node_idx = id_to_index[node_id]
                 var values: List[Float64] = []
-                values.resize(py_len(dofs), 0.0)
-                for j in range(py_len(dofs)):
-                    var dof = Int(dofs[j])
+                values.resize(rec.dof_count, 0.0)
+                for j in range(rec.dof_count):
+                    var dof = recorder_dofs_pool[rec.dof_offset + j]
                     require_dof_in_range(dof, ndf, "modal_eigen recorder")
                     values[j] = full_mode[node_dof_index(node_idx, dof, ndf)]
                 var filename = (

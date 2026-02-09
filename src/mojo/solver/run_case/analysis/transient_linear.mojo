@@ -1,14 +1,20 @@
 from collections import List
 from materials import UniMaterialDef, UniMaterialState
 from os import abort
-from python import PythonObject
 from sections import FiberCell, FiberSection2dDef
 
 from linalg import gaussian_elimination
-from solver.assembly import assemble_global_stiffness, assemble_internal_forces
+from solver.assembly import assemble_global_stiffness_typed, assemble_internal_forces_typed
 from solver.dof import node_dof_index, require_dof_in_range
-from solver.time_series import eval_time_series
-from strut_io import py_len
+from solver.run_case.input_types import (
+    AnalysisInput,
+    ElementInput,
+    MaterialInput,
+    NodeInput,
+    RecorderInput,
+    SectionInput,
+)
+from solver.time_series import TimeSeriesInput, eval_time_series_input
 
 from solver.run_case.helpers import (
     _append_output,
@@ -23,10 +29,12 @@ from solver.run_case.helpers import (
 )
 
 fn run_transient_linear(
-    analysis: PythonObject,
+    analysis: AnalysisInput,
     steps: Int,
     ts_index: Int,
-    time_series: PythonObject,
+    time_series: List[TimeSeriesInput],
+    time_series_values: List[Float64],
+    time_series_times: List[Float64],
     pattern_type: String,
     uniform_excitation_direction: Int,
     uniform_accel_ts_index: Int,
@@ -34,10 +42,10 @@ fn run_transient_linear(
     rayleigh_beta_k: Float64,
     rayleigh_beta_k_init: Float64,
     rayleigh_beta_k_comm: Float64,
-    nodes: PythonObject,
-    elements: PythonObject,
-    sections_by_id: List[PythonObject],
-    materials_by_id: List[PythonObject],
+    typed_nodes: List[NodeInput],
+    typed_elements: List[ElementInput],
+    typed_sections_by_id: List[SectionInput],
+    typed_materials_by_id: List[MaterialInput],
     id_to_index: List[Int],
     node_count: Int,
     ndf: Int,
@@ -53,7 +61,10 @@ fn run_transient_linear(
     mut F_total: List[Float64],
     M_total: List[Float64],
     free: List[Int],
-    recorders: PythonObject,
+    recorders: List[RecorderInput],
+    recorder_nodes_pool: List[Int],
+    recorder_elements_pool: List[Int],
+    recorder_dofs_pool: List[Int],
     elem_id_to_index: List[Int],
     fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
@@ -64,7 +75,7 @@ fn run_transient_linear(
     rep_dof: List[Int],
     constrained: List[Bool],
 ) raises:
-    var dt = Float64(analysis.get("dt", 0.0))
+    var dt = analysis.dt
     if dt <= 0.0:
         abort("transient_linear requires dt > 0")
     if pattern_type != "Plain" and pattern_type != "UniformExcitation":
@@ -74,12 +85,13 @@ fn run_transient_linear(
             abort("UniformExcitation direction out of range")
         if uniform_accel_ts_index < 0:
             abort("UniformExcitation missing accel time_series")
-    var integrator = analysis.get("integrator", {"type": "Newmark"})
-    var integrator_type = String(integrator.get("type", "Newmark"))
+    var integrator_type = analysis.integrator_type
+    if integrator_type == "":
+        integrator_type = "Newmark"
     if integrator_type != "Newmark":
         abort("transient_linear only supports Newmark integrator")
-    var gamma = Float64(integrator.get("gamma", 0.5))
-    var beta = Float64(integrator.get("beta", 0.25))
+    var gamma = analysis.integrator_gamma
+    var beta = analysis.integrator_beta
     if beta <= 0.0:
         abort("Newmark beta must be > 0")
 
@@ -95,11 +107,11 @@ fn run_transient_linear(
     if not has_mass:
         abort("transient_linear requires masses on free dofs")
 
-    var K = assemble_global_stiffness(
-        nodes,
-        elements,
-        sections_by_id,
-        materials_by_id,
+    var K = assemble_global_stiffness_typed(
+        typed_nodes,
+        typed_elements,
+        typed_sections_by_id,
+        typed_materials_by_id,
         id_to_index,
         node_count,
         ndf,
@@ -167,7 +179,7 @@ fn run_transient_linear(
     P_eff.resize(free_count, 0.0)
     var C_term: List[Float64] = []
     C_term.resize(free_count, 0.0)
-    var record_reactions = _has_recorder_type(recorders, "node_reaction")
+    var record_reactions = _has_recorder_type(recorders, 3)
     var envelope_files: List[String] = []
     var envelope_min: List[List[Float64]] = []
     var envelope_max: List[List[Float64]] = []
@@ -183,13 +195,23 @@ fn run_transient_linear(
             F_ext_step[i] = 0.0
         var factor = 1.0
         if pattern_type == "UniformExcitation":
-            var ag = eval_time_series(time_series[uniform_accel_ts_index], t)
+            var ag = eval_time_series_input(
+                time_series[uniform_accel_ts_index],
+                t,
+                time_series_values,
+                time_series_times,
+            )
             for i in range(total_dofs):
                 if (i % ndf) + 1 == uniform_excitation_direction:
                     F_ext_step[i] = -M_total[i] * ag
         else:
             if ts_index >= 0:
-                factor = eval_time_series(time_series[ts_index], t)
+                factor = eval_time_series_input(
+                    time_series[ts_index],
+                    t,
+                    time_series_values,
+                    time_series_times,
+                )
             for i in range(total_dofs):
                 F_ext_step[i] = F_total[i] * factor
         for i in range(free_count):
@@ -230,46 +252,39 @@ fn run_transient_linear(
             _enforce_equal_dof_values(v, rep_dof, constrained)
             _enforce_equal_dof_values(a, rep_dof, constrained)
 
-        for r in range(py_len(recorders)):
+        for r in range(len(recorders)):
             var rec = recorders[r]
-            var rec_type = String(rec["type"])
-            if rec_type == "node_displacement":
-                var dofs = rec["dofs"]
-                var output = String(rec.get("output", "node_disp"))
-                var nodes_out = rec["nodes"]
-                for nidx in range(py_len(nodes_out)):
-                    var node_id = Int(nodes_out[nidx])
+            if rec.type_tag == 1:
+                for nidx in range(rec.node_count):
+                    var node_id = recorder_nodes_pool[rec.node_offset + nidx]
                     var i = id_to_index[node_id]
                     var line = String()
-                    for j in range(py_len(dofs)):
-                        var dof = Int(dofs[j])
+                    for j in range(rec.dof_count):
+                        var dof = recorder_dofs_pool[rec.dof_offset + j]
                         require_dof_in_range(dof, ndf, "recorder")
                         var value = u[node_dof_index(i, dof, ndf)]
                         if j > 0:
                             line += " "
                         line += String(value)
                     line += "\n"
-                    var filename = output + "_node" + String(node_id) + ".out"
+                    var filename = rec.output + "_node" + String(node_id) + ".out"
                     _append_output(
                         transient_output_files, transient_output_buffers, filename, line
                     )
-            elif rec_type == "element_force":
-                var output = String(rec.get("output", "element_force"))
-                var elements_out = rec["elements"]
-                for eidx in range(py_len(elements_out)):
-                    var elem_id = Int(elements_out[eidx])
+            elif rec.type_tag == 2:
+                for eidx in range(rec.element_count):
+                    var elem_id = recorder_elements_pool[rec.element_offset + eidx]
                     if elem_id >= len(elem_id_to_index) or elem_id_to_index[elem_id] < 0:
                         abort("recorder element not found")
                     var elem_index = elem_id_to_index[elem_id]
-                    var elem = elements[elem_index]
+                    var elem = typed_elements[elem_index]
                     var f_elem = _element_force_global_for_recorder(
                         elem_index,
                         elem,
-                        nodes,
-                        sections_by_id,
-                        id_to_index,
                         ndf,
                         u,
+                        typed_nodes,
+                        typed_sections_by_id,
                         fiber_section_defs,
                         fiber_section_cells,
                         fiber_section_index_by_id,
@@ -280,21 +295,18 @@ fn run_transient_linear(
                         elem_uniaxial_state_ids,
                     )
                     var line = _format_values_line(f_elem)
-                    var filename = output + "_ele" + String(elem_id) + ".out"
+                    var filename = rec.output + "_ele" + String(elem_id) + ".out"
                     _append_output(
                         transient_output_files, transient_output_buffers, filename, line
                     )
-            elif rec_type == "node_reaction":
-                var output = String(rec.get("output", "reaction"))
-                var nodes_out = rec["nodes"]
-                var dofs = rec["dofs"]
+            elif rec.type_tag == 3:
                 if not record_reactions:
                     abort("internal error: reaction recorder flag mismatch")
-                var F_int = assemble_internal_forces(
-                    nodes,
-                    elements,
-                    sections_by_id,
-                    materials_by_id,
+                var F_int = assemble_internal_forces_typed(
+                    typed_nodes,
+                    typed_elements,
+                    typed_sections_by_id,
+                    typed_materials_by_id,
                     id_to_index,
                     node_count,
                     ndf,
@@ -306,29 +318,31 @@ fn run_transient_linear(
                     elem_uniaxial_offsets,
                     elem_uniaxial_counts,
                     elem_uniaxial_state_ids,
+                    fiber_section_defs,
+                    fiber_section_cells,
+                    fiber_section_index_by_id,
                 )
-                for nidx in range(py_len(nodes_out)):
-                    var node_id = Int(nodes_out[nidx])
+                for nidx in range(rec.node_count):
+                    var node_id = recorder_nodes_pool[rec.node_offset + nidx]
                     var i = id_to_index[node_id]
                     var values: List[Float64] = []
-                    values.resize(py_len(dofs), 0.0)
-                    for j in range(py_len(dofs)):
-                        var dof = Int(dofs[j])
+                    values.resize(rec.dof_count, 0.0)
+                    for j in range(rec.dof_count):
+                        var dof = recorder_dofs_pool[rec.dof_offset + j]
                         require_dof_in_range(dof, ndf, "recorder")
                         var idx = node_dof_index(i, dof, ndf)
                         values[j] = F_int[idx] - F_ext_step[idx]
                     var line = _format_values_line(values)
-                    var filename = output + "_node" + String(node_id) + ".out"
+                    var filename = rec.output + "_node" + String(node_id) + ".out"
                     _append_output(
                         transient_output_files, transient_output_buffers, filename, line
                     )
-            elif rec_type == "drift":
-                var output = String(rec.get("output", "drift"))
-                var i_node = Int(rec["i_node"])
-                var j_node = Int(rec["j_node"])
-                var value = _drift_value(rec, nodes, id_to_index, ndf, u)
+            elif rec.type_tag == 4:
+                var i_node = rec.i_node
+                var j_node = rec.j_node
+                var value = _drift_value(rec, typed_nodes, id_to_index, ndf, u)
                 var filename = (
-                    output
+                    rec.output
                     + "_i"
                     + String(i_node)
                     + "_j"
@@ -341,23 +355,20 @@ fn run_transient_linear(
                     filename,
                     _format_values_line([value]),
                 )
-            elif rec_type == "envelope_element_force":
-                var output = String(rec.get("output", "envelope_element_force"))
-                var elements_out = rec["elements"]
-                for eidx in range(py_len(elements_out)):
-                    var elem_id = Int(elements_out[eidx])
+            elif rec.type_tag == 5:
+                for eidx in range(rec.element_count):
+                    var elem_id = recorder_elements_pool[rec.element_offset + eidx]
                     if elem_id >= len(elem_id_to_index) or elem_id_to_index[elem_id] < 0:
                         abort("recorder element not found")
                     var elem_index = elem_id_to_index[elem_id]
-                    var elem = elements[elem_index]
+                    var elem = typed_elements[elem_index]
                     var f_elem = _element_force_global_for_recorder(
                         elem_index,
                         elem,
-                        nodes,
-                        sections_by_id,
-                        id_to_index,
                         ndf,
                         u,
+                        typed_nodes,
+                        typed_sections_by_id,
                         fiber_section_defs,
                         fiber_section_cells,
                         fiber_section_index_by_id,
@@ -367,7 +378,7 @@ fn run_transient_linear(
                         elem_uniaxial_counts,
                         elem_uniaxial_state_ids,
                     )
-                    var filename = output + "_ele" + String(elem_id) + ".out"
+                    var filename = rec.output + "_ele" + String(elem_id) + ".out"
                     _update_envelope(
                         filename,
                         f_elem,
