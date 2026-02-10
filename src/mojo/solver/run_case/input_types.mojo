@@ -549,7 +549,10 @@ struct CaseInput(Movable):
 fn element_type_tag(type_name: String) -> Int:
     if type_name == "elasticBeamColumn2d":
         return 1
-    if type_name == "forceBeamColumn2d":
+    if (
+        type_name == "forceBeamColumn2d"
+        or type_name == "dispBeamColumn2d"
+    ):
         return 2
     if type_name == "elasticBeamColumn3d":
         return 3

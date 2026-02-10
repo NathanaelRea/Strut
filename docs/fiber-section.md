@@ -20,7 +20,7 @@ Key files:
 Current limitation:
 
 - `elasticBeamColumn2d` / `elasticBeamColumn3d` still do not consume fiber sections.
-- `forceBeamColumn2d` is available in a minimum v1 scope only:
+- `forceBeamColumn2d` and `dispBeamColumn2d` are available in a minimum v1 scope only:
   - `geomTransf: Linear`
   - `integration: Lobatto`
   - `num_int_pts: 3`

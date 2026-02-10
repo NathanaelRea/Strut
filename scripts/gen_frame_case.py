@@ -46,7 +46,7 @@ def build_frame_case(
                     "geomTransf": "Linear",
                 }
             )
-            if element_type == "forceBeamColumn2d":
+            if element_type in ("forceBeamColumn2d", "dispBeamColumn2d"):
                 elements[-1]["integration"] = "Lobatto"
                 elements[-1]["num_int_pts"] = 3
             elem_id += 1
@@ -63,7 +63,7 @@ def build_frame_case(
                     "geomTransf": "Linear",
                 }
             )
-            if element_type == "forceBeamColumn2d":
+            if element_type in ("forceBeamColumn2d", "dispBeamColumn2d"):
                 elements[-1]["integration"] = "Lobatto"
                 elements[-1]["num_int_pts"] = 3
             elem_id += 1
@@ -83,7 +83,7 @@ def build_frame_case(
         }
     ]
     analysis = {"type": "static_linear", "steps": 1}
-    if element_type == "forceBeamColumn2d":
+    if element_type in ("forceBeamColumn2d", "dispBeamColumn2d"):
         sections = [
             {
                 "id": 1,
@@ -163,7 +163,7 @@ def main() -> None:
     parser.add_argument("--disabled", action="store_true")
     parser.add_argument(
         "--element-type",
-        choices=["elasticBeamColumn2d", "forceBeamColumn2d"],
+        choices=["elasticBeamColumn2d", "forceBeamColumn2d", "dispBeamColumn2d"],
         default="elasticBeamColumn2d",
     )
     args = parser.parse_args()

@@ -64,17 +64,17 @@ Minimum required fields (v1.0):
 - `masses`: list of `{ node, dof, value }` (optional; nodal lumped masses for dynamics)
 - `recorders`: list of
   - `{ type: "node_displacement", nodes, dofs, output }` (`dofs` in `1..ndf`)
-  - `{ type: "element_force", elements, output }` (`truss`, `elasticBeamColumn2d`, `forceBeamColumn2d`)
+  - `{ type: "element_force", elements, output }` (`truss`, `elasticBeamColumn2d`, `forceBeamColumn2d`, `dispBeamColumn2d`)
   - `{ type: "node_reaction", nodes, dofs, output }` (`dofs` in `1..ndf`)
   - `{ type: "drift", i_node, j_node, dof, perp_dirn, output }`
-  - `{ type: "envelope_element_force", elements, output }` (`truss`, `elasticBeamColumn2d`, `forceBeamColumn2d`)
+  - `{ type: "envelope_element_force", elements, output }` (`truss`, `elasticBeamColumn2d`, `forceBeamColumn2d`, `dispBeamColumn2d`)
   - `{ type: "modal_eigen", modes, nodes, dofs, output }`
 - `parity_mode`: `"step"` (default) or `"max_abs"` for transient comparisons (optional; top-level)
   - `step`: strict step-by-step time-history comparison.
   - `max_abs`: compare component-wise peak absolute response across the full history.
 - `benchmark_size`: `"small" | "medium" | "large"` (optional; top-level benchmark/plot override)
 
-Current limitation: `forceBeamColumn2d` support is currently limited to:
+Current limitation: `forceBeamColumn2d`/`dispBeamColumn2d` support is currently limited to:
 - `geomTransf: Linear | PDelta`
 - `integration: Lobatto`
 - `num_int_pts: 3 | 5`
@@ -99,7 +99,7 @@ Node displacement outputs are written as space-separated values with one row per
 
 For OpenSees, the Tcl recorder writes a space-separated vector per line. The comparator reads the last line for static cases and all lines for transient cases.
 
-Element force outputs are written as space-separated values with one row per analysis step. For `elasticBeamColumn2d` and `forceBeamColumn2d`,
+Element force outputs are written as space-separated values with one row per analysis step. For `elasticBeamColumn2d`, `forceBeamColumn2d`, and `dispBeamColumn2d`,
 the vector contains 6 global end forces (3 at node 1, 3 at node 2) in the OpenSees "force" recorder ordering.
 
 Node reaction outputs are written as space-separated values with one row per analysis step. Each row contains requested reaction DOFs at the requested node.

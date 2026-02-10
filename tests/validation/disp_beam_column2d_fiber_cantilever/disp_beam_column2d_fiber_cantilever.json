@@ -1,0 +1,62 @@
+{
+  "schema_version": "1.0",
+  "enabled": true,
+  "status": "wip",
+  "metadata": {
+    "name": "disp_beam_column2d_fiber_cantilever",
+    "units": "SI"
+  },
+  "model": {
+    "ndm": 2,
+    "ndf": 3
+  },
+  "nodes": [
+    { "id": 1, "x": 0.0, "y": 0.0, "constraints": [1, 2, 3] },
+    { "id": 2, "x": 4.0, "y": 0.0 }
+  ],
+  "materials": [
+    { "id": 1, "type": "Elastic", "params": { "E": 30000000000.0 } }
+  ],
+  "sections": [
+    {
+      "id": 1,
+      "type": "FiberSection2d",
+      "params": {
+        "patches": [
+          {
+            "type": "rect",
+            "material": 1,
+            "num_subdiv_y": 8,
+            "num_subdiv_z": 2,
+            "y_i": -0.2,
+            "z_i": -0.1,
+            "y_j": 0.2,
+            "z_j": 0.1
+          }
+        ],
+        "layers": []
+      }
+    }
+  ],
+  "elements": [
+    {
+      "id": 1,
+      "type": "dispBeamColumn2d",
+      "nodes": [1, 2],
+      "section": 1,
+      "geomTransf": "Linear",
+      "integration": "Lobatto",
+      "num_int_pts": 3
+    }
+  ],
+  "loads": [{ "node": 2, "dof": 2, "value": 1.0 }],
+  "analysis": { "type": "static_linear", "steps": 1, "force_beam_mode": "linear_if_elastic" },
+  "recorders": [
+    {
+      "type": "node_displacement",
+      "nodes": [2],
+      "dofs": [1, 2, 3],
+      "output": "node_disp"
+    }
+  ]
+}

@@ -43,7 +43,7 @@ fn _beam2d_element_force_global(
     if sec.type == "FiberSection2d":
         abort(
             "element_force for elasticBeamColumn2d with FiberSection2d requires "
-            "forceBeamColumn2d"
+            "forceBeamColumn2d or dispBeamColumn2d"
         )
 
     var E = sec.E
@@ -218,17 +218,18 @@ fn _force_beam_column2d_element_force_global(
     elem_uniaxial_counts: List[Int],
     elem_uniaxial_state_ids: List[Int],
 ) raises -> List[Float64]:
+    var beam_col_type = elem.type
     if ndf != 3:
-        abort("forceBeamColumn2d requires ndf=3")
+        abort(beam_col_type + " requires ndf=3")
     var geom = elem.geom_transf
     if geom != "Linear" and geom != "PDelta":
-        abort("forceBeamColumn2d supports geomTransf Linear or PDelta")
+        abort(beam_col_type + " supports geomTransf Linear or PDelta")
     var integration = elem.integration
     if integration != "Lobatto":
-        abort("forceBeamColumn2d supports Lobatto integration only")
+        abort(beam_col_type + " supports Lobatto integration only")
     var num_int_pts = elem.num_int_pts
     if num_int_pts != 3 and num_int_pts != 5:
-        abort("forceBeamColumn2d supports num_int_pts=3 or 5")
+        abort(beam_col_type + " supports num_int_pts=3 or 5")
 
     var i1 = elem.node_index_1
     var i2 = elem.node_index_2
@@ -272,7 +273,7 @@ fn _force_beam_column2d_element_force_global(
                 u_elem,
             )
         else:
-            abort("forceBeamColumn2d supports geomTransf Linear or PDelta")
+            abort(beam_col_type + " supports geomTransf Linear or PDelta")
         var f_global_elastic: List[Float64] = []
         f_global_elastic.resize(6, 0.0)
         for a in range(6):
@@ -284,10 +285,10 @@ fn _force_beam_column2d_element_force_global(
 
     var sec_id = elem.section
     if sec_id >= len(fiber_section_index_by_id):
-        abort("forceBeamColumn2d section not found")
+        abort(beam_col_type + " section not found")
     var sec_index = fiber_section_index_by_id[sec_id]
     if sec_index < 0 or sec_index >= len(fiber_section_defs):
-        abort("forceBeamColumn2d fiber section not found")
+        abort(beam_col_type + " fiber section not found")
     var sec_def = fiber_section_defs[sec_index]
 
     var elem_offset = elem_uniaxial_offsets[elem_index]
@@ -405,7 +406,7 @@ fn _element_force_global_for_recorder(
         )
     abort(
         "element_force recorder supports truss, "
-        "elasticBeamColumn2d, or forceBeamColumn2d only"
+        "elasticBeamColumn2d, forceBeamColumn2d, or dispBeamColumn2d only"
     )
     return []
 

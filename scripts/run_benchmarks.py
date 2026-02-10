@@ -562,7 +562,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--gen-frame-element",
-        choices=("elasticBeamColumn2d", "forceBeamColumn2d"),
+        choices=("elasticBeamColumn2d", "forceBeamColumn2d", "dispBeamColumn2d"),
         default="elasticBeamColumn2d",
         help="Element type for generated frame case.",
     )
@@ -649,6 +649,8 @@ def main() -> None:
         default_prefix = "elastic_frame"
         if args.gen_frame_element == "forceBeamColumn2d":
             default_prefix = "force_beam_column2d_fiber_frame"
+        if args.gen_frame_element == "dispBeamColumn2d":
+            default_prefix = "disp_beam_column2d_fiber_frame"
         name = args.gen_frame_name or f"{default_prefix}_{args.gen_frame_bays}bay_{args.gen_frame_stories}story"
         gen_dir = repo_root / "benchmark" / ".tmp"
         gen_dir.mkdir(parents=True, exist_ok=True)

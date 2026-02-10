@@ -510,7 +510,10 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
                 abort("unsupported geomTransf: " + elem.geom_transf)
             if elem.section < len(fiber_section_index_by_id):
                 if fiber_section_index_by_id[elem.section] >= 0:
-                    abort("elasticBeamColumn2d with FiberSection2d requires forceBeamColumn2d")
+                    abort(
+                        "elasticBeamColumn2d with FiberSection2d requires forceBeamColumn2d "
+                        "or dispBeamColumn2d"
+                    )
             elem.dof_count = 6
             _set_elem_dof(elem, 0, node_dof_index(elem.node_index_1, 1, ndf))
             _set_elem_dof(elem, 1, node_dof_index(elem.node_index_1, 2, ndf))
@@ -520,23 +523,24 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
             _set_elem_dof(elem, 5, node_dof_index(elem.node_index_2, 3, ndf))
         elif elem.type_tag == 2:
             has_force_beam_column2d = True
+            var beam_col_type = elem.type
             if ndm != 2 or ndf != 3:
-                abort("forceBeamColumn2d requires ndm=2, ndf=3")
+                abort(beam_col_type + " requires ndm=2, ndf=3")
             if elem.node_count != 2:
-                abort("forceBeamColumn2d requires 2 nodes")
+                abort(beam_col_type + " requires 2 nodes")
             if elem.geom_tag != 1 and elem.geom_tag != 2:
-                abort("forceBeamColumn2d supports geomTransf Linear or PDelta")
+                abort(beam_col_type + " supports geomTransf Linear or PDelta")
             if elem.integration != "Lobatto":
-                abort("forceBeamColumn2d supports Lobatto integration only")
+                abort(beam_col_type + " supports Lobatto integration only")
             if elem.num_int_pts != 3 and elem.num_int_pts != 5:
-                abort("forceBeamColumn2d supports num_int_pts=3 or 5")
+                abort(beam_col_type + " supports num_int_pts=3 or 5")
             if elem.section < 0 or elem.section >= len(typed_sections_by_id):
-                abort("forceBeamColumn2d section not found")
+                abort(beam_col_type + " section not found")
             var sec = typed_sections_by_id[elem.section]
             if sec.id < 0:
-                abort("forceBeamColumn2d section not found")
+                abort(beam_col_type + " section not found")
             if sec.type != "FiberSection2d" and sec.type != "ElasticSection2d":
-                abort("forceBeamColumn2d requires FiberSection2d or ElasticSection2d")
+                abort(beam_col_type + " requires FiberSection2d or ElasticSection2d")
             elem.dof_count = 6
             _set_elem_dof(elem, 0, node_dof_index(elem.node_index_1, 1, ndf))
             _set_elem_dof(elem, 1, node_dof_index(elem.node_index_1, 2, ndf))
@@ -558,7 +562,10 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
                 abort("elasticBeamColumn3d requires ElasticSection3d")
             if elem.section < len(fiber_section_index_by_id):
                 if fiber_section_index_by_id[elem.section] >= 0:
-                    abort("elasticBeamColumn3d with FiberSection2d requires forceBeamColumn2d")
+                    abort(
+                        "elasticBeamColumn3d with FiberSection2d requires forceBeamColumn2d "
+                        "or dispBeamColumn2d"
+                    )
             elem.dof_count = 12
             for d in range(6):
                 _set_elem_dof(elem, d, node_dof_index(elem.node_index_1, d + 1, ndf))
@@ -711,10 +718,11 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
             var sec_id = elem.section
             elem_uniaxial_offsets[e] = len(elem_uniaxial_state_ids)
             var sec = typed_sections_by_id[sec_id]
+            var beam_col_type = elem.type
             if sec.type == "FiberSection2d":
                 var sec_index = fiber_section_index_by_id[sec_id]
                 if sec_index < 0 or sec_index >= len(fiber_section_defs):
-                    abort("forceBeamColumn2d fiber section not found")
+                    abort(beam_col_type + " fiber section not found")
                 var sec_def = fiber_section_defs[sec_index]
                 var num_int_pts = elem.num_int_pts
                 var state_count = num_int_pts * sec_def.fiber_count
@@ -724,7 +732,7 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
                         var cell = fiber_section_cells[sec_def.fiber_offset + i]
                         var def_index = cell.def_index
                         if def_index < 0 or def_index >= len(uniaxial_defs):
-                            abort("forceBeamColumn2d fiber material definition out of range")
+                            abort(beam_col_type + " fiber material definition out of range")
                         var mat_def = uniaxial_defs[def_index]
                         var state_index = len(uniaxial_states)
                         uniaxial_states.append(UniMaterialState(mat_def))
@@ -736,7 +744,7 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
             elif sec.type == "ElasticSection2d":
                 elem_uniaxial_counts[e] = 0
             else:
-                abort("forceBeamColumn2d requires FiberSection2d or ElasticSection2d")
+                abort(beam_col_type + " requires FiberSection2d or ElasticSection2d")
         elif elem.type_tag == 8:
             var sec_id = elem.section
             elem_uniaxial_offsets[e] = len(elem_uniaxial_state_ids)
@@ -940,12 +948,15 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
             and analysis_type != "transient_nonlinear"
         ):
             abort(
-                "forceBeamColumn2d requires static_linear, static_nonlinear, "
-                "or transient_nonlinear analysis"
+                "forceBeamColumn2d/dispBeamColumn2d requires static_linear, "
+                "static_nonlinear, or transient_nonlinear analysis"
             )
         if analysis_type == "transient_nonlinear":
             if force_beam_mode != "auto":
-                abort("force_beam_mode is only supported for static forceBeamColumn2d analyses")
+                abort(
+                    "force_beam_mode is only supported for static forceBeamColumn2d/"
+                    "dispBeamColumn2d analyses"
+                )
         else:
             if force_beam_mode == "nonlinear":
                 if analysis_type != "static_nonlinear":
@@ -953,14 +964,20 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
             elif force_beam_mode == "linear_if_elastic":
                 if force_beam_has_nonelastic:
                     if analysis_type != "static_nonlinear":
-                        abort("forceBeamColumn2d with non-elastic fibers requires static_nonlinear analysis")
+                        abort(
+                            "forceBeamColumn2d/dispBeamColumn2d with non-elastic fibers "
+                            "requires static_nonlinear analysis"
+                        )
                 elif analysis_type != "static_linear":
                     abort(
                         "force_beam_mode=linear_if_elastic requires static_linear "
-                        "analysis for elastic forceBeamColumn2d"
+                        "analysis for elastic forceBeamColumn2d/dispBeamColumn2d"
                     )
             elif analysis_type == "static_linear" and force_beam_has_nonelastic:
-                abort("forceBeamColumn2d with non-elastic fibers requires static_nonlinear analysis")
+                abort(
+                    "forceBeamColumn2d/dispBeamColumn2d with non-elastic fibers requires "
+                    "static_nonlinear analysis"
+                )
     if (
         analysis_type != "static_nonlinear"
         and analysis_type != "transient_nonlinear"

@@ -403,6 +403,7 @@ def main():
                 "elasticBeamColumn2d",
                 "elasticBeamColumn3d",
                 "forceBeamColumn2d",
+                "dispBeamColumn2d",
             ):
                 continue
             name = elem.get("geomTransf", "Linear")
@@ -421,26 +422,27 @@ def main():
                     f.write(f"geomTransf {name} {next_tag} {vx} {vy} {vz}\n")
                 next_tag += 1
 
-        # Beam integrations (forceBeamColumn2d: Lobatto only)
+        # Beam integrations (forceBeamColumn2d/dispBeamColumn2d: Lobatto only)
         integration_tags = {}
         next_int_tag = 1
         for elem in elements:
-            if elem["type"] != "forceBeamColumn2d":
+            elem_type = elem["type"]
+            if elem_type not in ("forceBeamColumn2d", "dispBeamColumn2d"):
                 continue
             sec = sections[elem["section"]]
             if sec["type"] not in ("FiberSection2d", "ElasticSection2d"):
                 raise ValueError(
-                    "forceBeamColumn2d requires FiberSection2d or ElasticSection2d"
+                    f"{elem_type} requires FiberSection2d or ElasticSection2d"
                 )
             geom = elem.get("geomTransf", "Linear")
             if geom not in ("Linear", "PDelta"):
-                raise ValueError("forceBeamColumn2d supports geomTransf Linear or PDelta")
+                raise ValueError(f"{elem_type} supports geomTransf Linear or PDelta")
             integration = elem.get("integration", "Lobatto")
             if integration != "Lobatto":
-                raise ValueError("forceBeamColumn2d supports Lobatto integration only")
+                raise ValueError(f"{elem_type} supports Lobatto integration only")
             num_int_pts = int(elem.get("num_int_pts", 3))
             if num_int_pts not in (3, 5):
-                raise ValueError("forceBeamColumn2d supports num_int_pts=3 or 5")
+                raise ValueError(f"{elem_type} supports num_int_pts=3 or 5")
             key = (integration, elem["section"], num_int_pts)
             if key in integration_tags:
                 continue
@@ -456,7 +458,8 @@ def main():
                 sec = sections[elem["section"]]
                 if sec["type"] == "FiberSection2d":
                     raise ValueError(
-                        "elasticBeamColumn2d with FiberSection2d requires forceBeamColumn"
+                        "elasticBeamColumn2d with FiberSection2d requires "
+                        "forceBeamColumn2d or dispBeamColumn2d"
                     )
                 if sec["type"] != "ElasticSection2d":
                     raise ValueError("elasticBeamColumn2d requires ElasticSection2d")
@@ -469,22 +472,26 @@ def main():
                 f.write(
                     f"element elasticBeamColumn {elem['id']} {n1} {n2} {A} {E} {I} {transf_tag}\n"
                 )
-            elif elem["type"] == "forceBeamColumn2d":
+            elif elem["type"] in ("forceBeamColumn2d", "dispBeamColumn2d"):
+                elem_type = elem["type"]
                 sec = sections[elem["section"]]
                 if sec["type"] not in ("FiberSection2d", "ElasticSection2d"):
                     raise ValueError(
-                        "forceBeamColumn2d requires FiberSection2d or ElasticSection2d"
+                        f"{elem_type} requires FiberSection2d or ElasticSection2d"
                     )
                 integration = elem.get("integration", "Lobatto")
                 num_int_pts = int(elem.get("num_int_pts", 3))
                 key = (integration, elem["section"], num_int_pts)
                 if key not in integration_tags:
-                    raise ValueError("forceBeamColumn2d integration definition missing")
+                    raise ValueError(f"{elem_type} integration definition missing")
                 n1, n2 = elem["nodes"]
                 transf_tag = transf_tags[(elem.get("geomTransf", "Linear"), None)]
                 int_tag = integration_tags[key]
+                element_cmd = "forceBeamColumn"
+                if elem_type == "dispBeamColumn2d":
+                    element_cmd = "dispBeamColumn"
                 f.write(
-                    f"element forceBeamColumn {elem['id']} {n1} {n2} {transf_tag} {int_tag}\n"
+                    f"element {element_cmd} {elem['id']} {n1} {n2} {transf_tag} {int_tag}\n"
                 )
             elif elem["type"] == "elasticBeamColumn3d":
                 sec = sections[elem["section"]]

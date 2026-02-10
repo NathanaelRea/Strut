@@ -101,7 +101,7 @@ This document is a living roadmap for Strut (Mojo rewrite of OpenSees). It captu
 ### C. Beam-Column Nonlinearities
 
 - [x] `forceBeamColumn`.
-- [ ] `dispBeamColumn`.
+- [x] `dispBeamColumn`.
 - [ ] `beamWithHinges`.
 - [ ] `gradientInelasticBeamColumn`.
 - [ ] `mixedBeamColumn`.
@@ -127,7 +127,7 @@ The following are major OpenSees element families to consider. This list is base
 - [ ] `beam3d`.
 - [x] `elasticBeamColumn`.
 - [x] `forceBeamColumn`.
-- [ ] `dispBeamColumn`.
+- [x] `dispBeamColumn`.
 - [ ] `dispBeamColumnInt`.
 - [ ] `mixedBeamColumn`.
 - [ ] `nonlinearBeamColumn`.

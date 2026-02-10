@@ -165,6 +165,75 @@ def test_json_to_tcl_emits_force_beam_column2d_with_lobatto():
     assert "element forceBeamColumn 4 1 2 1 1\n" in text
 
 
+def test_json_to_tcl_emits_disp_beam_column2d_with_lobatto():
+    case_data = _base_case()
+    case_data["sections"] = [
+        {
+            "id": 7,
+            "type": "FiberSection2d",
+            "params": {
+                "patches": [
+                    {
+                        "type": "rect",
+                        "material": 1,
+                        "num_subdiv_y": 2,
+                        "num_subdiv_z": 2,
+                        "y_i": -0.2,
+                        "z_i": -0.1,
+                        "y_j": 0.2,
+                        "z_j": 0.1,
+                    }
+                ],
+                "layers": [],
+            },
+        }
+    ]
+    case_data["elements"] = [
+        {
+            "id": 4,
+            "type": "dispBeamColumn2d",
+            "nodes": [1, 2],
+            "section": 7,
+            "geomTransf": "Linear",
+            "integration": "Lobatto",
+            "num_int_pts": 3,
+        }
+    ]
+    case_data["analysis"] = {"type": "static_nonlinear", "steps": 1}
+
+    proc, text = _run_json_to_tcl(case_data)
+    assert proc.returncode == 0, proc.stderr
+    assert "beamIntegration Lobatto 1 7 3\n" in text
+    assert "element dispBeamColumn 4 1 2 1 1\n" in text
+
+
+def test_json_to_tcl_rejects_disp_beam_column_alias():
+    case_data = _base_case()
+    case_data["sections"] = [
+        {
+            "id": 3,
+            "type": "ElasticSection2d",
+            "params": {"E": 200000000000.0, "A": 0.02, "I": 0.00008},
+        }
+    ]
+    case_data["elements"] = [
+        {
+            "id": 5,
+            "type": "dispBeamColumn",
+            "nodes": [1, 2],
+            "section": 3,
+            "geomTransf": "Linear",
+            "integration": "Lobatto",
+            "num_int_pts": 5,
+        }
+    ]
+    case_data["analysis"] = {"type": "static_linear", "steps": 1}
+
+    proc, _ = _run_json_to_tcl(case_data)
+    assert proc.returncode != 0
+    assert "unsupported element type: dispBeamColumn" in proc.stderr
+
+
 def test_json_to_tcl_emits_force_beam_column2d_with_elastic_section2d():
     case_data = _base_case()
     case_data["sections"] = [

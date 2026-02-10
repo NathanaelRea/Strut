@@ -269,7 +269,7 @@ fn assemble_global_stiffness_banded_frame2d_typed(
                         u_elem,
                     )
                 else:
-                    abort("forceBeamColumn2d supports geomTransf Linear or PDelta")
+                    abort("forceBeamColumn2d/dispBeamColumn2d supports geomTransf Linear or PDelta")
             else:
                 var sec_index = fiber_section_index_by_id[elem.section]
                 var sec_def = fiber_section_defs[sec_index]
@@ -303,7 +303,10 @@ fn assemble_global_stiffness_banded_frame2d_typed(
                         continue
                     banded_add(K, bw, Aidx, Bidx, k_global[a][b])
         else:
-            abort("typed frame2d banded assembly requires elasticBeamColumn2d or forceBeamColumn2d")
+            abort(
+                "typed frame2d banded assembly requires elasticBeamColumn2d, "
+                "forceBeamColumn2d, or dispBeamColumn2d"
+            )
 
     return K^
 
@@ -573,7 +576,7 @@ fn assemble_global_stiffness_and_internal(
                         u_elem,
                     )
                 else:
-                    abort("forceBeamColumn2d supports geomTransf Linear or PDelta")
+                    abort("forceBeamColumn2d/dispBeamColumn2d supports geomTransf Linear or PDelta")
                 f_global.resize(6, 0.0)
                 for a in range(6):
                     var sum = 0.0
