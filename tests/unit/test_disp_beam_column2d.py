@@ -145,6 +145,23 @@ def test_disp_beam_column2d_rejects_unsupported_geom_transf():
             _run_mojo_case(case_data, out_dir)
 
 
+def test_disp_beam_column2d_rejects_non_lobatto_integration():
+    case_data = _base_case("dispBeamColumn2d")
+    case_data["elements"][0]["integration"] = "Legendre"
+    case_data["analysis"] = {
+        "type": "static_nonlinear",
+        "steps": 1,
+        "max_iters": 20,
+        "tol": 1.0e-10,
+        "integrator": {"type": "LoadControl"},
+    }
+
+    with tempfile.TemporaryDirectory() as tmp:
+        out_dir = Path(tmp)
+        with pytest.raises(subprocess.CalledProcessError):
+            _run_mojo_case(case_data, out_dir)
+
+
 def test_disp_beam_column_alias_rejected():
     case_data = _base_case("dispBeamColumn")
 

@@ -8,6 +8,7 @@ from elements import (
     beam2d_corotational_global_tangent_and_internal,
     beam2d_pdelta_global_stiffness,
     beam3d_global_stiffness,
+    disp_beam_column2d_global_tangent_and_internal,
     force_beam_column2d_global_tangent_and_internal,
     link_global_stiffness,
     quad4_plane_stress_stiffness,
@@ -137,6 +138,9 @@ fn assemble_global_stiffness_banded_frame2d_typed(
     elem_uniaxial_offsets: List[Int],
     elem_uniaxial_counts: List[Int],
     elem_uniaxial_state_ids: List[Int],
+    force_basic_offsets: List[Int],
+    force_basic_counts: List[Int],
+    mut force_basic_q: List[Float64],
     fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
@@ -221,7 +225,10 @@ fn assemble_global_stiffness_banded_frame2d_typed(
                     if Bidx < 0:
                         continue
                     banded_add(K, bw, Aidx, Bidx, k_global[a][b])
-        elif elem.type_tag == ElementTypeTag.ForceBeamColumn2d:
+        elif (
+            elem.type_tag == ElementTypeTag.ForceBeamColumn2d
+            or elem.type_tag == ElementTypeTag.DispBeamColumn2d
+        ):
             var i1 = elem.node_index_1
             var i2 = elem.node_index_2
             var node1 = nodes[i1]
@@ -277,23 +284,45 @@ fn assemble_global_stiffness_banded_frame2d_typed(
                 var elem_offset = elem_uniaxial_offsets[e]
                 var elem_state_count = elem_uniaxial_counts[e]
                 var f_dummy: List[Float64] = []
-                force_beam_column2d_global_tangent_and_internal(
-                    node1.x,
-                    node1.y,
-                    node2.x,
-                    node2.y,
-                    u_elem,
-                    sec_def,
-                    fiber_section_cells,
-                    uniaxial_defs,
-                    uniaxial_states,
-                    elem_uniaxial_state_ids,
-                    elem_offset,
-                    elem_state_count,
-                    elem.num_int_pts,
-                    k_global,
-                    f_dummy,
-                )
+                if elem.type_tag == ElementTypeTag.ForceBeamColumn2d:
+                    force_beam_column2d_global_tangent_and_internal(
+                        node1.x,
+                        node1.y,
+                        node2.x,
+                        node2.y,
+                        u_elem,
+                        sec_def,
+                        fiber_section_cells,
+                        uniaxial_defs,
+                        uniaxial_states,
+                        elem_uniaxial_state_ids,
+                        elem_offset,
+                        elem_state_count,
+                        elem.num_int_pts,
+                        force_basic_q,
+                        force_basic_offsets[e],
+                        force_basic_counts[e],
+                        k_global,
+                        f_dummy,
+                    )
+                else:
+                    disp_beam_column2d_global_tangent_and_internal(
+                        node1.x,
+                        node1.y,
+                        node2.x,
+                        node2.y,
+                        u_elem,
+                        sec_def,
+                        fiber_section_cells,
+                        uniaxial_defs,
+                        uniaxial_states,
+                        elem_uniaxial_state_ids,
+                        elem_offset,
+                        elem_state_count,
+                        elem.num_int_pts,
+                        k_global,
+                        f_dummy,
+                    )
             for a in range(6):
                 var Aidx = free_map[a]
                 if Aidx < 0:
@@ -328,6 +357,9 @@ fn assemble_global_stiffness_typed(
     elem_uniaxial_offsets: List[Int],
     elem_uniaxial_counts: List[Int],
     elem_uniaxial_state_ids: List[Int],
+    force_basic_offsets: List[Int],
+    force_basic_counts: List[Int],
+    mut force_basic_q: List[Float64],
     fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
@@ -356,6 +388,9 @@ fn assemble_global_stiffness_typed(
         elem_uniaxial_offsets,
         elem_uniaxial_counts,
         elem_uniaxial_state_ids,
+        force_basic_offsets,
+        force_basic_counts,
+        force_basic_q,
         fiber_section_defs,
         fiber_section_cells,
         fiber_section_index_by_id,
@@ -381,6 +416,9 @@ fn assemble_internal_forces_typed(
     elem_uniaxial_offsets: List[Int],
     elem_uniaxial_counts: List[Int],
     elem_uniaxial_state_ids: List[Int],
+    force_basic_offsets: List[Int],
+    force_basic_counts: List[Int],
+    mut force_basic_q: List[Float64],
     fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
@@ -409,6 +447,9 @@ fn assemble_internal_forces_typed(
         elem_uniaxial_offsets,
         elem_uniaxial_counts,
         elem_uniaxial_state_ids,
+        force_basic_offsets,
+        force_basic_counts,
+        force_basic_q,
         fiber_section_defs,
         fiber_section_cells,
         fiber_section_index_by_id,
@@ -434,6 +475,9 @@ fn assemble_global_stiffness_and_internal(
     elem_uniaxial_offsets: List[Int],
     elem_uniaxial_counts: List[Int],
     elem_uniaxial_state_ids: List[Int],
+    force_basic_offsets: List[Int],
+    force_basic_counts: List[Int],
+    mut force_basic_q: List[Float64],
     fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
@@ -532,7 +576,10 @@ fn assemble_global_stiffness_and_internal(
                         K[Aidx][Bidx] += kval
                         sum += kval * u[Bidx]
                     F_int[Aidx] += sum
-        elif elem_type == ElementTypeTag.ForceBeamColumn2d:
+        elif (
+            elem_type == ElementTypeTag.ForceBeamColumn2d
+            or elem_type == ElementTypeTag.DispBeamColumn2d
+        ):
             var i1 = elem.node_index_1
             var i2 = elem.node_index_2
             var node1 = nodes[i1]
@@ -589,23 +636,45 @@ fn assemble_global_stiffness_and_internal(
                 var sec_def = fiber_section_defs[sec_index]
                 var elem_offset = elem_uniaxial_offsets[e]
                 var elem_state_count = elem_uniaxial_counts[e]
-                force_beam_column2d_global_tangent_and_internal(
-                    node1.x,
-                    node1.y,
-                    node2.x,
-                    node2.y,
-                    u_elem,
-                    sec_def,
-                    fiber_section_cells,
-                    uniaxial_defs,
-                    uniaxial_states,
-                    elem_uniaxial_state_ids,
-                    elem_offset,
-                    elem_state_count,
-                    elem.num_int_pts,
-                    k_global,
-                    f_global,
-                )
+                if elem_type == ElementTypeTag.ForceBeamColumn2d:
+                    force_beam_column2d_global_tangent_and_internal(
+                        node1.x,
+                        node1.y,
+                        node2.x,
+                        node2.y,
+                        u_elem,
+                        sec_def,
+                        fiber_section_cells,
+                        uniaxial_defs,
+                        uniaxial_states,
+                        elem_uniaxial_state_ids,
+                        elem_offset,
+                        elem_state_count,
+                        elem.num_int_pts,
+                        force_basic_q,
+                        force_basic_offsets[e],
+                        force_basic_counts[e],
+                        k_global,
+                        f_global,
+                    )
+                else:
+                    disp_beam_column2d_global_tangent_and_internal(
+                        node1.x,
+                        node1.y,
+                        node2.x,
+                        node2.y,
+                        u_elem,
+                        sec_def,
+                        fiber_section_cells,
+                        uniaxial_defs,
+                        uniaxial_states,
+                        elem_uniaxial_state_ids,
+                        elem_offset,
+                        elem_state_count,
+                        elem.num_int_pts,
+                        k_global,
+                        f_global,
+                    )
             for a in range(6):
                 var Aidx = dof_map[a]
                 for b in range(6):

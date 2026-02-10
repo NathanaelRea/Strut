@@ -61,6 +61,9 @@ fn run_static_nonlinear_load_control(
     elem_uniaxial_offsets: List[Int],
     elem_uniaxial_counts: List[Int],
     elem_uniaxial_state_ids: List[Int],
+    force_basic_offsets: List[Int],
+    force_basic_counts: List[Int],
+    mut force_basic_q: List[Float64],
     fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
@@ -196,6 +199,9 @@ fn run_static_nonlinear_load_control(
                 elem_uniaxial_offsets,
                 elem_uniaxial_counts,
                 elem_uniaxial_state_ids,
+                force_basic_offsets,
+                force_basic_counts,
+                force_basic_q,
                 fiber_section_defs,
                 fiber_section_cells,
                 fiber_section_index_by_id,
@@ -340,6 +346,9 @@ fn run_static_nonlinear_load_control(
                 elem_uniaxial_offsets,
                 elem_uniaxial_counts,
                 elem_uniaxial_state_ids,
+                force_basic_offsets,
+                force_basic_counts,
+                force_basic_q,
                 fiber_section_defs,
                 fiber_section_cells,
                 fiber_section_index_by_id,
@@ -390,6 +399,9 @@ fn run_static_nonlinear_load_control(
                         elem_uniaxial_offsets,
                         elem_uniaxial_counts,
                         elem_uniaxial_state_ids,
+                    force_basic_offsets,
+                    force_basic_counts,
+                    force_basic_q,
                     )
                     var line = _format_values_line(f_elem)
                     var filename = rec.output + "_ele" + String(elem_id) + ".out"
@@ -458,6 +470,9 @@ fn run_static_nonlinear_load_control(
                         elem_uniaxial_offsets,
                         elem_uniaxial_counts,
                         elem_uniaxial_state_ids,
+                    force_basic_offsets,
+                    force_basic_counts,
+                    force_basic_q,
                     )
                     var filename = rec.output + "_ele" + String(elem_id) + ".out"
                     _update_envelope(
@@ -500,6 +515,9 @@ fn run_static_nonlinear_displacement_control(
     elem_uniaxial_offsets: List[Int],
     elem_uniaxial_counts: List[Int],
     elem_uniaxial_state_ids: List[Int],
+    force_basic_offsets: List[Int],
+    force_basic_counts: List[Int],
+    mut force_basic_q: List[Float64],
     fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
@@ -699,6 +717,9 @@ fn run_static_nonlinear_displacement_control(
                         elem_uniaxial_offsets,
                         elem_uniaxial_counts,
                         elem_uniaxial_state_ids,
+                        force_basic_offsets,
+                        force_basic_counts,
+                        force_basic_q,
                         fiber_section_defs,
                         fiber_section_cells,
                         fiber_section_index_by_id,
@@ -851,6 +872,9 @@ fn run_static_nonlinear_displacement_control(
                 elem_uniaxial_offsets,
                 elem_uniaxial_counts,
                 elem_uniaxial_state_ids,
+                force_basic_offsets,
+                force_basic_counts,
+                force_basic_q,
                 fiber_section_defs,
                 fiber_section_cells,
                 fiber_section_index_by_id,
@@ -902,6 +926,9 @@ fn run_static_nonlinear_displacement_control(
                         elem_uniaxial_offsets,
                         elem_uniaxial_counts,
                         elem_uniaxial_state_ids,
+                    force_basic_offsets,
+                    force_basic_counts,
+                    force_basic_q,
                     )
                     var line = _format_values_line(f_elem)
                     var filename = rec.output + "_ele" + String(elem_id) + ".out"
@@ -970,6 +997,9 @@ fn run_static_nonlinear_displacement_control(
                         elem_uniaxial_offsets,
                         elem_uniaxial_counts,
                         elem_uniaxial_state_ids,
+                    force_basic_offsets,
+                    force_basic_counts,
+                    force_basic_q,
                     )
                     var filename = rec.output + "_ele" + String(elem_id) + ".out"
                     _update_envelope(

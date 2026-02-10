@@ -7,6 +7,7 @@ from elements import (
     beam2d_pdelta_global_stiffness,
     beam_global_stiffness,
     beam_uniform_load_global,
+    disp_beam_column2d_global_tangent_and_internal,
     force_beam_column2d_global_tangent_and_internal,
 )
 from materials import UniMaterialDef, UniMaterialState, uniaxial_set_trial_strain
@@ -218,6 +219,9 @@ fn _force_beam_column2d_element_force_global(
     elem_uniaxial_offsets: List[Int],
     elem_uniaxial_counts: List[Int],
     elem_uniaxial_state_ids: List[Int],
+    force_basic_offsets: List[Int],
+    force_basic_counts: List[Int],
+    mut force_basic_q: List[Float64],
 ) raises -> List[Float64]:
     var beam_col_type = elem.type
     if ndf != 3:
@@ -310,6 +314,122 @@ fn _force_beam_column2d_element_force_global(
         elem_offset,
         elem_state_count,
         num_int_pts,
+        force_basic_q,
+        force_basic_offsets[elem_index],
+        force_basic_counts[elem_index],
+        k_dummy,
+        f_global,
+    )
+    return f_global^
+
+
+fn _disp_beam_column2d_element_force_global(
+    elem_index: Int,
+    elem: ElementInput,
+    nodes: List[NodeInput],
+    sections_by_id: List[SectionInput],
+    ndf: Int,
+    u: List[Float64],
+    fiber_section_defs: List[FiberSection2dDef],
+    fiber_section_cells: List[FiberCell],
+    fiber_section_index_by_id: List[Int],
+    uniaxial_defs: List[UniMaterialDef],
+    mut uniaxial_states: List[UniMaterialState],
+    elem_uniaxial_offsets: List[Int],
+    elem_uniaxial_counts: List[Int],
+    elem_uniaxial_state_ids: List[Int],
+) raises -> List[Float64]:
+    var beam_col_type = elem.type
+    if ndf != 3:
+        abort(beam_col_type + " requires ndf=3")
+    var geom = elem.geom_transf
+    if geom != "Linear" and geom != "PDelta":
+        abort(beam_col_type + " supports geomTransf Linear or PDelta")
+    var integration = elem.integration
+    if integration != "Lobatto":
+        abort(beam_col_type + " supports Lobatto integration only")
+    var num_int_pts = elem.num_int_pts
+    if num_int_pts != 3 and num_int_pts != 5:
+        abort(beam_col_type + " supports num_int_pts=3 or 5")
+
+    var i1 = elem.node_index_1
+    var i2 = elem.node_index_2
+    var node1 = nodes[i1]
+    var node2 = nodes[i2]
+    var dof_map = [
+        node_dof_index(i1, 1, ndf),
+        node_dof_index(i1, 2, ndf),
+        node_dof_index(i1, 3, ndf),
+        node_dof_index(i2, 1, ndf),
+        node_dof_index(i2, 2, ndf),
+        node_dof_index(i2, 3, ndf),
+    ]
+    var u_elem: List[Float64] = []
+    u_elem.resize(6, 0.0)
+    for i in range(6):
+        u_elem[i] = u[dof_map[i]]
+    var sec = sections_by_id[elem.section]
+
+    if sec.type == "ElasticSection2d":
+        var k_global: List[List[Float64]] = []
+        if geom == "Linear":
+            k_global = beam_global_stiffness(
+                sec.E,
+                sec.A,
+                sec.I,
+                node1.x,
+                node1.y,
+                node2.x,
+                node2.y,
+            )
+        elif geom == "PDelta":
+            k_global = beam2d_pdelta_global_stiffness(
+                sec.E,
+                sec.A,
+                sec.I,
+                node1.x,
+                node1.y,
+                node2.x,
+                node2.y,
+                u_elem,
+            )
+        else:
+            abort(beam_col_type + " supports geomTransf Linear or PDelta")
+        var f_global_elastic: List[Float64] = []
+        f_global_elastic.resize(6, 0.0)
+        for a in range(6):
+            var sum = 0.0
+            for b in range(6):
+                sum += k_global[a][b] * u_elem[b]
+            f_global_elastic[a] = sum
+        return f_global_elastic^
+
+    var sec_id = elem.section
+    if sec_id >= len(fiber_section_index_by_id):
+        abort(beam_col_type + " section not found")
+    var sec_index = fiber_section_index_by_id[sec_id]
+    if sec_index < 0 or sec_index >= len(fiber_section_defs):
+        abort(beam_col_type + " fiber section not found")
+    var sec_def = fiber_section_defs[sec_index]
+
+    var elem_offset = elem_uniaxial_offsets[elem_index]
+    var elem_state_count = elem_uniaxial_counts[elem_index]
+    var k_dummy: List[List[Float64]] = []
+    var f_global: List[Float64] = []
+    disp_beam_column2d_global_tangent_and_internal(
+        node1.x,
+        node1.y,
+        node2.x,
+        node2.y,
+        u_elem,
+        sec_def,
+        fiber_section_cells,
+        uniaxial_defs,
+        uniaxial_states,
+        elem_uniaxial_state_ids,
+        elem_offset,
+        elem_state_count,
+        num_int_pts,
         k_dummy,
         f_global,
     )
@@ -365,6 +485,9 @@ fn _element_force_global_for_recorder(
     elem_uniaxial_offsets: List[Int],
     elem_uniaxial_counts: List[Int],
     elem_uniaxial_state_ids: List[Int],
+    force_basic_offsets: List[Int],
+    force_basic_counts: List[Int],
+    mut force_basic_q: List[Float64],
 ) raises -> List[Float64]:
     if elem.type_tag == ElementTypeTag.ElasticBeamColumn2d:
         return _beam2d_element_force_global(
@@ -376,6 +499,26 @@ fn _element_force_global_for_recorder(
         )
     if elem.type_tag == ElementTypeTag.ForceBeamColumn2d:
         return _force_beam_column2d_element_force_global(
+            elem_index,
+            elem,
+            nodes,
+            sections_by_id,
+            ndf,
+            u,
+            fiber_section_defs,
+            fiber_section_cells,
+            fiber_section_index_by_id,
+            uniaxial_defs,
+            uniaxial_states,
+            elem_uniaxial_offsets,
+            elem_uniaxial_counts,
+            elem_uniaxial_state_ids,
+            force_basic_offsets,
+            force_basic_counts,
+            force_basic_q,
+        )
+    if elem.type_tag == ElementTypeTag.DispBeamColumn2d:
+        return _disp_beam_column2d_element_force_global(
             elem_index,
             elem,
             nodes,

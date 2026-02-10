@@ -59,6 +59,9 @@ fn run_transient_linear(
     elem_uniaxial_offsets: List[Int],
     elem_uniaxial_counts: List[Int],
     elem_uniaxial_state_ids: List[Int],
+    force_basic_offsets: List[Int],
+    force_basic_counts: List[Int],
+    mut force_basic_q: List[Float64],
     mut F_total: List[Float64],
     M_total: List[Float64],
     free: List[Int],
@@ -124,6 +127,9 @@ fn run_transient_linear(
         elem_uniaxial_offsets,
         elem_uniaxial_counts,
         elem_uniaxial_state_ids,
+        force_basic_offsets,
+        force_basic_counts,
+        force_basic_q,
         fiber_section_defs,
         fiber_section_cells,
         fiber_section_index_by_id,
@@ -274,6 +280,9 @@ fn run_transient_linear(
                 elem_uniaxial_offsets,
                 elem_uniaxial_counts,
                 elem_uniaxial_state_ids,
+                force_basic_offsets,
+                force_basic_counts,
+                force_basic_q,
                 fiber_section_defs,
                 fiber_section_cells,
                 fiber_section_index_by_id,
@@ -331,6 +340,9 @@ fn run_transient_linear(
                                 elem_uniaxial_offsets,
                                 elem_uniaxial_counts,
                                 elem_uniaxial_state_ids,
+                                force_basic_offsets,
+                                force_basic_counts,
+                                force_basic_q,
                             )
                         )
                         elem_force_cached[elem_index] = True
@@ -400,6 +412,9 @@ fn run_transient_linear(
                                 elem_uniaxial_offsets,
                                 elem_uniaxial_counts,
                                 elem_uniaxial_state_ids,
+                                force_basic_offsets,
+                                force_basic_counts,
+                                force_basic_q,
                             )
                         )
                         elem_force_cached[elem_index] = True

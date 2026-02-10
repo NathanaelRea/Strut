@@ -54,6 +54,9 @@ struct RunCaseState(Movable):
     var elem_uniaxial_offsets: List[Int]
     var elem_uniaxial_counts: List[Int]
     var elem_uniaxial_state_ids: List[Int]
+    var force_basic_offsets: List[Int]
+    var force_basic_counts: List[Int]
+    var force_basic_q: List[Float64]
 
     var total_dofs: Int
     var F_total: List[Float64]
@@ -112,6 +115,9 @@ struct RunCaseState(Movable):
         self.elem_uniaxial_offsets = []
         self.elem_uniaxial_counts = []
         self.elem_uniaxial_state_ids = []
+        self.force_basic_offsets = []
+        self.force_basic_counts = []
+        self.force_basic_q = []
         self.total_dofs = 0
         self.F_total = []
         self.constrained = []
@@ -555,27 +561,55 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
             _set_elem_dof(elem, 5, node_dof_index(elem.node_index_2, 3, ndf))
         elif elem.type_tag == ElementTypeTag.ForceBeamColumn2d:
             has_force_beam_column2d = True
-            var beam_col_type = elem.type
             if ndm != 2 or ndf != 3:
-                abort(beam_col_type + " requires ndm=2, ndf=3")
+                abort("forceBeamColumn2d requires ndm=2, ndf=3")
             if elem.node_count != 2:
-                abort(beam_col_type + " requires 2 nodes")
+                abort("forceBeamColumn2d requires 2 nodes")
             if (
                 elem.geom_tag != GeomTransfTag.Linear
                 and elem.geom_tag != GeomTransfTag.PDelta
             ):
-                abort(beam_col_type + " supports geomTransf Linear or PDelta")
+                abort("forceBeamColumn2d supports geomTransf Linear or PDelta")
             if elem.integration != "Lobatto":
-                abort(beam_col_type + " supports Lobatto integration only")
+                abort("forceBeamColumn2d supports Lobatto integration only")
             if elem.num_int_pts != 3 and elem.num_int_pts != 5:
-                abort(beam_col_type + " supports num_int_pts=3 or 5")
+                abort("forceBeamColumn2d supports num_int_pts=3 or 5")
             if elem.section < 0 or elem.section >= len(typed_sections_by_id):
-                abort(beam_col_type + " section not found")
+                abort("forceBeamColumn2d section not found")
             var sec = typed_sections_by_id[elem.section]
             if sec.id < 0:
-                abort(beam_col_type + " section not found")
+                abort("forceBeamColumn2d section not found")
             if sec.type != "FiberSection2d" and sec.type != "ElasticSection2d":
-                abort(beam_col_type + " requires FiberSection2d or ElasticSection2d")
+                abort("forceBeamColumn2d requires FiberSection2d or ElasticSection2d")
+            elem.dof_count = 6
+            _set_elem_dof(elem, 0, node_dof_index(elem.node_index_1, 1, ndf))
+            _set_elem_dof(elem, 1, node_dof_index(elem.node_index_1, 2, ndf))
+            _set_elem_dof(elem, 2, node_dof_index(elem.node_index_1, 3, ndf))
+            _set_elem_dof(elem, 3, node_dof_index(elem.node_index_2, 1, ndf))
+            _set_elem_dof(elem, 4, node_dof_index(elem.node_index_2, 2, ndf))
+            _set_elem_dof(elem, 5, node_dof_index(elem.node_index_2, 3, ndf))
+        elif elem.type_tag == ElementTypeTag.DispBeamColumn2d:
+            has_force_beam_column2d = True
+            if ndm != 2 or ndf != 3:
+                abort("dispBeamColumn2d requires ndm=2, ndf=3")
+            if elem.node_count != 2:
+                abort("dispBeamColumn2d requires 2 nodes")
+            if (
+                elem.geom_tag != GeomTransfTag.Linear
+                and elem.geom_tag != GeomTransfTag.PDelta
+            ):
+                abort("dispBeamColumn2d supports geomTransf Linear or PDelta")
+            if elem.integration != "Lobatto":
+                abort("dispBeamColumn2d supports Lobatto integration only")
+            if elem.num_int_pts != 3 and elem.num_int_pts != 5:
+                abort("dispBeamColumn2d supports num_int_pts=3 or 5")
+            if elem.section < 0 or elem.section >= len(typed_sections_by_id):
+                abort("dispBeamColumn2d section not found")
+            var sec = typed_sections_by_id[elem.section]
+            if sec.id < 0:
+                abort("dispBeamColumn2d section not found")
+            if sec.type != "FiberSection2d" and sec.type != "ElasticSection2d":
+                abort("dispBeamColumn2d requires FiberSection2d or ElasticSection2d")
             elem.dof_count = 6
             _set_elem_dof(elem, 0, node_dof_index(elem.node_index_1, 1, ndf))
             _set_elem_dof(elem, 1, node_dof_index(elem.node_index_1, 2, ndf))
@@ -714,12 +748,19 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
     var elem_uniaxial_offsets: List[Int] = []
     var elem_uniaxial_counts: List[Int] = []
     var elem_uniaxial_state_ids: List[Int] = []
+    var force_basic_offsets: List[Int] = []
+    var force_basic_counts: List[Int] = []
+    var force_basic_q: List[Float64] = []
     elem_uniaxial_offsets.resize(elem_count, 0)
     elem_uniaxial_counts.resize(elem_count, 0)
+    force_basic_offsets.resize(elem_count, 0)
+    force_basic_counts.resize(elem_count, 0)
     var used_nonelastic_uniaxial = False
     var force_beam_has_nonelastic = False
     for e in range(elem_count):
         var elem = typed_elements[e]
+        force_basic_offsets[e] = len(force_basic_q)
+        force_basic_counts[e] = 0
         if elem.type_tag == ElementTypeTag.Truss:
             var mat_id = elem.material
             if mat_id >= len(uniaxial_def_by_id) or uniaxial_def_by_id[mat_id] < 0:
@@ -750,6 +791,42 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
                 if not uni_mat_is_elastic(mat_def):
                     used_nonelastic_uniaxial = True
         elif elem.type_tag == ElementTypeTag.ForceBeamColumn2d:
+            force_basic_offsets[e] = len(force_basic_q)
+            force_basic_counts[e] = 3
+            force_basic_q.append(0.0)
+            force_basic_q.append(0.0)
+            force_basic_q.append(0.0)
+            var sec_id = elem.section
+            elem_uniaxial_offsets[e] = len(elem_uniaxial_state_ids)
+            var sec = typed_sections_by_id[sec_id]
+            var beam_col_type = elem.type
+            if sec.type == "FiberSection2d":
+                var sec_index = fiber_section_index_by_id[sec_id]
+                if sec_index < 0 or sec_index >= len(fiber_section_defs):
+                    abort(beam_col_type + " fiber section not found")
+                var sec_def = fiber_section_defs[sec_index]
+                var num_int_pts = elem.num_int_pts
+                var state_count = num_int_pts * sec_def.fiber_count
+                elem_uniaxial_counts[e] = state_count
+                for _ in range(num_int_pts):
+                    for i in range(sec_def.fiber_count):
+                        var cell = fiber_section_cells[sec_def.fiber_offset + i]
+                        var def_index = cell.def_index
+                        if def_index < 0 or def_index >= len(uniaxial_defs):
+                            abort(beam_col_type + " fiber material definition out of range")
+                        var mat_def = uniaxial_defs[def_index]
+                        var state_index = len(uniaxial_states)
+                        uniaxial_states.append(UniMaterialState(mat_def))
+                        uniaxial_state_defs.append(def_index)
+                        elem_uniaxial_state_ids.append(state_index)
+                        if not uni_mat_is_elastic(mat_def):
+                            used_nonelastic_uniaxial = True
+                            force_beam_has_nonelastic = True
+            elif sec.type == "ElasticSection2d":
+                elem_uniaxial_counts[e] = 0
+            else:
+                abort(beam_col_type + " requires FiberSection2d or ElasticSection2d")
+        elif elem.type_tag == ElementTypeTag.DispBeamColumn2d:
             var sec_id = elem.section
             elem_uniaxial_offsets[e] = len(elem_uniaxial_state_ids)
             var sec = typed_sections_by_id[sec_id]
@@ -1240,6 +1317,9 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
     state.elem_uniaxial_offsets = elem_uniaxial_offsets^
     state.elem_uniaxial_counts = elem_uniaxial_counts^
     state.elem_uniaxial_state_ids = elem_uniaxial_state_ids^
+    state.force_basic_offsets = force_basic_offsets^
+    state.force_basic_counts = force_basic_counts^
+    state.force_basic_q = force_basic_q^
     state.total_dofs = total_dofs
     state.F_total = F_total^
     state.constrained = constrained^

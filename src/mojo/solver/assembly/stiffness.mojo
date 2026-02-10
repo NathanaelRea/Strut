@@ -9,6 +9,7 @@ from elements import (
     beam2d_corotational_global_internal_force,
     beam2d_pdelta_global_stiffness,
     beam3d_global_stiffness,
+    disp_beam_column2d_global_tangent_and_internal,
     force_beam_column2d_global_tangent_and_internal,
     link_global_stiffness,
     quad4_plane_stress_stiffness,
@@ -155,18 +156,18 @@ fn assemble_global_stiffness(
                 for b in range(6):
                     var Bidx = dof_map[b]
                     K[Aidx][Bidx] += k_global[a][b]
-        elif elem_type == "forceBeamColumn2d":
+        elif elem_type == "forceBeamColumn2d" or elem_type == "dispBeamColumn2d":
             if ndf != 3:
-                abort("forceBeamColumn2d requires ndf=3")
+                abort(elem_type + " requires ndf=3")
             var geom = String(elem.get("geomTransf", "Linear"))
             if geom != "Linear" and geom != "PDelta":
-                abort("forceBeamColumn2d supports geomTransf Linear or PDelta")
+                abort(elem_type + " supports geomTransf Linear or PDelta")
             var integration = String(elem.get("integration", "Lobatto"))
             if integration != "Lobatto":
-                abort("forceBeamColumn2d supports Lobatto integration only")
+                abort(elem_type + " supports Lobatto integration only")
             var num_int_pts = Int(elem.get("num_int_pts", 3))
             if num_int_pts != 3 and num_int_pts != 5:
-                abort("forceBeamColumn2d supports num_int_pts=3 or 5")
+                abort(elem_type + " supports num_int_pts=3 or 5")
 
             var n1 = Int(elem["nodes"][0])
             var n2 = Int(elem["nodes"][1])
@@ -177,10 +178,10 @@ fn assemble_global_stiffness(
 
             var sec_id = Int(elem["section"])
             if sec_id >= len(sections_by_id):
-                abort("forceBeamColumn2d section not found")
+                abort(elem_type + " section not found")
             var sec = sections_by_id[sec_id]
             if sec is None:
-                abort("forceBeamColumn2d section not found")
+                abort(elem_type + " section not found")
 
             var dof_map = [
                 node_dof_index(i1, 1, ndf),
@@ -223,32 +224,55 @@ fn assemble_global_stiffness(
                         u_elem,
                     )
                 else:
-                    abort("forceBeamColumn2d supports geomTransf Linear or PDelta")
+                    abort(elem_type + " supports geomTransf Linear or PDelta")
             else:
                 var sec_index = fiber_section_index_by_id[sec_id]
                 if sec_index < 0 or sec_index >= len(fiber_section_defs):
-                    abort("forceBeamColumn2d requires FiberSection2d or ElasticSection2d")
+                    abort(elem_type + " requires FiberSection2d or ElasticSection2d")
                 var sec_def = fiber_section_defs[sec_index]
                 var elem_offset = elem_uniaxial_offsets[e]
                 var elem_state_count = elem_uniaxial_counts[e]
                 var f_dummy: List[Float64] = []
-                force_beam_column2d_global_tangent_and_internal(
-                    Float64(node1["x"]),
-                    Float64(node1["y"]),
-                    Float64(node2["x"]),
-                    Float64(node2["y"]),
-                    u_elem,
-                    sec_def,
-                    fiber_section_cells,
-                    uniaxial_defs,
-                    uniaxial_states,
-                    elem_uniaxial_state_ids,
-                    elem_offset,
-                    elem_state_count,
-                    num_int_pts,
-                    k_global,
-                    f_dummy,
-                )
+                if elem_type == "forceBeamColumn2d":
+                    var force_q_state: List[Float64] = [0.0, 0.0, 0.0]
+                    force_beam_column2d_global_tangent_and_internal(
+                        Float64(node1["x"]),
+                        Float64(node1["y"]),
+                        Float64(node2["x"]),
+                        Float64(node2["y"]),
+                        u_elem,
+                        sec_def,
+                        fiber_section_cells,
+                        uniaxial_defs,
+                        uniaxial_states,
+                        elem_uniaxial_state_ids,
+                        elem_offset,
+                        elem_state_count,
+                        num_int_pts,
+                        force_q_state,
+                        0,
+                        3,
+                        k_global,
+                        f_dummy,
+                    )
+                else:
+                    disp_beam_column2d_global_tangent_and_internal(
+                        Float64(node1["x"]),
+                        Float64(node1["y"]),
+                        Float64(node2["x"]),
+                        Float64(node2["y"]),
+                        u_elem,
+                        sec_def,
+                        fiber_section_cells,
+                        uniaxial_defs,
+                        uniaxial_states,
+                        elem_uniaxial_state_ids,
+                        elem_offset,
+                        elem_state_count,
+                        num_int_pts,
+                        k_global,
+                        f_dummy,
+                    )
 
             for a in range(6):
                 var Aidx = dof_map[a]

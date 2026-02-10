@@ -123,6 +123,9 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
     var elem_uniaxial_offsets = state.elem_uniaxial_offsets.copy()
     var elem_uniaxial_counts = state.elem_uniaxial_counts.copy()
     var elem_uniaxial_state_ids = state.elem_uniaxial_state_ids.copy()
+    var force_basic_offsets = state.force_basic_offsets.copy()
+    var force_basic_counts = state.force_basic_counts.copy()
+    var force_basic_q = state.force_basic_q.copy()
     var F_total = state.F_total.copy()
     var constrained = state.constrained.copy()
     var free = state.free.copy()
@@ -164,6 +167,9 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
             elem_uniaxial_offsets,
             elem_uniaxial_counts,
             elem_uniaxial_state_ids,
+            force_basic_offsets,
+            force_basic_counts,
+            force_basic_q,
             fiber_section_defs,
             fiber_section_cells,
             fiber_section_index_by_id,
@@ -213,6 +219,9 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
                 elem_uniaxial_offsets,
                 elem_uniaxial_counts,
                 elem_uniaxial_state_ids,
+                force_basic_offsets,
+                force_basic_counts,
+                force_basic_q,
                 fiber_section_defs,
                 fiber_section_cells,
                 fiber_section_index_by_id,
@@ -263,6 +272,9 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
                 elem_uniaxial_offsets,
                 elem_uniaxial_counts,
                 elem_uniaxial_state_ids,
+                force_basic_offsets,
+                force_basic_counts,
+                force_basic_q,
                 fiber_section_defs,
                 fiber_section_cells,
                 fiber_section_index_by_id,
@@ -322,6 +334,9 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
             elem_uniaxial_offsets,
             elem_uniaxial_counts,
             elem_uniaxial_state_ids,
+            force_basic_offsets,
+            force_basic_counts,
+            force_basic_q,
             F_total,
             M_total,
             free,
@@ -370,6 +385,9 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
             elem_uniaxial_offsets,
             elem_uniaxial_counts,
             elem_uniaxial_state_ids,
+            force_basic_offsets,
+            force_basic_counts,
+            force_basic_q,
             F_total,
             M_total,
             free,
@@ -406,6 +424,9 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
             elem_uniaxial_offsets,
             elem_uniaxial_counts,
             elem_uniaxial_state_ids,
+            force_basic_offsets,
+            force_basic_counts,
+            force_basic_q,
             fiber_section_defs,
             fiber_section_cells,
             fiber_section_index_by_id,
@@ -468,6 +489,9 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
                 elem_uniaxial_offsets,
                 elem_uniaxial_counts,
                 elem_uniaxial_state_ids,
+                force_basic_offsets,
+                force_basic_counts,
+                force_basic_q,
                 fiber_section_defs,
                 fiber_section_cells,
                 fiber_section_index_by_id,
@@ -518,6 +542,9 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
                         elem_uniaxial_offsets,
                         elem_uniaxial_counts,
                         elem_uniaxial_state_ids,
+                        force_basic_offsets,
+                        force_basic_counts,
+                        force_basic_q,
                     )
                     var line = _format_values_line(f_elem)
                     var filename = rec.output + "_ele" + String(elem_id) + ".out"
@@ -574,6 +601,9 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
                         elem_uniaxial_offsets,
                         elem_uniaxial_counts,
                         elem_uniaxial_state_ids,
+                        force_basic_offsets,
+                        force_basic_counts,
+                        force_basic_q,
                     )
                     var filename = rec.output + "_ele" + String(elem_id) + ".out"
                     _update_envelope(

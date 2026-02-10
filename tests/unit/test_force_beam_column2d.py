@@ -261,3 +261,37 @@ def test_force_beam_column2d_with_elastic_section2d_static_linear_runs():
     assert len(rows) == 1
     assert len(rows[0]) == 6
     assert all(math.isfinite(value) for value in rows[0])
+
+
+def test_force_beam_column2d_rejects_unsupported_geom_transf():
+    case_data = _base_force_beam_case(
+        {"id": 1, "type": "Elastic", "params": {"E": 30000000000.0}}
+    )
+    case_data["elements"][0]["geomTransf"] = "Corotational"
+    case_data["analysis"] = {
+        "type": "static_nonlinear",
+        "steps": 1,
+        "integrator": {"type": "LoadControl"},
+    }
+
+    with tempfile.TemporaryDirectory() as tmp:
+        out_dir = Path(tmp)
+        with pytest.raises(subprocess.CalledProcessError):
+            _run_mojo_case(case_data, out_dir)
+
+
+def test_force_beam_column2d_rejects_non_lobatto_integration():
+    case_data = _base_force_beam_case(
+        {"id": 1, "type": "Elastic", "params": {"E": 30000000000.0}}
+    )
+    case_data["elements"][0]["integration"] = "Legendre"
+    case_data["analysis"] = {
+        "type": "static_nonlinear",
+        "steps": 1,
+        "integrator": {"type": "LoadControl"},
+    }
+
+    with tempfile.TemporaryDirectory() as tmp:
+        out_dir = Path(tmp)
+        with pytest.raises(subprocess.CalledProcessError):
+            _run_mojo_case(case_data, out_dir)

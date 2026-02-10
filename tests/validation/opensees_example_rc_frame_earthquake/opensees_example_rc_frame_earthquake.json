@@ -1,6 +1,7 @@
 {
   "schema_version": "1.0",
-  "enabled": false,
+  "enabled": true,
+  "benchmark_size": "medium",
   "status": "todo",
   "metadata": {
     "name": "opensees_example_rc_frame_earthquake",
@@ -152,8 +153,8 @@
     "betaKComm": 0.000625
   },
   "parity_tolerance": {
-    "rtol": 0.25,
-    "atol": 1.0e-7
+    "rtol": 1.0e-3,
+    "atol": 1.0e-3
   },
   "parity_mode": "max_abs",
   "analysis": {

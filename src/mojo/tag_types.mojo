@@ -2,12 +2,13 @@ struct ElementTypeTag:
     alias Unknown = 0
     alias ElasticBeamColumn2d = 1
     alias ForceBeamColumn2d = 2
-    alias ElasticBeamColumn3d = 3
-    alias Truss = 4
-    alias Link = 5
-    alias FourNodeQuad = 6
-    alias Shell = 7
-    alias ZeroLengthSection = 8
+    alias DispBeamColumn2d = 3
+    alias ElasticBeamColumn3d = 4
+    alias Truss = 5
+    alias Link = 6
+    alias FourNodeQuad = 7
+    alias Shell = 8
+    alias ZeroLengthSection = 9
 
 
 struct GeomTransfTag:
