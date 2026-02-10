@@ -125,8 +125,8 @@ The following are major OpenSees element families to consider. This list is base
 
 - [ ] `beam2d`.
 - [ ] `beam3d`.
-- [ ] `elasticBeamColumn`.
-- [ ] `forceBeamColumn`.
+- [x] `elasticBeamColumn`.
+- [x] `forceBeamColumn`.
 - [ ] `dispBeamColumn`.
 - [ ] `dispBeamColumnInt`.
 - [ ] `mixedBeamColumn`.
@@ -134,7 +134,7 @@ The following are major OpenSees element families to consider. This list is base
 - [ ] `updatedLagrangianBeamColumn`.
 - [ ] `gradientInelasticBeamColumn`.
 - [ ] `beamWithHinges`.
-- [ ] `truss`.
+- [x] `truss`.
 - [x] `twoNodeLink`.
 - [x] `zeroLength`.
 - [x] `fourNodeQuad`.
@@ -167,9 +167,11 @@ The following are major OpenSees element families to consider. This list is base
 
 ### C. Dynamics and Earthquake Features
 
-- [ ] Time integration (Newmark, HHT, etc.).
-- [ ] Ground motion inputs and multi-support excitation.
-- [ ] Nonlinear transient analysis and damping models.
+- [x] Time integration baseline: `Newmark`.
+- [ ] Additional time integrators (e.g., `HHT`).
+- [x] Ground motion input baseline: `UniformExcitation` (single-support).
+- [ ] Multi-support excitation.
+- [x] Nonlinear transient analysis with Rayleigh damping baseline.
 
 ### D. GPU Acceleration
 
