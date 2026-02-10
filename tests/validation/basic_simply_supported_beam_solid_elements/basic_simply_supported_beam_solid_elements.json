@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "enabled": false,
+  "enabled": true,
   "status": "todo",
   "metadata": {
     "name": "basic_simply_supported_beam_solid_elements",
@@ -10,13 +10,13 @@
   "notes": "Simply supported beam modeled with 2D solid elements.",
   "model": {
     "ndm": 2,
-    "ndf": 2
+    "ndf": 3
   },
   "opensees": {
     "model_builder": {
       "type": "BasicBuilder",
       "ndm": 2,
-      "ndf": 2
+      "ndf": 3
     },
     "analysis": {
       "constraints": "Plain",
@@ -32,10 +32,7 @@
       "id": 1,
       "x": 0.0,
       "y": 0.0,
-      "constraints": [
-        1,
-        2
-      ]
+      "constraints": [1, 2, 3]
     },
     {
       "id": 2,
@@ -67,10 +64,7 @@
     {
       "id": 1,
       "type": "elasticBeamColumn2d",
-      "nodes": [
-        1,
-        2
-      ],
+      "nodes": [1, 2],
       "section": 1,
       "geomTransf": "Linear"
     }
@@ -89,14 +83,8 @@
   "recorders": [
     {
       "type": "node_displacement",
-      "nodes": [
-        1,
-        2
-      ],
-      "dofs": [
-        1,
-        2
-      ],
+      "nodes": [1, 2],
+      "dofs": [1, 2],
       "output": "node_disp"
     }
   ]

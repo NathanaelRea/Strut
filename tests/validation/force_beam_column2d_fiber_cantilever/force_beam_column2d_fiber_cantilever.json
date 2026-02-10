@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "enabled": false,
+  "enabled": true,
   "status": "wip",
   "metadata": {
     "name": "force_beam_column2d_fiber_cantilever",
@@ -11,11 +11,15 @@
     "ndf": 3
   },
   "nodes": [
-    {"id": 1, "x": 0.0, "y": 0.0, "constraints": [1, 2, 3]},
-    {"id": 2, "x": 4.0, "y": 0.0}
+    { "id": 1, "x": 0.0, "y": 0.0, "constraints": [1, 2, 3] },
+    { "id": 2, "x": 4.0, "y": 0.0 }
   ],
   "materials": [
-    {"id": 1, "type": "Steel01", "params": {"Fy": 350000000.0, "E0": 200000000000.0, "b": 0.01}}
+    {
+      "id": 1,
+      "type": "Steel01",
+      "params": { "Fy": 350000000.0, "E0": 200000000000.0, "b": 0.01 }
+    }
   ],
   "sections": [
     {
@@ -49,14 +53,12 @@
       "num_int_pts": 3
     }
   ],
-  "loads": [
-    {"node": 2, "dof": 2, "value": 1.0}
-  ],
+  "loads": [{ "node": 2, "dof": 2, "value": 1.0 }],
   "analysis": {
     "type": "static_nonlinear",
     "steps": 3,
     "max_iters": 40,
-    "tol": 1.0e-10,
+    "tol": 1.0e-8,
     "rel_tol": 1.0e-8,
     "integrator": {
       "type": "DisplacementControl",
@@ -68,7 +70,12 @@
     }
   },
   "recorders": [
-    {"type": "node_displacement", "nodes": [2], "dofs": [1, 2, 3], "output": "node_disp"},
-    {"type": "element_force", "elements": [1], "output": "element_force"}
+    {
+      "type": "node_displacement",
+      "nodes": [2],
+      "dofs": [1, 2, 3],
+      "output": "node_disp"
+    },
+    { "type": "element_force", "elements": [1], "output": "element_force" }
   ]
 }

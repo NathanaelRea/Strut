@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "enabled": false,
+  "enabled": true,
   "status": "todo",
   "metadata": {
     "name": "basic_truss_example",
@@ -10,13 +10,13 @@
   "notes": "Basic truss example with 4 nodes, 3 truss elements, single load at node 4.",
   "model": {
     "ndm": 2,
-    "ndf": 2
+    "ndf": 3
   },
   "opensees": {
     "model_builder": {
       "type": "BasicBuilder",
       "ndm": 2,
-      "ndf": 2
+      "ndf": 3
     },
     "time_series": {
       "type": "Linear",
@@ -41,10 +41,7 @@
       "id": 1,
       "x": 0.0,
       "y": 0.0,
-      "constraints": [
-        1,
-        2
-      ]
+      "constraints": [1, 2, 3]
     },
     {
       "id": 2,
@@ -76,10 +73,7 @@
     {
       "id": 1,
       "type": "elasticBeamColumn2d",
-      "nodes": [
-        1,
-        2
-      ],
+      "nodes": [1, 2],
       "section": 1,
       "geomTransf": "Linear"
     }
@@ -98,14 +92,8 @@
   "recorders": [
     {
       "type": "node_displacement",
-      "nodes": [
-        1,
-        2
-      ],
-      "dofs": [
-        1,
-        2
-      ],
+      "nodes": [1, 2],
+      "dofs": [1, 2],
       "output": "node_disp"
     }
   ]

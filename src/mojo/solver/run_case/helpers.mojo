@@ -8,7 +8,7 @@ from elements import (
     beam_global_stiffness,
     force_beam_column2d_global_tangent_and_internal,
 )
-from materials import UniMaterialDef, UniMaterialState
+from materials import UniMaterialDef, UniMaterialState, uniaxial_set_trial_strain
 from solver.dof import node_dof_index, require_dof_in_range
 from solver.run_case.input_types import (
     ElementInput,
@@ -115,7 +115,10 @@ fn _truss_element_force_global(
     elem: ElementInput,
     nodes: List[NodeInput],
     ndf: Int,
-    uniaxial_states: List[UniMaterialState],
+    u: List[Float64],
+    uniaxial_defs: List[UniMaterialDef],
+    uniaxial_state_defs: List[Int],
+    mut uniaxial_states: List[UniMaterialState],
     elem_uniaxial_offsets: List[Int],
     elem_uniaxial_counts: List[Int],
     elem_uniaxial_state_ids: List[Int],
@@ -132,9 +135,10 @@ fn _truss_element_force_global(
     if count != 1:
         abort("truss requires one uniaxial material")
     var state_index = elem_uniaxial_state_ids[offset]
+    var def_index = uniaxial_state_defs[state_index]
+    var mat_def = uniaxial_defs[def_index]
     var state = uniaxial_states[state_index]
     var A = elem.area
-    var N = state.sig_c * A
 
     if ndf == 2:
         var dx = node2.x - node1.x
@@ -144,6 +148,19 @@ fn _truss_element_force_global(
             abort("zero-length element")
         var c = dx / L
         var s = dy / L
+        var dof_map = [
+            node_dof_index(i1, 1, ndf),
+            node_dof_index(i1, 2, ndf),
+            node_dof_index(i2, 1, ndf),
+            node_dof_index(i2, 2, ndf),
+        ]
+        var du = (u[dof_map[2]] - u[dof_map[0]]) * c + (
+            u[dof_map[3]] - u[dof_map[1]]
+        ) * s
+        var eps = du / L
+        uniaxial_set_trial_strain(mat_def, state, eps)
+        uniaxial_states[state_index] = state
+        var N = state.sig_t * A
         return [-N * c, -N * s, N * c, N * s]
 
     var dx = node2.x - node1.x
@@ -155,6 +172,21 @@ fn _truss_element_force_global(
     var l = dx / L
     var m = dy / L
     var n = dz / L
+    var dof_map = [
+        node_dof_index(i1, 1, ndf),
+        node_dof_index(i1, 2, ndf),
+        node_dof_index(i1, 3, ndf),
+        node_dof_index(i2, 1, ndf),
+        node_dof_index(i2, 2, ndf),
+        node_dof_index(i2, 3, ndf),
+    ]
+    var du = (u[dof_map[3]] - u[dof_map[0]]) * l + (
+        u[dof_map[4]] - u[dof_map[1]]
+    ) * m + (u[dof_map[5]] - u[dof_map[2]]) * n
+    var eps = du / L
+    uniaxial_set_trial_strain(mat_def, state, eps)
+    uniaxial_states[state_index] = state
+    var N = state.sig_t * A
     return [-N * l, -N * m, -N * n, N * l, N * m, N * n]
 
 
@@ -314,6 +346,7 @@ fn _element_force_global_for_recorder(
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
     uniaxial_defs: List[UniMaterialDef],
+    uniaxial_state_defs: List[Int],
     mut uniaxial_states: List[UniMaterialState],
     elem_uniaxial_offsets: List[Int],
     elem_uniaxial_counts: List[Int],
@@ -350,6 +383,9 @@ fn _element_force_global_for_recorder(
             elem,
             nodes,
             ndf,
+            u,
+            uniaxial_defs,
+            uniaxial_state_defs,
             uniaxial_states,
             elem_uniaxial_offsets,
             elem_uniaxial_counts,
