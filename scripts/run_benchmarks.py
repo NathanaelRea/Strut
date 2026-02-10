@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from statistics import mean, median
-from typing import Iterable, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
 
 ABS_TOL = 1e-8
 REL_TOL = 1e-5
@@ -22,10 +22,26 @@ class CaseSpec:
     json_path: Path
 
 
-def run(cmd: List[str], env=None, verbose=False) -> None:
+def run(cmd: List[str], env=None, verbose=False, capture_on_error: bool = False) -> None:
     if verbose:
         print("+", " ".join(cmd))
-    subprocess.check_call(cmd, env=env)
+    if not capture_on_error:
+        subprocess.check_call(cmd, env=env)
+        return
+    proc = subprocess.run(
+        cmd,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if proc.returncode != 0:
+        raise subprocess.CalledProcessError(
+            proc.returncode,
+            cmd,
+            output=proc.stdout,
+            stderr=proc.stderr,
+        )
 
 
 def log(msg: str) -> None:
@@ -39,6 +55,11 @@ def log_ok(msg: str) -> None:
 
 def log_err(msg: str) -> None:
     log(_color(msg, "31"))
+
+
+def _write_case_error(output_dir: Path, message: str) -> None:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    (output_dir / "case_error.txt").write_text(f"{message}\n", encoding="utf-8")
 
 
 def _count_constrained_dofs(node: dict, ndf: int) -> int:
@@ -90,7 +111,7 @@ def _load_case_flags(path: Path) -> Tuple[bool, bool]:
     data = json.loads(path.read_text())
     enabled = bool(data.get("enabled", True))
     disabled = not enabled
-    runnable = enabled or data.get("status") == "benchmark"
+    runnable = enabled
     return disabled, runnable
 
 
@@ -269,6 +290,23 @@ def _load_all_values(path: Path) -> List[List[float]]:
         raise ValueError(f"empty output file: {path}")
     return [_parse_line(ln) for ln in lines]
 
+
+def _load_last_comparable_values(
+    ref_path: Path,
+    got_path: Path,
+    use_last_common_row: bool,
+) -> Tuple[List[float], List[float]]:
+    ref_rows = _load_all_values(ref_path)
+    got_rows = _load_all_values(got_path)
+    if not use_last_common_row:
+        return ref_rows[-1], got_rows[-1]
+    shared = min(len(ref_rows), len(got_rows))
+    if shared == 0:
+        raise ValueError(
+            f"empty comparable output rows: {ref_path} vs {got_path}"
+        )
+    return ref_rows[shared - 1], got_rows[shared - 1]
+
 def _isclose(a: float, b: float, rtol: float = REL_TOL, atol: float = ABS_TOL) -> bool:
     return abs(a - b) <= (atol + rtol * abs(b))
 
@@ -371,6 +409,131 @@ def _read_analysis_us(path: Path) -> Optional[float]:
         return float(path.read_text().strip())
     except ValueError:
         return None
+
+
+def _summarize_parity_failures(parity_failures: List[str]) -> List[str]:
+    grouped: Dict[str, Dict[str, List[str]]] = {}
+    case_order: List[str] = []
+    case_last_category: Dict[str, str] = {}
+    last_case: Optional[str] = None
+    category_order = [
+        "node mismatch",
+        "reaction mismatch",
+        "element mismatch",
+        "drift mismatch",
+        "envelope mismatch",
+        "modal mismatch",
+        "unsupported recorder",
+        "parse/read errors",
+        "details",
+        "other",
+    ]
+    label_by_category = {
+        "node mismatch": "Node Mismatch",
+        "reaction mismatch": "Reaction Mismatch",
+        "element mismatch": "Element Mismatch",
+        "drift mismatch": "Drift Mismatch",
+        "envelope mismatch": "Envelope Mismatch",
+        "modal mismatch": "Modal Mismatch",
+        "unsupported recorder": "Unsupported Recorder",
+        "parse/read errors": "Parse/Read Errors",
+        "details": "Details",
+        "other": "Other",
+    }
+
+    def add(case: str, category: str, detail: str) -> None:
+        if case not in grouped:
+            grouped[case] = {}
+            case_order.append(case)
+        bucket = grouped[case].setdefault(category, [])
+        if detail not in bucket:
+            bucket.append(detail)
+        case_last_category[case] = category
+
+    for failure in parity_failures:
+        if failure.startswith("  "):
+            if last_case is None:
+                continue
+            detail = failure.strip()
+            last_category = case_last_category.get(last_case)
+            category = "details"
+            if last_category in {
+                "node mismatch",
+                "reaction mismatch",
+                "element mismatch",
+                "drift mismatch",
+                "envelope mismatch",
+                "modal mismatch",
+            }:
+                category = last_category
+            add(last_case, category, detail)
+            continue
+
+        if ":" not in failure:
+            add("unknown", "other", failure)
+            last_case = "unknown"
+            continue
+
+        case_name, raw_detail = failure.split(":", 1)
+        case_name = case_name.strip()
+        detail = raw_detail.strip()
+        last_case = case_name
+
+        if detail.startswith("missing OpenSees output:"):
+            path = detail.split(":", 1)[1].strip()
+            add(case_name, "missing opensees files", Path(path).name)
+            continue
+        if detail.startswith("missing Mojo output:"):
+            path = detail.split(":", 1)[1].strip()
+            add(case_name, "missing mojo files", Path(path).name)
+            continue
+        if detail.startswith("node "):
+            add(case_name, "node mismatch", detail)
+            continue
+        if detail.startswith("reaction node "):
+            add(case_name, "reaction mismatch", detail)
+            continue
+        if detail.startswith("element "):
+            add(case_name, "element mismatch", detail)
+            continue
+        if detail.startswith("drift "):
+            add(case_name, "drift mismatch", detail)
+            continue
+        if detail.startswith("envelope element "):
+            add(case_name, "envelope mismatch", detail)
+            continue
+        if detail.startswith("modal "):
+            add(case_name, "modal mismatch", detail)
+            continue
+        if detail.startswith("unsupported recorder type:"):
+            add(case_name, "unsupported recorder", detail)
+            continue
+        if detail.startswith("empty output file:"):
+            path = detail.split(":", 1)[1].strip()
+            add(case_name, "parse/read errors", f"empty output file: {Path(path).name}")
+            continue
+        add(case_name, "other", detail)
+
+    lines = []
+    for case_name in case_order:
+        lines.append(f"Error: {case_name}")
+        case_categories = grouped[case_name]
+        missing_opensees = case_categories.get("missing opensees files", [])
+        missing_mojo = case_categories.get("missing mojo files", [])
+        if missing_opensees and not missing_mojo:
+            lines.append("Missing all Opensees Outputs")
+        elif missing_mojo and not missing_opensees:
+            lines.append("Missing all Mojo Outputs")
+        else:
+            if missing_opensees:
+                lines.append(f"Missing Opensees outputs: {json.dumps(missing_opensees)}")
+            if missing_mojo:
+                lines.append(f"Missing Mojo outputs: {json.dumps(missing_mojo)}")
+        for category in category_order:
+            details = case_categories.get(category)
+            if details:
+                lines.append(f"{label_by_category[category]}: {json.dumps(details)}")
+    return lines
 
 
 def main() -> None:
@@ -705,11 +868,16 @@ def main() -> None:
             lines.append(f"cd {{{case_out}}}")
             lines.append("wipe")
             lines.append("set __strut_case_t0 [clock microseconds]")
-            lines.append(f"source {{{tcl_path}}}")
+            lines.append(f"set __strut_case_err [catch {{source {{{tcl_path}}}}} __strut_case_msg]")
             lines.append("set __strut_case_t1 [clock microseconds]")
             lines.append('set __strut_fp [open "case_time_us.txt" w]')
             lines.append('puts $__strut_fp [expr {$__strut_case_t1 - $__strut_case_t0}]')
             lines.append("close $__strut_fp")
+            lines.append("if {$__strut_case_err != 0} {")
+            lines.append('  set __strut_err_fp [open "case_error.txt" w]')
+            lines.append("  puts $__strut_err_fp $__strut_case_msg")
+            lines.append("  close $__strut_err_fp")
+            lines.append("}")
             lines.append("cd $__strut_repo")
             lines.append("wipe")
         batch_path = results_root / "tcl" / (
@@ -799,43 +967,88 @@ def main() -> None:
 
         return times, analysis_by_case, total_by_case
 
-    def run_mojo_batch(entries: List[dict], output_root: Path, compute: bool) -> None:
+    def run_mojo_batch(entries: List[dict], output_root: Path, compute: bool) -> bool:
         ensure_clean_dir(output_root)
         if mojo_solver is None:
             raise SystemExit("Mojo solver not initialized.")
         batch_manifest = _write_mojo_batch_manifest(entries, output_root, compute)
-        run(
-            [
-                str(mojo_solver),
-                "--batch",
+        try:
+            run(
+                [
+                    str(mojo_solver),
+                    "--batch",
                 str(batch_manifest),
-            ],
-            env=env,
-            verbose=verbose,
-        )
+                ],
+                env=env,
+                verbose=verbose,
+                capture_on_error=True,
+            )
+        except subprocess.CalledProcessError as exc:
+            msg = f"mojo batch aborted (exit {exc.returncode})"
+            for entry in entries:
+                _write_case_error(output_root / entry["name"], msg)
+            return False
+        return True
 
     def run_mojo_batch_repeated(
         entries: List[dict], output_root: Path, compute: bool, repeat: int, warmup: int
     ):
         if not entries:
-            return [], {}, {}
+            return [], {}, {}, False
 
         n = len(entries)
         names = [entry["name"] for entry in entries]
         analysis_by_case = {name: [] for name in names}
         total_by_case = {name: [] for name in names}
+        had_abort = False
+
+        def run_mojo_case_fallback(entry: dict) -> None:
+            case_name = entry["name"]
+            target_dir = output_root / case_name
+            ensure_clean_dir(target_dir)
+            if compute:
+                compute_case = json.loads(Path(entry["json"]).read_text())
+                compute_case["recorders"] = []
+                compute_json = results_root / ".tmp" / f"{case_name}_compute_batch_fallback.json"
+                compute_json.write_text(json.dumps(compute_case, indent=2) + "\n", encoding="utf-8")
+                input_path = compute_json
+            else:
+                input_path = Path(entry["json"])
+            try:
+                run(
+                    [
+                        str(mojo_solver),
+                        "--input",
+                        str(input_path),
+                        "--output",
+                        str(target_dir),
+                    ],
+                    env=env,
+                    verbose=verbose,
+                    capture_on_error=True,
+                )
+            except subprocess.CalledProcessError as exc:
+                _write_case_error(target_dir, f"mojo case aborted (exit {exc.returncode})")
 
         for i in range(warmup):
             offset = i % n
             rotated = entries[offset:] + entries[:offset]
-            run_mojo_batch(rotated, output_root, compute)
+            ok = run_mojo_batch(rotated, output_root, compute)
+            if not ok:
+                had_abort = True
+                for entry in rotated:
+                    run_mojo_case_fallback(entry)
 
         times = []
         for i in range(repeat):
             offset = i % n
             rotated = entries[offset:] + entries[:offset]
             start = time.perf_counter()
-            run_mojo_batch(rotated, output_root, compute)
+            ok = run_mojo_batch(rotated, output_root, compute)
+            if not ok:
+                had_abort = True
+                for entry in rotated:
+                    run_mojo_case_fallback(entry)
             end = time.perf_counter()
             times.append(end - start)
 
@@ -849,7 +1062,7 @@ def main() -> None:
                 if total_us is not None:
                     total_by_case[name].append(total_us)
 
-        return times, analysis_by_case, total_by_case
+        return times, analysis_by_case, total_by_case, had_abort
 
     run_opensees_per_case = run_opensees and not batch_mode
     run_mojo_per_case = run_mojo and not batch_mode
@@ -952,14 +1165,17 @@ def main() -> None:
 
     if run_mojo and batch_mode:
         log("Running Mojo in batch mode.")
-        mojo_times, batch_analysis_hist, batch_total_hist = run_mojo_batch_repeated(
+        mojo_times, batch_analysis_hist, batch_total_hist, mojo_batch_had_abort = run_mojo_batch_repeated(
             case_entries,
             results_root / "mojo",
             compute=False,
             repeat=args.repeat,
             warmup=args.warmup,
         )
-        log_ok("Mojo batch pass OK.")
+        if mojo_batch_had_abort:
+            log_err("Mojo batch aborted for one or more cases; used per-case fallback.")
+        else:
+            log_ok("Mojo batch pass OK.")
         batch_stats = {
             "times_s": mojo_times,
             "mean_s": mean(mojo_times),
@@ -1026,13 +1242,19 @@ def main() -> None:
                 }
             )
         if not args.skip_compute_only:
-            mojo_compute = run_engine(
-                lambda out, last_run: run_mojo_batch(case_entries, out, compute=True),
+            mojo_compute, _, _, mojo_compute_had_abort = run_mojo_batch_repeated(
+                case_entries,
                 results_root / "mojo_compute",
-                args.repeat,
-                args.warmup,
+                compute=True,
+                repeat=args.repeat,
+                warmup=args.warmup,
             )
-            log_ok("Mojo batch compute-only pass OK.")
+            if mojo_compute_had_abort:
+                log_err(
+                    "Mojo batch compute-only aborted for one or more cases; used per-case fallback."
+                )
+            else:
+                log_ok("Mojo batch compute-only pass OK.")
             compute_stats = {
                 "times_s": mojo_compute,
                 "mean_s": mean(mojo_compute),
@@ -1127,6 +1349,7 @@ def main() -> None:
                 cmd,
                 env=env,
                 verbose=verbose,
+                capture_on_error=True,
             )
             if not last_run:
                 shutil.rmtree(target_dir, ignore_errors=True)
@@ -1153,6 +1376,7 @@ def main() -> None:
                 ],
                 env=env,
                 verbose=verbose,
+                capture_on_error=True,
             )
             if not last_run:
                 shutil.rmtree(target_dir, ignore_errors=True)
@@ -1230,70 +1454,88 @@ def main() -> None:
 
         if run_mojo_per_case:
             log(f"[{case_name}] Mojo total pass...")
-            mojo_times = run_engine(
-                lambda out, last_run: mojo_cmd(out / case_name, last_run),
-                results_root / "mojo",
-                args.repeat,
-                args.warmup,
-            )
-            log_ok(f"[{case_name}] Mojo total pass OK.")
-            stats = {
-                "times_s": mojo_times,
-                "mean_s": mean(mojo_times),
-                "median_s": median(mojo_times),
-                "min_s": min(mojo_times),
-            }
-            analysis_file = results_root / "mojo" / case_name / "analysis_time_us.txt"
-            stats["analysis_us"] = _read_analysis_us(analysis_file)
-            case_entry["mojo"] = stats
-            csv_rows.append(
-                {
-                    "case": case_name,
-                    "dofs": case_entry.get("dofs", ""),
-                    "engine": "mojo",
-                    "mode": "total",
-                    "repeat": args.repeat,
-                    "warmup": args.warmup,
-                    "mean_s": f"{stats['mean_s']:.6f}",
-                    "median_s": f"{stats['median_s']:.6f}",
-                    "min_s": f"{stats['min_s']:.6f}",
-                    "analysis_us": stats["analysis_us"],
-                }
-            )
-            if not args.skip_compute_only:
-                log(f"[{case_name}] Mojo compute-only pass...")
-                mojo_compute = run_engine(
-                    lambda out, last_run: mojo_compute_cmd(out / case_name, last_run),
-                    results_root / "mojo_compute",
+            try:
+                mojo_times = run_engine(
+                    lambda out, last_run: mojo_cmd(out / case_name, last_run),
+                    results_root / "mojo",
                     args.repeat,
                     args.warmup,
                 )
-                log_ok(f"[{case_name}] Mojo compute-only pass OK.")
-                compute_stats = {
-                    "times_s": mojo_compute,
-                    "mean_s": mean(mojo_compute),
-                    "median_s": median(mojo_compute),
-                    "min_s": min(mojo_compute),
-                }
-                case_entry["mojo_compute_only"] = compute_stats
-                compute_analysis_file = (
-                    results_root / "mojo_compute" / case_name / "analysis_time_us.txt"
+            except subprocess.CalledProcessError as exc:
+                _write_case_error(
+                    results_root / "mojo" / case_name,
+                    f"mojo total pass aborted (exit {exc.returncode})",
                 )
-                compute_analysis_us = _read_analysis_us(compute_analysis_file)
+                log_err(f"[{case_name}] Mojo total pass aborted (exit {exc.returncode}).")
+            else:
+                log_ok(f"[{case_name}] Mojo total pass OK.")
+                stats = {
+                    "times_s": mojo_times,
+                    "mean_s": mean(mojo_times),
+                    "median_s": median(mojo_times),
+                    "min_s": min(mojo_times),
+                }
+                analysis_file = results_root / "mojo" / case_name / "analysis_time_us.txt"
+                stats["analysis_us"] = _read_analysis_us(analysis_file)
+                case_entry["mojo"] = stats
                 csv_rows.append(
                     {
                         "case": case_name,
                         "dofs": case_entry.get("dofs", ""),
                         "engine": "mojo",
-                        "mode": "compute_only",
+                        "mode": "total",
                         "repeat": args.repeat,
                         "warmup": args.warmup,
-                        "mean_s": f"{compute_stats['mean_s']:.6f}",
-                        "median_s": f"{compute_stats['median_s']:.6f}",
-                        "min_s": f"{compute_stats['min_s']:.6f}",
-                        "analysis_us": compute_analysis_us,
+                        "mean_s": f"{stats['mean_s']:.6f}",
+                        "median_s": f"{stats['median_s']:.6f}",
+                        "min_s": f"{stats['min_s']:.6f}",
+                        "analysis_us": stats["analysis_us"],
                     }
                 )
+            if not args.skip_compute_only:
+                log(f"[{case_name}] Mojo compute-only pass...")
+                try:
+                    mojo_compute = run_engine(
+                        lambda out, last_run: mojo_compute_cmd(out / case_name, last_run),
+                        results_root / "mojo_compute",
+                        args.repeat,
+                        args.warmup,
+                    )
+                except subprocess.CalledProcessError as exc:
+                    _write_case_error(
+                        results_root / "mojo_compute" / case_name,
+                        f"mojo compute-only pass aborted (exit {exc.returncode})",
+                    )
+                    log_err(
+                        f"[{case_name}] Mojo compute-only pass aborted (exit {exc.returncode})."
+                    )
+                else:
+                    log_ok(f"[{case_name}] Mojo compute-only pass OK.")
+                    compute_stats = {
+                        "times_s": mojo_compute,
+                        "mean_s": mean(mojo_compute),
+                        "median_s": median(mojo_compute),
+                        "min_s": min(mojo_compute),
+                    }
+                    case_entry["mojo_compute_only"] = compute_stats
+                    compute_analysis_file = (
+                        results_root / "mojo_compute" / case_name / "analysis_time_us.txt"
+                    )
+                    compute_analysis_us = _read_analysis_us(compute_analysis_file)
+                    csv_rows.append(
+                        {
+                            "case": case_name,
+                            "dofs": case_entry.get("dofs", ""),
+                            "engine": "mojo",
+                            "mode": "compute_only",
+                            "repeat": args.repeat,
+                            "warmup": args.warmup,
+                            "mean_s": f"{compute_stats['mean_s']:.6f}",
+                            "median_s": f"{compute_stats['median_s']:.6f}",
+                            "min_s": f"{compute_stats['min_s']:.6f}",
+                            "analysis_us": compute_analysis_us,
+                        }
+                    )
 
         if run_opensees and run_mojo:
             case_data = json.loads(Path(case_entry["json"]).read_text())
@@ -1301,6 +1543,7 @@ def main() -> None:
             analysis = case_data.get("analysis", {})
             analysis_type = str(analysis.get("type", "static_linear"))
             is_transient = analysis_type.startswith("transient")
+            use_last_common_row = analysis_type == "static_nonlinear"
             tol = case_data.get("parity_tolerance", {})
             rtol = tol.get("rtol", REL_TOL)
             atol = tol.get("atol", ABS_TOL)
@@ -1336,8 +1579,11 @@ def main() -> None:
                                 ref_vals = _load_all_values(ref_file)
                                 mojo_vals = _load_all_values(mojo_file)
                             else:
-                                ref_vals = _load_last_values(ref_file)
-                                mojo_vals = _load_last_values(mojo_file)
+                                ref_vals, mojo_vals = _load_last_comparable_values(
+                                    ref_file,
+                                    mojo_file,
+                                    use_last_common_row=use_last_common_row,
+                                )
                         except ValueError as exc:
                             parity_failures.append(f"{case_name}: {exc}")
                             continue
@@ -1396,8 +1642,11 @@ def main() -> None:
                                 ref_vals = _load_all_values(ref_file)
                                 mojo_vals = _load_all_values(mojo_file)
                             else:
-                                ref_vals = _load_last_values(ref_file)
-                                mojo_vals = _load_last_values(mojo_file)
+                                ref_vals, mojo_vals = _load_last_comparable_values(
+                                    ref_file,
+                                    mojo_file,
+                                    use_last_common_row=use_last_common_row,
+                                )
                         except ValueError as exc:
                             parity_failures.append(f"{case_name}: {exc}")
                             continue
@@ -1458,8 +1707,11 @@ def main() -> None:
                                 ref_vals = _load_all_values(ref_file)
                                 mojo_vals = _load_all_values(mojo_file)
                             else:
-                                ref_vals = _load_last_values(ref_file)
-                                mojo_vals = _load_last_values(mojo_file)
+                                ref_vals, mojo_vals = _load_last_comparable_values(
+                                    ref_file,
+                                    mojo_file,
+                                    use_last_common_row=use_last_common_row,
+                                )
                         except ValueError as exc:
                             parity_failures.append(f"{case_name}: {exc}")
                             continue
@@ -1521,8 +1773,11 @@ def main() -> None:
                             ref_vals = _load_all_values(ref_file)
                             mojo_vals = _load_all_values(mojo_file)
                         else:
-                            ref_vals = _load_last_values(ref_file)
-                            mojo_vals = _load_last_values(mojo_file)
+                            ref_vals, mojo_vals = _load_last_comparable_values(
+                                ref_file,
+                                mojo_file,
+                                use_last_common_row=use_last_common_row,
+                            )
                     except ValueError as exc:
                         parity_failures.append(f"{case_name}: {exc}")
                         continue
@@ -1697,7 +1952,7 @@ def main() -> None:
     print(f"Wrote {summary_csv}")
     if parity_failures:
         log_err("PARITY FAILED")
-        for failure in parity_failures:
+        for failure in _summarize_parity_failures(parity_failures):
             log_err(failure)
         raise SystemExit(1)
     log_ok("PARITY OK")
@@ -1706,10 +1961,8 @@ def main() -> None:
 if __name__ == "__main__":
     try:
         main()
-    except SystemExit as exc:
-        if exc.code not in (0, None):
-            log_err(f"BENCHMARK ERROR (exit {exc.code})")
+    except SystemExit:
         raise
     except Exception as exc:
         log_err(f"BENCHMARK ERROR: {exc}")
-        raise
+        raise SystemExit(1)

@@ -32,17 +32,20 @@ def _write_case(path: Path, enabled=True, status="active") -> None:
     )
 
 
-def test_load_case_enabled_allows_benchmark_cases(tmp_path: Path):
+def test_load_case_enabled_uses_enabled_flag_only(tmp_path: Path):
     bench_case = tmp_path / "bench.json"
     normal_disabled_case = tmp_path / "disabled.json"
+    enabled_bench_case = tmp_path / "enabled_bench.json"
     _write_case(bench_case, enabled=False, status="benchmark")
     _write_case(normal_disabled_case, enabled=False, status="active")
+    _write_case(enabled_bench_case, enabled=True, status="benchmark")
 
-    assert run_benchmarks.load_case_enabled(bench_case) is True
+    assert run_benchmarks.load_case_enabled(bench_case) is False
     assert run_benchmarks.load_case_enabled(normal_disabled_case) is False
+    assert run_benchmarks.load_case_enabled(enabled_bench_case) is True
 
 
-def test_discover_default_cases_includes_disabled_benchmark(monkeypatch, tmp_path: Path):
+def test_discover_default_cases_excludes_disabled_cases(monkeypatch, tmp_path: Path):
     validation_root = tmp_path / "validation"
     _write_case(
         validation_root / "enabled_case" / "enabled_case.json", enabled=True, status="active"
@@ -56,7 +59,7 @@ def test_discover_default_cases_includes_disabled_benchmark(monkeypatch, tmp_pat
 
     monkeypatch.delenv("STRUT_RUN_ALL_CASES", raising=False)
     case_names = [case.name for case in run_benchmarks.discover_default_cases(validation_root)]
-    assert case_names == ["bench_case", "enabled_case"]
+    assert case_names == ["enabled_case"]
 
 
 def test_discover_all_cases_includes_disabled_cases(tmp_path: Path):
@@ -107,9 +110,9 @@ def test_filter_cases_by_enabled_counts_disabled_and_skipped(tmp_path: Path):
         case_specs, include_disabled=False
     )
 
-    assert [case.name for case in filtered] == ["enabled_case", "benchmark_disabled"]
+    assert [case.name for case in filtered] == ["enabled_case"]
     assert disabled_selected == 2
-    assert skipped_disabled == 1
+    assert skipped_disabled == 2
 
 
 def test_filter_cases_by_enabled_include_disabled_keeps_all_cases(tmp_path: Path):
@@ -185,3 +188,51 @@ def test_compare_mode_shape_vectors_tolerates_sign_flip():
     ok, errors = run_benchmarks._compare_mode_shape_vectors([1.0, 2.0], [-2.0, -4.0])
     assert ok is True
     assert errors == []
+
+
+def test_summarize_parity_failures_compacts_paths_and_groups_by_case():
+    failures = [
+        "beam_case: missing OpenSees output: /tmp/results/opensees/beam_case/node_disp_node1.out",
+        "beam_case: missing Mojo output: /tmp/results/mojo/beam_case/node_disp_node1.out",
+        "beam_case: node 1 mismatch at step 4",
+        "  dof 1: ref=1.000000e+00 got=2.000000e+00 abs=1.000e+00 rel=1.000e+00",
+        "beam_case: unsupported recorder type: weird_recorder",
+    ]
+
+    summary = run_benchmarks._summarize_parity_failures(failures)
+    assert summary[0] == "Error: beam_case"
+    assert 'Missing Opensees outputs: ["node_disp_node1.out"]' in summary
+    assert 'Missing Mojo outputs: ["node_disp_node1.out"]' in summary
+    assert (
+        "Node Mismatch: "
+        '[\"node 1 mismatch at step 4\", \"dof 1: ref=1.000000e+00 got=2.000000e+00 abs=1.000e+00 rel=1.000e+00\"]'
+        in summary
+    )
+    assert 'Unsupported Recorder: ["unsupported recorder type: weird_recorder"]' in summary
+    assert all("/tmp/results/" not in line for line in summary)
+
+
+def test_summarize_parity_failures_reports_all_missing_opensees_outputs():
+    failures = [
+        "frame_case: missing OpenSees output: /tmp/results/opensees/frame_case/a.out",
+        "frame_case: missing OpenSees output: /tmp/results/opensees/frame_case/b.out",
+    ]
+
+    summary = run_benchmarks._summarize_parity_failures(failures)
+    assert summary == [
+        "Error: frame_case",
+        "Missing all Opensees Outputs",
+    ]
+
+
+def test_summarize_parity_failures_reports_all_missing_mojo_outputs():
+    failures = [
+        "frame_case: missing Mojo output: /tmp/results/mojo/frame_case/a.out",
+        "frame_case: missing Mojo output: /tmp/results/mojo/frame_case/b.out",
+    ]
+
+    summary = run_benchmarks._summarize_parity_failures(failures)
+    assert summary == [
+        "Error: frame_case",
+        "Missing all Mojo Outputs",
+    ]

@@ -37,10 +37,17 @@ def _max_abs(values):
     return max((abs(v) for v in values), default=0.0)
 
 
-def _run_case(repo_root: Path, case_json: Path, refresh_reference: bool):
+def _run_case(
+    repo_root: Path,
+    case_json: Path,
+    refresh_reference: bool,
+    force_case: bool,
+):
     env = os.environ.copy()
     if refresh_reference:
         env["STRUT_REFRESH_REFERENCE"] = "1"
+    if force_case:
+        env["STRUT_FORCE_CASE"] = "1"
     cmd = ["uv", "run", str(repo_root / "scripts" / "run_case.py"), str(case_json)]
     print("+", " ".join(cmd))
     result = subprocess.run(cmd, env=env, check=False)
@@ -68,9 +75,16 @@ def _plot_one(
     peak_abs_err = abs(mojo_peak - ref_peak)
     peak_rel_err = peak_abs_err / max(ref_peak, 1.0e-30)
 
+    single_sample = len(x_vals) == 1
+    ref_style = {"label": "OpenSees reference", "linewidth": 2.0}
+    mojo_style = {"label": "Strut mojo", "linewidth": 1.6, "linestyle": "--"}
+    if single_sample:
+        ref_style.update({"marker": "o", "markersize": 6.0})
+        mojo_style.update({"marker": "x", "markersize": 6.0})
+
     fig, ax = plt.subplots(figsize=(9, 4.8))
-    ax.plot(x_vals, ref_vals, label="OpenSees reference", linewidth=2.0)
-    ax.plot(x_vals, mojo_vals, label="Strut mojo", linewidth=1.6, linestyle="--")
+    ax.plot(x_vals, ref_vals, **ref_style)
+    ax.plot(x_vals, mojo_vals, **mojo_style)
     ax.set_xlabel(x_label)
     ax.set_ylabel(f"Component {component}")
     ax.set_title(f"{case_name} :: {out_name} :: c{component}")
@@ -104,6 +118,11 @@ def main():
         help="refresh OpenSees reference outputs while running case",
     )
     parser.add_argument(
+        "--force-case",
+        action="store_true",
+        help="force run even when case JSON has enabled=false",
+    )
+    parser.add_argument(
         "--output-dir",
         default="",
         help="PNG output plot directory (default: build/plots/<case_name>)",
@@ -124,9 +143,11 @@ def main():
     case_json = Path(args.case_json).resolve()
     if not case_json.exists():
         raise SystemExit(f"missing case json: {case_json}")
+    case_data_input = json.loads(case_json.read_text(encoding="utf-8"))
+    force_case = args.force_case or (not bool(case_data_input.get("enabled", True)))
 
     if not args.skip_run:
-        _run_case(repo_root, case_json, args.refresh_reference)
+        _run_case(repo_root, case_json, args.refresh_reference, force_case)
 
     case_name = case_json.stem
     case_root = repo_root / "tests" / "validation" / case_name

@@ -103,9 +103,16 @@ def main():
     peak_abs_err = abs(mojo_peak - ref_peak)
     peak_rel_err = peak_abs_err / max(ref_peak, 1.0e-30)
 
+    single_sample = len(x_vals) == 1
+    ref_style = {"label": "OpenSees reference", "linewidth": 2.0}
+    mojo_style = {"label": "Strut mojo", "linewidth": 1.6, "linestyle": "--"}
+    if single_sample:
+        ref_style.update({"marker": "o", "markersize": 6.0})
+        mojo_style.update({"marker": "x", "markersize": 6.0})
+
     fig, ax = plt.subplots(figsize=(9, 4.8))
-    ax.plot(x_vals, ref_vals, label="OpenSees reference", linewidth=2.0)
-    ax.plot(x_vals, mojo_vals, label="Strut mojo", linewidth=1.6, linestyle="--")
+    ax.plot(x_vals, ref_vals, **ref_style)
+    ax.plot(x_vals, mojo_vals, **mojo_style)
     ax.set_xlabel(x_label)
     ax.set_ylabel(f"Component {args.component}")
     ax.set_title(f"{args.case} :: {args.series_file}")
