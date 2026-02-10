@@ -163,3 +163,31 @@ def test_json_to_tcl_emits_force_beam_column2d_with_lobatto():
     assert proc.returncode == 0, proc.stderr
     assert "beamIntegration Lobatto 1 7 3\n" in text
     assert "element forceBeamColumn 4 1 2 1 1\n" in text
+
+
+def test_json_to_tcl_emits_force_beam_column2d_with_elastic_section2d():
+    case_data = _base_case()
+    case_data["sections"] = [
+        {
+            "id": 3,
+            "type": "ElasticSection2d",
+            "params": {"E": 200000000000.0, "A": 0.02, "I": 0.00008},
+        }
+    ]
+    case_data["elements"] = [
+        {
+            "id": 5,
+            "type": "forceBeamColumn2d",
+            "nodes": [1, 2],
+            "section": 3,
+            "geomTransf": "Linear",
+            "integration": "Lobatto",
+            "num_int_pts": 5,
+        }
+    ]
+    case_data["analysis"] = {"type": "static_linear", "steps": 1}
+
+    proc, text = _run_json_to_tcl(case_data)
+    assert proc.returncode == 0, proc.stderr
+    assert "beamIntegration Lobatto 1 3 5\n" in text
+    assert "element forceBeamColumn 5 1 2 1 1\n" in text

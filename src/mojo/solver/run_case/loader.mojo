@@ -530,10 +530,13 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
                 abort("forceBeamColumn2d supports Lobatto integration only")
             if elem.num_int_pts != 3 and elem.num_int_pts != 5:
                 abort("forceBeamColumn2d supports num_int_pts=3 or 5")
-            if elem.section < 0 or elem.section >= len(fiber_section_index_by_id):
+            if elem.section < 0 or elem.section >= len(typed_sections_by_id):
                 abort("forceBeamColumn2d section not found")
-            if fiber_section_index_by_id[elem.section] < 0:
-                abort("forceBeamColumn2d requires FiberSection2d")
+            var sec = typed_sections_by_id[elem.section]
+            if sec.id < 0:
+                abort("forceBeamColumn2d section not found")
+            if sec.type != "FiberSection2d" and sec.type != "ElasticSection2d":
+                abort("forceBeamColumn2d requires FiberSection2d or ElasticSection2d")
             elem.dof_count = 6
             _set_elem_dof(elem, 0, node_dof_index(elem.node_index_1, 1, ndf))
             _set_elem_dof(elem, 1, node_dof_index(elem.node_index_1, 2, ndf))
@@ -685,28 +688,34 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
                     used_nonelastic_uniaxial = True
         elif elem.type_tag == 2:
             var sec_id = elem.section
-            var sec_index = fiber_section_index_by_id[sec_id]
-            if sec_index < 0 or sec_index >= len(fiber_section_defs):
-                abort("forceBeamColumn2d requires FiberSection2d")
-            var sec_def = fiber_section_defs[sec_index]
-            var num_int_pts = elem.num_int_pts
-            var state_count = num_int_pts * sec_def.fiber_count
             elem_uniaxial_offsets[e] = len(elem_uniaxial_state_ids)
-            elem_uniaxial_counts[e] = state_count
-            for _ in range(num_int_pts):
-                for i in range(sec_def.fiber_count):
-                    var cell = fiber_section_cells[sec_def.fiber_offset + i]
-                    var def_index = cell.def_index
-                    if def_index < 0 or def_index >= len(uniaxial_defs):
-                        abort("forceBeamColumn2d fiber material definition out of range")
-                    var mat_def = uniaxial_defs[def_index]
-                    var state_index = len(uniaxial_states)
-                    uniaxial_states.append(UniMaterialState(mat_def))
-                    uniaxial_state_defs.append(def_index)
-                    elem_uniaxial_state_ids.append(state_index)
-                    if not uni_mat_is_elastic(mat_def):
-                        used_nonelastic_uniaxial = True
-                        force_beam_has_nonelastic = True
+            var sec = typed_sections_by_id[sec_id]
+            if sec.type == "FiberSection2d":
+                var sec_index = fiber_section_index_by_id[sec_id]
+                if sec_index < 0 or sec_index >= len(fiber_section_defs):
+                    abort("forceBeamColumn2d fiber section not found")
+                var sec_def = fiber_section_defs[sec_index]
+                var num_int_pts = elem.num_int_pts
+                var state_count = num_int_pts * sec_def.fiber_count
+                elem_uniaxial_counts[e] = state_count
+                for _ in range(num_int_pts):
+                    for i in range(sec_def.fiber_count):
+                        var cell = fiber_section_cells[sec_def.fiber_offset + i]
+                        var def_index = cell.def_index
+                        if def_index < 0 or def_index >= len(uniaxial_defs):
+                            abort("forceBeamColumn2d fiber material definition out of range")
+                        var mat_def = uniaxial_defs[def_index]
+                        var state_index = len(uniaxial_states)
+                        uniaxial_states.append(UniMaterialState(mat_def))
+                        uniaxial_state_defs.append(def_index)
+                        elem_uniaxial_state_ids.append(state_index)
+                        if not uni_mat_is_elastic(mat_def):
+                            used_nonelastic_uniaxial = True
+                            force_beam_has_nonelastic = True
+            elif sec.type == "ElasticSection2d":
+                elem_uniaxial_counts[e] = 0
+            else:
+                abort("forceBeamColumn2d requires FiberSection2d or ElasticSection2d")
         else:
             elem_uniaxial_offsets[e] = len(elem_uniaxial_state_ids)
             elem_uniaxial_counts[e] = 0

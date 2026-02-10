@@ -182,12 +182,11 @@ fn assemble_global_stiffness_banded(
             var node2 = nodes[i2]
 
             var sec_id = Int(elem["section"])
-            if sec_id >= len(fiber_section_index_by_id):
+            if sec_id >= len(sections_by_id):
                 abort("forceBeamColumn2d section not found")
-            var sec_index = fiber_section_index_by_id[sec_id]
-            if sec_index < 0 or sec_index >= len(fiber_section_defs):
-                abort("forceBeamColumn2d requires FiberSection2d")
-            var sec_def = fiber_section_defs[sec_index]
+            var sec = sections_by_id[sec_id]
+            if sec is None:
+                abort("forceBeamColumn2d section not found")
 
             var dof_map = [
                 node_dof_index(i1, 1, ndf),
@@ -207,27 +206,60 @@ fn assemble_global_stiffness_banded(
             for i in range(6):
                 u_elem[i] = u[dof_map[i]]
 
-            var elem_offset = elem_uniaxial_offsets[e]
-            var elem_state_count = elem_uniaxial_counts[e]
             var k_global: List[List[Float64]] = []
-            var f_dummy: List[Float64] = []
-            force_beam_column2d_global_tangent_and_internal(
-                Float64(node1["x"]),
-                Float64(node1["y"]),
-                Float64(node2["x"]),
-                Float64(node2["y"]),
-                u_elem,
-                sec_def,
-                fiber_section_cells,
-                uniaxial_defs,
-                uniaxial_states,
-                elem_uniaxial_state_ids,
-                elem_offset,
-                elem_state_count,
-                num_int_pts,
-                k_global,
-                f_dummy,
-            )
+            if String(sec["type"]) == "ElasticSection2d":
+                var params = sec["params"]
+                var E = Float64(params["E"])
+                var A = Float64(params["A"])
+                var I = Float64(params["I"])
+                if geom == "Linear":
+                    k_global = beam_global_stiffness(
+                        E,
+                        A,
+                        I,
+                        Float64(node1["x"]),
+                        Float64(node1["y"]),
+                        Float64(node2["x"]),
+                        Float64(node2["y"]),
+                    )
+                elif geom == "PDelta":
+                    k_global = beam2d_pdelta_global_stiffness(
+                        E,
+                        A,
+                        I,
+                        Float64(node1["x"]),
+                        Float64(node1["y"]),
+                        Float64(node2["x"]),
+                        Float64(node2["y"]),
+                        u_elem,
+                    )
+                else:
+                    abort("forceBeamColumn2d supports geomTransf Linear or PDelta")
+            else:
+                var sec_index = fiber_section_index_by_id[sec_id]
+                if sec_index < 0 or sec_index >= len(fiber_section_defs):
+                    abort("forceBeamColumn2d requires FiberSection2d or ElasticSection2d")
+                var sec_def = fiber_section_defs[sec_index]
+                var elem_offset = elem_uniaxial_offsets[e]
+                var elem_state_count = elem_uniaxial_counts[e]
+                var f_dummy: List[Float64] = []
+                force_beam_column2d_global_tangent_and_internal(
+                    Float64(node1["x"]),
+                    Float64(node1["y"]),
+                    Float64(node2["x"]),
+                    Float64(node2["y"]),
+                    u_elem,
+                    sec_def,
+                    fiber_section_cells,
+                    uniaxial_defs,
+                    uniaxial_states,
+                    elem_uniaxial_state_ids,
+                    elem_offset,
+                    elem_state_count,
+                    num_int_pts,
+                    k_global,
+                    f_dummy,
+                )
             for a in range(6):
                 var Aidx = free_map[a]
                 if Aidx < 0:

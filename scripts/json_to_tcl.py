@@ -428,8 +428,10 @@ def main():
             if elem["type"] != "forceBeamColumn2d":
                 continue
             sec = sections[elem["section"]]
-            if sec["type"] != "FiberSection2d":
-                raise ValueError("forceBeamColumn2d requires FiberSection2d")
+            if sec["type"] not in ("FiberSection2d", "ElasticSection2d"):
+                raise ValueError(
+                    "forceBeamColumn2d requires FiberSection2d or ElasticSection2d"
+                )
             geom = elem.get("geomTransf", "Linear")
             if geom not in ("Linear", "PDelta"):
                 raise ValueError("forceBeamColumn2d supports geomTransf Linear or PDelta")
@@ -469,8 +471,10 @@ def main():
                 )
             elif elem["type"] == "forceBeamColumn2d":
                 sec = sections[elem["section"]]
-                if sec["type"] != "FiberSection2d":
-                    raise ValueError("forceBeamColumn2d requires FiberSection2d")
+                if sec["type"] not in ("FiberSection2d", "ElasticSection2d"):
+                    raise ValueError(
+                        "forceBeamColumn2d requires FiberSection2d or ElasticSection2d"
+                    )
                 integration = elem.get("integration", "Lobatto")
                 num_int_pts = int(elem.get("num_int_pts", 3))
                 key = (integration, elem["section"], num_int_pts)

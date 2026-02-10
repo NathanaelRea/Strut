@@ -245,6 +245,7 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
                 analysis,
                 steps,
                 ts_index,
+                time_series,
                 analysis_integrator_targets_pool,
                 typed_nodes,
                 typed_elements,

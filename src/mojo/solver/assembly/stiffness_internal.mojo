@@ -225,9 +225,7 @@ fn assemble_global_stiffness_banded_frame2d_typed(
             var i2 = elem.node_index_2
             var node1 = nodes[i1]
             var node2 = nodes[i2]
-
-            var sec_index = fiber_section_index_by_id[elem.section]
-            var sec_def = fiber_section_defs[sec_index]
+            var sec = sections_by_id[elem.section]
 
             var dof_map = [
                 _elem_dof(elem, 0),
@@ -246,28 +244,55 @@ fn assemble_global_stiffness_banded_frame2d_typed(
             u_elem.resize(6, 0.0)
             for i in range(6):
                 u_elem[i] = u[dof_map[i]]
-
-            var elem_offset = elem_uniaxial_offsets[e]
-            var elem_state_count = elem_uniaxial_counts[e]
             var k_global: List[List[Float64]] = []
-            var f_dummy: List[Float64] = []
-            force_beam_column2d_global_tangent_and_internal(
-                node1.x,
-                node1.y,
-                node2.x,
-                node2.y,
-                u_elem,
-                sec_def,
-                fiber_section_cells,
-                uniaxial_defs,
-                uniaxial_states,
-                elem_uniaxial_state_ids,
-                elem_offset,
-                elem_state_count,
-                elem.num_int_pts,
-                k_global,
-                f_dummy,
-            )
+            if sec.type == "ElasticSection2d":
+                var geom = elem.geom_transf
+                if geom == "Linear":
+                    k_global = beam_global_stiffness(
+                        sec.E,
+                        sec.A,
+                        sec.I,
+                        node1.x,
+                        node1.y,
+                        node2.x,
+                        node2.y,
+                    )
+                elif geom == "PDelta":
+                    k_global = beam2d_pdelta_global_stiffness(
+                        sec.E,
+                        sec.A,
+                        sec.I,
+                        node1.x,
+                        node1.y,
+                        node2.x,
+                        node2.y,
+                        u_elem,
+                    )
+                else:
+                    abort("forceBeamColumn2d supports geomTransf Linear or PDelta")
+            else:
+                var sec_index = fiber_section_index_by_id[elem.section]
+                var sec_def = fiber_section_defs[sec_index]
+                var elem_offset = elem_uniaxial_offsets[e]
+                var elem_state_count = elem_uniaxial_counts[e]
+                var f_dummy: List[Float64] = []
+                force_beam_column2d_global_tangent_and_internal(
+                    node1.x,
+                    node1.y,
+                    node2.x,
+                    node2.y,
+                    u_elem,
+                    sec_def,
+                    fiber_section_cells,
+                    uniaxial_defs,
+                    uniaxial_states,
+                    elem_uniaxial_state_ids,
+                    elem_offset,
+                    elem_state_count,
+                    elem.num_int_pts,
+                    k_global,
+                    f_dummy,
+                )
             for a in range(6):
                 var Aidx = free_map[a]
                 if Aidx < 0:
@@ -508,9 +533,7 @@ fn assemble_global_stiffness_and_internal(
             var i2 = elem.node_index_2
             var node1 = nodes[i1]
             var node2 = nodes[i2]
-
-            var sec_index = fiber_section_index_by_id[elem.section]
-            var sec_def = fiber_section_defs[sec_index]
+            var sec = sections_by_id[elem.section]
 
             var dof_map = [
                 _elem_dof(elem, 0),
@@ -524,28 +547,61 @@ fn assemble_global_stiffness_and_internal(
             u_elem.resize(6, 0.0)
             for i in range(6):
                 u_elem[i] = u[dof_map[i]]
-
-            var elem_offset = elem_uniaxial_offsets[e]
-            var elem_state_count = elem_uniaxial_counts[e]
             var k_global: List[List[Float64]] = []
             var f_global: List[Float64] = []
-            force_beam_column2d_global_tangent_and_internal(
-                node1.x,
-                node1.y,
-                node2.x,
-                node2.y,
-                u_elem,
-                sec_def,
-                fiber_section_cells,
-                uniaxial_defs,
-                uniaxial_states,
-                elem_uniaxial_state_ids,
-                elem_offset,
-                elem_state_count,
-                elem.num_int_pts,
-                k_global,
-                f_global,
-            )
+            if sec.type == "ElasticSection2d":
+                var geom = elem.geom_transf
+                if geom == "Linear":
+                    k_global = beam_global_stiffness(
+                        sec.E,
+                        sec.A,
+                        sec.I,
+                        node1.x,
+                        node1.y,
+                        node2.x,
+                        node2.y,
+                    )
+                elif geom == "PDelta":
+                    k_global = beam2d_pdelta_global_stiffness(
+                        sec.E,
+                        sec.A,
+                        sec.I,
+                        node1.x,
+                        node1.y,
+                        node2.x,
+                        node2.y,
+                        u_elem,
+                    )
+                else:
+                    abort("forceBeamColumn2d supports geomTransf Linear or PDelta")
+                f_global.resize(6, 0.0)
+                for a in range(6):
+                    var sum = 0.0
+                    for b in range(6):
+                        sum += k_global[a][b] * u_elem[b]
+                    f_global[a] = sum
+            else:
+                var sec_index = fiber_section_index_by_id[elem.section]
+                var sec_def = fiber_section_defs[sec_index]
+                var elem_offset = elem_uniaxial_offsets[e]
+                var elem_state_count = elem_uniaxial_counts[e]
+                force_beam_column2d_global_tangent_and_internal(
+                    node1.x,
+                    node1.y,
+                    node2.x,
+                    node2.y,
+                    u_elem,
+                    sec_def,
+                    fiber_section_cells,
+                    uniaxial_defs,
+                    uniaxial_states,
+                    elem_uniaxial_state_ids,
+                    elem_offset,
+                    elem_state_count,
+                    elem.num_int_pts,
+                    k_global,
+                    f_global,
+                )
             for a in range(6):
                 var Aidx = dof_map[a]
                 for b in range(6):

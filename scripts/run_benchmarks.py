@@ -654,6 +654,25 @@ def main() -> None:
         return case_entry
 
     case_entries = [build_case_tcl(case) for case in case_specs]
+    if batch_mode:
+        batch_case_entries = []
+        skipped_eigen_cases = []
+        for entry in case_entries:
+            timed_tcl = Path(entry["tcl_timed"])
+            if _tcl_uses_eigen(timed_tcl):
+                skipped_eigen_cases.append(entry["name"])
+                continue
+            batch_case_entries.append(entry)
+        if skipped_eigen_cases:
+            log(
+                "Batch mode: skipping eigen/modal cases: "
+                + ", ".join(sorted(skipped_eigen_cases))
+            )
+        case_entries = batch_case_entries
+        if not case_entries:
+            raise SystemExit(
+                "No non-eigen cases remain for batch mode. Use --no-batch to run eigen/modal cases."
+            )
     case_entries_by_name = {entry["name"]: entry for entry in case_entries}
 
     def _write_batch_tcl(entries: List[dict], output_root: Path, compute: bool) -> Path:

@@ -162,6 +162,7 @@ fn _force_beam_column2d_element_force_global(
     elem_index: Int,
     elem: ElementInput,
     nodes: List[NodeInput],
+    sections_by_id: List[SectionInput],
     ndf: Int,
     u: List[Float64],
     fiber_section_defs: List[FiberSection2dDef],
@@ -189,15 +190,6 @@ fn _force_beam_column2d_element_force_global(
     var i2 = elem.node_index_2
     var node1 = nodes[i1]
     var node2 = nodes[i2]
-
-    var sec_id = elem.section
-    if sec_id >= len(fiber_section_index_by_id):
-        abort("forceBeamColumn2d section not found")
-    var sec_index = fiber_section_index_by_id[sec_id]
-    if sec_index < 0 or sec_index >= len(fiber_section_defs):
-        abort("forceBeamColumn2d requires FiberSection2d")
-    var sec_def = fiber_section_defs[sec_index]
-
     var dof_map = [
         node_dof_index(i1, 1, ndf),
         node_dof_index(i1, 2, ndf),
@@ -210,6 +202,49 @@ fn _force_beam_column2d_element_force_global(
     u_elem.resize(6, 0.0)
     for i in range(6):
         u_elem[i] = u[dof_map[i]]
+    var sec = sections_by_id[elem.section]
+
+    if sec.type == "ElasticSection2d":
+        var k_global: List[List[Float64]] = []
+        if geom == "Linear":
+            k_global = beam_global_stiffness(
+                sec.E,
+                sec.A,
+                sec.I,
+                node1.x,
+                node1.y,
+                node2.x,
+                node2.y,
+            )
+        elif geom == "PDelta":
+            k_global = beam2d_pdelta_global_stiffness(
+                sec.E,
+                sec.A,
+                sec.I,
+                node1.x,
+                node1.y,
+                node2.x,
+                node2.y,
+                u_elem,
+            )
+        else:
+            abort("forceBeamColumn2d supports geomTransf Linear or PDelta")
+        var f_global_elastic: List[Float64] = []
+        f_global_elastic.resize(6, 0.0)
+        for a in range(6):
+            var sum = 0.0
+            for b in range(6):
+                sum += k_global[a][b] * u_elem[b]
+            f_global_elastic[a] = sum
+        return f_global_elastic^
+
+    var sec_id = elem.section
+    if sec_id >= len(fiber_section_index_by_id):
+        abort("forceBeamColumn2d section not found")
+    var sec_index = fiber_section_index_by_id[sec_id]
+    if sec_index < 0 or sec_index >= len(fiber_section_defs):
+        abort("forceBeamColumn2d fiber section not found")
+    var sec_def = fiber_section_defs[sec_index]
 
     var elem_offset = elem_uniaxial_offsets[elem_index]
     var elem_state_count = elem_uniaxial_counts[elem_index]
@@ -297,6 +332,7 @@ fn _element_force_global_for_recorder(
             elem_index,
             elem,
             nodes,
+            sections_by_id,
             ndf,
             u,
             fiber_section_defs,

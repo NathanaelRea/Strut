@@ -480,6 +480,7 @@ fn run_static_nonlinear_displacement_control(
     analysis: AnalysisInput,
     mut steps: Int,
     ts_index: Int,
+    time_series: List[TimeSeriesInput],
     analysis_integrator_targets_pool: List[Float64],
     typed_nodes: List[NodeInput],
     typed_elements: List[ElementInput],
@@ -556,8 +557,12 @@ fn run_static_nonlinear_displacement_control(
         row_ff.resize(free_count, 0.0)
         K_ff.append(row_ff^)
 
+    var load_scale_derivative = 1.0
     if ts_index >= 0:
-        abort("DisplacementControl does not support time_series scaling")
+        var ts = time_series[ts_index]
+        if ts.type_tag != 2:
+            abort("DisplacementControl only supports Linear time_series")
+        load_scale_derivative = ts.factor
     if analysis.integrator_node < 0 or analysis.integrator_dof < 0:
         abort("DisplacementControl requires node and dof")
     var control_node = analysis.integrator_node
@@ -717,8 +722,9 @@ fn run_static_nonlinear_displacement_control(
                         _append_event(
                             events, events_need_comma, "O", frame_kff_extract, kff_start_us
                         )
+                    var load_scale = load_scale_derivative * load_factor
                     for i in range(free_count):
-                        R_f[i] = load_factor * F_total_free[i] - F_int[free[i]]
+                        R_f[i] = load_scale * F_total_free[i] - F_int[free[i]]
                     if not use_modified_newton or not tangent_initialized:
                         for i in range(free_count):
                             for j in range(free_count):
@@ -735,7 +741,7 @@ fn run_static_nonlinear_displacement_control(
                         rhs_aug[i] = R_f[i]
                         for j in range(free_count):
                             K_aug[i][j] = K_ff[i][j]
-                        K_aug[i][free_count] = -F_total_free[i]
+                        K_aug[i][free_count] = -load_scale_derivative * F_total_free[i]
                     for j in range(free_count):
                         K_aug[free_count][j] = 0.0
                     K_aug[free_count][control_free] = 1.0
