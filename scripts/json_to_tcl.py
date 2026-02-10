@@ -687,10 +687,12 @@ def main():
                     if du is None or float(du) == 0.0:
                         raise ValueError("DisplacementControl requires non-zero du when targets are omitted")
                     f.write(f"integrator DisplacementControl {int(node)} {int(dof)} {float(du)}\n")
-                    f.write(f"set strut_dc_ok [analyze {steps}]\n")
-                    f.write("if {$strut_dc_ok != 0} {\n")
-                    f.write("  error \"analysis failed\"\n")
-                    f.write("}\n")
+                    static_nl_post_lines = [
+                        f"set strut_dc_ok [analyze {steps}]",
+                        "if {$strut_dc_ok != 0} {",
+                        "  error \"analysis failed\"",
+                        "}",
+                    ]
             else:
                 raise ValueError(f"unsupported static_nonlinear integrator: {integrator_type}")
         elif analysis_type == "transient_linear":

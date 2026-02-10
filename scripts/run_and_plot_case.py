@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+from matplotlib.backends.backend_pdf import PdfPages
 
 
 def _parse_rows(path: Path):
@@ -57,7 +58,8 @@ def _plot_one(
     mojo_vals,
     x_vals,
     x_label: str,
-    out_path: Path,
+    out_path: Path | None,
+    pdf: PdfPages | None,
 ):
     diffs = [g - r for r, g in zip(ref_vals, mojo_vals)]
     rmse = (sum(d * d for d in diffs) / max(len(diffs), 1)) ** 0.5
@@ -75,11 +77,14 @@ def _plot_one(
     ax.grid(True, alpha=0.3)
     ax.legend()
     fig.tight_layout()
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_path, dpi=140)
+    if out_path is not None:
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(out_path, dpi=140)
+        print(f"saved: {out_path}")
+    if pdf is not None:
+        pdf.savefig(fig, dpi=140)
     plt.close(fig)
 
-    print(f"saved: {out_path}")
     print(f"  peak(ref)={ref_peak:.6e} peak(mojo)={mojo_peak:.6e} peak_rel={peak_rel_err:.6e} rmse={rmse:.6e}")
 
 
@@ -101,7 +106,17 @@ def main():
     parser.add_argument(
         "--output-dir",
         default="",
-        help="output plot directory (default: build/plots/<case_name>)",
+        help="PNG output plot directory (default: build/plots/<case_name>)",
+    )
+    parser.add_argument(
+        "--no-png",
+        action="store_true",
+        help="skip writing per-series PNG files",
+    )
+    parser.add_argument(
+        "--pdf",
+        default="",
+        help="output PDF path (default: build/plots/<case_name>/<case_name>_all_recorders.pdf)",
     )
     args = parser.parse_args()
 
@@ -139,62 +154,71 @@ def main():
     if not out_files:
         raise SystemExit(f"no .out files found in {ref_dir}")
 
+    if args.pdf:
+        pdf_path = Path(args.pdf)
+    else:
+        pdf_path = plot_dir / f"{case_name}_all_recorders.pdf"
+    pdf_path.parent.mkdir(parents=True, exist_ok=True)
+
     plotted = 0
-    for ref_file in out_files:
-        mojo_file = mojo_dir / ref_file.name
-        if not mojo_file.exists():
-            print(f"skip (missing mojo): {mojo_file}")
-            continue
-        try:
-            ref_rows = _parse_rows(ref_file)
-            mojo_rows = _parse_rows(mojo_file)
-        except ValueError as exc:
-            print(f"skip ({exc})")
-            continue
+    with PdfPages(pdf_path) as pdf:
+        for ref_file in out_files:
+            mojo_file = mojo_dir / ref_file.name
+            if not mojo_file.exists():
+                print(f"skip (missing mojo): {mojo_file}")
+                continue
+            try:
+                ref_rows = _parse_rows(ref_file)
+                mojo_rows = _parse_rows(mojo_file)
+            except ValueError as exc:
+                print(f"skip ({exc})")
+                continue
 
-        n = min(len(ref_rows), len(mojo_rows))
-        if n == 0:
-            print(f"skip (no comparable rows): {ref_file.name}")
-            continue
-        if len(ref_rows) != len(mojo_rows):
-            print(
-                f"warning: row mismatch in {ref_file.name}; ref={len(ref_rows)} mojo={len(mojo_rows)} using first {n}"
-            )
-        ref_rows = ref_rows[:n]
-        mojo_rows = mojo_rows[:n]
+            n = min(len(ref_rows), len(mojo_rows))
+            if n == 0:
+                print(f"skip (no comparable rows): {ref_file.name}")
+                continue
+            if len(ref_rows) != len(mojo_rows):
+                print(
+                    f"warning: row mismatch in {ref_file.name}; ref={len(ref_rows)} mojo={len(mojo_rows)} using first {n}"
+                )
+            ref_rows = ref_rows[:n]
+            mojo_rows = mojo_rows[:n]
 
-        width = min(len(ref_rows[0]), len(mojo_rows[0]))
-        if len(ref_rows[0]) != len(mojo_rows[0]):
-            print(
-                f"warning: column mismatch in {ref_file.name}; ref={len(ref_rows[0])} mojo={len(mojo_rows[0])} using first {width}"
-            )
+            width = min(len(ref_rows[0]), len(mojo_rows[0]))
+            if len(ref_rows[0]) != len(mojo_rows[0]):
+                print(
+                    f"warning: column mismatch in {ref_file.name}; ref={len(ref_rows[0])} mojo={len(mojo_rows[0])} using first {width}"
+                )
 
-        if is_transient:
-            x_vals = [dt * (i + 1) for i in range(n)]
-            x_label = "Time (s)"
-        else:
-            x_vals = [i + 1 for i in range(n)]
-            x_label = "Step"
+            if is_transient:
+                x_vals = [dt * (i + 1) for i in range(n)]
+                x_label = "Time (s)"
+            else:
+                x_vals = [i + 1 for i in range(n)]
+                x_label = "Step"
 
-        stem = ref_file.stem
-        for comp_idx in range(width):
-            component = comp_idx + 1
-            ref_vals = _series(ref_rows, comp_idx)
-            mojo_vals = _series(mojo_rows, comp_idx)
-            out_path = plot_dir / f"{stem}_c{component}.png"
-            _plot_one(
-                case_name,
-                ref_file.name,
-                component,
-                ref_vals,
-                mojo_vals,
-                x_vals,
-                x_label,
-                out_path,
-            )
-            plotted += 1
+            stem = ref_file.stem
+            for comp_idx in range(width):
+                component = comp_idx + 1
+                ref_vals = _series(ref_rows, comp_idx)
+                mojo_vals = _series(mojo_rows, comp_idx)
+                out_path = None if args.no_png else (plot_dir / f"{stem}_c{component}.png")
+                _plot_one(
+                    case_name,
+                    ref_file.name,
+                    component,
+                    ref_vals,
+                    mojo_vals,
+                    x_vals,
+                    x_label,
+                    out_path,
+                    pdf,
+                )
+                plotted += 1
 
-    print(f"done: generated {plotted} plot(s) in {plot_dir}")
+    print(f"saved: {pdf_path}")
+    print(f"done: generated {plotted} plot(s)")
 
 
 if __name__ == "__main__":
