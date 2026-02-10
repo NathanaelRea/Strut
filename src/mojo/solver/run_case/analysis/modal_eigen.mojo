@@ -21,6 +21,7 @@ from solver.run_case.helpers import (
     _enforce_equal_dof_values,
     _format_values_line,
 )
+from tag_types import RecorderTypeTag
 
 
 fn _sorted_indices_ascending(values: List[Float64]) -> List[Int]:
@@ -146,7 +147,7 @@ fn run_modal_eigen(
     var wrote_eigenvalues = False
     for r in range(len(recorders)):
         var rec = recorders[r]
-        if rec.type_tag != 6:
+        if rec.type_tag != RecorderTypeTag.ModalEigen:
             continue
         var output = rec.output
         if not wrote_eigenvalues:

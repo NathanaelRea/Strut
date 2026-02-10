@@ -22,6 +22,7 @@ from solver.run_case.input_types import (
 )
 from solver.time_series import TimeSeriesInput, eval_time_series_input
 from sections import FiberCell, FiberSection2dDef
+from tag_types import RecorderTypeTag, TimeSeriesTypeTag
 
 from solver.run_case.helpers import (
     _append_output,
@@ -136,7 +137,7 @@ fn run_static_nonlinear_load_control(
         K_ff_banded = banded_matrix(free_count, bw_nl)
     var F_f: List[Float64] = []
     F_f.resize(free_count, 0.0)
-    var has_reaction_recorder = _has_recorder_type(recorders, 3)
+    var has_reaction_recorder = _has_recorder_type(recorders, RecorderTypeTag.NodeReaction)
     var envelope_files: List[String] = []
     var envelope_min: List[List[Float64]] = []
     var envelope_max: List[List[Float64]] = []
@@ -346,7 +347,7 @@ fn run_static_nonlinear_load_control(
             F_ext_reaction = _scaled_forces(F_total, scale)
         for r in range(len(recorders)):
             var rec = recorders[r]
-            if rec.type_tag == 1:
+            if rec.type_tag == RecorderTypeTag.NodeDisplacement:
                 for nidx in range(rec.node_count):
                     var node_id = recorder_nodes_pool[rec.node_offset + nidx]
                     var i = id_to_index[node_id]
@@ -363,7 +364,7 @@ fn run_static_nonlinear_load_control(
                     _append_output(
                         static_output_files, static_output_buffers, filename, line
                     )
-            elif rec.type_tag == 2:
+            elif rec.type_tag == RecorderTypeTag.ElementForce:
                 for eidx in range(rec.element_count):
                     var elem_id = recorder_elements_pool[rec.element_offset + eidx]
                     if (
@@ -395,7 +396,7 @@ fn run_static_nonlinear_load_control(
                     _append_output(
                         static_output_files, static_output_buffers, filename, line
                     )
-            elif rec.type_tag == 3:
+            elif rec.type_tag == RecorderTypeTag.NodeReaction:
                 for nidx in range(rec.node_count):
                     var node_id = recorder_nodes_pool[rec.node_offset + nidx]
                     var i = id_to_index[node_id]
@@ -413,7 +414,7 @@ fn run_static_nonlinear_load_control(
                         filename,
                         _format_values_line(values),
                     )
-            elif rec.type_tag == 4:
+            elif rec.type_tag == RecorderTypeTag.Drift:
                 var i_node = rec.i_node
                 var j_node = rec.j_node
                 var value = _drift_value(rec, typed_nodes, id_to_index, ndf, u)
@@ -431,7 +432,7 @@ fn run_static_nonlinear_load_control(
                     filename,
                     _format_values_line([value]),
                 )
-            elif rec.type_tag == 5:
+            elif rec.type_tag == RecorderTypeTag.EnvelopeElementForce:
                 for eidx in range(rec.element_count):
                     var elem_id = recorder_elements_pool[rec.element_offset + eidx]
                     if (
@@ -562,7 +563,7 @@ fn run_static_nonlinear_displacement_control(
     var load_scale_derivative = 1.0
     if ts_index >= 0:
         var ts = time_series[ts_index]
-        if ts.type_tag != 2:
+        if ts.type_tag != TimeSeriesTypeTag.Linear:
             abort("DisplacementControl only supports Linear time_series")
         load_scale_derivative = ts.factor
     if analysis.integrator_node < 0 or analysis.integrator_dof < 0:
@@ -626,7 +627,7 @@ fn run_static_nonlinear_displacement_control(
     rhs_aug.resize(aug_size, 0.0)
     var sol_aug: List[Float64] = []
     sol_aug.resize(aug_size, 0.0)
-    var has_reaction_recorder = _has_recorder_type(recorders, 3)
+    var has_reaction_recorder = _has_recorder_type(recorders, RecorderTypeTag.NodeReaction)
     var envelope_files: List[String] = []
     var envelope_min: List[List[Float64]] = []
     var envelope_max: List[List[Float64]] = []
@@ -858,7 +859,7 @@ fn run_static_nonlinear_displacement_control(
 
         for r in range(len(recorders)):
             var rec = recorders[r]
-            if rec.type_tag == 1:
+            if rec.type_tag == RecorderTypeTag.NodeDisplacement:
                 for nidx in range(rec.node_count):
                     var node_id = recorder_nodes_pool[rec.node_offset + nidx]
                     var i = id_to_index[node_id]
@@ -875,7 +876,7 @@ fn run_static_nonlinear_displacement_control(
                     _append_output(
                         static_output_files, static_output_buffers, filename, line
                     )
-            elif rec.type_tag == 2:
+            elif rec.type_tag == RecorderTypeTag.ElementForce:
                 for eidx in range(rec.element_count):
                     var elem_id = recorder_elements_pool[rec.element_offset + eidx]
                     if (
@@ -907,7 +908,7 @@ fn run_static_nonlinear_displacement_control(
                     _append_output(
                         static_output_files, static_output_buffers, filename, line
                     )
-            elif rec.type_tag == 3:
+            elif rec.type_tag == RecorderTypeTag.NodeReaction:
                 for nidx in range(rec.node_count):
                     var node_id = recorder_nodes_pool[rec.node_offset + nidx]
                     var i = id_to_index[node_id]
@@ -925,7 +926,7 @@ fn run_static_nonlinear_displacement_control(
                         filename,
                         _format_values_line(values),
                     )
-            elif rec.type_tag == 4:
+            elif rec.type_tag == RecorderTypeTag.Drift:
                 var i_node = rec.i_node
                 var j_node = rec.j_node
                 var value = _drift_value(rec, typed_nodes, id_to_index, ndf, u)
@@ -943,7 +944,7 @@ fn run_static_nonlinear_displacement_control(
                     filename,
                     _format_values_line([value]),
                 )
-            elif rec.type_tag == 5:
+            elif rec.type_tag == RecorderTypeTag.EnvelopeElementForce:
                 for eidx in range(rec.element_count):
                     var elem_id = recorder_elements_pool[rec.element_offset + eidx]
                     if (

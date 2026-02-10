@@ -37,6 +37,7 @@ from solver.run_case.helpers import (
     _drift_value,
     _update_envelope,
 )
+from tag_types import NonlinearAlgorithmMode, RecorderTypeTag
 
 
 fn run_transient_nonlinear(
@@ -98,35 +99,35 @@ fn run_transient_nonlinear(
             abort("UniformExcitation missing accel time_series")
 
     var algorithm = analysis.algorithm
-    var primary_algorithm_mode = -1
+    var primary_algorithm_mode = NonlinearAlgorithmMode.Unknown
     if algorithm == "Newton":
-        primary_algorithm_mode = 0
+        primary_algorithm_mode = NonlinearAlgorithmMode.Newton
     elif algorithm == "ModifiedNewton":
-        primary_algorithm_mode = 1
+        primary_algorithm_mode = NonlinearAlgorithmMode.ModifiedNewton
     elif algorithm == "ModifiedNewtonInitial":
-        primary_algorithm_mode = 2
+        primary_algorithm_mode = NonlinearAlgorithmMode.ModifiedNewtonInitial
     else:
         abort("unsupported transient_nonlinear algorithm: " + algorithm)
 
     var fallback_algorithm = analysis.fallback_algorithm
     var has_fallback = False
-    var fallback_algorithm_mode = -1
+    var fallback_algorithm_mode = NonlinearAlgorithmMode.Unknown
     if len(fallback_algorithm) > 0:
         if fallback_algorithm == "Newton":
-            fallback_algorithm_mode = 0
+            fallback_algorithm_mode = NonlinearAlgorithmMode.Newton
         elif fallback_algorithm == "ModifiedNewton":
-            fallback_algorithm_mode = 1
+            fallback_algorithm_mode = NonlinearAlgorithmMode.ModifiedNewton
         elif fallback_algorithm == "ModifiedNewtonInitial":
-            fallback_algorithm_mode = 2
+            fallback_algorithm_mode = NonlinearAlgorithmMode.ModifiedNewtonInitial
         else:
             abort(
                 "unsupported transient_nonlinear fallback_algorithm: "
                 + fallback_algorithm
             )
         has_fallback = True
-    elif primary_algorithm_mode != 0:
+    elif primary_algorithm_mode != NonlinearAlgorithmMode.Newton:
         # Preserve legacy fallback behavior for ModifiedNewton* primary modes.
-        fallback_algorithm_mode = 0
+        fallback_algorithm_mode = NonlinearAlgorithmMode.Newton
         has_fallback = True
 
     var integrator_type = analysis.integrator_type
@@ -271,7 +272,7 @@ fn run_transient_nonlinear(
     var du_f: List[Float64] = []
     du_f.resize(free_count, 0.0)
 
-    var record_reactions = _has_recorder_type(recorders, 3)
+    var record_reactions = _has_recorder_type(recorders, RecorderTypeTag.NodeReaction)
     var envelope_files: List[String] = []
     var envelope_min: List[List[Float64]] = []
     var envelope_max: List[List[Float64]] = []
@@ -364,11 +365,11 @@ fn run_transient_nonlinear(
                 if has_transformation_mpc:
                     K = _collapse_matrix_by_rep(K, rep_dof)
                     F_int = _collapse_vector_by_rep(F_int, rep_dof)
-                if attempt_algorithm_mode == 0:
+                if attempt_algorithm_mode == NonlinearAlgorithmMode.Newton:
                     for i in range(free_count):
                         for j in range(free_count):
                             K_ff[i][j] = K[free[i]][free[j]]
-                elif attempt_algorithm_mode == 1:
+                elif attempt_algorithm_mode == NonlinearAlgorithmMode.ModifiedNewton:
                     if not tangent_initialized:
                         for i in range(free_count):
                             for j in range(free_count):
@@ -524,7 +525,7 @@ fn run_transient_nonlinear(
 
         for r in range(len(recorders)):
             var rec = recorders[r]
-            if rec.type_tag == 1:
+            if rec.type_tag == RecorderTypeTag.NodeDisplacement:
                 for nidx in range(rec.node_count):
                     var node_id = recorder_nodes_pool[rec.node_offset + nidx]
                     var i = id_to_index[node_id]
@@ -541,7 +542,7 @@ fn run_transient_nonlinear(
                     _append_output(
                         transient_output_files, transient_output_buffers, filename, line
                     )
-            elif rec.type_tag == 2:
+            elif rec.type_tag == RecorderTypeTag.ElementForce:
                 for eidx in range(rec.element_count):
                     var elem_id = recorder_elements_pool[rec.element_offset + eidx]
                     if elem_id >= len(elem_id_to_index) or elem_id_to_index[elem_id] < 0:
@@ -570,7 +571,7 @@ fn run_transient_nonlinear(
                     _append_output(
                         transient_output_files, transient_output_buffers, filename, line
                     )
-            elif rec.type_tag == 3:
+            elif rec.type_tag == RecorderTypeTag.NodeReaction:
                 if not record_reactions:
                     abort("internal error: reaction recorder flag mismatch")
                 var F_int_reaction = assemble_internal_forces_typed(
@@ -608,7 +609,7 @@ fn run_transient_nonlinear(
                     _append_output(
                         transient_output_files, transient_output_buffers, filename, line
                     )
-            elif rec.type_tag == 4:
+            elif rec.type_tag == RecorderTypeTag.Drift:
                 var i_node = rec.i_node
                 var j_node = rec.j_node
                 var value = _drift_value(rec, typed_nodes, id_to_index, ndf, u)
@@ -626,7 +627,7 @@ fn run_transient_nonlinear(
                     filename,
                     _format_values_line([value]),
                 )
-            elif rec.type_tag == 5:
+            elif rec.type_tag == RecorderTypeTag.EnvelopeElementForce:
                 for eidx in range(rec.element_count):
                     var elem_id = recorder_elements_pool[rec.element_offset + eidx]
                     if elem_id >= len(elem_id_to_index) or elem_id_to_index[elem_id] < 0:

@@ -25,6 +25,7 @@ from solver.banded import banded_add, banded_matrix
 from solver.dof import node_dof_index
 from solver.run_case.input_types import ElementInput, MaterialInput, NodeInput, SectionInput
 from sections import FiberCell, FiberSection2dDef
+from tag_types import ElementTypeTag, LinkDirectionTag
 
 
 fn _zero_vector(mut vec: List[Float64]):
@@ -147,7 +148,7 @@ fn assemble_global_stiffness_banded_frame2d_typed(
 
     for e in range(len(elements)):
         var elem = elements[e]
-        if elem.type_tag == 1:
+        if elem.type_tag == ElementTypeTag.ElasticBeamColumn2d:
             var i1 = elem.node_index_1
             var i2 = elem.node_index_2
             var node1 = nodes[i1]
@@ -220,7 +221,7 @@ fn assemble_global_stiffness_banded_frame2d_typed(
                     if Bidx < 0:
                         continue
                     banded_add(K, bw, Aidx, Bidx, k_global[a][b])
-        elif elem.type_tag == 2:
+        elif elem.type_tag == ElementTypeTag.ForceBeamColumn2d:
             var i1 = elem.node_index_1
             var i2 = elem.node_index_2
             var node1 = nodes[i1]
@@ -446,7 +447,7 @@ fn assemble_global_stiffness_and_internal(
     for e in range(elem_count):
         var elem = elements[e]
         var elem_type = elem.type_tag
-        if elem_type == 1:
+        if elem_type == ElementTypeTag.ElasticBeamColumn2d:
             var i1 = elem.node_index_1
             var i2 = elem.node_index_2
             var node1 = nodes[i1]
@@ -531,7 +532,7 @@ fn assemble_global_stiffness_and_internal(
                         K[Aidx][Bidx] += kval
                         sum += kval * u[Bidx]
                     F_int[Aidx] += sum
-        elif elem_type == 2:
+        elif elem_type == ElementTypeTag.ForceBeamColumn2d:
             var i1 = elem.node_index_1
             var i2 = elem.node_index_2
             var node1 = nodes[i1]
@@ -611,7 +612,7 @@ fn assemble_global_stiffness_and_internal(
                     var Bidx = dof_map[b]
                     K[Aidx][Bidx] += k_global[a][b]
                 F_int[Aidx] += f_global[a]
-        elif elem_type == 3:
+        elif elem_type == ElementTypeTag.ElasticBeamColumn3d:
             var i1 = elem.node_index_1
             var i2 = elem.node_index_2
             var node1 = nodes[i1]
@@ -662,7 +663,7 @@ fn assemble_global_stiffness_and_internal(
                     K[Aidx][Bidx] += kval
                     sum += kval * u[Bidx]
                 F_int[Aidx] += sum
-        elif elem_type == 4:
+        elif elem_type == ElementTypeTag.Truss:
             var i1 = elem.node_index_1
             var i2 = elem.node_index_2
             var node1 = nodes[i1]
@@ -757,7 +758,7 @@ fn assemble_global_stiffness_and_internal(
                 F_int[dof_map[3]] += N * l
                 F_int[dof_map[4]] += N * m
                 F_int[dof_map[5]] += N * n
-        elif elem_type == 5:
+        elif elem_type == ElementTypeTag.Link:
             var dof_map = [
                 _elem_dof(elem, 0),
                 _elem_dof(elem, 1),
@@ -773,14 +774,14 @@ fn assemble_global_stiffness_and_internal(
                 var mat_def = uniaxial_defs[def_index]
                 var state = uniaxial_states[state_index]
                 var dir = _elem_dir(elem, m)
-                if dir == 1:
+                if dir == LinkDirectionTag.UX:
                     uniaxial_set_trial_strain(mat_def, state, u[dof_map[2]] - u[dof_map[0]])
                 else:
                     uniaxial_set_trial_strain(mat_def, state, u[dof_map[3]] - u[dof_map[1]])
                 uniaxial_states[state_index] = state
                 var force = state.sig_t
                 var k = state.tangent_t
-                if dir == 1:
+                if dir == LinkDirectionTag.UX:
                     K[dof_map[0]][dof_map[0]] += k
                     K[dof_map[2]][dof_map[2]] += k
                     K[dof_map[0]][dof_map[2]] -= k
@@ -794,7 +795,7 @@ fn assemble_global_stiffness_and_internal(
                     K[dof_map[3]][dof_map[1]] -= k
                     F_int[dof_map[1]] -= force
                     F_int[dof_map[3]] += force
-        elif elem_type == 8:
+        elif elem_type == ElementTypeTag.ZeroLengthSection:
             var dof_map = [
                 _elem_dof(elem, 0),
                 _elem_dof(elem, 1),
@@ -886,7 +887,7 @@ fn assemble_global_stiffness_and_internal(
             F_int[r1] -= moment_z
             F_int[u2] += axial_force
             F_int[r2] += moment_z
-        elif elem_type == 6:
+        elif elem_type == ElementTypeTag.FourNodeQuad:
             var i1 = elem.node_index_1
             var i2 = elem.node_index_2
             var i3 = elem.node_index_3
@@ -934,7 +935,7 @@ fn assemble_global_stiffness_and_internal(
                     K[Aidx][Bidx] += kval
                     sum += kval * u[Bidx]
                 F_int[Aidx] += sum
-        elif elem_type == 7:
+        elif elem_type == ElementTypeTag.Shell:
             var i1 = elem.node_index_1
             var i2 = elem.node_index_2
             var i3 = elem.node_index_3

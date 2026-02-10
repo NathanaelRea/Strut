@@ -5,19 +5,20 @@ from materials.uniaxial.concrete01 import _concrete01_reload
 from materials.uniaxial.concrete02 import _concrete02_set_trial
 from materials.uniaxial.core import _abs, _sign, UniMaterialDef, UniMaterialState
 from materials.uniaxial.steel02 import _steel02_set_trial
+from tag_types import UniMaterialTypeTag
 
 fn uniaxial_set_trial_strain(
     mat_def: UniMaterialDef, mut state: UniMaterialState, eps: Float64
 ):
     state.eps_t = eps
-    if mat_def.mat_type == 0:
+    if mat_def.mat_type == UniMaterialTypeTag.Elastic:
         var E = mat_def.p0
         state.sig_t = E * eps
         state.tangent_t = E
         state.eps_p_t = state.eps_p_c
         state.alpha_t = state.alpha_c
         return
-    if mat_def.mat_type == 1:
+    if mat_def.mat_type == UniMaterialTypeTag.Steel01:
         var Fy = mat_def.p0
         var E0 = mat_def.p1
         var b = mat_def.p2
@@ -42,7 +43,7 @@ fn uniaxial_set_trial_strain(
         state.sig_t = sigma_trial - E0 * dg * sgn
         state.tangent_t = (E0 * H) / (E0 + H)
         return
-    if mat_def.mat_type == 2:
+    if mat_def.mat_type == UniMaterialTypeTag.Concrete01:
         var fpc = mat_def.p0
         var epsc0 = mat_def.p1
         var fpcu = mat_def.p2
@@ -96,10 +97,10 @@ fn uniaxial_set_trial_strain(
         state.eps_p_t = state.eps_p_c
         state.alpha_t = state.alpha_c
         return
-    if mat_def.mat_type == 3:
+    if mat_def.mat_type == UniMaterialTypeTag.Steel02:
         _steel02_set_trial(mat_def, state, eps)
         return
-    if mat_def.mat_type == 4:
+    if mat_def.mat_type == UniMaterialTypeTag.Concrete02:
         _concrete02_set_trial(mat_def, state, eps)
         return
     abort("unsupported uniaxial material")

@@ -22,6 +22,12 @@ from solver.time_series import (
 )
 from sections import FiberCell, FiberSection2dDef, append_fiber_section2d_from_json
 from strut_io import py_len
+from tag_types import (
+    ElementTypeTag,
+    GeomTransfTag,
+    LinkDirectionTag,
+    UniMaterialTypeTag,
+)
 
 struct RunCaseState(Movable):
     var ndm: Int
@@ -277,7 +283,7 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
             var E = mat.E
             if E <= 0.0:
                 abort("Elastic material E must be > 0")
-            var mat_def = UniMaterialDef(0, E, 0.0, 0.0, 0.0)
+            var mat_def = UniMaterialDef(UniMaterialTypeTag.Elastic, E, 0.0, 0.0, 0.0)
             uniaxial_def_by_id[mid] = len(uniaxial_defs)
             uniaxial_defs.append(mat_def)
         elif mat_type == "Steel01":
@@ -290,7 +296,7 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
                 abort("Steel01 E0 must be > 0")
             if b < 0.0 or b >= 1.0:
                 abort("Steel01 b must be in [0, 1)")
-            var mat_def = UniMaterialDef(1, Fy, E0, b, 0.0)
+            var mat_def = UniMaterialDef(UniMaterialTypeTag.Steel01, Fy, E0, b, 0.0)
             uniaxial_def_by_id[mid] = len(uniaxial_defs)
             uniaxial_defs.append(mat_def)
         elif mat_type == "Concrete01":
@@ -316,7 +322,7 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
                 abort("Concrete01 epscu must be < epsc0")
             if fpcu > 0.0 or fpcu < fpc:
                 abort("Concrete01 fpcu must be between fpc and 0")
-            var mat_def = UniMaterialDef(2, fpc, epsc0, fpcu, epscu)
+            var mat_def = UniMaterialDef(UniMaterialTypeTag.Concrete01, fpc, epsc0, fpcu, epscu)
             uniaxial_def_by_id[mid] = len(uniaxial_defs)
             uniaxial_defs.append(mat_def)
         elif mat_type == "Steel02":
@@ -379,7 +385,18 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
                 sig_init = mat.sigInit
 
             var mat_def = UniMaterialDef(
-                3, Fy, E0, b, R0, cR1, cR2, a1, a2, a3, a4, sig_init
+                UniMaterialTypeTag.Steel02,
+                Fy,
+                E0,
+                b,
+                R0,
+                cR1,
+                cR2,
+                a1,
+                a2,
+                a3,
+                a4,
+                sig_init,
             )
             uniaxial_def_by_id[mid] = len(uniaxial_defs)
             uniaxial_defs.append(mat_def)
@@ -431,7 +448,18 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
                 abort("Concrete02 Ets must be > 0")
 
             var mat_def = UniMaterialDef(
-                4, fpc, epsc0, fpcu, epscu, rat, ft, Ets, 0.0, 0.0, 0.0, 0.0
+                UniMaterialTypeTag.Concrete02,
+                fpc,
+                epsc0,
+                fpcu,
+                epscu,
+                rat,
+                ft,
+                Ets,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
             )
             uniaxial_def_by_id[mid] = len(uniaxial_defs)
             uniaxial_defs.append(mat_def)
@@ -476,7 +504,7 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
     var has_force_beam_column2d = False
     for i in range(elem_count):
         var elem = typed_elements[i]
-        if elem.type_tag == 0:
+        if elem.type_tag == ElementTypeTag.Unknown:
             abort("unsupported element type: " + elem.type)
 
         if elem.node_1 >= len(id_to_index) or id_to_index[elem.node_1] < 0:
@@ -494,7 +522,7 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
                 abort("element node not found")
             elem.node_index_4 = id_to_index[elem.node_4]
 
-        if elem.type_tag == 1:
+        if elem.type_tag == ElementTypeTag.ElasticBeamColumn2d:
             if ndm != 2 or ndf != 3:
                 abort("elasticBeamColumn2d requires ndm=2, ndf=3")
             if elem.node_count != 2:
@@ -506,7 +534,11 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
                 abort("section not found")
             if sec.type != "ElasticSection2d":
                 abort("elasticBeamColumn2d requires ElasticSection2d")
-            if elem.geom_tag < 1 or elem.geom_tag > 3:
+            if (
+                elem.geom_tag != GeomTransfTag.Linear
+                and elem.geom_tag != GeomTransfTag.PDelta
+                and elem.geom_tag != GeomTransfTag.Corotational
+            ):
                 abort("unsupported geomTransf: " + elem.geom_transf)
             if elem.section < len(fiber_section_index_by_id):
                 if fiber_section_index_by_id[elem.section] >= 0:
@@ -521,14 +553,17 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
             _set_elem_dof(elem, 3, node_dof_index(elem.node_index_2, 1, ndf))
             _set_elem_dof(elem, 4, node_dof_index(elem.node_index_2, 2, ndf))
             _set_elem_dof(elem, 5, node_dof_index(elem.node_index_2, 3, ndf))
-        elif elem.type_tag == 2:
+        elif elem.type_tag == ElementTypeTag.ForceBeamColumn2d:
             has_force_beam_column2d = True
             var beam_col_type = elem.type
             if ndm != 2 or ndf != 3:
                 abort(beam_col_type + " requires ndm=2, ndf=3")
             if elem.node_count != 2:
                 abort(beam_col_type + " requires 2 nodes")
-            if elem.geom_tag != 1 and elem.geom_tag != 2:
+            if (
+                elem.geom_tag != GeomTransfTag.Linear
+                and elem.geom_tag != GeomTransfTag.PDelta
+            ):
                 abort(beam_col_type + " supports geomTransf Linear or PDelta")
             if elem.integration != "Lobatto":
                 abort(beam_col_type + " supports Lobatto integration only")
@@ -548,7 +583,7 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
             _set_elem_dof(elem, 3, node_dof_index(elem.node_index_2, 1, ndf))
             _set_elem_dof(elem, 4, node_dof_index(elem.node_index_2, 2, ndf))
             _set_elem_dof(elem, 5, node_dof_index(elem.node_index_2, 3, ndf))
-        elif elem.type_tag == 3:
+        elif elem.type_tag == ElementTypeTag.ElasticBeamColumn3d:
             if ndm != 3 or ndf != 6:
                 abort("elasticBeamColumn3d requires ndm=3, ndf=6")
             if elem.node_count != 2:
@@ -570,7 +605,7 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
             for d in range(6):
                 _set_elem_dof(elem, d, node_dof_index(elem.node_index_1, d + 1, ndf))
                 _set_elem_dof(elem, d + 6, node_dof_index(elem.node_index_2, d + 1, ndf))
-        elif elem.type_tag == 4:
+        elif elem.type_tag == ElementTypeTag.Truss:
             if elem.node_count != 2:
                 abort("truss requires 2 nodes")
             if ndf != 2 and ndf != 3:
@@ -591,7 +626,7 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
                 _set_elem_dof(elem, 3, node_dof_index(elem.node_index_2, 1, ndf))
                 _set_elem_dof(elem, 4, node_dof_index(elem.node_index_2, 2, ndf))
                 _set_elem_dof(elem, 5, node_dof_index(elem.node_index_2, 3, ndf))
-        elif elem.type_tag == 5:
+        elif elem.type_tag == ElementTypeTag.Link:
             if ndf != 2:
                 abort("zeroLength/twoNodeLink requires ndf=2")
             if elem.node_count != 2:
@@ -600,14 +635,14 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
                 abort("zeroLength/twoNodeLink materials/dirs mismatch")
             for d in range(elem.dir_count):
                 var dir = _elem_dir(elem, d)
-                if dir != 1 and dir != 2:
+                if dir != LinkDirectionTag.UX and dir != LinkDirectionTag.UY:
                     abort("unsupported link dir")
             elem.dof_count = 4
             _set_elem_dof(elem, 0, node_dof_index(elem.node_index_1, 1, ndf))
             _set_elem_dof(elem, 1, node_dof_index(elem.node_index_1, 2, ndf))
             _set_elem_dof(elem, 2, node_dof_index(elem.node_index_2, 1, ndf))
             _set_elem_dof(elem, 3, node_dof_index(elem.node_index_2, 2, ndf))
-        elif elem.type_tag == 8:
+        elif elem.type_tag == ElementTypeTag.ZeroLengthSection:
             if ndm != 2 or ndf != 3:
                 abort("zeroLengthSection requires ndm=2, ndf=3")
             if elem.node_count != 2:
@@ -626,7 +661,7 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
             _set_elem_dof(elem, 3, node_dof_index(elem.node_index_2, 1, ndf))
             _set_elem_dof(elem, 4, node_dof_index(elem.node_index_2, 2, ndf))
             _set_elem_dof(elem, 5, node_dof_index(elem.node_index_2, 3, ndf))
-        elif elem.type_tag == 6:
+        elif elem.type_tag == ElementTypeTag.FourNodeQuad:
             if ndm != 2 or ndf != 2:
                 abort("fourNodeQuad requires ndm=2, ndf=2")
             if elem.node_count != 4:
@@ -651,7 +686,7 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
             _set_elem_dof(elem, 5, node_dof_index(elem.node_index_3, 2, ndf))
             _set_elem_dof(elem, 6, node_dof_index(elem.node_index_4, 1, ndf))
             _set_elem_dof(elem, 7, node_dof_index(elem.node_index_4, 2, ndf))
-        elif elem.type_tag == 7:
+        elif elem.type_tag == ElementTypeTag.Shell:
             if ndm != 3 or ndf != 6:
                 abort("shell requires ndm=3, ndf=6")
             if elem.node_count != 4:
@@ -685,7 +720,7 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
     var force_beam_has_nonelastic = False
     for e in range(elem_count):
         var elem = typed_elements[e]
-        if elem.type_tag == 4:
+        if elem.type_tag == ElementTypeTag.Truss:
             var mat_id = elem.material
             if mat_id >= len(uniaxial_def_by_id) or uniaxial_def_by_id[mat_id] < 0:
                 abort("truss requires uniaxial material")
@@ -699,7 +734,7 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
             elem_uniaxial_state_ids.append(state_index)
             if not uni_mat_is_elastic(mat_def):
                 used_nonelastic_uniaxial = True
-        elif elem.type_tag == 5:
+        elif elem.type_tag == ElementTypeTag.Link:
             elem_uniaxial_offsets[e] = len(elem_uniaxial_state_ids)
             elem_uniaxial_counts[e] = elem.material_count
             for m in range(elem.material_count):
@@ -714,7 +749,7 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
                 elem_uniaxial_state_ids.append(state_index)
                 if not uni_mat_is_elastic(mat_def):
                     used_nonelastic_uniaxial = True
-        elif elem.type_tag == 2:
+        elif elem.type_tag == ElementTypeTag.ForceBeamColumn2d:
             var sec_id = elem.section
             elem_uniaxial_offsets[e] = len(elem_uniaxial_state_ids)
             var sec = typed_sections_by_id[sec_id]
@@ -745,7 +780,7 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
                 elem_uniaxial_counts[e] = 0
             else:
                 abort(beam_col_type + " requires FiberSection2d or ElasticSection2d")
-        elif elem.type_tag == 8:
+        elif elem.type_tag == ElementTypeTag.ZeroLengthSection:
             var sec_id = elem.section
             elem_uniaxial_offsets[e] = len(elem_uniaxial_state_ids)
             var sec = typed_sections_by_id[sec_id]
@@ -841,7 +876,7 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
     # Lump translational mass from fourNodeQuad/bbarQuad density when provided.
     for e in range(elem_count):
         var elem = typed_elements[e]
-        if elem.type_tag != 6:
+        if elem.type_tag != ElementTypeTag.FourNodeQuad:
             continue
         if elem.material < 0 or elem.material >= len(typed_materials_by_id):
             abort("material not found")

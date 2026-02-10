@@ -13,6 +13,7 @@ from solver.run_case.input_types import ElementInput, MaterialInput, NodeInput, 
 from solver.run_case.helpers import _collapse_matrix_by_rep, _enforce_equal_dof_values
 from solver.time_series import TimeSeriesInput, eval_time_series_input
 from sections import FiberCell, FiberSection2dDef
+from tag_types import ElementTypeTag
 
 fn run_static_linear(
     typed_nodes: List[NodeInput],
@@ -77,7 +78,10 @@ fn run_static_linear(
         use_typed_banded = True
         for e in range(len(typed_elements)):
             var elem_type = typed_elements[e].type_tag
-            if elem_type != 1 and elem_type != 2:
+            if (
+                elem_type != ElementTypeTag.ElasticBeamColumn2d
+                and elem_type != ElementTypeTag.ForceBeamColumn2d
+            ):
                 use_typed_banded = False
                 break
         if use_typed_banded:

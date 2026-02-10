@@ -29,6 +29,7 @@ from solver.run_case.helpers import (
     _update_envelope,
 )
 from solver.run_case.loader import load_case_state
+from tag_types import RecorderTypeTag
 
 
 fn _write_output_chunk_files(
@@ -447,7 +448,7 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
     else:
         if has_transformation_mpc:
             _enforce_equal_dof_values(u, rep_dof, constrained)
-        var has_reaction_recorder = _has_recorder_type(recorders, 3)
+        var has_reaction_recorder = _has_recorder_type(recorders, RecorderTypeTag.NodeReaction)
         var F_int_reaction: List[Float64] = []
         var F_ext_reaction: List[Float64] = []
         if has_reaction_recorder:
@@ -478,7 +479,7 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
         var envelope_abs: List[List[Float64]] = []
         for r in range(len(recorders)):
             var rec = recorders[r]
-            if rec.type_tag == 1:
+            if rec.type_tag == RecorderTypeTag.NodeDisplacement:
                 for nidx in range(rec.node_count):
                     var node_id = recorder_nodes_pool[rec.node_offset + nidx]
                     var i = id_to_index[node_id]
@@ -494,7 +495,7 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
                     var filename = rec.output + "_node" + String(node_id) + ".out"
                     var file_path = out_dir.joinpath(filename)
                     file_path.write_text(PythonObject(line))
-            elif rec.type_tag == 2:
+            elif rec.type_tag == RecorderTypeTag.ElementForce:
                 for eidx in range(rec.element_count):
                     var elem_id = recorder_elements_pool[rec.element_offset + eidx]
                     if elem_id >= len(elem_id_to_index) or elem_id_to_index[elem_id] < 0:
@@ -522,7 +523,7 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
                     var filename = rec.output + "_ele" + String(elem_id) + ".out"
                     var file_path = out_dir.joinpath(filename)
                     file_path.write_text(PythonObject(line))
-            elif rec.type_tag == 3:
+            elif rec.type_tag == RecorderTypeTag.NodeReaction:
                 for nidx in range(rec.node_count):
                     var node_id = recorder_nodes_pool[rec.node_offset + nidx]
                     var i = id_to_index[node_id]
@@ -536,7 +537,7 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
                     var filename = rec.output + "_node" + String(node_id) + ".out"
                     var file_path = out_dir.joinpath(filename)
                     file_path.write_text(PythonObject(_format_values_line(values)))
-            elif rec.type_tag == 4:
+            elif rec.type_tag == RecorderTypeTag.Drift:
                 var i_node = rec.i_node
                 var j_node = rec.j_node
                 var value = _drift_value(rec, typed_nodes, id_to_index, ndf, u)
@@ -550,7 +551,7 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
                 )
                 var file_path = out_dir.joinpath(filename)
                 file_path.write_text(PythonObject(_format_values_line([value])))
-            elif rec.type_tag == 5:
+            elif rec.type_tag == RecorderTypeTag.EnvelopeElementForce:
                 for eidx in range(rec.element_count):
                     var elem_id = recorder_elements_pool[rec.element_offset + eidx]
                     if elem_id >= len(elem_id_to_index) or elem_id_to_index[elem_id] < 0:

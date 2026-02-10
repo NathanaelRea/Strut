@@ -3,6 +3,7 @@ from os import abort
 from python import Python, PythonObject
 
 from strut_io import py_len
+from tag_types import ElementTypeTag, GeomTransfTag, RecorderTypeTag
 
 
 struct ModelInput(Movable, ImplicitlyCopyable):
@@ -238,8 +239,8 @@ struct ElementInput(Movable, ImplicitlyCopyable):
     fn __init__(out self):
         self.id = 0
         self.type = ""
-        self.type_tag = 0
-        self.geom_tag = 0
+        self.type_tag = ElementTypeTag.Unknown
+        self.geom_tag = GeomTransfTag.Unknown
         self.node_count = 0
         self.node_1 = -1
         self.node_2 = -1
@@ -487,7 +488,7 @@ struct RecorderInput(Movable, ImplicitlyCopyable):
     var perp_dirn: Int
 
     fn __init__(out self):
-        self.type_tag = 0
+        self.type_tag = RecorderTypeTag.Unknown
         self.output = ""
         self.node_offset = 0
         self.node_count = 0
@@ -548,51 +549,51 @@ struct CaseInput(Movable):
 
 fn element_type_tag(type_name: String) -> Int:
     if type_name == "elasticBeamColumn2d":
-        return 1
+        return ElementTypeTag.ElasticBeamColumn2d
     if (
         type_name == "forceBeamColumn2d"
         or type_name == "dispBeamColumn2d"
     ):
-        return 2
+        return ElementTypeTag.ForceBeamColumn2d
     if type_name == "elasticBeamColumn3d":
-        return 3
+        return ElementTypeTag.ElasticBeamColumn3d
     if type_name == "truss":
-        return 4
+        return ElementTypeTag.Truss
     if type_name == "zeroLength" or type_name == "twoNodeLink":
-        return 5
+        return ElementTypeTag.Link
     if type_name == "zeroLengthSection":
-        return 8
+        return ElementTypeTag.ZeroLengthSection
     if type_name == "fourNodeQuad" or type_name == "bbarQuad":
-        return 6
+        return ElementTypeTag.FourNodeQuad
     if type_name == "shell":
-        return 7
-    return 0
+        return ElementTypeTag.Shell
+    return ElementTypeTag.Unknown
 
 
 fn geom_transf_tag(geom_name: String) -> Int:
     if geom_name == "Linear":
-        return 1
+        return GeomTransfTag.Linear
     if geom_name == "PDelta":
-        return 2
+        return GeomTransfTag.PDelta
     if geom_name == "Corotational":
-        return 3
-    return 0
+        return GeomTransfTag.Corotational
+    return GeomTransfTag.Unknown
 
 
 fn recorder_type_tag(type_name: String) -> Int:
     if type_name == "node_displacement":
-        return 1
+        return RecorderTypeTag.NodeDisplacement
     if type_name == "element_force":
-        return 2
+        return RecorderTypeTag.ElementForce
     if type_name == "node_reaction":
-        return 3
+        return RecorderTypeTag.NodeReaction
     if type_name == "drift":
-        return 4
+        return RecorderTypeTag.Drift
     if type_name == "envelope_element_force":
-        return 5
+        return RecorderTypeTag.EnvelopeElementForce
     if type_name == "modal_eigen":
-        return 6
-    return 0
+        return RecorderTypeTag.ModalEigen
+    return RecorderTypeTag.Unknown
 
 
 fn parse_case_input(data: PythonObject) raises -> CaseInput:
@@ -945,9 +946,9 @@ fn parse_case_input(data: PythonObject) raises -> CaseInput:
         var rec = recorders_raw[i]
         var parsed = RecorderInput()
         parsed.type_tag = recorder_type_tag(String(rec["type"]))
-        if parsed.type_tag == 0:
+        if parsed.type_tag == RecorderTypeTag.Unknown:
             abort("unsupported recorder type")
-        if parsed.type_tag == 1:
+        if parsed.type_tag == RecorderTypeTag.NodeDisplacement:
             parsed.output = String(rec.get("output", "node_disp"))
             if not rec.__contains__("nodes") or not rec.__contains__("dofs"):
                 abort("node_displacement recorder requires nodes and dofs")
@@ -961,7 +962,7 @@ fn parse_case_input(data: PythonObject) raises -> CaseInput:
             parsed.dof_count = py_len(dofs_raw)
             for j in range(py_len(dofs_raw)):
                 case_input.recorder_dofs_pool.append(Int(dofs_raw[j]))
-        elif parsed.type_tag == 2:
+        elif parsed.type_tag == RecorderTypeTag.ElementForce:
             parsed.output = String(rec.get("output", "element_force"))
             if not rec.__contains__("elements"):
                 abort("element_force recorder requires elements")
@@ -970,7 +971,7 @@ fn parse_case_input(data: PythonObject) raises -> CaseInput:
             parsed.element_count = py_len(elements_raw)
             for j in range(py_len(elements_raw)):
                 case_input.recorder_elements_pool.append(Int(elements_raw[j]))
-        elif parsed.type_tag == 3:
+        elif parsed.type_tag == RecorderTypeTag.NodeReaction:
             parsed.output = String(rec.get("output", "reaction"))
             if not rec.__contains__("nodes") or not rec.__contains__("dofs"):
                 abort("node_reaction recorder requires nodes and dofs")
@@ -984,7 +985,7 @@ fn parse_case_input(data: PythonObject) raises -> CaseInput:
             parsed.dof_count = py_len(dofs_raw)
             for j in range(py_len(dofs_raw)):
                 case_input.recorder_dofs_pool.append(Int(dofs_raw[j]))
-        elif parsed.type_tag == 4:
+        elif parsed.type_tag == RecorderTypeTag.Drift:
             parsed.output = String(rec.get("output", "drift"))
             if (
                 not rec.__contains__("i_node")
@@ -997,7 +998,7 @@ fn parse_case_input(data: PythonObject) raises -> CaseInput:
             parsed.j_node = Int(rec["j_node"])
             parsed.drift_dof = Int(rec["dof"])
             parsed.perp_dirn = Int(rec["perp_dirn"])
-        elif parsed.type_tag == 5:
+        elif parsed.type_tag == RecorderTypeTag.EnvelopeElementForce:
             parsed.output = String(rec.get("output", "envelope_element_force"))
             if not rec.__contains__("elements"):
                 abort("envelope_element_force recorder requires elements")

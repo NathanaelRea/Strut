@@ -13,6 +13,7 @@ from sections import (
     fiber_section2d_set_trial,
 )
 from strut_io import py_len
+from tag_types import UniMaterialTypeTag
 
 
 fn arg_value(
@@ -39,7 +40,7 @@ def make_uniaxial_def(material: PythonObject) -> UniMaterialDef:
         var E = Float64(params["E"])
         if E <= 0.0:
             abort("Elastic material E must be > 0")
-        return UniMaterialDef(0, E, 0.0, 0.0, 0.0)
+        return UniMaterialDef(UniMaterialTypeTag.Elastic, E, 0.0, 0.0, 0.0)
     if mat_type == "Steel01":
         var Fy = Float64(params["Fy"])
         var E0 = Float64(params["E0"])
@@ -50,7 +51,7 @@ def make_uniaxial_def(material: PythonObject) -> UniMaterialDef:
             abort("Steel01 E0 must be > 0")
         if b < 0.0 or b >= 1.0:
             abort("Steel01 b must be in [0, 1)")
-        return UniMaterialDef(1, Fy, E0, b, 0.0)
+        return UniMaterialDef(UniMaterialTypeTag.Steel01, Fy, E0, b, 0.0)
     if mat_type == "Concrete01":
         var fpc = Float64(params["fpc"])
         var epsc0 = Float64(params["epsc0"])
@@ -64,7 +65,7 @@ def make_uniaxial_def(material: PythonObject) -> UniMaterialDef:
             fpcu = -fpcu
         if epscu > 0.0:
             epscu = -epscu
-        return UniMaterialDef(2, fpc, epsc0, fpcu, epscu)
+        return UniMaterialDef(UniMaterialTypeTag.Concrete01, fpc, epsc0, fpcu, epscu)
     if mat_type == "Steel02":
         var Fy = Float64(params["Fy"])
         var E0 = Float64(params["E0"])
@@ -96,7 +97,18 @@ def make_uniaxial_def(material: PythonObject) -> UniMaterialDef:
         if params.__contains__("sigInit"):
             sig_init = Float64(params["sigInit"])
         return UniMaterialDef(
-            3, Fy, E0, b, R0, cR1, cR2, a1, a2, a3, a4, sig_init
+            UniMaterialTypeTag.Steel02,
+            Fy,
+            E0,
+            b,
+            R0,
+            cR1,
+            cR2,
+            a1,
+            a2,
+            a3,
+            a4,
+            sig_init,
         )
     if mat_type == "Concrete02":
         var fpc = Float64(params["fpc"])
@@ -121,7 +133,18 @@ def make_uniaxial_def(material: PythonObject) -> UniMaterialDef:
             ft = Float64(params["ft"])
             Ets = Float64(params["Ets"])
         return UniMaterialDef(
-            4, fpc, epsc0, fpcu, epscu, rat, ft, Ets, 0.0, 0.0, 0.0, 0.0
+            UniMaterialTypeTag.Concrete02,
+            fpc,
+            epsc0,
+            fpcu,
+            epscu,
+            rat,
+            ft,
+            Ets,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
         )
 
     abort("unsupported material type for section path: " + mat_type)

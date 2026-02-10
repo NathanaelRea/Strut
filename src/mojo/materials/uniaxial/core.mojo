@@ -1,5 +1,6 @@
 from collections import List
 from os import abort
+from tag_types import UniMaterialTypeTag
 
 
 fn _abs(x: Float64) -> Float64:
@@ -59,7 +60,7 @@ struct UniMaterialDef(Defaultable, Movable, ImplicitlyCopyable):
     var p10: Float64
 
     fn __init__(out self):
-        self.mat_type = 0
+        self.mat_type = UniMaterialTypeTag.Elastic
         self.p0 = 0.0
         self.p1 = 0.0
         self.p2 = 0.0
@@ -241,11 +242,11 @@ struct UniMaterialState(Defaultable, Movable, ImplicitlyCopyable):
         self.tangent_c = tangent
         self.tangent_t = tangent
 
-        if mat_def.mat_type == 2:
+        if mat_def.mat_type == UniMaterialTypeTag.Concrete01:
             self.unload_slope_c = tangent
             self.unload_slope_t = tangent
 
-        if mat_def.mat_type == 3:
+        if mat_def.mat_type == UniMaterialTypeTag.Steel02:
             var Fy = mat_def.p0
             var E0 = mat_def.p1
             var epsy = Fy / E0
@@ -263,21 +264,20 @@ struct UniMaterialState(Defaultable, Movable, ImplicitlyCopyable):
 
 
 fn uni_mat_is_elastic(mat_def: UniMaterialDef) -> Bool:
-    return mat_def.mat_type == 0
+    return mat_def.mat_type == UniMaterialTypeTag.Elastic
 
 
 fn uni_mat_initial_tangent(mat_def: UniMaterialDef) -> Float64:
-    if mat_def.mat_type == 0:
+    if mat_def.mat_type == UniMaterialTypeTag.Elastic:
         return mat_def.p0
-    if mat_def.mat_type == 1:
+    if mat_def.mat_type == UniMaterialTypeTag.Steel01:
         return mat_def.p1
-    if mat_def.mat_type == 2:
+    if mat_def.mat_type == UniMaterialTypeTag.Concrete01:
         return (2.0 * mat_def.p0) / mat_def.p1
-    if mat_def.mat_type == 3:
+    if mat_def.mat_type == UniMaterialTypeTag.Steel02:
         return mat_def.p1
-    if mat_def.mat_type == 4:
+    if mat_def.mat_type == UniMaterialTypeTag.Concrete02:
         return (2.0 * mat_def.p0) / mat_def.p1
     abort("unsupported uniaxial material")
     return 0.0
-
 

@@ -4,6 +4,7 @@ from os import abort
 from python import Python, PythonObject
 
 from strut_io import py_len
+from tag_types import TimeSeriesTypeTag
 
 
 fn _is_list(obj: PythonObject) raises -> Bool:
@@ -215,7 +216,7 @@ struct TimeSeriesInput(Movable, ImplicitlyCopyable):
 
     fn __init__(out self):
         self.tag = -1
-        self.type_tag = 0
+        self.type_tag = TimeSeriesTypeTag.Unknown
         self.factor = 1.0
         self.has_dt = False
         self.dt = 0.0
@@ -241,13 +242,13 @@ fn _parse_time_series_entry(
 
     var typ = String(ts["type"])
     if typ == "Constant":
-        parsed.type_tag = 1
+        parsed.type_tag = TimeSeriesTypeTag.Constant
         return parsed^
     if typ == "Linear":
-        parsed.type_tag = 2
+        parsed.type_tag = TimeSeriesTypeTag.Linear
         return parsed^
     if typ == "Path":
-        parsed.type_tag = 3
+        parsed.type_tag = TimeSeriesTypeTag.Path
         if not ts.__contains__("values"):
             abort("Path time_series missing values")
         var values = ts["values"]
@@ -268,7 +269,7 @@ fn _parse_time_series_entry(
                 time_pool.append(Float64(times[i]))
         return parsed^
     if typ == "Trig":
-        parsed.type_tag = 4
+        parsed.type_tag = TimeSeriesTypeTag.Trig
         if not ts.__contains__("t_start") or not ts.__contains__("t_finish"):
             abort("Trig time_series missing t_start/t_finish")
         if not ts.__contains__("period"):
@@ -317,11 +318,11 @@ fn eval_time_series_input(
     path_values: List[Float64],
     path_time: List[Float64],
 ) raises -> Float64:
-    if ts.type_tag == 1:
+    if ts.type_tag == TimeSeriesTypeTag.Constant:
         return ts.factor
-    if ts.type_tag == 2:
+    if ts.type_tag == TimeSeriesTypeTag.Linear:
         return ts.factor * t
-    if ts.type_tag == 3:
+    if ts.type_tag == TimeSeriesTypeTag.Path:
         var n = ts.values_count
         if n == 0:
             return 0.0
@@ -369,7 +370,7 @@ fn eval_time_series_input(
                 var v2 = path_values[ts.values_offset + i + 1]
                 return ts.factor * (v1 + (v2 - v1) * (t - t1) / (t2 - t1))
         return 0.0
-    if ts.type_tag == 4:
+    if ts.type_tag == TimeSeriesTypeTag.Trig:
         if t < ts.t_start or t > ts.t_finish:
             return 0.0
         var period = ts.period

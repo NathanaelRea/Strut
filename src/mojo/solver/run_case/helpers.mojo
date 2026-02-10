@@ -18,6 +18,7 @@ from solver.run_case.input_types import (
     SectionInput,
 )
 from sections import FiberCell, FiberSection2dDef
+from tag_types import ElementTypeTag
 
 
 fn _beam2d_element_force_global(
@@ -365,7 +366,7 @@ fn _element_force_global_for_recorder(
     elem_uniaxial_counts: List[Int],
     elem_uniaxial_state_ids: List[Int],
 ) raises -> List[Float64]:
-    if elem.type_tag == 1:
+    if elem.type_tag == ElementTypeTag.ElasticBeamColumn2d:
         return _beam2d_element_force_global(
             elem,
             nodes,
@@ -373,7 +374,7 @@ fn _element_force_global_for_recorder(
             ndf,
             u,
         )
-    if elem.type_tag == 2:
+    if elem.type_tag == ElementTypeTag.ForceBeamColumn2d:
         return _force_beam_column2d_element_force_global(
             elem_index,
             elem,
@@ -390,7 +391,7 @@ fn _element_force_global_for_recorder(
             elem_uniaxial_counts,
             elem_uniaxial_state_ids,
         )
-    if elem.type_tag == 4:
+    if elem.type_tag == ElementTypeTag.Truss:
         return _truss_element_force_global(
             elem_index,
             elem,
