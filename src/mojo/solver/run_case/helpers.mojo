@@ -6,6 +6,7 @@ from elements import (
     beam2d_corotational_global_internal_force,
     beam2d_pdelta_global_stiffness,
     beam_global_stiffness,
+    beam_uniform_load_global,
     force_beam_column2d_global_tangent_and_internal,
 )
 from materials import UniMaterialDef, UniMaterialState, uniaxial_set_trial_strain
@@ -63,31 +64,9 @@ fn _beam2d_element_force_global(
         u_elem[i] = u[dof_map[i]]
 
     var geom = elem.geom_transf
+    var f_elem: List[Float64] = []
     if geom == "Corotational":
-        return beam2d_corotational_global_internal_force(
-            E,
-            A,
-            I,
-            node1.x,
-            node1.y,
-            node2.x,
-            node2.y,
-            u_elem,
-        )
-
-    var k_global: List[List[Float64]] = []
-    if geom == "Linear":
-        k_global = beam_global_stiffness(
-            E,
-            A,
-            I,
-            node1.x,
-            node1.y,
-            node2.x,
-            node2.y,
-        )
-    elif geom == "PDelta":
-        k_global = beam2d_pdelta_global_stiffness(
+        f_elem = beam2d_corotational_global_internal_force(
             E,
             A,
             I,
@@ -98,15 +77,48 @@ fn _beam2d_element_force_global(
             u_elem,
         )
     else:
-        abort("unsupported geomTransf: " + geom)
+        var k_global: List[List[Float64]] = []
+        if geom == "Linear":
+            k_global = beam_global_stiffness(
+                E,
+                A,
+                I,
+                node1.x,
+                node1.y,
+                node2.x,
+                node2.y,
+            )
+        elif geom == "PDelta":
+            k_global = beam2d_pdelta_global_stiffness(
+                E,
+                A,
+                I,
+                node1.x,
+                node1.y,
+                node2.x,
+                node2.y,
+                u_elem,
+            )
+        else:
+            abort("unsupported geomTransf: " + geom)
 
-    var f_elem: List[Float64] = []
-    f_elem.resize(6, 0.0)
-    for i in range(6):
-        var sum = 0.0
-        for j in range(6):
-            sum += k_global[i][j] * u_elem[j]
-        f_elem[i] = sum
+        f_elem.resize(6, 0.0)
+        for i in range(6):
+            var sum = 0.0
+            for j in range(6):
+                sum += k_global[i][j] * u_elem[j]
+            f_elem[i] = sum
+
+    if elem.uniform_load_w != 0.0:
+        var f_load = beam_uniform_load_global(
+            node1.x,
+            node1.y,
+            node2.x,
+            node2.y,
+            elem.uniform_load_w,
+        )
+        for i in range(6):
+            f_elem[i] -= f_load[i]
     return f_elem^
 
 

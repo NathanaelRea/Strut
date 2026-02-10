@@ -791,6 +791,98 @@ fn assemble_global_stiffness_and_internal(
                     K[dof_map[3]][dof_map[1]] -= k
                     F_int[dof_map[1]] -= force
                     F_int[dof_map[3]] += force
+        elif elem_type == 8:
+            var dof_map = [
+                _elem_dof(elem, 0),
+                _elem_dof(elem, 1),
+                _elem_dof(elem, 2),
+                _elem_dof(elem, 3),
+                _elem_dof(elem, 4),
+                _elem_dof(elem, 5),
+            ]
+            var delta_axial = u[dof_map[3]] - u[dof_map[0]]
+            var delta_curv = u[dof_map[5]] - u[dof_map[2]]
+
+            var sec = sections_by_id[elem.section]
+            var axial_force = 0.0
+            var moment_z = 0.0
+            var k11 = 0.0
+            var k12 = 0.0
+            var k22 = 0.0
+            if sec.type == "ElasticSection2d":
+                k11 = sec.E * sec.A
+                k22 = sec.E * sec.I
+                axial_force = k11 * delta_axial
+                moment_z = k22 * delta_curv
+            elif sec.type == "FiberSection2d":
+                var sec_index = fiber_section_index_by_id[elem.section]
+                if sec_index < 0 or sec_index >= len(fiber_section_defs):
+                    abort("zeroLengthSection fiber section not found")
+                var sec_def = fiber_section_defs[sec_index]
+                var elem_offset = elem_uniaxial_offsets[e]
+                var elem_state_count = elem_uniaxial_counts[e]
+                if elem_state_count != sec_def.fiber_count:
+                    abort("zeroLengthSection fiber state count mismatch")
+                if elem_offset < 0 or elem_offset + elem_state_count > len(
+                    elem_uniaxial_state_ids
+                ):
+                    abort("zeroLengthSection fiber state range out of bounds")
+                for i in range(elem_state_count):
+                    var cell = fiber_section_cells[sec_def.fiber_offset + i]
+                    var y_rel = cell.y - sec_def.y_bar
+                    var eps = delta_axial - y_rel * delta_curv
+
+                    var state_index = elem_uniaxial_state_ids[elem_offset + i]
+                    if state_index < 0 or state_index >= len(uniaxial_states):
+                        abort("zeroLengthSection fiber state index out of range")
+                    var def_index = cell.def_index
+                    if def_index < 0 or def_index >= len(uniaxial_defs):
+                        abort("zeroLengthSection fiber material definition out of range")
+                    var mat_def = uniaxial_defs[def_index]
+                    var state = uniaxial_states[state_index]
+                    uniaxial_set_trial_strain(mat_def, state, eps)
+                    uniaxial_states[state_index] = state
+
+                    var area = cell.area
+                    var fs = state.sig_t * area
+                    var ks = state.tangent_t * area
+                    axial_force += fs
+                    moment_z += -fs * y_rel
+                    k11 += ks
+                    k12 += -ks * y_rel
+                    k22 += ks * y_rel * y_rel
+            else:
+                abort("zeroLengthSection requires FiberSection2d or ElasticSection2d")
+
+            var u1 = dof_map[0]
+            var r1 = dof_map[2]
+            var u2 = dof_map[3]
+            var r2 = dof_map[5]
+
+            K[u1][u1] += k11
+            K[u1][r1] += k12
+            K[u1][u2] -= k11
+            K[u1][r2] -= k12
+
+            K[r1][u1] += k12
+            K[r1][r1] += k22
+            K[r1][u2] -= k12
+            K[r1][r2] -= k22
+
+            K[u2][u1] -= k11
+            K[u2][r1] -= k12
+            K[u2][u2] += k11
+            K[u2][r2] += k12
+
+            K[r2][u1] -= k12
+            K[r2][r1] -= k22
+            K[r2][u2] += k12
+            K[r2][r2] += k22
+
+            F_int[u1] -= axial_force
+            F_int[r1] -= moment_z
+            F_int[u2] += axial_force
+            F_int[r2] += moment_z
         elif elem_type == 6:
             var i1 = elem.node_index_1
             var i2 = elem.node_index_2

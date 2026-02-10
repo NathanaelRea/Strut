@@ -111,12 +111,23 @@ fn run_modal_eigen(
         K_ff.append(row^)
     var M_f: List[Float64] = []
     M_f.resize(free_count, 0.0)
+    var max_mass = 0.0
     for i in range(free_count):
-        M_f[i] = M_total[free[i]]
-        if M_f[i] <= 0.0:
-            abort("modal_eigen requires positive mass at free dofs")
         for j in range(free_count):
             K_ff[i][j] = K[free[i]][free[j]]
+        var m = M_total[free[i]]
+        M_f[i] = m
+        if m > max_mass:
+            max_mass = m
+    var msmall = 1.0e-10
+    var mass_floor = max_mass * 1.0e-12
+    if mass_floor <= 0.0:
+        mass_floor = 1.0e-12
+    for i in range(free_count):
+        if M_f[i] == 0.0:
+            M_f[i] = K_ff[i][i] * msmall
+        if M_f[i] <= 0.0:
+            M_f[i] = mass_floor
 
     var A: List[List[Float64]] = []
     for i in range(free_count):

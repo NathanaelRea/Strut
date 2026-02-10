@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "enabled": false,
+  "enabled": true,
   "status": "todo",
   "metadata": {
     "name": "opensees_example_simply_supported_beam_solid",
@@ -20,15 +20,24 @@
     { "id": 4, "x": 0.0, "y": 10.0 }
   ],
   "materials": [
-    { "id": 1, "type": "ElasticIsotropic", "params": { "E": 1000.0, "nu": 0.25, "rho": 3.0 } }
+    {
+      "id": 1,
+      "type": "ElasticIsotropic",
+      "params": { "E": 1000.0, "nu": 0.25, "rho": 3.0 }
+    }
   ],
   "sections": [],
   "elements": [
-    { "id": 1, "type": "bbarQuad", "nodes": [1, 2, 3, 4], "material": 1, "thickness": 1.0, "formulation": "PlaneStress" }
+    {
+      "id": 1,
+      "type": "bbarQuad",
+      "nodes": [1, 2, 3, 4],
+      "material": 1,
+      "thickness": 1.0,
+      "formulation": "PlaneStress"
+    }
   ],
-  "time_series": [
-    { "type": "Linear", "tag": 1, "factor": 1.0 }
-  ],
+  "time_series": [{ "type": "Linear", "tag": 1, "factor": 1.0 }],
   "pattern": {
     "type": "Plain",
     "tag": 1,
@@ -49,6 +58,11 @@
     }
   },
   "recorders": [
-    { "type": "node_displacement", "nodes": [2, 3], "dofs": [2], "output": "node_disp" }
+    {
+      "type": "node_displacement",
+      "nodes": [2, 3],
+      "dofs": [2],
+      "output": "node_disp"
+    }
   ]
 }

@@ -600,6 +600,25 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
             _set_elem_dof(elem, 1, node_dof_index(elem.node_index_1, 2, ndf))
             _set_elem_dof(elem, 2, node_dof_index(elem.node_index_2, 1, ndf))
             _set_elem_dof(elem, 3, node_dof_index(elem.node_index_2, 2, ndf))
+        elif elem.type_tag == 8:
+            if ndm != 2 or ndf != 3:
+                abort("zeroLengthSection requires ndm=2, ndf=3")
+            if elem.node_count != 2:
+                abort("zeroLengthSection requires 2 nodes")
+            if elem.section < 0 or elem.section >= len(typed_sections_by_id):
+                abort("zeroLengthSection section not found")
+            var sec = typed_sections_by_id[elem.section]
+            if sec.id < 0:
+                abort("zeroLengthSection section not found")
+            if sec.type != "FiberSection2d" and sec.type != "ElasticSection2d":
+                abort("zeroLengthSection requires FiberSection2d or ElasticSection2d")
+            elem.dof_count = 6
+            _set_elem_dof(elem, 0, node_dof_index(elem.node_index_1, 1, ndf))
+            _set_elem_dof(elem, 1, node_dof_index(elem.node_index_1, 2, ndf))
+            _set_elem_dof(elem, 2, node_dof_index(elem.node_index_1, 3, ndf))
+            _set_elem_dof(elem, 3, node_dof_index(elem.node_index_2, 1, ndf))
+            _set_elem_dof(elem, 4, node_dof_index(elem.node_index_2, 2, ndf))
+            _set_elem_dof(elem, 5, node_dof_index(elem.node_index_2, 3, ndf))
         elif elem.type_tag == 6:
             if ndm != 2 or ndf != 2:
                 abort("fourNodeQuad requires ndm=2, ndf=2")
@@ -625,7 +644,7 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
             _set_elem_dof(elem, 5, node_dof_index(elem.node_index_3, 2, ndf))
             _set_elem_dof(elem, 6, node_dof_index(elem.node_index_4, 1, ndf))
             _set_elem_dof(elem, 7, node_dof_index(elem.node_index_4, 2, ndf))
-        else:
+        elif elem.type_tag == 7:
             if ndm != 3 or ndf != 6:
                 abort("shell requires ndm=3, ndf=6")
             if elem.node_count != 4:
@@ -643,6 +662,8 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
                 _set_elem_dof(elem, d + 6, node_dof_index(elem.node_index_2, d + 1, ndf))
                 _set_elem_dof(elem, d + 12, node_dof_index(elem.node_index_3, d + 1, ndf))
                 _set_elem_dof(elem, d + 18, node_dof_index(elem.node_index_4, d + 1, ndf))
+        else:
+            abort("unsupported element type: " + elem.type)
 
         typed_elements[i] = elem
 
@@ -716,6 +737,33 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
                 elem_uniaxial_counts[e] = 0
             else:
                 abort("forceBeamColumn2d requires FiberSection2d or ElasticSection2d")
+        elif elem.type_tag == 8:
+            var sec_id = elem.section
+            elem_uniaxial_offsets[e] = len(elem_uniaxial_state_ids)
+            var sec = typed_sections_by_id[sec_id]
+            if sec.type == "FiberSection2d":
+                var sec_index = fiber_section_index_by_id[sec_id]
+                if sec_index < 0 or sec_index >= len(fiber_section_defs):
+                    abort("zeroLengthSection fiber section not found")
+                var sec_def = fiber_section_defs[sec_index]
+                var state_count = sec_def.fiber_count
+                elem_uniaxial_counts[e] = state_count
+                for i in range(sec_def.fiber_count):
+                    var cell = fiber_section_cells[sec_def.fiber_offset + i]
+                    var def_index = cell.def_index
+                    if def_index < 0 or def_index >= len(uniaxial_defs):
+                        abort("zeroLengthSection fiber material definition out of range")
+                    var mat_def = uniaxial_defs[def_index]
+                    var state_index = len(uniaxial_states)
+                    uniaxial_states.append(UniMaterialState(mat_def))
+                    uniaxial_state_defs.append(def_index)
+                    elem_uniaxial_state_ids.append(state_index)
+                    if not uni_mat_is_elastic(mat_def):
+                        used_nonelastic_uniaxial = True
+            elif sec.type == "ElasticSection2d":
+                elem_uniaxial_counts[e] = 0
+            else:
+                abort("zeroLengthSection requires FiberSection2d or ElasticSection2d")
         else:
             elem_uniaxial_offsets[e] = len(elem_uniaxial_state_ids)
             elem_uniaxial_counts[e] = 0
@@ -729,7 +777,8 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
         var elem_id = load.element
         if elem_id >= len(elem_id_to_index) or elem_id_to_index[elem_id] < 0:
             abort("element load refers to unknown element")
-        var elem = typed_elements[elem_id_to_index[elem_id]]
+        var elem_index = elem_id_to_index[elem_id]
+        var elem = typed_elements[elem_index]
         var elem_type = elem.type
         var load_type = load.type
         if load_type == "beamUniform":
@@ -758,6 +807,8 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
             ]
             for a in range(6):
                 F_total[dof_map[a]] += f_global[a]
+            elem.uniform_load_w += load.w
+            typed_elements[elem_index] = elem
         else:
             abort("unsupported element load type")
 
@@ -778,6 +829,49 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
         require_dof_in_range(dof, ndf, "mass")
         var idx = node_dof_index(id_to_index[node_id], dof, ndf)
         M_total[idx] += mass.value
+
+    # Lump translational mass from fourNodeQuad/bbarQuad density when provided.
+    for e in range(elem_count):
+        var elem = typed_elements[e]
+        if elem.type_tag != 6:
+            continue
+        if elem.material < 0 or elem.material >= len(typed_materials_by_id):
+            abort("material not found")
+        var mat = typed_materials_by_id[elem.material]
+        if mat.id < 0:
+            abort("material not found")
+        var rho = mat.rho
+        if rho == 0.0:
+            continue
+
+        var n1 = input.nodes[elem.node_index_1]
+        var n2 = input.nodes[elem.node_index_2]
+        var n3 = input.nodes[elem.node_index_3]
+        var n4 = input.nodes[elem.node_index_4]
+        var twice_area = (
+            n1.x * n2.y
+            - n1.y * n2.x
+            + n2.x * n3.y
+            - n2.y * n3.x
+            + n3.x * n4.y
+            - n3.y * n4.x
+            + n4.x * n1.y
+            - n4.y * n1.x
+        )
+        var area = abs(twice_area) * 0.5
+        if area <= 0.0:
+            abort("fourNodeQuad area must be > 0")
+        var lumped = rho * elem.thickness * area / 4.0
+        if lumped == 0.0:
+            continue
+        M_total[node_dof_index(elem.node_index_1, 1, ndf)] += lumped
+        M_total[node_dof_index(elem.node_index_1, 2, ndf)] += lumped
+        M_total[node_dof_index(elem.node_index_2, 1, ndf)] += lumped
+        M_total[node_dof_index(elem.node_index_2, 2, ndf)] += lumped
+        M_total[node_dof_index(elem.node_index_3, 1, ndf)] += lumped
+        M_total[node_dof_index(elem.node_index_3, 2, ndf)] += lumped
+        M_total[node_dof_index(elem.node_index_4, 1, ndf)] += lumped
+        M_total[node_dof_index(elem.node_index_4, 2, ndf)] += lumped
 
     var constrained: List[Bool] = []
     constrained.resize(total_dofs, False)

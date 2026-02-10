@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "enabled": false,
+  "enabled": true,
   "status": "todo",
   "metadata": {
     "name": "opensees_example_elastic_frame",
@@ -51,15 +51,43 @@
     }
   ],
   "elements": [
-    { "id": 1, "type": "elasticBeamColumn2d", "nodes": [1, 4], "section": 1, "geomTransf": "PDelta" },
-    { "id": 2, "type": "elasticBeamColumn2d", "nodes": [2, 5], "section": 1, "geomTransf": "PDelta" },
-    { "id": 3, "type": "elasticBeamColumn2d", "nodes": [3, 6], "section": 1, "geomTransf": "PDelta" },
-    { "id": 4, "type": "elasticBeamColumn2d", "nodes": [4, 5], "section": 2, "geomTransf": "Linear" },
-    { "id": 5, "type": "elasticBeamColumn2d", "nodes": [5, 6], "section": 2, "geomTransf": "Linear" }
+    {
+      "id": 1,
+      "type": "elasticBeamColumn2d",
+      "nodes": [1, 4],
+      "section": 1,
+      "geomTransf": "PDelta"
+    },
+    {
+      "id": 2,
+      "type": "elasticBeamColumn2d",
+      "nodes": [2, 5],
+      "section": 1,
+      "geomTransf": "PDelta"
+    },
+    {
+      "id": 3,
+      "type": "elasticBeamColumn2d",
+      "nodes": [3, 6],
+      "section": 1,
+      "geomTransf": "PDelta"
+    },
+    {
+      "id": 4,
+      "type": "elasticBeamColumn2d",
+      "nodes": [4, 5],
+      "section": 2,
+      "geomTransf": "Linear"
+    },
+    {
+      "id": 5,
+      "type": "elasticBeamColumn2d",
+      "nodes": [5, 6],
+      "section": 2,
+      "geomTransf": "Linear"
+    }
   ],
-  "time_series": [
-    { "type": "Linear", "tag": 1, "factor": 1.0 }
-  ],
+  "time_series": [{ "type": "Linear", "tag": 1, "factor": 1.0 }],
   "pattern": {
     "type": "Plain",
     "tag": 1,
@@ -74,8 +102,22 @@
     "steps": 1
   },
   "recorders": [
-    { "type": "node_displacement", "nodes": [4, 5, 6], "dofs": [1, 2, 3], "output": "node_disp" },
-    { "type": "node_reaction", "nodes": [1, 2, 3], "dofs": [1, 2, 3], "output": "reaction" },
-    { "type": "element_force", "elements": [1, 2, 3, 4, 5], "output": "element_force" }
+    {
+      "type": "node_displacement",
+      "nodes": [4, 5, 6],
+      "dofs": [1, 2, 3],
+      "output": "node_disp"
+    },
+    {
+      "type": "node_reaction",
+      "nodes": [1, 2, 3],
+      "dofs": [1, 2, 3],
+      "output": "reaction"
+    },
+    {
+      "type": "element_force",
+      "elements": [1, 2, 3, 4, 5],
+      "output": "element_force"
+    }
   ]
 }

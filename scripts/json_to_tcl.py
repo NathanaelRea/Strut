@@ -450,7 +450,7 @@ def main():
             )
             next_int_tag += 1
 
-        # Elements (elasticBeamColumn2d, truss, zeroLength, twoNodeLink, fourNodeQuad, shell)
+        # Elements (elasticBeamColumn2d, truss, zeroLength, zeroLengthSection, twoNodeLink, fourNodeQuad/bbarQuad, shell)
         for elem in elements:
             if elem["type"] == "elasticBeamColumn2d":
                 sec = sections[elem["section"]]
@@ -513,12 +513,23 @@ def main():
                 mats = " ".join(str(mid) for mid in elem["materials"])
                 dirs = " ".join(str(d) for d in elem["dirs"])
                 f.write(f"element zeroLength {elem['id']} {n1} {n2} -mat {mats} -dir {dirs}\n")
+            elif elem["type"] == "zeroLengthSection":
+                n1, n2 = elem["nodes"]
+                sec_id = elem["section"]
+                if sec_id not in sections:
+                    raise ValueError("zeroLengthSection section not found")
+                sec_type = sections[sec_id]["type"]
+                if sec_type not in ("FiberSection2d", "ElasticSection2d"):
+                    raise ValueError(
+                        "zeroLengthSection requires FiberSection2d or ElasticSection2d"
+                    )
+                f.write(f"element zeroLengthSection {elem['id']} {n1} {n2} {sec_id}\n")
             elif elem["type"] == "twoNodeLink":
                 n1, n2 = elem["nodes"]
                 mats = " ".join(str(mid) for mid in elem["materials"])
                 dirs = " ".join(str(d) for d in elem["dirs"])
                 f.write(f"element twoNodeLink {elem['id']} {n1} {n2} -mat {mats} -dir {dirs}\n")
-            elif elem["type"] == "fourNodeQuad":
+            elif elem["type"] == "fourNodeQuad" or elem["type"] == "bbarQuad":
                 n1, n2, n3, n4 = elem["nodes"]
                 t = elem["thickness"]
                 mat_id = elem["material"]

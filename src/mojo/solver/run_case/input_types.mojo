@@ -121,6 +121,7 @@ struct MaterialInput(Movable, ImplicitlyCopyable):
     var ft: Float64
     var Ets: Float64
     var nu: Float64
+    var rho: Float64
 
     var has_r0: Bool
     var has_cr1: Bool
@@ -157,6 +158,7 @@ struct MaterialInput(Movable, ImplicitlyCopyable):
         self.ft = 0.0
         self.Ets = 0.0
         self.nu = 0.0
+        self.rho = 0.0
         self.has_r0 = False
         self.has_cr1 = False
         self.has_cr2 = False
@@ -206,6 +208,7 @@ struct ElementInput(Movable, ImplicitlyCopyable):
     var geom_transf: String
     var integration: String
     var num_int_pts: Int
+    var uniform_load_w: Float64
     var dof_count: Int
     var dof_1: Int
     var dof_2: Int
@@ -268,6 +271,7 @@ struct ElementInput(Movable, ImplicitlyCopyable):
         self.geom_transf = "Linear"
         self.integration = "Lobatto"
         self.num_int_pts = 3
+        self.uniform_load_w = 0.0
         self.dof_count = 0
         self.dof_1 = -1
         self.dof_2 = -1
@@ -553,7 +557,9 @@ fn element_type_tag(type_name: String) -> Int:
         return 4
     if type_name == "zeroLength" or type_name == "twoNodeLink":
         return 5
-    if type_name == "fourNodeQuad":
+    if type_name == "zeroLengthSection":
+        return 8
+    if type_name == "fourNodeQuad" or type_name == "bbarQuad":
         return 6
     if type_name == "shell":
         return 7
@@ -705,6 +711,8 @@ fn parse_case_input(data: PythonObject) raises -> CaseInput:
             parsed.Ets = Float64(params["Ets"])
         if params.__contains__("nu"):
             parsed.nu = Float64(params["nu"])
+        if params.__contains__("rho"):
+            parsed.rho = Float64(params["rho"])
         case_input.materials.append(parsed^)
 
     var elements_raw = data["elements"]

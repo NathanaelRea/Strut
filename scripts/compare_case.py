@@ -322,7 +322,9 @@ def main():
                         continue
                     ref_vals = _load_last_values(ref_file)
                     mojo_vals = _load_last_values(mojo_file)
-                    ok, errors = _compare_vectors(ref_vals, mojo_vals, rtol=rtol, atol=atol)
+                    ok, errors = _compare_mode_shape_vectors(
+                        ref_vals, mojo_vals, rtol=rtol, atol=atol
+                    )
                     if not ok:
                         failures.append(
                             f"modal mode shape mismatch mode={mode_no} node={node_id}"
