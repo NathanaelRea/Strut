@@ -31,6 +31,18 @@ from solver.run_case.helpers import (
 from solver.run_case.loader import load_case_state
 
 
+fn _write_output_chunk_files(
+    out_dir: PythonObject, filenames: List[String], buffers: List[List[String]]
+) raises:
+    var builtins = Python.import_module("builtins")
+    for i in range(len(filenames)):
+        var file_path = out_dir.joinpath(filenames[i])
+        var file_obj = builtins.open(file_path, "w")
+        for j in range(len(buffers[i])):
+            file_obj.write(PythonObject(buffers[i][j]))
+        file_obj.close()
+
+
 def run_case(data: PythonObject, output_path: String, profile_path: String):
     var time = Python.import_module("time")
     var t0 = Int(time.perf_counter_ns())
@@ -123,9 +135,9 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
     var u: List[Float64] = []
     u.resize(total_dofs, 0.0)
     var transient_output_files: List[String] = []
-    var transient_output_buffers: List[String] = []
+    var transient_output_buffers: List[List[String]] = []
     var static_output_files: List[String] = []
-    var static_output_buffers: List[String] = []
+    var static_output_buffers: List[List[String]] = []
 
     var t_solve_start = Int(time.perf_counter_ns())
     if do_profile:
@@ -424,20 +436,13 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
     var analysis_path = out_dir.joinpath("analysis_time_us.txt")
     analysis_path.write_text(PythonObject(String(analysis_us) + "\n"))
     if analysis_type == "transient_linear" or analysis_type == "transient_nonlinear":
-        for i in range(len(transient_output_files)):
-            var filename = transient_output_files[i]
-            var file_path = out_dir.joinpath(filename)
-            file_path.write_text(PythonObject(transient_output_buffers[i]))
+        _write_output_chunk_files(
+            out_dir, transient_output_files, transient_output_buffers
+        )
     elif analysis_type == "modal_eigen":
-        for i in range(len(static_output_files)):
-            var filename = static_output_files[i]
-            var file_path = out_dir.joinpath(filename)
-            file_path.write_text(PythonObject(static_output_buffers[i]))
+        _write_output_chunk_files(out_dir, static_output_files, static_output_buffers)
     elif analysis_type == "static_nonlinear" and len(static_output_files) > 0:
-        for i in range(len(static_output_files)):
-            var filename = static_output_files[i]
-            var file_path = out_dir.joinpath(filename)
-            file_path.write_text(PythonObject(static_output_buffers[i]))
+        _write_output_chunk_files(out_dir, static_output_files, static_output_buffers)
     else:
         if has_transformation_mpc:
             _enforce_equal_dof_values(u, rep_dof, constrained)

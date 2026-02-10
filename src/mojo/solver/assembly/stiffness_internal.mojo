@@ -5,7 +5,7 @@ from os import abort
 from elements import (
     beam_global_stiffness,
     beam2d_corotational_global_stiffness,
-    beam2d_corotational_global_internal_force,
+    beam2d_corotational_global_tangent_and_internal,
     beam2d_pdelta_global_stiffness,
     beam3d_global_stiffness,
     force_beam_column2d_global_tangent_and_internal,
@@ -168,16 +168,18 @@ fn assemble_global_stiffness_banded_frame2d_typed(
                 free_map[i] = free_index[dof_map[i]]
 
             var geom = elem.geom_transf
-            var k_global = beam_global_stiffness(
-                sec.E,
-                sec.A,
-                sec.I,
-                node1.x,
-                node1.y,
-                node2.x,
-                node2.y,
-            )
-            if geom == "PDelta":
+            var k_global: List[List[Float64]] = []
+            if geom == "Linear":
+                k_global = beam_global_stiffness(
+                    sec.E,
+                    sec.A,
+                    sec.I,
+                    node1.x,
+                    node1.y,
+                    node2.x,
+                    node2.y,
+                )
+            elif geom == "PDelta":
                 var u_elem: List[Float64] = []
                 u_elem.resize(6, 0.0)
                 for i in range(6):
@@ -207,6 +209,8 @@ fn assemble_global_stiffness_banded_frame2d_typed(
                     node2.y,
                     u_elem,
                 )
+            else:
+                abort("unsupported geomTransf: " + geom)
             for a in range(6):
                 var Aidx = free_map[a]
                 if Aidx < 0:
@@ -435,16 +439,19 @@ fn assemble_global_stiffness_and_internal(
             ]
 
             var geom = elem.geom_transf
-            var k_global = beam_global_stiffness(
-                E,
-                A,
-                I,
-                node1.x,
-                node1.y,
-                node2.x,
-                node2.y,
-            )
-            if geom == "PDelta":
+            var k_global: List[List[Float64]] = []
+            var f_elem: List[Float64] = []
+            if geom == "Linear":
+                k_global = beam_global_stiffness(
+                    E,
+                    A,
+                    I,
+                    node1.x,
+                    node1.y,
+                    node2.x,
+                    node2.y,
+                )
+            elif geom == "PDelta":
                 var u_elem: List[Float64] = []
                 u_elem.resize(6, 0.0)
                 for i in range(6):
@@ -464,7 +471,7 @@ fn assemble_global_stiffness_and_internal(
                 u_elem.resize(6, 0.0)
                 for i in range(6):
                     u_elem[i] = u[dof_map[i]]
-                k_global = beam2d_corotational_global_stiffness(
+                beam2d_corotational_global_tangent_and_internal(
                     E,
                     A,
                     I,
@@ -473,34 +480,28 @@ fn assemble_global_stiffness_and_internal(
                     node2.x,
                     node2.y,
                     u_elem,
+                    k_global,
+                    f_elem,
                 )
-            var f_elem: List[Float64] = []
+            else:
+                abort("unsupported geomTransf: " + geom)
+
             if geom == "Corotational":
-                var u_elem: List[Float64] = []
-                u_elem.resize(6, 0.0)
-                for i in range(6):
-                    u_elem[i] = u[dof_map[i]]
-                f_elem = beam2d_corotational_global_internal_force(
-                    E,
-                    A,
-                    I,
-                    node1.x,
-                    node1.y,
-                    node2.x,
-                    node2.y,
-                    u_elem,
-                )
-            for a in range(6):
-                var Aidx = dof_map[a]
-                var sum = 0.0
-                for b in range(6):
-                    var Bidx = dof_map[b]
-                    var kval = k_global[a][b]
-                    K[Aidx][Bidx] += kval
-                    sum += kval * u[Bidx]
-                if geom == "Corotational":
+                for a in range(6):
+                    var Aidx = dof_map[a]
+                    for b in range(6):
+                        var Bidx = dof_map[b]
+                        K[Aidx][Bidx] += k_global[a][b]
                     F_int[Aidx] += f_elem[a]
-                else:
+            else:
+                for a in range(6):
+                    var Aidx = dof_map[a]
+                    var sum = 0.0
+                    for b in range(6):
+                        var Bidx = dof_map[b]
+                        var kval = k_global[a][b]
+                        K[Aidx][Bidx] += kval
+                        sum += kval * u[Bidx]
                     F_int[Aidx] += sum
         elif elem_type == 2:
             var i1 = elem.node_index_1

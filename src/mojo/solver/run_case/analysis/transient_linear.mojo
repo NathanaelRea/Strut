@@ -70,7 +70,7 @@ fn run_transient_linear(
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
     mut transient_output_files: List[String],
-    mut transient_output_buffers: List[String],
+    mut transient_output_buffers: List[List[String]],
     has_transformation_mpc: Bool,
     rep_dof: List[Int],
     constrained: List[Bool],
@@ -180,6 +180,9 @@ fn run_transient_linear(
     var C_term: List[Float64] = []
     C_term.resize(free_count, 0.0)
     var record_reactions = _has_recorder_type(recorders, 3)
+    var record_any_element_force = (
+        _has_recorder_type(recorders, 2) or _has_recorder_type(recorders, 5)
+    )
     var envelope_files: List[String] = []
     var envelope_min: List[List[Float64]] = []
     var envelope_max: List[List[Float64]] = []
@@ -252,6 +255,37 @@ fn run_transient_linear(
             _enforce_equal_dof_values(v, rep_dof, constrained)
             _enforce_equal_dof_values(a, rep_dof, constrained)
 
+        var F_int_reaction: List[Float64] = []
+        if record_reactions:
+            F_int_reaction = assemble_internal_forces_typed(
+                typed_nodes,
+                typed_elements,
+                typed_sections_by_id,
+                typed_materials_by_id,
+                id_to_index,
+                node_count,
+                ndf,
+                ndm,
+                u,
+                uniaxial_defs,
+                uniaxial_state_defs,
+                uniaxial_states,
+                elem_uniaxial_offsets,
+                elem_uniaxial_counts,
+                elem_uniaxial_state_ids,
+                fiber_section_defs,
+                fiber_section_cells,
+                fiber_section_index_by_id,
+            )
+
+        var elem_force_cached: List[Bool] = []
+        var elem_force_values: List[List[Float64]] = []
+        if record_any_element_force:
+            elem_force_cached.resize(len(typed_elements), False)
+            for _ in range(len(typed_elements)):
+                var empty_force: List[Float64] = []
+                elem_force_values.append(empty_force^)
+
         for r in range(len(recorders)):
             var rec = recorders[r]
             if rec.type_tag == 1:
@@ -277,24 +311,28 @@ fn run_transient_linear(
                     if elem_id >= len(elem_id_to_index) or elem_id_to_index[elem_id] < 0:
                         abort("recorder element not found")
                     var elem_index = elem_id_to_index[elem_id]
-                    var elem = typed_elements[elem_index]
-                    var f_elem = _element_force_global_for_recorder(
-                        elem_index,
-                        elem,
-                        ndf,
-                        u,
-                        typed_nodes,
-                        typed_sections_by_id,
-                        fiber_section_defs,
-                        fiber_section_cells,
-                        fiber_section_index_by_id,
-                        uniaxial_defs,
-                        uniaxial_states,
-                        elem_uniaxial_offsets,
-                        elem_uniaxial_counts,
-                        elem_uniaxial_state_ids,
-                    )
-                    var line = _format_values_line(f_elem)
+                    if not elem_force_cached[elem_index]:
+                        var elem = typed_elements[elem_index]
+                        elem_force_values[elem_index] = (
+                            _element_force_global_for_recorder(
+                                elem_index,
+                                elem,
+                                ndf,
+                                u,
+                                typed_nodes,
+                                typed_sections_by_id,
+                                fiber_section_defs,
+                                fiber_section_cells,
+                                fiber_section_index_by_id,
+                                uniaxial_defs,
+                                uniaxial_states,
+                                elem_uniaxial_offsets,
+                                elem_uniaxial_counts,
+                                elem_uniaxial_state_ids,
+                            )
+                        )
+                        elem_force_cached[elem_index] = True
+                    var line = _format_values_line(elem_force_values[elem_index])
                     var filename = rec.output + "_ele" + String(elem_id) + ".out"
                     _append_output(
                         transient_output_files, transient_output_buffers, filename, line
@@ -302,26 +340,6 @@ fn run_transient_linear(
             elif rec.type_tag == 3:
                 if not record_reactions:
                     abort("internal error: reaction recorder flag mismatch")
-                var F_int = assemble_internal_forces_typed(
-                    typed_nodes,
-                    typed_elements,
-                    typed_sections_by_id,
-                    typed_materials_by_id,
-                    id_to_index,
-                    node_count,
-                    ndf,
-                    ndm,
-                    u,
-                    uniaxial_defs,
-                    uniaxial_state_defs,
-                    uniaxial_states,
-                    elem_uniaxial_offsets,
-                    elem_uniaxial_counts,
-                    elem_uniaxial_state_ids,
-                    fiber_section_defs,
-                    fiber_section_cells,
-                    fiber_section_index_by_id,
-                )
                 for nidx in range(rec.node_count):
                     var node_id = recorder_nodes_pool[rec.node_offset + nidx]
                     var i = id_to_index[node_id]
@@ -331,7 +349,7 @@ fn run_transient_linear(
                         var dof = recorder_dofs_pool[rec.dof_offset + j]
                         require_dof_in_range(dof, ndf, "recorder")
                         var idx = node_dof_index(i, dof, ndf)
-                        values[j] = F_int[idx] - F_ext_step[idx]
+                        values[j] = F_int_reaction[idx] - F_ext_step[idx]
                     var line = _format_values_line(values)
                     var filename = rec.output + "_node" + String(node_id) + ".out"
                     _append_output(
@@ -361,27 +379,31 @@ fn run_transient_linear(
                     if elem_id >= len(elem_id_to_index) or elem_id_to_index[elem_id] < 0:
                         abort("recorder element not found")
                     var elem_index = elem_id_to_index[elem_id]
-                    var elem = typed_elements[elem_index]
-                    var f_elem = _element_force_global_for_recorder(
-                        elem_index,
-                        elem,
-                        ndf,
-                        u,
-                        typed_nodes,
-                        typed_sections_by_id,
-                        fiber_section_defs,
-                        fiber_section_cells,
-                        fiber_section_index_by_id,
-                        uniaxial_defs,
-                        uniaxial_states,
-                        elem_uniaxial_offsets,
-                        elem_uniaxial_counts,
-                        elem_uniaxial_state_ids,
-                    )
+                    if not elem_force_cached[elem_index]:
+                        var elem = typed_elements[elem_index]
+                        elem_force_values[elem_index] = (
+                            _element_force_global_for_recorder(
+                                elem_index,
+                                elem,
+                                ndf,
+                                u,
+                                typed_nodes,
+                                typed_sections_by_id,
+                                fiber_section_defs,
+                                fiber_section_cells,
+                                fiber_section_index_by_id,
+                                uniaxial_defs,
+                                uniaxial_states,
+                                elem_uniaxial_offsets,
+                                elem_uniaxial_counts,
+                                elem_uniaxial_state_ids,
+                            )
+                        )
+                        elem_force_cached[elem_index] = True
                     var filename = rec.output + "_ele" + String(elem_id) + ".out"
                     _update_envelope(
                         filename,
-                        f_elem,
+                        elem_force_values[elem_index],
                         envelope_files,
                         envelope_min,
                         envelope_max,

@@ -237,16 +237,18 @@ fn _force_beam_column2d_element_force_global(
 
 fn _append_output(
     mut filenames: List[String],
-    mut buffers: List[String],
+    mut buffers: List[List[String]],
     filename: String,
     line: String,
 ):
     for i in range(len(filenames)):
         if filenames[i] == filename:
-            buffers[i] = buffers[i] + line
+            buffers[i].append(line)
             return
     filenames.append(filename)
-    buffers.append(line)
+    var lines: List[String] = []
+    lines.append(line)
+    buffers.append(lines^)
 
 
 fn _has_recorder_type(recorders: List[RecorderInput], wanted_tag: Int) -> Bool:
@@ -417,7 +419,7 @@ fn _flush_envelope_outputs(
     envelope_max: List[List[Float64]],
     envelope_abs: List[List[Float64]],
     mut output_files: List[String],
-    mut output_buffers: List[String],
+    mut output_buffers: List[List[String]],
 ):
     for i in range(len(envelope_files)):
         var line = String()

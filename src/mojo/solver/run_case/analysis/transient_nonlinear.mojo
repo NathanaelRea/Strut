@@ -81,7 +81,7 @@ fn run_transient_nonlinear(
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
     mut transient_output_files: List[String],
-    mut transient_output_buffers: List[String],
+    mut transient_output_buffers: List[List[String]],
     has_transformation_mpc: Bool,
     rep_dof: List[Int],
     constrained: List[Bool],
