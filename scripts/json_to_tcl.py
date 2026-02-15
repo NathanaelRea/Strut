@@ -68,16 +68,52 @@ def _format_list(values):
     return " ".join(str(v) for v in values)
 
 
-def _load_path_time_series_values(ts, case_dir: Path):
+def _resolve_optional_repo_path(path_text, repo_root: Path):
+    if not isinstance(path_text, str) or not path_text:
+        return None
+    path_obj = Path(path_text)
+    if path_obj.is_absolute():
+        return path_obj
+    return (repo_root / path_obj).resolve()
+
+
+def _load_path_time_series_values(ts, case_dir: Path, case_data: dict):
     values_path = ts.get("values_path", ts.get("path"))
     if values_path is None:
         raise ValueError("Path time_series missing values_path")
+
     src = Path(values_path)
-    if not src.is_absolute():
-        candidate = (case_dir / src).resolve()
-        src = candidate if candidate.exists() else Path(values_path)
-    if not src.exists():
-        raise ValueError(f"Path time_series values_path not found: {values_path}")
+    candidates = []
+    if src.is_absolute():
+        candidates.append(src)
+    else:
+        repo_root = Path(__file__).resolve().parents[1]
+        candidates.append((case_dir / src).resolve())
+        candidates.append((repo_root / src).resolve())
+
+        source_example = _resolve_optional_repo_path(case_data.get("source_example"), repo_root)
+        if source_example is not None:
+            candidates.append((source_example.parent / src).resolve())
+
+        source_doc = _resolve_optional_repo_path(case_data.get("source_doc"), repo_root)
+        if source_doc is not None:
+            candidates.append((source_doc.parent / src).resolve())
+
+        migration = case_data.get("migration", {})
+        ground_motion = migration.get("ground_motion", {}) if isinstance(migration, dict) else {}
+        source_file = _resolve_optional_repo_path(ground_motion.get("source_file"), repo_root)
+        if source_file is not None:
+            candidates.append((source_file.parent / src).resolve())
+
+        # Keep backward compatibility with callers that rely on current working directory.
+        candidates.append(Path(values_path))
+
+    src = next((p for p in candidates if p.exists()), None)
+    if src is None:
+        checked = ", ".join(str(p) for p in candidates)
+        raise ValueError(
+            f"Path time_series values_path not found: {values_path}; checked: {checked}"
+        )
     text = src.read_text(encoding="utf-8")
     tokens = re.findall(r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eEdD][-+]?\d+)?", text)
     if not tokens:
@@ -85,7 +121,7 @@ def _load_path_time_series_values(ts, case_dir: Path):
     return [float(tok.replace("D", "E").replace("d", "e")) for tok in tokens]
 
 
-def _emit_time_series(f, ts, case_dir: Path):
+def _emit_time_series(f, ts, case_dir: Path, case_data: dict):
     ts_type = ts.get("type")
     tag = ts.get("tag")
     if ts_type is None or tag is None:
@@ -103,7 +139,7 @@ def _emit_time_series(f, ts, case_dir: Path):
             raise ValueError("Path time_series cannot specify both values and values_path/path")
         values = ts.get("values")
         if values is None:
-            values = _load_path_time_series_values(ts, case_dir)
+            values = _load_path_time_series_values(ts, case_dir, case_data)
         line = f"timeSeries Path {tag} "
         if "dt" in ts:
             line += f"-dt {ts['dt']} "
@@ -658,7 +694,7 @@ def main():
             ts_list = _normalize_time_series(data.get("time_series"))
             if ts_list:
                 for ts in ts_list:
-                    _emit_time_series(f, ts, case_dir)
+                    _emit_time_series(f, ts, case_dir, data)
                 ts_tags = {ts["tag"] for ts in ts_list}
                 if pattern is None:
                     if len(ts_list) == 1:
@@ -671,7 +707,7 @@ def main():
                     raise ValueError("UniformExcitation pattern requires time_series definitions")
                 if loads or element_loads:
                     _emit_time_series(
-                        f, {"type": "Linear", "tag": 1, "factor": 1.0}, case_dir
+                        f, {"type": "Linear", "tag": 1, "factor": 1.0}, case_dir, data
                     )
                     ts_tags = {1}
                     if pattern is None:
@@ -770,7 +806,7 @@ def main():
 
                 stage_ts_list = _normalize_time_series(stage.get("time_series"))
                 for ts in stage_ts_list:
-                    _emit_time_series(f, ts, case_dir)
+                    _emit_time_series(f, ts, case_dir, data)
                     ts_tags.add(ts["tag"])
 
                 stage_pattern = stage.get("pattern")

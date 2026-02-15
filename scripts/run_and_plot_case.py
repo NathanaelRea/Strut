@@ -1,12 +1,22 @@
 #!/usr/bin/env python3
 import argparse
 import json
+import math
 import os
 import subprocess
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+from matplotlib import animation
 from matplotlib.backends.backend_pdf import PdfPages
+from matplotlib.collections import LineCollection
+from matplotlib.lines import Line2D
+
+try:
+    from .plot_constants import MOJO_ORANGE, OPENSEES_BLUE
+except ImportError:
+    # Allow running as a standalone script.
+    from plot_constants import MOJO_ORANGE, OPENSEES_BLUE
 
 
 def _parse_rows(path: Path):
@@ -57,6 +67,301 @@ def _run_case(
         )
 
 
+def _build_node_xy(case_data: dict) -> dict[int, tuple[float, float]]:
+    node_xy: dict[int, tuple[float, float]] = {}
+    for node in case_data.get("nodes", []):
+        node_id = int(node["id"])
+        node_xy[node_id] = (float(node.get("x", 0.0)), float(node.get("y", 0.0)))
+    return node_xy
+
+
+def _build_edges(case_data: dict, node_xy: dict[int, tuple[float, float]]) -> list[tuple[int, int]]:
+    edges: list[tuple[int, int]] = []
+    seen: set[tuple[int, int]] = set()
+
+    for elem in case_data.get("elements", []):
+        conn = elem.get("nodes", [])
+        if not isinstance(conn, list) or len(conn) < 2:
+            continue
+        node_ids = [int(n) for n in conn if int(n) in node_xy]
+        if len(node_ids) < 2:
+            continue
+
+        if len(node_ids) == 2:
+            pairs = [(node_ids[0], node_ids[1])]
+        else:
+            pairs = [
+                (node_ids[i], node_ids[(i + 1) % len(node_ids)])
+                for i in range(len(node_ids))
+            ]
+
+        for n1, n2 in pairs:
+            if n1 == n2:
+                continue
+            edge_key = (n1, n2) if n1 < n2 else (n2, n1)
+            if edge_key in seen:
+                continue
+            seen.add(edge_key)
+            edges.append((n1, n2))
+
+    return edges
+
+
+def _dof_series(rows, dofs: list[int], dof: int):
+    if dof not in dofs:
+        return None
+    idx = dofs.index(dof)
+    vals = []
+    for row in rows:
+        vals.append(row[idx] if idx < len(row) else 0.0)
+    return vals
+
+
+def _collect_node_displacements(case_data: dict, out_dir: Path, node_xy: dict[int, tuple[float, float]]):
+    raw: dict[int, dict[int, list[float]]] = {}
+    for rec in case_data.get("recorders", []):
+        if rec.get("type") != "node_displacement":
+            continue
+        dofs = [int(d) for d in rec.get("dofs", [])]
+        output = rec.get("output", "node_disp")
+        for node_id in rec.get("nodes", []):
+            nid = int(node_id)
+            path = out_dir / f"{output}_node{nid}.out"
+            if not path.exists():
+                continue
+            try:
+                rows = _parse_rows(path)
+            except ValueError as exc:
+                print(f"warning: skipping displacement file {path.name} ({exc})")
+                continue
+            per_node = raw.setdefault(nid, {})
+            for target_dof in (1, 2):
+                vals = _dof_series(rows, dofs, target_dof)
+                if vals is None:
+                    continue
+                prev = per_node.get(target_dof)
+                if prev is None or len(vals) > len(prev):
+                    per_node[target_dof] = vals
+
+    n = 0
+    for dof_map in raw.values():
+        for vals in dof_map.values():
+            n = max(n, len(vals))
+
+    node_disp: dict[int, list[tuple[float, float]]] = {}
+    for node_id in node_xy:
+        dof_map = raw.get(node_id, {})
+        ux_vals = dof_map.get(1, [])
+        uy_vals = dof_map.get(2, [])
+        node_disp[node_id] = [
+            (
+                ux_vals[i] if i < len(ux_vals) else 0.0,
+                uy_vals[i] if i < len(uy_vals) else 0.0,
+            )
+            for i in range(n)
+        ]
+    return node_disp, n
+
+
+def _animation_frame_indices(n: int, max_frames: int) -> tuple[list[int], int]:
+    if n <= 0:
+        return [], 1
+    if max_frames <= 0 or n <= max_frames:
+        return list(range(n)), 1
+
+    step = max(1, int(math.ceil(n / max_frames)))
+    frame_indices = list(range(0, n, step))
+    if frame_indices[-1] != n - 1:
+        frame_indices.append(n - 1)
+    return frame_indices, step
+
+
+def _plot_structure_animation(
+    case_name: str,
+    case_data: dict,
+    ref_dir: Path,
+    mojo_dir: Path,
+    is_transient: bool,
+    dt: float,
+    out_path: Path,
+    max_frames: int,
+) -> bool:
+    node_xy = _build_node_xy(case_data)
+    edges = _build_edges(case_data, node_xy)
+    if not node_xy or not edges:
+        print("skip animation: missing model geometry in case JSON")
+        return False
+
+    ref_disp, n_ref = _collect_node_displacements(case_data, ref_dir, node_xy)
+    mojo_disp, n_mojo = _collect_node_displacements(case_data, mojo_dir, node_xy)
+    n = min(n_ref, n_mojo)
+    if n <= 0:
+        print("skip animation: no comparable node displacement history found")
+        return False
+
+    for node_id in node_xy:
+        ref_disp[node_id] = ref_disp[node_id][:n]
+        mojo_disp[node_id] = mojo_disp[node_id][:n]
+
+    frame_indices, frame_step = _animation_frame_indices(n, max_frames)
+    if not frame_indices:
+        print("skip animation: no frames to render")
+        return False
+
+    xs = [xy[0] for xy in node_xy.values()]
+    ys = [xy[1] for xy in node_xy.values()]
+    span = max(max(xs) - min(xs), max(ys) - min(ys), 1.0e-9)
+
+    max_disp = 0.0
+    for node_disp in (ref_disp, mojo_disp):
+        for series in node_disp.values():
+            for ux, uy in series:
+                max_disp = max(max_disp, abs(ux), abs(uy))
+    if max_disp <= 1.0e-15:
+        disp_scale = 1.0
+    else:
+        disp_scale = min(max(0.15 * span / max_disp, 1.0), 1.0e6)
+
+    def _node_pos(node_id: int, frame_idx: int, node_disp):
+        x0, y0 = node_xy[node_id]
+        ux, uy = node_disp[node_id][frame_idx]
+        return (x0 + disp_scale * ux, y0 + disp_scale * uy)
+
+    def _segments(node_disp, frame_idx: int):
+        return [
+            [_node_pos(n1, frame_idx, node_disp), _node_pos(n2, frame_idx, node_disp)]
+            for n1, n2 in edges
+        ]
+
+    all_x = list(xs)
+    all_y = list(ys)
+    for frame_idx in frame_indices:
+        for node_id in node_xy:
+            rx, ry = _node_pos(node_id, frame_idx, ref_disp)
+            mx, my = _node_pos(node_id, frame_idx, mojo_disp)
+            all_x.extend((rx, mx))
+            all_y.extend((ry, my))
+    pad = max(0.05 * span, 1.0e-8)
+    x_min, x_max = min(all_x) - pad, max(all_x) + pad
+    y_min, y_max = min(all_y) - pad, max(all_y) + pad
+
+    base_segments = [[node_xy[n1], node_xy[n2]] for n1, n2 in edges]
+    fig, ax = plt.subplots(figsize=(9.0, 6.0))
+    undeformed = LineCollection(
+        base_segments,
+        colors="#8f8f8f",
+        linewidths=1.0,
+        linestyles=":",
+        alpha=0.55,
+        zorder=1,
+    )
+    ref_lines = LineCollection(
+        [],
+        colors=OPENSEES_BLUE,
+        linewidths=2.0,
+        linestyles="-",
+        zorder=2,
+    )
+    mojo_lines = LineCollection(
+        [],
+        colors=MOJO_ORANGE,
+        linewidths=1.8,
+        linestyles="--",
+        zorder=3,
+    )
+    ax.add_collection(undeformed)
+    ax.add_collection(ref_lines)
+    ax.add_collection(mojo_lines)
+    ax.set_xlim(x_min, x_max)
+    ax.set_ylim(y_min, y_max)
+    ax.set_aspect("equal", adjustable="box")
+    ax.set_xlabel("X")
+    ax.set_ylabel("Y")
+    ax.grid(True, alpha=0.3)
+    ax.set_title(f"{case_name} :: Structural Response")
+    ax.legend(
+        handles=[
+            Line2D([], [], color="#8f8f8f", linestyle=":", linewidth=1.0, label="Undeformed"),
+            Line2D([], [], color=OPENSEES_BLUE, linestyle="-", linewidth=2.0, label="OpenSees reference"),
+            Line2D([], [], color=MOJO_ORANGE, linestyle="--", linewidth=1.8, label="Strut mojo"),
+        ],
+        loc="best",
+    )
+    time_text = ax.text(
+        0.015,
+        0.985,
+        "",
+        transform=ax.transAxes,
+        va="top",
+        ha="left",
+        bbox={"boxstyle": "round,pad=0.2", "facecolor": "white", "alpha": 0.85, "edgecolor": "none"},
+    )
+    ax.text(
+        0.015,
+        0.02,
+        f"deformation scale = {disp_scale:.3e}",
+        transform=ax.transAxes,
+        va="bottom",
+        ha="left",
+        bbox={"boxstyle": "round,pad=0.2", "facecolor": "white", "alpha": 0.85, "edgecolor": "none"},
+    )
+
+    def _frame_label(frame_idx: int) -> str:
+        if is_transient:
+            t = dt * (frame_idx + 1)
+            return f"t = {t:.4g} s  (step {frame_idx + 1}/{n})"
+        return f"step {frame_idx + 1}/{n}"
+
+    def _draw(frame_idx: int):
+        ref_lines.set_segments(_segments(ref_disp, frame_idx))
+        mojo_lines.set_segments(_segments(mojo_disp, frame_idx))
+        time_text.set_text(_frame_label(frame_idx))
+        return ref_lines, mojo_lines, time_text
+
+    _draw(frame_indices[0])
+    fig.tight_layout()
+
+    if is_transient and dt > 0.0:
+        effective_dt = dt * frame_step
+        fps = int(max(2, min(30, round(1.0 / effective_dt))))
+    else:
+        fps = 4
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        if not animation.writers.is_available("ffmpeg"):
+            print(
+                "warning: ffmpeg writer is not available; install ffmpeg to save MP4 animation"
+            )
+            plt.close(fig)
+            return False
+        anim = animation.FuncAnimation(
+            fig,
+            _draw,
+            frames=frame_indices,
+            interval=1000.0 / fps,
+            blit=False,
+            repeat=True,
+        )
+        writer = animation.FFMpegWriter(
+            fps=fps,
+            codec="libx264",
+            extra_args=["-pix_fmt", "yuv420p"],
+        )
+        anim.save(out_path, writer=writer, dpi=140)
+        print(f"saved movie: {out_path}")
+        print(
+            f"  frames={len(frame_indices)} from {n} step(s), frame_step={frame_step}, fps={fps}"
+        )
+    except Exception as exc:
+        print(f"warning: failed to save animation {out_path} ({exc})")
+        plt.close(fig)
+        return False
+
+    plt.close(fig)
+    return True
+
+
 def _plot_one(
     case_name: str,
     out_name: str,
@@ -76,8 +381,8 @@ def _plot_one(
     peak_rel_err = peak_abs_err / max(ref_peak, 1.0e-30)
 
     single_sample = len(x_vals) == 1
-    ref_style = {"label": "OpenSees reference", "linewidth": 2.0}
-    mojo_style = {"label": "Strut mojo", "linewidth": 1.6, "linestyle": "--"}
+    ref_style = {"label": "OpenSees reference", "linewidth": 2.0, "color": OPENSEES_BLUE}
+    mojo_style = {"label": "Strut mojo", "linewidth": 1.6, "linestyle": "--", "color": MOJO_ORANGE}
     if single_sample:
         ref_style.update({"marker": "o", "markersize": 6.0})
         mojo_style.update({"marker": "x", "markersize": 6.0})
@@ -137,6 +442,22 @@ def main():
         default="",
         help="output PDF path (default: build/plots/<case_name>/<case_name>_all_recorders.pdf)",
     )
+    parser.add_argument(
+        "--no-animation",
+        action="store_true",
+        help="skip creating structural time-history GIF and preview page",
+    )
+    parser.add_argument(
+        "--animation",
+        default="",
+        help="output MP4 path (default: build/plots/<case_name>/<case_name>_structure_time_history.mp4)",
+    )
+    parser.add_argument(
+        "--animation-max-frames",
+        type=int,
+        default=400,
+        help="max frames to render in structural GIF (default: 400)",
+    )
     args = parser.parse_args()
 
     repo_root = Path(__file__).resolve().parents[1]
@@ -182,7 +503,24 @@ def main():
     pdf_path.parent.mkdir(parents=True, exist_ok=True)
 
     plotted = 0
+    animation_saved = False
     with PdfPages(pdf_path) as pdf:
+        if not args.no_animation:
+            if args.animation:
+                animation_path = Path(args.animation)
+            else:
+                animation_path = plot_dir / f"{case_name}_structure_time_history.mp4"
+            animation_saved = _plot_structure_animation(
+                case_name,
+                case_data,
+                ref_dir,
+                mojo_dir,
+                is_transient,
+                dt,
+                animation_path,
+                max_frames=max(1, int(args.animation_max_frames)),
+            )
+
         for ref_file in out_files:
             mojo_file = mojo_dir / ref_file.name
             if not mojo_file.exists():
@@ -239,7 +577,10 @@ def main():
                 plotted += 1
 
     print(f"saved: {pdf_path}")
-    print(f"done: generated {plotted} plot(s)")
+    if animation_saved:
+        print("done: generated structural animation + recorder plots")
+    else:
+        print(f"done: generated {plotted} plot(s)")
 
 
 if __name__ == "__main__":

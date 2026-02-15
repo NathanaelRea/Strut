@@ -213,3 +213,31 @@ def test_json_to_tcl_loads_path_values_from_file():
         )
         text = tcl_path.read_text(encoding="utf-8")
     assert "timeSeries Path 2 -dt 0.1 -values {1.0 0.0} -factor 1.0\n" in text
+
+
+def test_json_to_tcl_loads_path_values_relative_to_source_example():
+    case = _base_uniform_case()
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_dir = Path(tmp)
+        example_dir = tmp_dir / "examples"
+        example_dir.mkdir(parents=True, exist_ok=True)
+        example_tcl = example_dir / "example.tcl"
+        example_tcl.write_text("# placeholder\n", encoding="utf-8")
+        (example_dir / "A10000.tcl").write_text("1.0E+00 0.0D+00", encoding="utf-8")
+        case["source_example"] = str(example_tcl)
+        case["time_series"] = [
+            {"type": "Path", "tag": 2, "dt": 0.1, "values_path": "A10000.tcl"}
+        ]
+        case_path = tmp_dir / "case.json"
+        tcl_path = tmp_dir / "model.tcl"
+        case_path.write_text(json.dumps(case), encoding="utf-8")
+        subprocess.check_call(
+            [
+                sys.executable,
+                str(repo_root / "scripts" / "json_to_tcl.py"),
+                str(case_path),
+                str(tcl_path),
+            ]
+        )
+        text = tcl_path.read_text(encoding="utf-8")
+    assert "timeSeries Path 2 -dt 0.1 -values {1.0 0.0} -factor 1.0\n" in text
