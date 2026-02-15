@@ -1,11 +1,13 @@
 from collections import List
 from materials import UniMaterialDef, UniMaterialState
 from os import abort
+from python import Python
 from sections import FiberCell, FiberSection2dDef
 
 from linalg import gaussian_elimination
 from solver.assembly import assemble_global_stiffness_typed, assemble_internal_forces_typed
 from solver.dof import node_dof_index, require_dof_in_range
+from solver.profile import _append_event
 from solver.run_case.input_types import (
     AnalysisInput,
     ElementInput,
@@ -80,7 +82,20 @@ fn run_transient_linear(
     has_transformation_mpc: Bool,
     rep_dof: List[Int],
     constrained: List[Bool],
+    do_profile: Bool,
+    t0: Int,
+    mut events: String,
+    mut events_need_comma: Bool,
+    frame_assemble_stiffness: Int,
+    frame_solve_linear: Int,
+    frame_time_series_eval: Int,
+    frame_constraints: Int,
+    frame_recorders: Int,
+    frame_factorize: Int,
+    frame_transient_step: Int,
 ) raises:
+    var time = Python.import_module("time")
+
     var dt = analysis.dt
     if dt <= 0.0:
         abort("transient_linear requires dt > 0")
@@ -113,6 +128,12 @@ fn run_transient_linear(
     if not has_mass:
         abort("transient_linear requires masses on free dofs")
 
+    if do_profile:
+        var t_asm_start = Int(time.perf_counter_ns())
+        var asm_start_us = (t_asm_start - t0) // 1000
+        _append_event(
+            events, events_need_comma, "O", frame_assemble_stiffness, asm_start_us
+        )
     var K = assemble_global_stiffness_typed(
         typed_nodes,
         typed_elements,
@@ -136,8 +157,34 @@ fn run_transient_linear(
         fiber_section_cells,
         fiber_section_index_by_id,
     )
+    if do_profile:
+        var t_asm_end = Int(time.perf_counter_ns())
+        var asm_end_us = (t_asm_end - t0) // 1000
+        _append_event(
+            events, events_need_comma, "C", frame_assemble_stiffness, asm_end_us
+        )
     if has_transformation_mpc:
+        if do_profile:
+            var t_constraints_start = Int(time.perf_counter_ns())
+            var constraints_start_us = (t_constraints_start - t0) // 1000
+            _append_event(
+                events,
+                events_need_comma,
+                "O",
+                frame_constraints,
+                constraints_start_us,
+            )
         K = _collapse_matrix_by_rep(K, rep_dof)
+        if do_profile:
+            var t_constraints_end = Int(time.perf_counter_ns())
+            var constraints_end_us = (t_constraints_end - t0) // 1000
+            _append_event(
+                events,
+                events_need_comma,
+                "C",
+                frame_constraints,
+                constraints_end_us,
+            )
     var K_ff: List[List[Float64]] = []
     for _ in range(free_count):
         var row: List[Float64] = []
@@ -198,32 +245,98 @@ fn run_transient_linear(
     var envelope_abs: List[List[Float64]] = []
 
     for step in range(steps):
+        if do_profile:
+            var t_step_start = Int(time.perf_counter_ns())
+            var step_start_us = (t_step_start - t0) // 1000
+            _append_event(
+                events, events_need_comma, "O", frame_transient_step, step_start_us
+            )
         if has_transformation_mpc:
+            if do_profile:
+                var t_constraints_start = Int(time.perf_counter_ns())
+                var constraints_start_us = (t_constraints_start - t0) // 1000
+                _append_event(
+                    events,
+                    events_need_comma,
+                    "O",
+                    frame_constraints,
+                    constraints_start_us,
+                )
             _enforce_equal_dof_values(u, rep_dof, constrained)
             _enforce_equal_dof_values(v, rep_dof, constrained)
             _enforce_equal_dof_values(a, rep_dof, constrained)
+            if do_profile:
+                var t_constraints_end = Int(time.perf_counter_ns())
+                var constraints_end_us = (t_constraints_end - t0) // 1000
+                _append_event(
+                    events,
+                    events_need_comma,
+                    "C",
+                    frame_constraints,
+                    constraints_end_us,
+                )
         var t = Float64(step + 1) * dt
         for i in range(total_dofs):
             F_ext_step[i] = F_total[i]
         var factor = 1.0
         if pattern_type == "UniformExcitation":
+            if do_profile:
+                var t_ts_start = Int(time.perf_counter_ns())
+                var ts_start_us = (t_ts_start - t0) // 1000
+                _append_event(
+                    events,
+                    events_need_comma,
+                    "O",
+                    frame_time_series_eval,
+                    ts_start_us,
+                )
             var ag = eval_time_series_input(
                 time_series[uniform_accel_ts_index],
                 t,
                 time_series_values,
                 time_series_times,
             )
+            if do_profile:
+                var t_ts_end = Int(time.perf_counter_ns())
+                var ts_end_us = (t_ts_end - t0) // 1000
+                _append_event(
+                    events,
+                    events_need_comma,
+                    "C",
+                    frame_time_series_eval,
+                    ts_end_us,
+                )
             for i in range(total_dofs):
                 if (i % ndf) + 1 == uniform_excitation_direction:
                     F_ext_step[i] += -M_total[i] * ag
         else:
             if ts_index >= 0:
+                if do_profile:
+                    var t_ts_start = Int(time.perf_counter_ns())
+                    var ts_start_us = (t_ts_start - t0) // 1000
+                    _append_event(
+                        events,
+                        events_need_comma,
+                        "O",
+                        frame_time_series_eval,
+                        ts_start_us,
+                    )
                 factor = eval_time_series_input(
                     time_series[ts_index],
                     t,
                     time_series_values,
                     time_series_times,
                 )
+                if do_profile:
+                    var t_ts_end = Int(time.perf_counter_ns())
+                    var ts_end_us = (t_ts_end - t0) // 1000
+                    _append_event(
+                        events,
+                        events_need_comma,
+                        "C",
+                        frame_time_series_eval,
+                        ts_end_us,
+                    )
             for i in range(total_dofs):
                 F_ext_step[i] = F_total[i] * factor
         for i in range(free_count):
@@ -250,7 +363,25 @@ fn run_transient_linear(
         P_step.resize(free_count, 0.0)
         for i in range(free_count):
             P_step[i] = P_eff[i]
+        if do_profile:
+            var t_solve_start = Int(time.perf_counter_ns())
+            var solve_start_us = (t_solve_start - t0) // 1000
+            _append_event(
+                events, events_need_comma, "O", frame_solve_linear, solve_start_us
+            )
+            _append_event(
+                events, events_need_comma, "O", frame_factorize, solve_start_us
+            )
         var u_f = gaussian_elimination(K_eff_step, P_step)
+        if do_profile:
+            var t_solve_end = Int(time.perf_counter_ns())
+            var solve_end_us = (t_solve_end - t0) // 1000
+            _append_event(
+                events, events_need_comma, "C", frame_factorize, solve_end_us
+            )
+            _append_event(
+                events, events_need_comma, "C", frame_solve_linear, solve_end_us
+            )
         for i in range(free_count):
             var idx = free[i]
             var u_next = u_f[i]
@@ -260,11 +391,35 @@ fn run_transient_linear(
             v[idx] = v_next
             a[idx] = a_next
         if has_transformation_mpc:
+            if do_profile:
+                var t_constraints_start = Int(time.perf_counter_ns())
+                var constraints_start_us = (t_constraints_start - t0) // 1000
+                _append_event(
+                    events,
+                    events_need_comma,
+                    "O",
+                    frame_constraints,
+                    constraints_start_us,
+                )
             _enforce_equal_dof_values(u, rep_dof, constrained)
             _enforce_equal_dof_values(v, rep_dof, constrained)
             _enforce_equal_dof_values(a, rep_dof, constrained)
+            if do_profile:
+                var t_constraints_end = Int(time.perf_counter_ns())
+                var constraints_end_us = (t_constraints_end - t0) // 1000
+                _append_event(
+                    events,
+                    events_need_comma,
+                    "C",
+                    frame_constraints,
+                    constraints_end_us,
+                )
 
         var F_int_reaction: List[Float64] = []
+        if do_profile:
+            var t_rec_start = Int(time.perf_counter_ns())
+            var rec_start_us = (t_rec_start - t0) // 1000
+            _append_event(events, events_need_comma, "O", frame_recorders, rec_start_us)
         if record_reactions:
             F_int_reaction = assemble_internal_forces_typed(
                 typed_nodes,
@@ -479,6 +634,13 @@ fn run_transient_linear(
                         )
             else:
                 abort("unsupported recorder type")
+        if do_profile:
+            var t_rec_end = Int(time.perf_counter_ns())
+            var rec_end_us = (t_rec_end - t0) // 1000
+            _append_event(events, events_need_comma, "C", frame_recorders, rec_end_us)
+            _append_event(
+                events, events_need_comma, "C", frame_transient_step, rec_end_us
+            )
     _flush_envelope_outputs(
         envelope_files,
         envelope_min,

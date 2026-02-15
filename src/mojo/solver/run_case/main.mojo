@@ -163,6 +163,11 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
     var frame_solve_nonlinear = 7
     var frame_nonlinear_step = 8
     var frame_nonlinear_iter = 9
+    var frame_time_series_eval = 10
+    var frame_constraints = 11
+    var frame_recorders = 12
+    var frame_factorize = 13
+    var frame_transient_step = 14
 
     var frames = String()
     var events = String()
@@ -179,6 +184,11 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
         _append_frame(frames, frames_need_comma, "solve_nonlinear")
         _append_frame(frames, frames_need_comma, "nonlinear_step")
         _append_frame(frames, frames_need_comma, "nonlinear_iter")
+        _append_frame(frames, frames_need_comma, "time_series_eval")
+        _append_frame(frames, frames_need_comma, "constraints")
+        _append_frame(frames, frames_need_comma, "recorders")
+        _append_frame(frames, frames_need_comma, "factorize")
+        _append_frame(frames, frames_need_comma, "transient_step")
         _append_event(events, events_need_comma, "O", frame_total, 0)
         _append_event(events, events_need_comma, "O", frame_assemble, 0)
 
@@ -461,6 +471,17 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
             has_transformation_mpc,
             rep_dof,
             constrained,
+            do_profile,
+            t0,
+            events,
+            events_need_comma,
+            frame_assemble_stiffness,
+            frame_solve_linear,
+            frame_time_series_eval,
+            frame_constraints,
+            frame_recorders,
+            frame_factorize,
+            frame_transient_step,
         )
     elif analysis_type == "transient_nonlinear":
         run_transient_nonlinear(
@@ -513,6 +534,19 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
             has_transformation_mpc,
             rep_dof,
             constrained,
+            do_profile,
+            t0,
+            events,
+            events_need_comma,
+            frame_assemble_stiffness,
+            frame_solve_nonlinear,
+            frame_nonlinear_step,
+            frame_nonlinear_iter,
+            frame_time_series_eval,
+            frame_constraints,
+            frame_recorders,
+            frame_factorize,
+            frame_transient_step,
         )
     elif analysis_type == "staged":
         var builtins = Python.import_module("builtins")
@@ -862,6 +896,17 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
                     has_transformation_mpc,
                     rep_dof,
                     constrained,
+                    do_profile,
+                    t0,
+                    events,
+                    events_need_comma,
+                    frame_assemble_stiffness,
+                    frame_solve_linear,
+                    frame_time_series_eval,
+                    frame_constraints,
+                    frame_recorders,
+                    frame_factorize,
+                    frame_transient_step,
                 )
             elif stage_type == "transient_nonlinear":
                 run_transient_nonlinear(
@@ -914,6 +959,19 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
                     has_transformation_mpc,
                     rep_dof,
                     constrained,
+                    do_profile,
+                    t0,
+                    events,
+                    events_need_comma,
+                    frame_assemble_stiffness,
+                    frame_solve_nonlinear,
+                    frame_nonlinear_step,
+                    frame_nonlinear_iter,
+                    frame_time_series_eval,
+                    frame_constraints,
+                    frame_recorders,
+                    frame_factorize,
+                    frame_transient_step,
                 )
             elif stage_type == "modal_eigen":
                 if stage_analysis.num_modes < 1:
@@ -1243,8 +1301,9 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
             file_path.write_text(PythonObject(line))
 
     var t2 = Int(time.perf_counter_ns())
+    var total_us = (t2 - t0) // 1000
+
     if do_profile:
-        var total_us = (t2 - t0) // 1000
         _append_event(events, events_need_comma, "C", frame_output, total_us)
         _append_event(events, events_need_comma, "C", frame_total, total_us)
         _write_speedscope(profile_path, frames, events, total_us)

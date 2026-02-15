@@ -16,11 +16,12 @@ def main():
             var entry = cases[i]
             var entry_input = String(entry.get("input", ""))
             var entry_output = String(entry.get("output", ""))
+            var entry_profile = String(entry.get("profile", ""))
             if entry_input == "" or entry_output == "":
                 abort("batch entry missing input/output")
             var data = load_json(entry_input)
             var t0 = Int(time.perf_counter_ns())
-            run_case(data, entry_output, "")
+            run_case(data, entry_output, entry_profile)
             var t1 = Int(time.perf_counter_ns())
             var elapsed_us = (t1 - t0) // 1000
             var out_dir = pathlib.Path(entry_output)

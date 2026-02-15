@@ -13,11 +13,14 @@
 - `uv run scripts/run_benchmarks.py --gen-frame-bays 18 --gen-frame-stories 17 --no-archive`
 - `uv run scripts/run_benchmarks.py --gen-frame-bays 18 --gen-frame-stories 17 --no-batch --no-archive`
 - `uv run scripts/run_benchmarks.py --gen-frame-bays 18 --gen-frame-stories 17 --gen-frame-element forceBeamColumn2d --cases force_beam_column2d_fiber_frame_18bay_17story --no-archive`
+- `uv run scripts/run_benchmarks.py --benchmark-suite root_cause_v1 --no-archive`
+- `uv run scripts/run_benchmarks.py --engine mojo --cases opensees_example_rc_frame_earthquake --profile benchmark/speedscope --no-archive`
 
 ## Benchmark Iteration Rule
 
 - Use `--no-archive` while iterating to avoid polluting `benchmark/archive`.
 - Runs with `--profile` default to `--no-archive`.
+- `--profile <DIR>` emits per-case speedscope output in both batch and `--no-batch` modes.
 
 ## Mojo Build Behavior
 

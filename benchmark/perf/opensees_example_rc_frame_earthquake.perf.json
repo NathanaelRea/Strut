@@ -1,0 +1,34 @@
+{
+  "case_name": "opensees_example_rc_frame_earthquake",
+  "analysis_type": "transient_nonlinear",
+  "dofs_free": 6,
+  "steps": 50,
+  "nonlinear_iterations_total": 152,
+  "timing_us": {
+    "total": 5424,
+    "analysis": 4765,
+    "load_case": 250,
+    "assemble": 3779,
+    "factorize": 4,
+    "solve": 4765,
+    "linear_solve": 4,
+    "time_series_eval": 12,
+    "constraints": 0,
+    "recorders": 473,
+    "output": 392
+  },
+  "counts": {
+    "assemble_calls": 203,
+    "factorizations": 152,
+    "linear_solves": 152,
+    "time_series_calls": 50,
+    "mpc_collapses": 0,
+    "nonlinear_iterations_total": 152,
+    "nonlinear_steps_total": 50
+  },
+  "memory": {
+    "matrix_dim": 6,
+    "solver_backend": "dense",
+    "workspace_reuse": false
+  }
+}

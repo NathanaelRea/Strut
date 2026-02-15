@@ -22,6 +22,28 @@ class CaseSpec:
     json_path: Path
 
 
+BENCHMARK_SUITES: Dict[str, List[str]] = {
+    "root_cause_v1": [
+        "opensees_example_ex5_frame2d_eq_uniform_rc_fiber",
+        "opensees_example_ex2c_canti2d_inelastic_fiber",
+        "opensees_example_rc_frame_earthquake",
+        "steel01_truss_transient_modified_newton_benchmark",
+        "opensees_example_2d_elastic_cantileaver_column",
+        "elastic_transient_newmark_path",
+    ],
+    "regression_gate_v1": [
+        "elastic_frame_18bay_17story",
+        "force_beam_column2d_fiber_frame_18bay_17story",
+        "opensees_example_rc_frame_earthquake",
+        "opensees_example_ex5_frame2d_eq_uniform_rc_fiber",
+    ],
+    "scaling_v1": [
+        "elastic_frame_18bay_17story",
+        "force_beam_column2d_fiber_frame_18bay_17story",
+    ],
+}
+
+
 def run(cmd: List[str], env=None, verbose=False, capture_on_error: bool = False) -> None:
     if verbose:
         print("+", " ".join(cmd))
@@ -602,6 +624,12 @@ def main() -> None:
         help="Case name, JSON path, or glob. Repeatable.",
     )
     parser.add_argument(
+        "--benchmark-suite",
+        choices=tuple(sorted(BENCHMARK_SUITES.keys())),
+        default=None,
+        help="Run a predefined benchmark suite.",
+    )
+    parser.add_argument(
         "--gen-frame-bays",
         type=int,
         default=None,
@@ -669,13 +697,9 @@ def main() -> None:
     )
     parser.add_argument(
         "--profile",
-        action="store_true",
-        help="Emit speedscope profiles for Mojo runs (last repetition only).",
-    )
-    parser.add_argument(
-        "--profile-dir",
         default=None,
-        help="Directory for speedscope output (default: benchmark/speedscope).",
+        metavar="DIR",
+        help="Emit per-case speedscope profiles to DIR.",
     )
     parser.add_argument(
         "--include-disabled",
@@ -687,6 +711,17 @@ def main() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     validation_root = repo_root / "tests" / "validation"
     generated_cases: List[CaseSpec] = []
+    generate_suite_force_pair = False
+
+    if args.benchmark_suite:
+        if args.cases:
+            raise SystemExit("--benchmark-suite cannot be combined with --cases.")
+        args.cases = [",".join(BENCHMARK_SUITES[args.benchmark_suite])]
+        if args.benchmark_suite in {"regression_gate_v1", "scaling_v1"}:
+            if args.gen_frame_bays is None and args.gen_frame_stories is None:
+                args.gen_frame_bays = 18
+                args.gen_frame_stories = 17
+                generate_suite_force_pair = True
 
     batch_mode = not args.no_batch
     auto_batch_default_gen = (
@@ -731,7 +766,10 @@ def main() -> None:
             verbose=os.getenv("STRUT_VERBOSE") == "1",
         )
         generated_cases.append(CaseSpec(name=name, json_path=gen_path))
-        if auto_batch_default_gen and args.gen_frame_element != "forceBeamColumn2d":
+        if (
+            (auto_batch_default_gen or generate_suite_force_pair)
+            and args.gen_frame_element != "forceBeamColumn2d"
+        ):
             fiber_name = (
                 f"force_beam_column2d_fiber_frame_{args.gen_frame_bays}bay_"
                 f"{args.gen_frame_stories}story"
@@ -804,11 +842,7 @@ def main() -> None:
     )
     profile_root = None
     if args.profile:
-        profile_root = (
-            Path(args.profile_dir)
-            if args.profile_dir
-            else repo_root / "benchmark" / "speedscope"
-        )
+        profile_root = Path(args.profile)
         ensure_clean_dir(profile_root)
 
     for sub in ("opensees", "mojo", "opensees_compute", "mojo_compute", "tcl", ".tmp"):
@@ -963,12 +997,15 @@ def main() -> None:
                 input_path = compute_json
             else:
                 input_path = Path(entry["json"])
-            batch_entries.append(
-                {
-                    "input": str(input_path),
-                    "output": str(output_root / case_name),
-                }
-            )
+            batch_entry = {
+                "input": str(input_path),
+                "output": str(output_root / case_name),
+            }
+            if args.profile and not compute and profile_root is not None:
+                batch_entry["profile"] = str(
+                    profile_root / f"{case_name}.speedscope.json"
+                )
+            batch_entries.append(batch_entry)
         batch = {"cases": batch_entries}
         batch_path = results_root / ".tmp" / (
             "mojo_batch_compute.json" if compute else "mojo_batch.json"
@@ -1081,14 +1118,20 @@ def main() -> None:
             else:
                 input_path = Path(entry["json"])
             try:
+                cmd = [
+                    str(mojo_solver),
+                    "--input",
+                    str(input_path),
+                    "--output",
+                    str(target_dir),
+                ]
+                if args.profile and not compute and profile_root is not None:
+                    cmd += [
+                        "--profile",
+                        str(profile_root / f"{case_name}.speedscope.json"),
+                    ]
                 run(
-                    [
-                        str(mojo_solver),
-                        "--input",
-                        str(input_path),
-                        "--output",
-                        str(target_dir),
-                    ],
+                    cmd,
                     env=env,
                     verbose=verbose,
                     capture_on_error=True,
