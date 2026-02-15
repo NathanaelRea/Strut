@@ -7,7 +7,7 @@
     "units": "kips-in"
   },
   "source_doc": "docs/agent-reference/OpenSeesDocs/basic_truss_example.html",
-  "source_example": "docs/agent-reference/OpenSeesExamples/basic_truss_example/Truss.tcl",
+  "source_example": "docs/agent-reference/OpenSeesExamplesBasic/basic_truss_example/Truss.tcl",
   "notes": "Three-bar 2D elastic truss from the Basic Truss Example.",
   "model": {
     "ndm": 2,
@@ -42,28 +42,19 @@
       "id": 1,
       "x": 0.0,
       "y": 0.0,
-      "constraints": [
-        1,
-        2
-      ]
+      "constraints": [1, 2]
     },
     {
       "id": 2,
       "x": 144.0,
       "y": 0.0,
-      "constraints": [
-        1,
-        2
-      ]
+      "constraints": [1, 2]
     },
     {
       "id": 3,
       "x": 168.0,
       "y": 0.0,
-      "constraints": [
-        1,
-        2
-      ]
+      "constraints": [1, 2]
     },
     {
       "id": 4,
@@ -85,30 +76,21 @@
     {
       "id": 1,
       "type": "truss",
-      "nodes": [
-        1,
-        4
-      ],
+      "nodes": [1, 4],
       "area": 10.0,
       "material": 1
     },
     {
       "id": 2,
       "type": "truss",
-      "nodes": [
-        2,
-        4
-      ],
+      "nodes": [2, 4],
       "area": 5.0,
       "material": 1
     },
     {
       "id": 3,
       "type": "truss",
-      "nodes": [
-        3,
-        4
-      ],
+      "nodes": [3, 4],
       "area": 5.0,
       "material": 1
     }
@@ -132,13 +114,8 @@
   "recorders": [
     {
       "type": "node_displacement",
-      "nodes": [
-        4
-      ],
-      "dofs": [
-        1,
-        2
-      ],
+      "nodes": [4],
+      "dofs": [1, 2],
       "output": "node_disp"
     }
   ]

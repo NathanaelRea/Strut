@@ -7,7 +7,7 @@
     "units": "kips-in"
   },
   "source_doc": "docs/agent-reference/OpenSeesDocs/time_history_analysis_of_a_2d_elastic_cantilever_column.html",
-  "source_example": "docs/agent-reference/OpenSeesExamples/time_history_analysis_of_a_2d_elastic_cantilever_column/Ex1a.Canti2D.EQ.modif.tcl",
+  "source_example": "docs/agent-reference/OpenSeesExamplesBasic/time_history_analysis_of_a_2d_elastic_cantilever_column/Ex1a.Canti2D.EQ.modif.tcl",
   "notes": "Disabled parity case for staged gravity + uniform-excitation time history workflow from OpenSees example.",
   "model": {
     "ndm": 2,
@@ -17,20 +17,32 @@
     { "id": 1, "x": 0.0, "y": 0.0, "constraints": [1, 2, 3] },
     { "id": 2, "x": 0.0, "y": 432.0 }
   ],
-  "materials": [
-    { "id": 1, "type": "Elastic", "params": { "E": 3225.0 } }
-  ],
+  "materials": [{ "id": 1, "type": "Elastic", "params": { "E": 3225.0 } }],
   "sections": [
-    { "id": 1, "type": "ElasticSection2d", "params": { "E": 3225.0, "A": 3600.0, "I": 1080000.0 } }
+    {
+      "id": 1,
+      "type": "ElasticSection2d",
+      "params": { "E": 3225.0, "A": 3600.0, "I": 1080000.0 }
+    }
   ],
   "elements": [
-    { "id": 1, "type": "elasticBeamColumn2d", "nodes": [1, 2], "section": 1, "geomTransf": "Linear" }
+    {
+      "id": 1,
+      "type": "elasticBeamColumn2d",
+      "nodes": [1, 2],
+      "section": 1,
+      "geomTransf": "Linear"
+    }
   ],
-  "masses": [
-    { "node": 2, "dof": 1, "value": 5.18 }
-  ],
+  "masses": [{ "node": 2, "dof": 1, "value": 5.18 }],
   "time_series": [
-    { "type": "Path", "tag": 2, "dt": 0.005, "values": [0.0, 0.01, -0.02, 0.03, -0.01, 0.0], "factor": 386.0 }
+    {
+      "type": "Path",
+      "tag": 2,
+      "dt": 0.005,
+      "values": [0.0, 0.01, -0.02, 0.03, -0.01, 0.0],
+      "factor": 386.0
+    }
   ],
   "pattern": {
     "type": "UniformExcitation",
@@ -56,9 +68,26 @@
     }
   },
   "recorders": [
-    { "type": "node_displacement", "nodes": [2], "dofs": [1, 2, 3], "output": "node_disp" },
-    { "type": "node_reaction", "nodes": [1], "dofs": [1, 2, 3], "output": "reaction" },
-    { "type": "drift", "i_node": 1, "j_node": 2, "dof": 1, "perp_dirn": 2, "output": "drift" },
+    {
+      "type": "node_displacement",
+      "nodes": [2],
+      "dofs": [1, 2, 3],
+      "output": "node_disp"
+    },
+    {
+      "type": "node_reaction",
+      "nodes": [1],
+      "dofs": [1, 2, 3],
+      "output": "reaction"
+    },
+    {
+      "type": "drift",
+      "i_node": 1,
+      "j_node": 2,
+      "dof": 1,
+      "perp_dirn": 2,
+      "output": "drift"
+    },
     { "type": "element_force", "elements": [1], "output": "element_force" }
   ]
 }

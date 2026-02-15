@@ -7,7 +7,7 @@
     "units": "kips-in"
   },
   "source_doc": "docs/agent-reference/OpenSeesDocs/simply_supported_beam_modeled_with_two_dimensional_solid_elements.html",
-  "source_example": "docs/agent-reference/OpenSeesExamples/simply_supported_beam_modeled_with_two_dimensional_solid_elements/Example6_4.tcl",
+  "source_example": "docs/agent-reference/OpenSeesExamplesBasic/simply_supported_beam_modeled_with_two_dimensional_solid_elements/Example6_4.tcl",
   "notes": "Disabled parity case for the full solid-beam example. Uses bbar/enhanced quad family and block2D mesh generation not yet represented in Strut JSON.",
   "model": {
     "ndm": 2,

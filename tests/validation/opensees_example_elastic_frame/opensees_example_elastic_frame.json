@@ -7,7 +7,7 @@
     "units": "kips-in"
   },
   "source_doc": "docs/agent-reference/OpenSeesDocs/elastic_frame_example.html",
-  "source_example": "docs/agent-reference/OpenSeesExamples/elastic_frame_example/ElasticFrame.tcl",
+  "source_example": "docs/agent-reference/OpenSeesExamplesBasic/elastic_frame_example/ElasticFrame.tcl",
   "notes": "Disabled parity case approximating OpenSees Elastic Frame example geometry/load workflow.",
   "model": {
     "ndm": 2,

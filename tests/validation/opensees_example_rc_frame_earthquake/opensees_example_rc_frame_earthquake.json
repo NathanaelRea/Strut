@@ -8,7 +8,7 @@
     "units": "kips-in"
   },
   "source_doc": "docs/agent-reference/OpenSeesDocs/reinforced_concrete_frame_earthquake_analysis.html",
-  "source_example": "docs/agent-reference/OpenSeesExamples/reinforced_concrete_frame_earthquake_analysis/RCFrameGravity.tcl",
+  "source_example": "docs/agent-reference/OpenSeesExamplesBasic/reinforced_concrete_frame_earthquake_analysis/RCFrameGravity.tcl",
   "notes": "Parity case mirroring RC earthquake workflow (ReadRecord + UniformExcitation + transient nonlinear loop).",
   "model": {
     "ndm": 2,

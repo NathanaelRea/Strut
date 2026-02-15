@@ -7,7 +7,7 @@
     "units": "kips-in"
   },
   "source_doc": "docs/agent-reference/OpenSeesDocs/basic_truss_example.html",
-  "source_example": "docs/agent-reference/OpenSeesExamples/basic_truss_example/Truss.tcl",
+  "source_example": "docs/agent-reference/OpenSeesExamplesBasic/basic_truss_example/Truss.tcl",
   "notes": "Disabled parity case mirroring OpenSees Basic Truss example.",
   "model": {
     "ndm": 2,

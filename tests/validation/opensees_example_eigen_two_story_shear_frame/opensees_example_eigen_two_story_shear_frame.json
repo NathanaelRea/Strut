@@ -7,7 +7,7 @@
     "units": "kips-in"
   },
   "source_doc": "docs/agent-reference/OpenSeesDocs/eigen_analysis_of_a_two_story_shear_frame.html",
-  "source_example": "docs/agent-reference/OpenSeesExamples/eigen_analysis_of_a_two_story_shear_frame/EigenAnal_twoStoreyShearFrame7.tcl",
+  "source_example": "docs/agent-reference/OpenSeesExamplesBasic/eigen_analysis_of_a_two_story_shear_frame/EigenAnal_twoStoreyShearFrame7.tcl",
   "notes": "Disabled parity case for two-storey shear-frame modal example with equalDOF constraints.",
   "model": {
     "ndm": 2,

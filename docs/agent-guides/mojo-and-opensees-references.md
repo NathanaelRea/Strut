@@ -16,4 +16,4 @@ Use these references when implementing or validating behavior.
 
 ## Example Models
 
-- [`docs/agent-reference/OpenSeesExamples/`](../agent-reference/OpenSeesExamples/): downloaded Tcl model examples.
+- [`docs/agent-reference/OpenSeesExamplesBasic/`](../agent-reference/OpenSeesExamplesBasic/): downloaded Tcl model examples.

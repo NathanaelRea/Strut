@@ -7,7 +7,7 @@
     "units": "kips-in"
   },
   "source_doc": "docs/agent-reference/OpenSeesDocs/reinforced_concrete_frame_pushover_analysis.html",
-  "source_example": "docs/agent-reference/OpenSeesExamples/reinforced_concrete_frame_pushover_analysis/RCFramePushover.tcl",
+  "source_example": "docs/agent-reference/OpenSeesExamplesBasic/reinforced_concrete_frame_pushover_analysis/RCFramePushover.tcl",
   "notes": "Disabled parity case mirroring RC pushover workflow (gravity preload + displacement control loop).",
   "model": {
     "ndm": 2,
@@ -20,9 +20,21 @@
     { "id": 4, "x": 360.0, "y": 144.0 }
   ],
   "materials": [
-    { "id": 1, "type": "Concrete01", "params": { "fpc": -6.0, "epsc0": -0.004, "fpcu": -5.0, "epscu": -0.014 } },
-    { "id": 2, "type": "Concrete01", "params": { "fpc": -5.0, "epsc0": -0.002, "fpcu": 0.0, "epscu": -0.006 } },
-    { "id": 3, "type": "Steel01", "params": { "Fy": 60.0, "E0": 30000.0, "b": 0.01 } }
+    {
+      "id": 1,
+      "type": "Concrete01",
+      "params": { "fpc": -6.0, "epsc0": -0.004, "fpcu": -5.0, "epscu": -0.014 }
+    },
+    {
+      "id": 2,
+      "type": "Concrete01",
+      "params": { "fpc": -5.0, "epsc0": -0.002, "fpcu": 0.0, "epscu": -0.006 }
+    },
+    {
+      "id": 3,
+      "type": "Steel01",
+      "params": { "Fy": 60.0, "E0": 30000.0, "b": 0.01 }
+    }
   ],
   "sections": [
     {
@@ -30,12 +42,48 @@
       "type": "FiberSection2d",
       "params": {
         "patches": [
-          { "type": "rect", "material": 1, "num_subdiv_y": 10, "num_subdiv_z": 1, "y_i": -10.5, "z_i": -6.0, "y_j": 10.5, "z_j": 6.0 },
-          { "type": "rect", "material": 2, "num_subdiv_y": 10, "num_subdiv_z": 1, "y_i": -12.0, "z_i": -7.5, "y_j": 12.0, "z_j": 7.5 }
+          {
+            "type": "rect",
+            "material": 1,
+            "num_subdiv_y": 10,
+            "num_subdiv_z": 1,
+            "y_i": -10.5,
+            "z_i": -6.0,
+            "y_j": 10.5,
+            "z_j": 6.0
+          },
+          {
+            "type": "rect",
+            "material": 2,
+            "num_subdiv_y": 10,
+            "num_subdiv_z": 1,
+            "y_i": -12.0,
+            "z_i": -7.5,
+            "y_j": 12.0,
+            "z_j": 7.5
+          }
         ],
         "layers": [
-          { "type": "straight", "material": 3, "num_bars": 3, "bar_area": 0.60, "y_start": 10.5, "z_start": 6.0, "y_end": 10.5, "z_end": -6.0 },
-          { "type": "straight", "material": 3, "num_bars": 3, "bar_area": 0.60, "y_start": -10.5, "z_start": 6.0, "y_end": -10.5, "z_end": -6.0 }
+          {
+            "type": "straight",
+            "material": 3,
+            "num_bars": 3,
+            "bar_area": 0.6,
+            "y_start": 10.5,
+            "z_start": 6.0,
+            "y_end": 10.5,
+            "z_end": -6.0
+          },
+          {
+            "type": "straight",
+            "material": 3,
+            "num_bars": 3,
+            "bar_area": 0.6,
+            "y_start": -10.5,
+            "z_start": 6.0,
+            "y_end": -10.5,
+            "z_end": -6.0
+          }
         ]
       }
     },
@@ -50,13 +98,33 @@
     }
   ],
   "elements": [
-    { "id": 1, "type": "forceBeamColumn2d", "nodes": [1, 3], "section": 1, "geomTransf": "PDelta", "integration": "Lobatto", "num_int_pts": 5 },
-    { "id": 2, "type": "forceBeamColumn2d", "nodes": [2, 4], "section": 1, "geomTransf": "PDelta", "integration": "Lobatto", "num_int_pts": 5 },
-    { "id": 3, "type": "elasticBeamColumn2d", "nodes": [3, 4], "section": 2, "geomTransf": "Linear" }
+    {
+      "id": 1,
+      "type": "forceBeamColumn2d",
+      "nodes": [1, 3],
+      "section": 1,
+      "geomTransf": "PDelta",
+      "integration": "Lobatto",
+      "num_int_pts": 5
+    },
+    {
+      "id": 2,
+      "type": "forceBeamColumn2d",
+      "nodes": [2, 4],
+      "section": 1,
+      "geomTransf": "PDelta",
+      "integration": "Lobatto",
+      "num_int_pts": 5
+    },
+    {
+      "id": 3,
+      "type": "elasticBeamColumn2d",
+      "nodes": [3, 4],
+      "section": 2,
+      "geomTransf": "Linear"
+    }
   ],
-  "time_series": [
-    { "type": "Linear", "tag": 2, "factor": 1.0 }
-  ],
+  "time_series": [{ "type": "Linear", "tag": 2, "factor": 1.0 }],
   "pattern": {
     "type": "Plain",
     "tag": 2,
@@ -79,7 +147,16 @@
     }
   },
   "recorders": [
-    { "type": "node_displacement", "nodes": [3, 4], "dofs": [1, 2, 3], "output": "node_disp" },
-    { "type": "envelope_element_force", "elements": [1, 2], "output": "envelope_element_force" }
+    {
+      "type": "node_displacement",
+      "nodes": [3, 4],
+      "dofs": [1, 2, 3],
+      "output": "node_disp"
+    },
+    {
+      "type": "envelope_element_force",
+      "elements": [1, 2],
+      "output": "envelope_element_force"
+    }
   ]
 }

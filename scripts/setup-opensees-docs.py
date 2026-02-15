@@ -17,7 +17,7 @@ BASE_URL = "https://opensees.berkeley.edu"
 EXAMPLES_URL = f"{BASE_URL}/wiki/index.php/Examples"
 
 DOCS_DIR = Path("docs/agent-reference/OpenSeesDocs")
-EXAMPLES_DIR = Path("docs/agent-reference/OpenSeesExamples")
+EXAMPLES_DIR = Path("docs/agent-reference/OpenSeesExamplesBasic")
 
 USER_AGENT = "strut-opensees-docs/1.0"
 

@@ -7,7 +7,7 @@
     "units": "kips-in"
   },
   "source_doc": "docs/agent-reference/OpenSeesDocs/simply_supported_beam_solid_elements.html",
-  "source_example": "docs/agent-reference/OpenSeesExamples/simply_supported_beam_modeled_with_two_dimensional_solid_elements/Example6_4.tcl",
+  "source_example": "docs/agent-reference/OpenSeesExamplesBasic/simply_supported_beam_modeled_with_two_dimensional_solid_elements/Example6_4.tcl",
   "notes": "Simplified 1x1 quad derived from the simply supported beam with 2D solid elements.",
   "model": {
     "ndm": 2,
@@ -33,18 +33,13 @@
       "id": 1,
       "x": 0.0,
       "y": 0.0,
-      "constraints": [
-        1,
-        2
-      ]
+      "constraints": [1, 2]
     },
     {
       "id": 2,
       "x": 40.0,
       "y": 0.0,
-      "constraints": [
-        2
-      ]
+      "constraints": [2]
     },
     {
       "id": 3,
@@ -55,9 +50,7 @@
       "id": 4,
       "x": 0.0,
       "y": 10.0,
-      "constraints": [
-        2
-      ]
+      "constraints": [2]
     }
   ],
   "materials": [
@@ -76,12 +69,7 @@
     {
       "id": 1,
       "type": "fourNodeQuad",
-      "nodes": [
-        1,
-        2,
-        3,
-        4
-      ],
+      "nodes": [1, 2, 3, 4],
       "material": 1,
       "thickness": 1.0,
       "formulation": "PlaneStress"
@@ -106,14 +94,8 @@
   "recorders": [
     {
       "type": "node_displacement",
-      "nodes": [
-        2,
-        3
-      ],
-      "dofs": [
-        1,
-        2
-      ],
+      "nodes": [2, 3],
+      "dofs": [1, 2],
       "output": "node_disp"
     }
   ]
