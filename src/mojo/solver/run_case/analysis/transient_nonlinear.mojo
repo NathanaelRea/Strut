@@ -9,7 +9,7 @@ from materials import (
 from os import abort
 from sections import FiberCell, FiberSection2dDef
 
-from linalg import gaussian_elimination
+from linalg import gaussian_elimination_into
 from solver.assembly import (
     assemble_global_stiffness_and_internal,
     assemble_internal_forces_typed,
@@ -202,6 +202,7 @@ fn run_transient_nonlinear(
     var K_comm_ff: List[List[Float64]] = []
     var C_ff: List[List[Float64]] = []
     var K_eff: List[List[Float64]] = []
+    var K_step: List[List[Float64]] = []
     for _ in range(free_count):
         var row_kff: List[Float64] = []
         row_kff.resize(free_count, 0.0)
@@ -218,6 +219,9 @@ fn run_transient_nonlinear(
         var row_keff: List[Float64] = []
         row_keff.resize(free_count, 0.0)
         K_eff.append(row_keff^)
+        var row_step: List[Float64] = []
+        row_step.resize(free_count, 0.0)
+        K_step.append(row_step^)
 
     uniaxial_revert_trial_all(uniaxial_states)
     assemble_global_stiffness_and_internal(
@@ -275,6 +279,8 @@ fn run_transient_nonlinear(
     P_ext_f.resize(free_count, 0.0)
     var R_f: List[Float64] = []
     R_f.resize(free_count, 0.0)
+    var R_step: List[Float64] = []
+    R_step.resize(free_count, 0.0)
     var du_f: List[Float64] = []
     du_f.resize(free_count, 0.0)
 
@@ -439,18 +445,12 @@ fn run_transient_nonlinear(
                         K_eff[i][j] = K_ff[i][j] + a1 * C_ff[i][j]
                     K_eff[i][i] += a0 * M_f[i]
 
-                var K_step: List[List[Float64]] = []
                 for i in range(free_count):
-                    var row_step: List[Float64] = []
-                    row_step.resize(free_count, 0.0)
-                    K_step.append(row_step^)
                     for j in range(free_count):
                         K_step[i][j] = K_eff[i][j]
-                var R_step: List[Float64] = []
-                R_step.resize(free_count, 0.0)
                 for i in range(free_count):
                     R_step[i] = R_f[i]
-                du_f = gaussian_elimination(K_step, R_step)
+                gaussian_elimination_into(K_step, R_step, du_f)
 
                 var max_diff = 0.0
                 var max_u = 0.0

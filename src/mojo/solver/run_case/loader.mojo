@@ -792,14 +792,18 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
                     used_nonelastic_uniaxial = True
         elif elem.type_tag == ElementTypeTag.ForceBeamColumn2d:
             force_basic_offsets[e] = len(force_basic_q)
-            force_basic_counts[e] = 3
-            force_basic_q.append(0.0)
-            force_basic_q.append(0.0)
-            force_basic_q.append(0.0)
             var sec_id = elem.section
             elem_uniaxial_offsets[e] = len(elem_uniaxial_state_ids)
             var sec = typed_sections_by_id[sec_id]
             var beam_col_type = elem.type
+            var predictor_slots = 0
+            if sec.type == "FiberSection2d":
+                predictor_slots = 2 * elem.num_int_pts
+            elif sec.type != "ElasticSection2d":
+                abort(beam_col_type + " requires FiberSection2d or ElasticSection2d")
+            force_basic_counts[e] = 3 + predictor_slots
+            for _ in range(force_basic_counts[e]):
+                force_basic_q.append(0.0)
             if sec.type == "FiberSection2d":
                 var sec_index = fiber_section_index_by_id[sec_id]
                 if sec_index < 0 or sec_index >= len(fiber_section_defs):

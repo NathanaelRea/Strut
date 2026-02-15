@@ -2,21 +2,8 @@ from collections import List
 from math import hypot
 from os import abort
 
-from elements.utils import _matvec, _zero_matrix
-from linalg import matmul, transpose
 from materials import UniMaterialDef, UniMaterialState, uniaxial_set_trial_strain
 from sections import FiberCell, FiberSection2dDef, FiberSection2dResponse
-
-
-fn _beam2d_transform(c: Float64, s: Float64) -> List[List[Float64]]:
-    return [
-        [c, s, 0.0, 0.0, 0.0, 0.0],
-        [-s, c, 0.0, 0.0, 0.0, 0.0],
-        [0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
-        [0.0, 0.0, 0.0, c, s, 0.0],
-        [0.0, 0.0, 0.0, -s, c, 0.0],
-        [0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
-    ]
 
 
 fn _lobatto_xi_weight(num_int_pts: Int, ip: Int) -> (Float64, Float64):
@@ -40,34 +27,28 @@ fn _lobatto_xi_weight(num_int_pts: Int, ip: Int) -> (Float64, Float64):
     return (0.0, 0.0)
 
 
-fn _invert_2x2(
-    a11: Float64,
-    a12: Float64,
-    a21: Float64,
-    a22: Float64,
-    mut inv_out: List[List[Float64]],
-) -> Bool:
-    var det = a11 * a22 - a12 * a21
-    if abs(det) <= 1.0e-40:
-        return False
-    var inv_det = 1.0 / det
-    inv_out[0][0] = a22 * inv_det
-    inv_out[0][1] = -a12 * inv_det
-    inv_out[1][0] = -a21 * inv_det
-    inv_out[1][1] = a11 * inv_det
-    return True
-
-
-fn _invert_3x3(mat: List[List[Float64]], mut inv_out: List[List[Float64]]) -> Bool:
-    var a = mat[0][0]
-    var b = mat[0][1]
-    var c = mat[0][2]
-    var d = mat[1][0]
-    var e = mat[1][1]
-    var f = mat[1][2]
-    var g = mat[2][0]
-    var h = mat[2][1]
-    var i = mat[2][2]
+fn _invert_3x3_values(
+    a: Float64,
+    b: Float64,
+    c: Float64,
+    d: Float64,
+    e: Float64,
+    f: Float64,
+    g: Float64,
+    h: Float64,
+    i: Float64,
+) -> (
+    Bool,
+    Float64,
+    Float64,
+    Float64,
+    Float64,
+    Float64,
+    Float64,
+    Float64,
+    Float64,
+    Float64,
+):
 
     var co00 = e * i - f * h
     var co01 = -(d * i - f * g)
@@ -81,19 +62,21 @@ fn _invert_3x3(mat: List[List[Float64]], mut inv_out: List[List[Float64]]) -> Bo
 
     var det = a * co00 + b * co01 + c * co02
     if abs(det) <= 1.0e-40:
-        return False
+        return (False, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
     var inv_det = 1.0 / det
-    inv_out[0][0] = co00 * inv_det
-    inv_out[0][1] = co10 * inv_det
-    inv_out[0][2] = co20 * inv_det
-    inv_out[1][0] = co01 * inv_det
-    inv_out[1][1] = co11 * inv_det
-    inv_out[1][2] = co21 * inv_det
-    inv_out[2][0] = co02 * inv_det
-    inv_out[2][1] = co12 * inv_det
-    inv_out[2][2] = co22 * inv_det
-    return True
+    return (
+        True,
+        co00 * inv_det,
+        co10 * inv_det,
+        co20 * inv_det,
+        co01 * inv_det,
+        co11 * inv_det,
+        co21 * inv_det,
+        co02 * inv_det,
+        co12 * inv_det,
+        co22 * inv_det,
+    )
 
 
 fn _fiber_section2d_set_trial_from_offset(
@@ -182,18 +165,13 @@ fn _fiber_section2d_solve_for_force(
         if abs(r_axial) <= tol and abs(r_moment) <= tol:
             return resp
 
-        var sec_tangent_inv = _zero_matrix(2, 2)
-        if not _invert_2x2(
-            resp.k11,
-            resp.k12,
-            resp.k12,
-            resp.k22,
-            sec_tangent_inv,
-        ):
+        var det = resp.k11 * resp.k22 - resp.k12 * resp.k12
+        if abs(det) <= 1.0e-40:
             return resp
 
-        var de0 = sec_tangent_inv[0][0] * r_axial + sec_tangent_inv[0][1] * r_moment
-        var dkappa = sec_tangent_inv[1][0] * r_axial + sec_tangent_inv[1][1] * r_moment
+        var inv_det = 1.0 / det
+        var de0 = inv_det * (resp.k22 * r_axial - resp.k12 * r_moment)
+        var dkappa = inv_det * (-resp.k12 * r_axial + resp.k11 * r_moment)
         eps0_guess += de0
         kappa_guess += dkappa
         iter += 1
@@ -231,50 +209,82 @@ fn force_beam_column2d_global_tangent_and_internal(
     if elem_state_count != required_state_count:
         abort("forceBeamColumn2d element state count mismatch")
 
-    if force_basic_q_count != 3:
+    var predictor_state_count = 3 + 2 * num_int_pts
+    if force_basic_q_count < predictor_state_count:
         abort("forceBeamColumn2d basic force state count mismatch")
-    if force_basic_q_offset < 0 or force_basic_q_offset + 3 > len(force_basic_q_state):
+    if (
+        force_basic_q_offset < 0
+        or force_basic_q_offset + predictor_state_count > len(force_basic_q_state)
+    ):
         abort("forceBeamColumn2d basic force state out of range")
 
     var c = dx / L
     var s = dy / L
-    var T = _beam2d_transform(c, s)
-    var u_local = _matvec(T, u_elem_global)
+    var T: List[List[Float64]] = []
+    for _ in range(6):
+        var row_t: List[Float64] = []
+        row_t.resize(6, 0.0)
+        T.append(row_t^)
+    T[0][0] = c
+    T[0][1] = s
+    T[1][0] = -s
+    T[1][1] = c
+    T[2][2] = 1.0
+    T[3][3] = c
+    T[3][4] = s
+    T[4][3] = -s
+    T[4][4] = c
+    T[5][5] = 1.0
+
+    var u_local: List[Float64] = []
+    u_local.resize(6, 0.0)
+    for i in range(6):
+        var sum = 0.0
+        for j in range(6):
+            sum += T[i][j] * u_elem_global[j]
+        u_local[i] = sum
 
     var chord_rotation = (u_local[4] - u_local[1]) / L
-    var v_basic: List[Float64] = [
-        u_local[3] - u_local[0],
-        u_local[2] - chord_rotation,
-        u_local[5] - chord_rotation,
-    ]
+    var v_basic_0 = u_local[3] - u_local[0]
+    var v_basic_1 = u_local[2] - chord_rotation
+    var v_basic_2 = u_local[5] - chord_rotation
 
-    var q: List[Float64] = []
-    q.resize(3, 0.0)
-    q[0] = force_basic_q_state[force_basic_q_offset]
-    q[1] = force_basic_q_state[force_basic_q_offset + 1]
-    q[2] = force_basic_q_state[force_basic_q_offset + 2]
-
-    var section_eps0: List[Float64] = []
-    var section_kappa: List[Float64] = []
-    section_eps0.resize(num_int_pts, 0.0)
-    section_kappa.resize(num_int_pts, 0.0)
+    var q0 = force_basic_q_state[force_basic_q_offset]
+    var q1 = force_basic_q_state[force_basic_q_offset + 1]
+    var q2 = force_basic_q_state[force_basic_q_offset + 2]
+    var eps0_offset = force_basic_q_offset + 3
+    var kappa_offset = eps0_offset + num_int_pts
 
     var elem_tol = 1.0e-10
     var section_tol = 1.0e-8
     var max_elem_iters = 40
     var max_section_iters = 60
 
-    var flexibility = _zero_matrix(3, 3)
-    var basic_stiffness = _zero_matrix(3, 3)
+    var k00 = 0.0
+    var k01 = 0.0
+    var k02 = 0.0
+    var k10 = 0.0
+    var k11 = 0.0
+    var k12 = 0.0
+    var k20 = 0.0
+    var k21 = 0.0
+    var k22 = 0.0
     var converged = False
 
     for _ in range(max_elem_iters):
-        for i in range(3):
-            for j in range(3):
-                flexibility[i][j] = 0.0
+        var f00 = 0.0
+        var f01 = 0.0
+        var f02 = 0.0
+        var f10 = 0.0
+        var f11 = 0.0
+        var f12 = 0.0
+        var f20 = 0.0
+        var f21 = 0.0
+        var f22 = 0.0
 
-        var v_from_section: List[Float64] = []
-        v_from_section.resize(3, 0.0)
+        var v_from_0 = 0.0
+        var v_from_1 = 0.0
+        var v_from_2 = 0.0
 
         for ip in range(num_int_pts):
             var xi_weight = _lobatto_xi_weight(num_int_pts, ip)
@@ -284,12 +294,12 @@ fn force_beam_column2d_global_tangent_and_internal(
 
             var b_mi = xi - 1.0
             var b_mj = xi
-            var axial_target = q[0]
-            var moment_target = b_mi * q[1] + b_mj * q[2]
+            var axial_target = q0
+            var moment_target = b_mi * q1 + b_mj * q2
 
             var ip_state_offset = elem_state_offset + ip * fibers_per_section
-            var eps0 = section_eps0[ip]
-            var kappa = section_kappa[ip]
+            var eps0 = force_basic_q_state[eps0_offset + ip]
+            var kappa = force_basic_q_state[kappa_offset + ip]
             var resp = _fiber_section2d_solve_for_force(
                 sec_def,
                 fibers,
@@ -305,61 +315,76 @@ fn force_beam_column2d_global_tangent_and_internal(
                 max_section_iters,
                 section_tol,
             )
-            section_eps0[ip] = eps0
-            section_kappa[ip] = kappa
+            force_basic_q_state[eps0_offset + ip] = eps0
+            force_basic_q_state[kappa_offset + ip] = kappa
 
-            var sec_flex = _zero_matrix(2, 2)
-            if not _invert_2x2(
-                resp.k11,
-                resp.k12,
-                resp.k12,
-                resp.k22,
-                sec_flex,
-            ):
+            var det_sec = resp.k11 * resp.k22 - resp.k12 * resp.k12
+            if abs(det_sec) <= 1.0e-40:
                 abort("forceBeamColumn2d singular section flexibility")
+            var inv_det_sec = 1.0 / det_sec
+            var sec_f00 = resp.k22 * inv_det_sec
+            var sec_f01 = -resp.k12 * inv_det_sec
+            var sec_f10 = sec_f01
+            var sec_f11 = resp.k11 * inv_det_sec
 
-            v_from_section[0] += wL * eps0
-            v_from_section[1] += wL * b_mi * kappa
-            v_from_section[2] += wL * b_mj * kappa
+            v_from_0 += wL * eps0
+            v_from_1 += wL * b_mi * kappa
+            v_from_2 += wL * b_mj * kappa
 
-            flexibility[0][0] += wL * sec_flex[0][0]
-            flexibility[0][1] += wL * sec_flex[0][1] * b_mi
-            flexibility[0][2] += wL * sec_flex[0][1] * b_mj
-            flexibility[1][0] += wL * b_mi * sec_flex[1][0]
-            flexibility[1][1] += wL * b_mi * sec_flex[1][1] * b_mi
-            flexibility[1][2] += wL * b_mi * sec_flex[1][1] * b_mj
-            flexibility[2][0] += wL * b_mj * sec_flex[1][0]
-            flexibility[2][1] += wL * b_mj * sec_flex[1][1] * b_mi
-            flexibility[2][2] += wL * b_mj * sec_flex[1][1] * b_mj
+            f00 += wL * sec_f00
+            f01 += wL * sec_f01 * b_mi
+            f02 += wL * sec_f01 * b_mj
+            f10 += wL * b_mi * sec_f10
+            f11 += wL * b_mi * sec_f11 * b_mi
+            f12 += wL * b_mi * sec_f11 * b_mj
+            f20 += wL * b_mj * sec_f10
+            f21 += wL * b_mj * sec_f11 * b_mi
+            f22 += wL * b_mj * sec_f11 * b_mj
 
-        if not _invert_3x3(flexibility, basic_stiffness):
-            abort("forceBeamColumn2d singular element flexibility")
-
-        var residual: List[Float64] = []
-        residual.resize(3, 0.0)
-        for i in range(3):
-            residual[i] = v_basic[i] - v_from_section[i]
-
-        var dq: List[Float64] = []
-        dq.resize(3, 0.0)
-        for i in range(3):
-            var sum = 0.0
-            for j in range(3):
-                sum += basic_stiffness[i][j] * residual[j]
-            dq[i] = sum
-
-        for i in range(3):
-            q[i] += dq[i]
-
-        var max_residual = 0.0
-        for i in range(3):
-            var abs_residual = abs(residual[i])
-            if abs_residual > max_residual:
-                max_residual = abs_residual
-
-        var work_norm = abs(
-            residual[0] * dq[0] + residual[1] * dq[1] + residual[2] * dq[2]
+        var k_inv = _invert_3x3_values(
+            f00,
+            f01,
+            f02,
+            f10,
+            f11,
+            f12,
+            f20,
+            f21,
+            f22,
         )
+        if not k_inv[0]:
+            abort("forceBeamColumn2d singular element flexibility")
+        k00 = k_inv[1]
+        k01 = k_inv[2]
+        k02 = k_inv[3]
+        k10 = k_inv[4]
+        k11 = k_inv[5]
+        k12 = k_inv[6]
+        k20 = k_inv[7]
+        k21 = k_inv[8]
+        k22 = k_inv[9]
+
+        var residual_0 = v_basic_0 - v_from_0
+        var residual_1 = v_basic_1 - v_from_1
+        var residual_2 = v_basic_2 - v_from_2
+
+        var dq0 = k00 * residual_0 + k01 * residual_1 + k02 * residual_2
+        var dq1 = k10 * residual_0 + k11 * residual_1 + k12 * residual_2
+        var dq2 = k20 * residual_0 + k21 * residual_1 + k22 * residual_2
+
+        q0 += dq0
+        q1 += dq1
+        q2 += dq2
+
+        var max_residual = abs(residual_0)
+        var abs_residual_1 = abs(residual_1)
+        if abs_residual_1 > max_residual:
+            max_residual = abs_residual_1
+        var abs_residual_2 = abs(residual_2)
+        if abs_residual_2 > max_residual:
+            max_residual = abs_residual_2
+
+        var work_norm = abs(residual_0 * dq0 + residual_1 * dq1 + residual_2 * dq2)
         if max_residual <= elem_tol or work_norm <= elem_tol:
             converged = True
             break
@@ -367,39 +392,72 @@ fn force_beam_column2d_global_tangent_and_internal(
     if not converged:
         abort("forceBeamColumn2d element compatibility did not converge")
 
-    force_basic_q_state[force_basic_q_offset] = q[0]
-    force_basic_q_state[force_basic_q_offset + 1] = q[1]
-    force_basic_q_state[force_basic_q_offset + 2] = q[2]
+    force_basic_q_state[force_basic_q_offset] = q0
+    force_basic_q_state[force_basic_q_offset + 1] = q1
+    force_basic_q_state[force_basic_q_offset + 2] = q2
 
+    var inv_L = 1.0 / L
     var a_matrix: List[List[Float64]] = [
         [-1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
-        [0.0, 1.0 / L, 1.0, 0.0, -1.0 / L, 0.0],
-        [0.0, 1.0 / L, 0.0, 0.0, -1.0 / L, 1.0],
+        [0.0, inv_L, 1.0, 0.0, -inv_L, 0.0],
+        [0.0, inv_L, 0.0, 0.0, -inv_L, 1.0],
     ]
 
-    var k_local = _zero_matrix(6, 6)
+    var k_local: List[List[Float64]] = []
+    for _ in range(6):
+        var row_k_local: List[Float64] = []
+        row_k_local.resize(6, 0.0)
+        k_local.append(row_k_local^)
     for a in range(6):
         for b in range(6):
-            var sum = 0.0
-            for i in range(3):
-                for j in range(3):
-                    sum += a_matrix[i][a] * basic_stiffness[i][j] * a_matrix[j][b]
-            k_local[a][b] = sum
+            var a0 = a_matrix[0][a]
+            var a1 = a_matrix[1][a]
+            var a2 = a_matrix[2][a]
+            var b0 = a_matrix[0][b]
+            var b1 = a_matrix[1][b]
+            var b2 = a_matrix[2][b]
+            k_local[a][b] = (
+                a0 * (k00 * b0 + k01 * b1 + k02 * b2)
+                + a1 * (k10 * b0 + k11 * b1 + k12 * b2)
+                + a2 * (k20 * b0 + k21 * b1 + k22 * b2)
+            )
 
     var f_local: List[Float64] = []
     f_local.resize(6, 0.0)
-    f_local[0] = -q[0]
-    f_local[1] = (q[1] + q[2]) / L
-    f_local[2] = q[1]
-    f_local[3] = q[0]
-    f_local[4] = -(q[1] + q[2]) / L
-    f_local[5] = q[2]
+    f_local[0] = -q0
+    f_local[1] = (q1 + q2) * inv_L
+    f_local[2] = q1
+    f_local[3] = q0
+    f_local[4] = -(q1 + q2) * inv_L
+    f_local[5] = q2
 
-    var k_global = matmul(transpose(T), matmul(k_local, T))
+    var k_temp: List[List[Float64]] = []
+    var k_global: List[List[Float64]] = []
+    for _ in range(6):
+        var row_k_temp: List[Float64] = []
+        row_k_temp.resize(6, 0.0)
+        k_temp.append(row_k_temp^)
+        var row_k_global: List[Float64] = []
+        row_k_global.resize(6, 0.0)
+        k_global.append(row_k_global^)
+
+    for i in range(6):
+        for j in range(6):
+            var sum_temp = 0.0
+            for k in range(6):
+                sum_temp += k_local[i][k] * T[k][j]
+            k_temp[i][j] = sum_temp
+    for i in range(6):
+        for j in range(6):
+            var sum_global = 0.0
+            for k in range(6):
+                sum_global += T[k][i] * k_temp[k][j]
+            k_global[i][j] = sum_global
+
     f_global_out.resize(6, 0.0)
     for i in range(6):
-        var sum = 0.0
+        var sum_f = 0.0
         for j in range(6):
-            sum += T[j][i] * f_local[j]
-        f_global_out[i] = sum
+            sum_f += T[j][i] * f_local[j]
+        f_global_out[i] = sum_f
     k_global_out = k_global^

@@ -77,3 +77,46 @@ fn gaussian_elimination(
             s -= A[i][j] * x[j]
         x[i] = s
     return x^
+
+
+fn gaussian_elimination_into(
+    mut A: List[List[Float64]], mut b: List[Float64], mut x_out: List[Float64]
+):
+    var n = len(b)
+    if len(x_out) != n:
+        x_out.resize(n, 0.0)
+    for i in range(n):
+        var pivot = i
+        var max_val = abs(A[i][i])
+        for r in range(i + 1, n):
+            if abs(A[r][i]) > max_val:
+                max_val = abs(A[r][i])
+                pivot = r
+        if max_val == 0.0:
+            abort("singular matrix")
+        if pivot != i:
+            var tmp = A[i].copy()
+            A[i] = A[pivot].copy()
+            A[pivot] = tmp^
+            var tb = b[i]
+            b[i] = b[pivot]
+            b[pivot] = tb
+
+        var piv = A[i][i]
+        for j in range(i, n):
+            A[i][j] /= piv
+        b[i] /= piv
+
+        for r in range(i + 1, n):
+            var factor = A[r][i]
+            if factor == 0.0:
+                continue
+            for c in range(i, n):
+                A[r][c] -= factor * A[i][c]
+            b[r] -= factor * b[i]
+
+    for i in range(n - 1, -1, -1):
+        var s = b[i]
+        for j in range(i + 1, n):
+            s -= A[i][j] * x_out[j]
+        x_out[i] = s
