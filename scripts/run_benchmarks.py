@@ -142,6 +142,7 @@ def load_case_enabled(path: Path) -> bool:
 
 
 def _absolutize_time_series_paths(case_data: dict, case_json_path: Path) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
     time_series = case_data.get("time_series")
     if isinstance(time_series, dict):
         entries = [time_series]
@@ -165,7 +166,15 @@ def _absolutize_time_series_paths(case_data: dict, case_json_path: Path) -> None
         raw_path = Path(raw)
         if raw_path.is_absolute():
             continue
-        ts[key] = str((case_json_path.parent / raw_path).resolve())
+        from_case_dir = case_json_path.parent / raw_path
+        if from_case_dir.exists():
+            ts[key] = str(from_case_dir.resolve())
+            continue
+        from_repo_root = repo_root / raw_path
+        if from_repo_root.exists():
+            ts[key] = str(from_repo_root.resolve())
+            continue
+        ts[key] = str(from_case_dir.resolve())
 
 
 def filter_cases_by_enabled(
@@ -402,24 +411,25 @@ def _compare_mode_shape_vectors(
 
 
 def _inject_opensees_timing(tcl_lines: List[str], timing_file: str) -> List[str]:
-    out = []
+    out = ["set __strut_analysis_us 0"]
     injected = False
     for line in tcl_lines:
         stripped = line.lstrip()
         has_analyze = stripped.startswith("analyze ") or "[analyze " in stripped
         has_eigen = stripped.startswith("eigen ") or "[eigen " in stripped
-        if not injected and (has_analyze or has_eigen):
+        if has_analyze or has_eigen:
             out.append('set __strut_t0 [clock microseconds]')
             out.append(line)
             out.append('set __strut_t1 [clock microseconds]')
-            out.append(f'set __strut_fp [open "{timing_file}" w]')
-            out.append('puts $__strut_fp [expr {$__strut_t1 - $__strut_t0}]')
-            out.append('close $__strut_fp')
+            out.append('incr __strut_analysis_us [expr {$__strut_t1 - $__strut_t0}]')
             injected = True
             continue
         out.append(line)
     if not injected:
         raise ValueError("failed to inject timing: analyze/eigen command not found in Tcl")
+    out.append(f'set __strut_fp [open "{timing_file}" w]')
+    out.append('puts $__strut_fp $__strut_analysis_us')
+    out.append('close $__strut_fp')
     return out
 
 
@@ -987,18 +997,21 @@ def main() -> None:
         if not entries:
             return [], {}, {}
 
+        pass_label = "compute-only" if compute else "total"
         n = len(entries)
         names = [entry["name"] for entry in entries]
         analysis_by_case = {name: [] for name in names}
         total_by_case = {name: [] for name in names}
 
         for i in range(warmup):
+            log(f"OpenSees batch {pass_label} warmup {i + 1}/{warmup}...")
             offset = i % n
             rotated = entries[offset:] + entries[:offset]
             run_opensees_batch(rotated, output_root, compute)
 
         times = []
         for i in range(repeat):
+            log(f"OpenSees batch {pass_label} repeat {i + 1}/{repeat}...")
             offset = i % n
             rotated = entries[offset:] + entries[:offset]
             start = time.perf_counter()
@@ -1047,6 +1060,7 @@ def main() -> None:
         if not entries:
             return [], {}, {}, False
 
+        pass_label = "compute-only" if compute else "total"
         n = len(entries)
         names = [entry["name"] for entry in entries]
         analysis_by_case = {name: [] for name in names}
@@ -1083,6 +1097,7 @@ def main() -> None:
                 _write_case_error(target_dir, f"mojo case aborted (exit {exc.returncode})")
 
         for i in range(warmup):
+            log(f"Mojo batch {pass_label} warmup {i + 1}/{warmup}...")
             offset = i % n
             rotated = entries[offset:] + entries[:offset]
             ok = run_mojo_batch(rotated, output_root, compute)
@@ -1093,6 +1108,7 @@ def main() -> None:
 
         times = []
         for i in range(repeat):
+            log(f"Mojo batch {pass_label} repeat {i + 1}/{repeat}...")
             offset = i % n
             rotated = entries[offset:] + entries[:offset]
             start = time.perf_counter()

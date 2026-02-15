@@ -120,3 +120,61 @@ fn gaussian_elimination_into(
         for j in range(i + 1, n):
             s -= A[i][j] * x_out[j]
         x_out[i] = s
+
+
+fn lu_factorize_into(mut A: List[List[Float64]], mut pivots: List[Int]):
+    var n = len(A)
+    if len(pivots) != n:
+        pivots.resize(n, 0)
+    for i in range(n):
+        pivots[i] = i
+    for i in range(n):
+        var pivot = i
+        var max_val = abs(A[i][i])
+        for r in range(i + 1, n):
+            var v = abs(A[r][i])
+            if v > max_val:
+                max_val = v
+                pivot = r
+        if max_val == 0.0:
+            abort("singular matrix")
+        if pivot != i:
+            var tmp = A[i].copy()
+            A[i] = A[pivot].copy()
+            A[pivot] = tmp^
+            var tp = pivots[i]
+            pivots[i] = pivots[pivot]
+            pivots[pivot] = tp
+        var piv = A[i][i]
+        for r in range(i + 1, n):
+            A[r][i] /= piv
+            var factor = A[r][i]
+            if factor == 0.0:
+                continue
+            for c in range(i + 1, n):
+                A[r][c] -= factor * A[i][c]
+
+
+fn lu_solve_into(
+    LU: List[List[Float64]],
+    pivots: List[Int],
+    b: List[Float64],
+    mut work: List[Float64],
+    mut x_out: List[Float64],
+):
+    var n = len(b)
+    if len(work) != n:
+        work.resize(n, 0.0)
+    if len(x_out) != n:
+        x_out.resize(n, 0.0)
+    for i in range(n):
+        var s = b[pivots[i]]
+        for j in range(i):
+            s -= LU[i][j] * work[j]
+        work[i] = s
+
+    for i in range(n - 1, -1, -1):
+        var s = work[i]
+        for j in range(i + 1, n):
+            s -= LU[i][j] * x_out[j]
+        x_out[i] = s / LU[i][i]

@@ -4,12 +4,11 @@ from materials import (
     UniMaterialDef,
     UniMaterialState,
     uniaxial_commit_all,
-    uniaxial_revert_trial_all,
 )
 from os import abort
 from sections import FiberCell, FiberSection2dDef
 
-from linalg import gaussian_elimination_into
+from linalg import gaussian_elimination_into, lu_factorize_into, lu_solve_into
 from solver.assembly import (
     assemble_global_stiffness_and_internal,
     assemble_internal_forces_typed,
@@ -213,6 +212,7 @@ fn run_transient_nonlinear(
     var C_ff: List[List[Float64]] = []
     var K_eff: List[List[Float64]] = []
     var K_step: List[List[Float64]] = []
+    var K_lu: List[List[Float64]] = []
     for _ in range(free_count):
         var row_kff: List[Float64] = []
         row_kff.resize(free_count, 0.0)
@@ -232,8 +232,10 @@ fn run_transient_nonlinear(
         var row_step: List[Float64] = []
         row_step.resize(free_count, 0.0)
         K_step.append(row_step^)
+        var row_lu: List[Float64] = []
+        row_lu.resize(free_count, 0.0)
+        K_lu.append(row_lu^)
 
-    uniaxial_revert_trial_all(uniaxial_states)
     assemble_global_stiffness_and_internal(
         typed_nodes,
         typed_elements,
@@ -265,7 +267,6 @@ fn run_transient_nonlinear(
         for j in range(free_count):
             K_init_ff[i][j] = K[free[i]][free[j]]
             K_comm_ff[i][j] = K_init_ff[i][j]
-    uniaxial_revert_trial_all(uniaxial_states)
 
     var v: List[Float64] = []
     v.resize(total_dofs, 0.0)
@@ -293,6 +294,12 @@ fn run_transient_nonlinear(
     R_step.resize(free_count, 0.0)
     var du_f: List[Float64] = []
     du_f.resize(free_count, 0.0)
+    var lu_pivots: List[Int] = []
+    lu_pivots.resize(free_count, 0)
+    var lu_rhs: List[Float64] = []
+    lu_rhs.resize(free_count, 0.0)
+    var lu_work: List[Float64] = []
+    lu_work.resize(free_count, 0.0)
 
     var record_reactions = _has_recorder_type(recorders, RecorderTypeTag.NodeReaction)
     var envelope_files: List[String] = []
@@ -360,8 +367,10 @@ fn run_transient_nonlinear(
                 attempt_rel_tol = fallback_rel_tol
 
             var tangent_initialized = False
+            var damping_initialized = False
+            var k_eff_initialized = False
+            var k_eff_factored = False
             for _ in range(attempt_max_iters):
-                uniaxial_revert_trial_all(uniaxial_states)
                 assemble_global_stiffness_and_internal(
                     typed_nodes,
                     typed_elements,
@@ -387,8 +396,17 @@ fn run_transient_nonlinear(
                     K,
                     F_int,
                 )
+                var need_tangent_matrix = (
+                    attempt_algorithm_mode == NonlinearAlgorithmMode.Newton
+                    or (
+                        attempt_algorithm_mode
+                        == NonlinearAlgorithmMode.ModifiedNewton
+                        and not tangent_initialized
+                    )
+                )
                 if has_transformation_mpc:
-                    K = _collapse_matrix_by_rep(K, rep_dof)
+                    if need_tangent_matrix:
+                        K = _collapse_matrix_by_rep(K, rep_dof)
                     F_int = _collapse_vector_by_rep(F_int, rep_dof)
                 if attempt_algorithm_mode == NonlinearAlgorithmMode.Newton:
                     for i in range(free_count):
@@ -407,22 +425,27 @@ fn run_transient_nonlinear(
                                 K_ff[i][j] = K_init_ff[i][j]
                         tangent_initialized = True
 
-                for i in range(free_count):
-                    for j in range(free_count):
-                        C_ff[i][j] = 0.0
-                    C_ff[i][i] = rayleigh_alpha_m * M_f[i]
-                if rayleigh_beta_k != 0.0:
+                if (
+                    attempt_algorithm_mode == NonlinearAlgorithmMode.Newton
+                    or not damping_initialized
+                ):
                     for i in range(free_count):
                         for j in range(free_count):
-                            C_ff[i][j] += rayleigh_beta_k * K_ff[i][j]
-                if rayleigh_beta_k_init != 0.0:
-                    for i in range(free_count):
-                        for j in range(free_count):
-                            C_ff[i][j] += rayleigh_beta_k_init * K_init_ff[i][j]
-                if rayleigh_beta_k_comm != 0.0:
-                    for i in range(free_count):
-                        for j in range(free_count):
-                            C_ff[i][j] += rayleigh_beta_k_comm * K_comm_ff[i][j]
+                            C_ff[i][j] = 0.0
+                        C_ff[i][i] = rayleigh_alpha_m * M_f[i]
+                    if rayleigh_beta_k != 0.0:
+                        for i in range(free_count):
+                            for j in range(free_count):
+                                C_ff[i][j] += rayleigh_beta_k * K_ff[i][j]
+                    if rayleigh_beta_k_init != 0.0:
+                        for i in range(free_count):
+                            for j in range(free_count):
+                                C_ff[i][j] += rayleigh_beta_k_init * K_init_ff[i][j]
+                    if rayleigh_beta_k_comm != 0.0:
+                        for i in range(free_count):
+                            for j in range(free_count):
+                                C_ff[i][j] += rayleigh_beta_k_comm * K_comm_ff[i][j]
+                    damping_initialized = True
 
                 for i in range(free_count):
                     var idx = free[i]
@@ -450,17 +473,33 @@ fn run_transient_nonlinear(
                         converged = True
                         break
 
-                for i in range(free_count):
-                    for j in range(free_count):
-                        K_eff[i][j] = K_ff[i][j] + a1 * C_ff[i][j]
-                    K_eff[i][i] += a0 * M_f[i]
+                if (
+                    attempt_algorithm_mode == NonlinearAlgorithmMode.Newton
+                    or not k_eff_initialized
+                ):
+                    for i in range(free_count):
+                        for j in range(free_count):
+                            K_eff[i][j] = K_ff[i][j] + a1 * C_ff[i][j]
+                        K_eff[i][i] += a0 * M_f[i]
+                    k_eff_initialized = True
 
-                for i in range(free_count):
-                    for j in range(free_count):
-                        K_step[i][j] = K_eff[i][j]
-                for i in range(free_count):
-                    R_step[i] = R_f[i]
-                gaussian_elimination_into(K_step, R_step, du_f)
+                if attempt_algorithm_mode == NonlinearAlgorithmMode.Newton:
+                    for i in range(free_count):
+                        for j in range(free_count):
+                            K_step[i][j] = K_eff[i][j]
+                    for i in range(free_count):
+                        R_step[i] = R_f[i]
+                    gaussian_elimination_into(K_step, R_step, du_f)
+                else:
+                    if not k_eff_factored:
+                        for i in range(free_count):
+                            for j in range(free_count):
+                                K_lu[i][j] = K_eff[i][j]
+                        lu_factorize_into(K_lu, lu_pivots)
+                        k_eff_factored = True
+                    for i in range(free_count):
+                        lu_rhs[i] = R_f[i]
+                    lu_solve_into(K_lu, lu_pivots, lu_rhs, lu_work, du_f)
 
                 var max_diff = 0.0
                 var max_u = 0.0
@@ -509,7 +548,6 @@ fn run_transient_nonlinear(
         if not converged:
             abort("transient_nonlinear did not converge at step " + String(step + 1))
 
-        uniaxial_revert_trial_all(uniaxial_states)
         assemble_global_stiffness_and_internal(
             typed_nodes,
             typed_elements,

@@ -170,15 +170,57 @@ def test_absolutize_time_series_paths_resolves_relative_values_path(tmp_path: Pa
     assert resolved == motion.resolve()
 
 
-def test_inject_opensees_timing_wraps_first_analyze_call():
+def test_absolutize_time_series_paths_resolves_from_repo_root_when_needed(tmp_path: Path):
+    case_json = tmp_path / "validation" / "case_b" / "case_b.json"
+    case_json.parent.mkdir(parents=True, exist_ok=True)
+    case_data = {
+        "time_series": [
+            {
+                "type": "Path",
+                "tag": 1,
+                "values_path": "docs/agent-reference/OpenSeesExamplesBasic/time_history_analysis_of_a_2d_elastic_cantilever_column/A10000.tcl",
+            }
+        ]
+    }
+
+    run_benchmarks._absolutize_time_series_paths(case_data, case_json)
+
+    resolved = Path(case_data["time_series"][0]["values_path"])
+    expected = (
+        REPO_ROOT
+        / "docs/agent-reference/OpenSeesExamplesBasic/time_history_analysis_of_a_2d_elastic_cantilever_column/A10000.tcl"
+    ).resolve()
+    assert resolved.is_absolute()
+    assert resolved == expected
+
+
+def test_inject_opensees_timing_wraps_all_analyze_calls_and_accumulates():
     lines = ["wipe", "analyze 10", "analyze 5"]
     timed = run_benchmarks._inject_opensees_timing(lines, "analysis_time_us.txt")
 
-    first_analyze_index = timed.index("analyze 10")
-    assert timed[first_analyze_index - 1] == "set __strut_t0 [clock microseconds]"
-    assert timed[first_analyze_index + 1] == "set __strut_t1 [clock microseconds]"
-    assert timed.count("set __strut_t0 [clock microseconds]") == 1
+    assert timed[0] == "set __strut_analysis_us 0"
+    assert timed.count("set __strut_t0 [clock microseconds]") == 2
+    assert timed.count("incr __strut_analysis_us [expr {$__strut_t1 - $__strut_t0}]") == 2
+    assert timed[-3] == 'set __strut_fp [open "analysis_time_us.txt" w]'
+    assert timed[-2] == "puts $__strut_fp $__strut_analysis_us"
+    assert timed[-1] == "close $__strut_fp"
+    assert "analyze 10" in timed
     assert "analyze 5" in timed
+
+
+def test_inject_opensees_timing_wraps_analyze_and_eigen_in_staged_patterns():
+    lines = [
+        "set strut_tr_ok [analyze 1 0.01]",
+        "if {$strut_tr_ok != 0} {",
+        "  set strut_tr_ok [analyze 1 0.01]",
+        "}",
+        "set modes [eigen 2]",
+    ]
+    timed = run_benchmarks._inject_opensees_timing(lines, "analysis_time_us.txt")
+
+    assert timed.count("set __strut_t0 [clock microseconds]") == 3
+    assert timed.count("set __strut_t1 [clock microseconds]") == 3
+    assert timed.count("incr __strut_analysis_us [expr {$__strut_t1 - $__strut_t0}]") == 3
 
 
 def test_inject_opensees_timing_requires_analyze_or_eigen():
