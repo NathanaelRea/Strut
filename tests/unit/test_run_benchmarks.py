@@ -250,3 +250,30 @@ def test_summarize_parity_failures_reports_all_missing_mojo_outputs():
         "Error: frame_case",
         "Missing all Mojo Outputs",
     ]
+
+
+def test_analysis_is_transient_for_top_level_transient():
+    analysis = {"type": "transient_nonlinear", "steps": 10, "dt": 0.01}
+    assert run_benchmarks._analysis_is_transient(analysis) is True
+
+
+def test_analysis_is_transient_for_staged_with_transient_stage():
+    analysis = {
+        "type": "staged",
+        "stages": [
+            {"analysis": {"type": "static_nonlinear", "steps": 5}},
+            {"analysis": {"type": "transient_nonlinear", "steps": 10, "dt": 0.01}},
+        ],
+    }
+    assert run_benchmarks._analysis_is_transient(analysis) is True
+
+
+def test_analysis_is_transient_false_for_non_transient_staged():
+    analysis = {
+        "type": "staged",
+        "stages": [
+            {"analysis": {"type": "static_linear", "steps": 1}},
+            {"analysis": {"type": "static_nonlinear", "steps": 5}},
+        ],
+    }
+    assert run_benchmarks._analysis_is_transient(analysis) is False

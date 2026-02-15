@@ -28,6 +28,8 @@ tests/validation/*/reference/*
 tests/validation/*/generated/*
 tests/validation/**/*.out
 tests/validation/**/*.txt
+tests/validation/**/*.AT2
+tests/validation/**/*.g3
 
 # Temporary files
 ignore/

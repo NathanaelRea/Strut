@@ -107,6 +107,27 @@ def _case_size_override(path: Path) -> Optional[str]:
     return None
 
 
+def _analysis_is_transient(analysis: dict) -> bool:
+    analysis_type = str(analysis.get("type", "static_linear"))
+    if analysis_type.startswith("transient"):
+        return True
+    if analysis_type != "staged":
+        return False
+    stages = analysis.get("stages", [])
+    if not isinstance(stages, list):
+        return False
+    for stage in stages:
+        if not isinstance(stage, dict):
+            continue
+        stage_analysis = stage.get("analysis", stage)
+        if not isinstance(stage_analysis, dict):
+            continue
+        stage_type = str(stage_analysis.get("type", ""))
+        if stage_type.startswith("transient"):
+            return True
+    return False
+
+
 def _load_case_flags(path: Path) -> Tuple[bool, bool]:
     data = json.loads(path.read_text())
     enabled = bool(data.get("enabled", True))
@@ -1574,12 +1595,14 @@ def main() -> None:
             recorders = case_data.get("recorders", [])
             analysis = case_data.get("analysis", {})
             analysis_type = str(analysis.get("type", "static_linear"))
-            is_transient = analysis_type.startswith("transient")
+            is_transient = _analysis_is_transient(analysis)
             use_last_common_row = analysis_type == "static_nonlinear"
             tol = case_data.get("parity_tolerance", {})
             rtol = tol.get("rtol", REL_TOL)
             atol = tol.get("atol", ABS_TOL)
             for rec in recorders:
+                if rec.get("parity", True) is False:
+                    continue
                 rec_type = rec.get("type")
                 if rec_type == "node_displacement":
                     output = rec.get("output", "node_disp")

@@ -1102,6 +1102,10 @@ def main():
                     elif stage_static_nl_post_lines is not None:
                         for line in stage_static_nl_post_lines:
                             f.write(line + "\n")
+                elif stage_type == "transient_nonlinear":
+                    # The staged transient_nonlinear branch above either emitted a single
+                    # `analyze` or a per-step fallback loop.
+                    pass
                 else:
                     f.write(f"analyze {stage_steps}\n")
 
