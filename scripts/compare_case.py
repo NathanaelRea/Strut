@@ -286,6 +286,46 @@ def main():
                         )
                         failures.extend([f"  {err}" for err in errors])
                         break
+        elif rec_type in ("section_force", "section_deformation"):
+            default_output = "section_force" if rec_type == "section_force" else "section_deformation"
+            output = rec.get("output", default_output)
+            sections = rec.get("sections")
+            if sections is None:
+                if "section" not in rec:
+                    failures.append(f"{rec_type} recorder missing section/sections")
+                    continue
+                sections = [rec["section"]]
+            for elem_id in rec["elements"]:
+                for sec_no in sections:
+                    ref_file = ref_dir / f"{output}_ele{elem_id}_sec{sec_no}.out"
+                    mojo_file = mojo_dir / f"{output}_ele{elem_id}_sec{sec_no}.out"
+                    if not ref_file.exists():
+                        failures.append(f"missing reference output: {ref_file}")
+                        continue
+                    if not mojo_file.exists():
+                        failures.append(f"missing mojo output: {mojo_file}")
+                        continue
+                    if is_transient:
+                        ref_vals = _load_all_values(ref_file)
+                        mojo_vals = _load_all_values(mojo_file)
+                        _compare_transient_rows(
+                            ref_vals,
+                            mojo_vals,
+                            f"{rec_type} element {elem_id} section {sec_no}",
+                            failures,
+                            rtol,
+                            atol,
+                            parity_mode,
+                        )
+                    else:
+                        ref_vals = _load_last_values(ref_file)
+                        mojo_vals = _load_last_values(mojo_file)
+                        ok, errors = _compare_vectors(ref_vals, mojo_vals, rtol=rtol, atol=atol)
+                        if not ok:
+                            failures.append(
+                                f"{rec_type} element {elem_id} section {sec_no} mismatch"
+                            )
+                            failures.extend([f"  {err}" for err in errors])
         elif rec_type == "modal_eigen":
             output = rec.get("output", "modal")
             modes = rec.get("modes", [])

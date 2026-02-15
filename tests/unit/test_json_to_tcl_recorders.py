@@ -57,6 +57,18 @@ def test_json_to_tcl_emits_reaction_drift_and_envelope_recorders():
             {"type": "node_reaction", "nodes": [1], "dofs": [1, 2, 3], "output": "reaction"},
             {"type": "drift", "i_node": 1, "j_node": 2, "dof": 1, "perp_dirn": 2, "output": "drift"},
             {"type": "envelope_element_force", "elements": [1], "output": "env_force"},
+            {
+                "type": "section_force",
+                "elements": [1],
+                "sections": [1],
+                "output": "sec_force",
+            },
+            {
+                "type": "section_deformation",
+                "elements": [1],
+                "section": 1,
+                "output": "sec_defo",
+            },
         ],
     }
 
@@ -65,3 +77,5 @@ def test_json_to_tcl_emits_reaction_drift_and_envelope_recorders():
     assert "recorder Node -file reaction_node1.out -node 1 -dof 1 2 3 reaction\n" in text
     assert "recorder Drift -file drift_i1_j2.out -iNode 1 -jNode 2 -dof 1 -perpDirn 2\n" in text
     assert "recorder EnvelopeElement -file env_force_ele1.out -ele 1 forces\n" in text
+    assert "recorder Element -file sec_force_ele1_sec1.out -ele 1 section 1 force\n" in text
+    assert "recorder Element -file sec_defo_ele1_sec1.out -ele 1 section 1 deformation\n" in text

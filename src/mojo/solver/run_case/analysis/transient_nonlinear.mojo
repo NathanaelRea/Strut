@@ -35,6 +35,7 @@ from solver.run_case.helpers import (
     _format_values_line,
     _has_recorder_type,
     _drift_value,
+    _section_response_for_recorder,
     _update_envelope,
 )
 from tag_types import NonlinearAlgorithmMode, RecorderTypeTag
@@ -80,6 +81,7 @@ fn run_transient_nonlinear(
     recorder_nodes_pool: List[Int],
     recorder_elements_pool: List[Int],
     recorder_dofs_pool: List[Int],
+    recorder_sections_pool: List[Int],
     elem_id_to_index: List[Int],
     fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
@@ -109,6 +111,9 @@ fn run_transient_nonlinear(
         primary_algorithm_mode = NonlinearAlgorithmMode.ModifiedNewton
     elif algorithm == "ModifiedNewtonInitial":
         primary_algorithm_mode = NonlinearAlgorithmMode.ModifiedNewtonInitial
+    elif algorithm == "Broyden" or algorithm == "NewtonLineSearch":
+        # Mapped alternative: currently follows Newton tangent refresh behavior.
+        primary_algorithm_mode = NonlinearAlgorithmMode.Newton
     else:
         abort("unsupported transient_nonlinear algorithm: " + algorithm)
 
@@ -122,6 +127,9 @@ fn run_transient_nonlinear(
             fallback_algorithm_mode = NonlinearAlgorithmMode.ModifiedNewton
         elif fallback_algorithm == "ModifiedNewtonInitial":
             fallback_algorithm_mode = NonlinearAlgorithmMode.ModifiedNewtonInitial
+        elif fallback_algorithm == "Broyden" or fallback_algorithm == "NewtonLineSearch":
+            # Mapped alternative: currently follows Newton tangent refresh behavior.
+            fallback_algorithm_mode = NonlinearAlgorithmMode.Newton
         else:
             abort(
                 "unsupported transient_nonlinear fallback_algorithm: "
@@ -148,6 +156,7 @@ fn run_transient_nonlinear(
         test_type != "MaxDispIncr"
         and test_type != "NormDispIncr"
         and test_type != "NormUnbalance"
+        and test_type != "EnergyIncr"
     ):
         abort("unsupported transient_nonlinear test_type: " + test_type)
     var fallback_test_type = analysis.fallback_test_type
@@ -155,6 +164,7 @@ fn run_transient_nonlinear(
         fallback_test_type != "MaxDispIncr"
         and fallback_test_type != "NormDispIncr"
         and fallback_test_type != "NormUnbalance"
+        and fallback_test_type != "EnergyIncr"
     ):
         abort(
             "unsupported transient_nonlinear fallback_test_type: "
@@ -304,7 +314,7 @@ fn run_transient_nonlinear(
 
         var t = Float64(step + 1) * dt
         for i in range(total_dofs):
-            F_ext_step[i] = 0.0
+            F_ext_step[i] = F_total[i]
         if pattern_type == "UniformExcitation":
             var ag = eval_time_series_input(
                 time_series[uniform_accel_ts_index],
@@ -314,7 +324,7 @@ fn run_transient_nonlinear(
             )
             for i in range(total_dofs):
                 if (i % ndf) + 1 == uniform_excitation_direction:
-                    F_ext_step[i] = -M_total[i] * ag
+                    F_ext_step[i] += -M_total[i] * ag
         else:
             var factor = 1.0
             if ts_index >= 0:
@@ -468,6 +478,10 @@ fn run_transient_nonlinear(
                 for i in range(free_count):
                     disp_incr_norm_sq += du_f[i] * du_f[i]
                 var disp_incr_norm = sqrt(disp_incr_norm_sq)
+                var energy_incr = 0.0
+                for i in range(free_count):
+                    energy_incr += du_f[i] * R_f[i]
+                energy_incr = abs(energy_incr)
                 var scale_tol = attempt_rel_tol * max_u
                 if scale_tol < attempt_rel_tol:
                     scale_tol = attempt_rel_tol
@@ -479,6 +493,10 @@ fn run_transient_nonlinear(
 
                 if attempt_test_type == "NormDispIncr":
                     if disp_incr_norm <= attempt_tol:
+                        converged = True
+                        break
+                elif attempt_test_type == "EnergyIncr":
+                    if energy_incr <= attempt_tol:
                         converged = True
                         break
                 elif attempt_test_type == "MaxDispIncr":
@@ -681,6 +699,54 @@ fn run_transient_nonlinear(
                         envelope_max,
                         envelope_abs,
                     )
+            elif (
+                rec.type_tag == RecorderTypeTag.SectionForce
+                or rec.type_tag == RecorderTypeTag.SectionDeformation
+            ):
+                var want_defo = rec.type_tag == RecorderTypeTag.SectionDeformation
+                for eidx in range(rec.element_count):
+                    var elem_id = recorder_elements_pool[rec.element_offset + eidx]
+                    if elem_id >= len(elem_id_to_index) or elem_id_to_index[elem_id] < 0:
+                        abort("recorder element not found")
+                    var elem_index = elem_id_to_index[elem_id]
+                    var elem = typed_elements[elem_index]
+                    for sidx in range(rec.section_count):
+                        var sec_no = recorder_sections_pool[rec.section_offset + sidx]
+                        var values = _section_response_for_recorder(
+                            elem_index,
+                            elem,
+                            sec_no,
+                            ndf,
+                            u,
+                            typed_nodes,
+                            typed_sections_by_id,
+                            fiber_section_defs,
+                            fiber_section_cells,
+                            fiber_section_index_by_id,
+                            uniaxial_defs,
+                            uniaxial_states,
+                            elem_uniaxial_offsets,
+                            elem_uniaxial_counts,
+                            elem_uniaxial_state_ids,
+                            force_basic_offsets,
+                            force_basic_counts,
+                            force_basic_q,
+                            want_defo,
+                        )
+                        var filename = (
+                            rec.output
+                            + "_ele"
+                            + String(elem_id)
+                            + "_sec"
+                            + String(sec_no)
+                            + ".out"
+                        )
+                        _append_output(
+                            transient_output_files,
+                            transient_output_buffers,
+                            filename,
+                            _format_values_line(values),
+                        )
             else:
                 abort("unsupported recorder type")
     _flush_envelope_outputs(

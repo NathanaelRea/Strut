@@ -26,6 +26,8 @@ struct RecorderTypeTag:
     alias Drift = 4
     alias EnvelopeElementForce = 5
     alias ModalEigen = 6
+    alias SectionForce = 7
+    alias SectionDeformation = 8
 
 
 struct TimeSeriesTypeTag:

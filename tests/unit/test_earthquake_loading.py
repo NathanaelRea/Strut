@@ -223,3 +223,80 @@ def test_transient_nonlinear_newton_fallback_modified_initial_smoke():
 
     assert len(disp_rows) == 6
     assert all(math.isfinite(row[0]) for row in disp_rows)
+
+
+def test_transient_nonlinear_energy_incr_with_mapped_algorithms_smoke():
+    case_data = _base_truss_dynamic_case(
+        {"id": 1, "type": "Steel01", "params": {"Fy": 10.0, "E0": 100.0, "b": 0.01}}
+    )
+    case_data["time_series"] = [
+        {"type": "Path", "tag": 7, "dt": 0.02, "values": [1.0, 0.5, 0.0, 0.0, 0.0]}
+    ]
+    case_data["pattern"] = {"type": "UniformExcitation", "tag": 7, "direction": 1, "accel": 7}
+    case_data["analysis"] = {
+        "type": "transient_nonlinear",
+        "steps": 5,
+        "dt": 0.02,
+        "integrator": {"type": "Newmark", "gamma": 0.5, "beta": 0.25},
+        "algorithm": "Broyden",
+        "test_type": "EnergyIncr",
+        "tol": 1.0,
+        "max_iters": 10,
+        "fallback_algorithm": "NewtonLineSearch",
+        "fallback_test_type": "EnergyIncr",
+        "fallback_tol": 1.0,
+        "fallback_max_iters": 10,
+    }
+
+    with tempfile.TemporaryDirectory() as tmp:
+        out_dir = Path(tmp)
+        _run_mojo_case(case_data, out_dir)
+        disp_rows = _read_rows(out_dir / "node_disp_node2.out")
+
+    assert len(disp_rows) == 5
+    assert all(math.isfinite(row[0]) for row in disp_rows)
+
+
+def test_staged_analysis_gravity_load_const_then_uniform_excitation_smoke():
+    case_data = _base_truss_dynamic_case({"id": 1, "type": "Elastic", "params": {"E": 100.0}})
+    case_data["time_series"] = [
+        {"type": "Linear", "tag": 1, "factor": 1.0},
+        {"type": "Path", "tag": 2, "dt": 0.02, "values": [0.0, 1.0, 0.0]},
+    ]
+    case_data["pattern"] = {"type": "Plain", "tag": 1, "time_series": 1}
+    case_data["loads"] = [{"node": 2, "dof": 1, "value": 1.0}]
+    case_data["analysis"] = {
+        "type": "staged",
+        "constraints": "Plain",
+        "stages": [
+            {
+                "analysis": {
+                    "type": "static_nonlinear",
+                    "steps": 2,
+                    "algorithm": "Newton",
+                    "integrator": {"type": "LoadControl"},
+                },
+                "load_const": {"time": 0.0},
+            },
+            {
+                "pattern": {"type": "UniformExcitation", "tag": 2, "direction": 1, "accel": 2},
+                "analysis": {
+                    "type": "transient_linear",
+                    "steps": 3,
+                    "dt": 0.02,
+                    "integrator": {"type": "Newmark", "gamma": 0.5, "beta": 0.25},
+                },
+            },
+        ],
+    }
+
+    with tempfile.TemporaryDirectory() as tmp:
+        out_dir = Path(tmp)
+        _run_mojo_case(case_data, out_dir)
+        disp_rows = _read_rows(out_dir / "node_disp_node2.out")
+        force_rows = _read_rows(out_dir / "element_force_ele1.out")
+
+    assert len(disp_rows) == 5
+    assert len(force_rows) == 5
+    assert all(math.isfinite(row[0]) for row in disp_rows)
+    assert all(math.isfinite(v) for row in force_rows for v in row)

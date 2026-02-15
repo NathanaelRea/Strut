@@ -130,6 +130,83 @@ def _emit_time_series(f, ts, case_dir: Path):
         raise ValueError(f"unsupported time_series type: {ts_type}")
 
 
+def _algorithm_cmd(algorithm_name, cfg, prefix=""):
+    if algorithm_name == "ModifiedNewtonInitial":
+        return "ModifiedNewton -initial"
+    if algorithm_name == "Broyden":
+        count = int(cfg.get(f"{prefix}broyden_count", 8))
+        return f"Broyden {count}"
+    if algorithm_name == "NewtonLineSearch":
+        eta = float(cfg.get(f"{prefix}line_search_eta", 0.8))
+        return f"NewtonLineSearch {eta}"
+    return algorithm_name
+
+
+def _emit_recorders(f, recorders, node_by_id, ndf):
+    for rec in recorders:
+        rec_type = rec["type"]
+        if rec_type == "node_displacement":
+            dofs = rec["dofs"]
+            output = rec.get("output", "node_disp")
+            for node_id in rec["nodes"]:
+                filename = f"{output}_node{node_id}.out"
+                f.write(
+                    f"recorder Node -file {filename} -node {node_id} -dof {' '.join(str(d) for d in dofs)} disp\n"
+                )
+        elif rec_type == "element_force":
+            output = rec.get("output", "element_force")
+            for elem_id in rec["elements"]:
+                filename = f"{output}_ele{elem_id}.out"
+                f.write(f"recorder Element -file {filename} -ele {elem_id} force\n")
+        elif rec_type == "node_reaction":
+            dofs = rec["dofs"]
+            output = rec.get("output", "reaction")
+            for node_id in rec["nodes"]:
+                filename = f"{output}_node{node_id}.out"
+                f.write(
+                    f"recorder Node -file {filename} -node {node_id} -dof {' '.join(str(d) for d in dofs)} reaction\n"
+                )
+        elif rec_type == "drift":
+            i_node = rec["i_node"]
+            j_node = rec["j_node"]
+            dof = rec["dof"]
+            perp_dirn = rec["perp_dirn"]
+            output = rec.get("output", "drift")
+            filename = f"{output}_i{i_node}_j{j_node}.out"
+            f.write(
+                f"recorder Drift -file {filename} -iNode {i_node} -jNode {j_node} -dof {dof} -perpDirn {perp_dirn}\n"
+            )
+        elif rec_type == "envelope_element_force":
+            output = rec.get("output", "envelope_element_force")
+            for elem_id in rec["elements"]:
+                filename = f"{output}_ele{elem_id}.out"
+                f.write(
+                    f"recorder EnvelopeElement -file {filename} -ele {elem_id} forces\n"
+                )
+        elif rec_type == "section_force" or rec_type == "section_deformation":
+            output = rec.get("output", rec_type)
+            response = "force" if rec_type == "section_force" else "deformation"
+            sections = rec.get("sections")
+            if sections is None:
+                if "section" not in rec:
+                    raise ValueError(f"{rec_type} recorder requires section or sections")
+                sections = [rec["section"]]
+            if not isinstance(sections, list) or len(sections) == 0:
+                raise ValueError(f"{rec_type} recorder requires non-empty sections")
+            for elem_id in rec["elements"]:
+                for sec_no in sections:
+                    sec_idx = int(sec_no)
+                    filename = f"{output}_ele{elem_id}_sec{sec_idx}.out"
+                    f.write(
+                        f"recorder Element -file {filename} -ele {elem_id} section {sec_idx} {response}\n"
+                    )
+        elif rec_type == "modal_eigen":
+            # Modal outputs are emitted explicitly after `eigen`, not through recorder commands.
+            pass
+        else:
+            raise ValueError(f"unsupported recorder type: {rec_type}")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("json_file")
@@ -334,10 +411,8 @@ def main():
                 f.write(f"section Fiber {sec['id']} {{\n")
                 for patch in patches:
                     patch_type = patch.get("type")
-                    if patch_type != "rect":
-                        raise ValueError(
-                            f"unsupported FiberSection2d patch type: {patch_type}"
-                        )
+                    if patch_type == "quad":
+                        patch_type = "quadr"
                     mat = patch["material"]
                     if mat not in materials:
                         raise ValueError(f"FiberSection2d patch material {mat} not found")
@@ -347,18 +422,36 @@ def main():
                         )
                     ny = patch["num_subdiv_y"]
                     nz = patch["num_subdiv_z"]
-                    yi = patch["y_i"]
-                    zi = patch["z_i"]
-                    yj = patch["y_j"]
-                    zj = patch["z_j"]
                     if ny <= 0 or nz <= 0:
                         raise ValueError(
-                            "FiberSection2d patch rect requires num_subdiv_y and "
-                            "num_subdiv_z > 0"
+                            "FiberSection2d patch requires num_subdiv_y and num_subdiv_z > 0"
                         )
-                    f.write(
-                        f"  patch rect {mat} {ny} {nz} {yi} {zi} {yj} {zj}\n"
-                    )
+                    if patch_type == "rect":
+                        yi = patch["y_i"]
+                        zi = patch["z_i"]
+                        yj = patch["y_j"]
+                        zj = patch["z_j"]
+                        f.write(
+                            f"  patch rect {mat} {ny} {nz} {yi} {zi} {yj} {zj}\n"
+                        )
+                    elif patch_type == "quadr":
+                        yi = patch["y_i"]
+                        zi = patch["z_i"]
+                        yj = patch["y_j"]
+                        zj = patch["z_j"]
+                        yk = patch["y_k"]
+                        zk = patch["z_k"]
+                        yl = patch["y_l"]
+                        zl = patch["z_l"]
+                        f.write(
+                            "  patch quadr "
+                            f"{mat} {ny} {nz} "
+                            f"{yi} {zi} {yj} {zj} {yk} {zk} {yl} {zl}\n"
+                        )
+                    else:
+                        raise ValueError(
+                            f"unsupported FiberSection2d patch type: {patch_type}"
+                        )
                 for layer in layers:
                     layer_type = layer.get("type")
                     if layer_type != "straight":
@@ -404,6 +497,7 @@ def main():
                 "elasticBeamColumn3d",
                 "forceBeamColumn2d",
                 "dispBeamColumn2d",
+                "nonlinearBeamColumn",
             ):
                 continue
             name = elem.get("geomTransf", "Linear")
@@ -427,6 +521,8 @@ def main():
         next_int_tag = 1
         for elem in elements:
             elem_type = elem["type"]
+            if elem_type == "nonlinearBeamColumn":
+                elem_type = "forceBeamColumn2d"
             if elem_type not in ("forceBeamColumn2d", "dispBeamColumn2d"):
                 continue
             sec = sections[elem["section"]]
@@ -472,8 +568,10 @@ def main():
                 f.write(
                     f"element elasticBeamColumn {elem['id']} {n1} {n2} {A} {E} {I} {transf_tag}\n"
                 )
-            elif elem["type"] in ("forceBeamColumn2d", "dispBeamColumn2d"):
+            elif elem["type"] in ("forceBeamColumn2d", "dispBeamColumn2d", "nonlinearBeamColumn"):
                 elem_type = elem["type"]
+                if elem_type == "nonlinearBeamColumn":
+                    elem_type = "forceBeamColumn2d"
                 sec = sections[elem["section"]]
                 if sec["type"] not in ("FiberSection2d", "ElasticSection2d"):
                     raise ValueError(
@@ -555,9 +653,9 @@ def main():
         loads = data.get("loads", [])
         element_loads = data.get("element_loads", [])
         pattern = data.get("pattern")
+        ts_tags = set()
         if loads or element_loads or pattern is not None:
             ts_list = _normalize_time_series(data.get("time_series"))
-            ts_tags = set()
             if ts_list:
                 for ts in ts_list:
                     _emit_time_series(f, ts, case_dir)
@@ -648,6 +746,340 @@ def main():
         dt = None
         static_nl_post_lines = None
         transient_nonlinear_emits_analyze = True
+
+        if analysis_type == "staged":
+            stages = analysis.get("stages", [])
+            if not isinstance(stages, list) or len(stages) == 0:
+                raise ValueError("staged analysis requires non-empty analysis.stages")
+            if constraints_handler not in ("Plain", "Transformation"):
+                raise ValueError(f"unsupported constraints handler: {constraints_handler}")
+            if mp_constraints and constraints_handler != "Transformation":
+                raise ValueError("mp_constraints require analysis.constraints=Transformation")
+
+            _emit_recorders(f, recorders, node_by_id, ndf)
+
+            for stage_idx, stage in enumerate(stages):
+                if not isinstance(stage, dict):
+                    raise ValueError("analysis.stages entries must be objects")
+                stage_analysis = stage.get("analysis", stage)
+                if not isinstance(stage_analysis, dict):
+                    raise ValueError("analysis.stages[].analysis must be an object")
+                stage_type = stage_analysis.get("type")
+                if stage_type is None:
+                    raise ValueError("analysis.stages[].analysis missing type")
+
+                stage_ts_list = _normalize_time_series(stage.get("time_series"))
+                for ts in stage_ts_list:
+                    _emit_time_series(f, ts, case_dir)
+                    ts_tags.add(ts["tag"])
+
+                stage_pattern = stage.get("pattern")
+                stage_loads = stage.get("loads", loads if stage_idx == 0 else [])
+                stage_element_loads = stage.get(
+                    "element_loads",
+                    element_loads if stage_idx == 0 else [],
+                )
+                if stage_pattern is not None:
+                    stage_pattern_type = stage_pattern.get("type", "Plain")
+                    if stage_pattern_type == "Plain":
+                        pattern_tag = stage_pattern.get("tag", 1)
+                        ts_tag = stage_pattern.get("time_series")
+                        if ts_tag is None:
+                            raise ValueError("pattern missing time_series tag")
+                        if ts_tag not in ts_tags:
+                            raise ValueError(f"pattern time_series tag {ts_tag} not found")
+                        f.write(f"pattern Plain {pattern_tag} {ts_tag} {{\n")
+                        if stage_loads:
+                            load_map = {}
+                            for load in stage_loads:
+                                node_id = load["node"]
+                                vec = load_map.setdefault(node_id, [0.0] * ndf)
+                                dof = load["dof"]
+                                if dof < 1 or dof > ndf:
+                                    raise ValueError(f"load dof {dof} out of range 1..{ndf}")
+                                vec[dof - 1] += load["value"]
+                            for node_id, vec in load_map.items():
+                                f.write(f"  load {node_id} {' '.join(str(v) for v in vec)}\n")
+                        for elem_load in stage_element_loads:
+                            if elem_load["type"] != "beamUniform":
+                                raise ValueError(
+                                    f"unsupported element load type: {elem_load['type']}"
+                                )
+                            elem_id = elem_load["element"]
+                            w = elem_load["w"]
+                            f.write(f"  eleLoad -ele {elem_id} -type -beamUniform {w}\n")
+                        f.write("}\n")
+                    elif stage_pattern_type == "UniformExcitation":
+                        if stage_loads or stage_element_loads:
+                            raise ValueError(
+                                "UniformExcitation does not support nodal/element loads"
+                            )
+                        pattern_tag = stage_pattern.get("tag", 1)
+                        direction = stage_pattern.get("direction")
+                        if direction is None:
+                            raise ValueError("UniformExcitation pattern missing direction")
+                        direction = int(direction)
+                        if direction < 1 or direction > ndm:
+                            raise ValueError(
+                                "UniformExcitation direction out of range 1..ndm"
+                            )
+                        accel_tag = stage_pattern.get(
+                            "accel", stage_pattern.get("time_series")
+                        )
+                        if accel_tag is None:
+                            raise ValueError(
+                                "UniformExcitation pattern missing accel time_series tag"
+                            )
+                        accel_tag = int(accel_tag)
+                        if accel_tag not in ts_tags:
+                            raise ValueError(
+                                f"UniformExcitation accel time_series tag {accel_tag} not found"
+                            )
+                        f.write(
+                            f"pattern UniformExcitation {pattern_tag} {direction} -accel {accel_tag}\n"
+                        )
+                    else:
+                        raise ValueError(
+                            f"unsupported staged pattern type: {stage_pattern_type}"
+                        )
+                elif stage_idx > 0 and (stage_loads or stage_element_loads):
+                    raise ValueError(
+                        "staged analysis stage loads require an explicit stage pattern"
+                    )
+
+                stage_rayleigh = stage.get("rayleigh")
+                if stage_rayleigh is not None:
+                    alpha_m = float(stage_rayleigh.get("alphaM", 0.0))
+                    beta_k = float(stage_rayleigh.get("betaK", 0.0))
+                    beta_k_init = float(stage_rayleigh.get("betaKInit", 0.0))
+                    beta_k_comm = float(stage_rayleigh.get("betaKComm", 0.0))
+                    f.write(f"rayleigh {alpha_m} {beta_k} {beta_k_init} {beta_k_comm}\n")
+
+                stage_constraints = stage_analysis.get("constraints", constraints_handler)
+                if stage_constraints not in ("Plain", "Transformation"):
+                    raise ValueError(
+                        f"unsupported constraints handler: {stage_constraints}"
+                    )
+                f.write(f"constraints {stage_constraints}\n")
+                f.write("numberer RCM\n")
+                f.write("system BandGeneral\n")
+
+                stage_steps = int(stage_analysis.get("steps", 1))
+                if stage_steps < 1:
+                    raise ValueError("analysis steps must be >= 1")
+                stage_dt = None
+                stage_static_nl_post_lines = None
+                stage_transient_nl_emits_analyze = True
+                if stage_type == "static_linear":
+                    f.write("test NormUnbalance 1.0e-12 10\n")
+                    f.write("algorithm Linear\n")
+                    f.write("integrator LoadControl 1.0\n")
+                    f.write("analysis Static\n")
+                elif stage_type == "static_nonlinear":
+                    tol = stage_analysis.get("tol", 1.0e-10)
+                    max_iters = stage_analysis.get("max_iters", 20)
+                    algorithm = stage_analysis.get("algorithm", "Newton")
+                    if algorithm not in ("Newton", "ModifiedNewton"):
+                        raise ValueError(
+                            f"unsupported static_nonlinear algorithm: {algorithm}"
+                        )
+                    f.write(f"test NormUnbalance {tol} {max_iters}\n")
+                    f.write(f"algorithm {algorithm}\n")
+                    integrator = stage_analysis.get("integrator", {"type": "LoadControl"})
+                    integrator_type = integrator.get("type", "LoadControl")
+                    if integrator_type == "LoadControl":
+                        f.write(f"integrator LoadControl {1.0/stage_steps}\n")
+                        f.write("analysis Static\n")
+                    elif integrator_type == "DisplacementControl":
+                        node = integrator.get("node")
+                        dof = integrator.get("dof")
+                        if node is None or dof is None:
+                            raise ValueError("DisplacementControl requires node and dof")
+                        f.write("analysis Static\n")
+                        targets = integrator.get("targets")
+                        if targets is not None:
+                            if not isinstance(targets, list) or len(targets) == 0:
+                                raise ValueError(
+                                    "DisplacementControl targets must be a non-empty list"
+                                )
+                            stage_static_nl_post_lines = [
+                                "set strut_dc_prev 0.0",
+                                "set strut_dc_targets {"
+                                + " ".join(str(float(val)) for val in targets)
+                                + "}",
+                                "foreach strut_dc_targ $strut_dc_targets {",
+                                "  set strut_dc_du [expr $strut_dc_targ - $strut_dc_prev]",
+                                "  if {[expr abs($strut_dc_du)] < 1.0e-16} {",
+                                "    set strut_dc_prev $strut_dc_targ",
+                                "    continue",
+                                "  }",
+                                f"  integrator DisplacementControl {int(node)} {int(dof)} $strut_dc_du",
+                                "  set strut_dc_ok [analyze 1]",
+                                "  if {$strut_dc_ok != 0} {",
+                                "    error \"analysis failed\"",
+                                "  }",
+                                "  set strut_dc_prev $strut_dc_targ",
+                                "}",
+                            ]
+                        else:
+                            du = integrator.get("du")
+                            if du is None or float(du) == 0.0:
+                                raise ValueError(
+                                    "DisplacementControl requires non-zero du when targets are omitted"
+                                )
+                            f.write(
+                                f"integrator DisplacementControl {int(node)} {int(dof)} {float(du)}\n"
+                            )
+                            stage_static_nl_post_lines = [
+                                f"set strut_nl_ok [analyze {stage_steps}]",
+                                "if {$strut_nl_ok != 0} {",
+                                "  error \"analysis failed\"",
+                                "}",
+                            ]
+                    else:
+                        raise ValueError(
+                            f"unsupported static_nonlinear integrator: {integrator_type}"
+                        )
+                elif stage_type == "transient_linear":
+                    stage_dt = stage_analysis.get("dt")
+                    if stage_dt is None or stage_dt <= 0.0:
+                        raise ValueError("transient_linear requires dt > 0")
+                    integrator = stage_analysis.get("integrator", {"type": "Newmark"})
+                    if integrator.get("type", "Newmark") != "Newmark":
+                        raise ValueError("transient_linear only supports Newmark integrator")
+                    gamma = integrator.get("gamma", 0.5)
+                    beta = integrator.get("beta", 0.25)
+                    f.write("test NormUnbalance 1.0e-12 10\n")
+                    f.write("algorithm Linear\n")
+                    f.write(f"integrator Newmark {gamma} {beta}\n")
+                    f.write("analysis Transient\n")
+                elif stage_type == "transient_nonlinear":
+                    stage_dt = stage_analysis.get("dt")
+                    if stage_dt is None or stage_dt <= 0.0:
+                        raise ValueError("transient_nonlinear requires dt > 0")
+                    algorithm = stage_analysis.get("algorithm", "Newton")
+                    if algorithm not in (
+                        "Newton",
+                        "ModifiedNewton",
+                        "ModifiedNewtonInitial",
+                        "Broyden",
+                        "NewtonLineSearch",
+                    ):
+                        raise ValueError(
+                            f"unsupported transient_nonlinear algorithm: {algorithm}"
+                        )
+                    fallback_algorithm = stage_analysis.get("fallback_algorithm")
+                    if fallback_algorithm is not None and fallback_algorithm not in (
+                        "Newton",
+                        "ModifiedNewton",
+                        "ModifiedNewtonInitial",
+                        "Broyden",
+                        "NewtonLineSearch",
+                    ):
+                        raise ValueError(
+                            "unsupported transient_nonlinear fallback_algorithm: "
+                            f"{fallback_algorithm}"
+                        )
+                    integrator = stage_analysis.get("integrator", {"type": "Newmark"})
+                    if integrator.get("type", "Newmark") != "Newmark":
+                        raise ValueError(
+                            "transient_nonlinear only supports Newmark integrator"
+                        )
+                    gamma = integrator.get("gamma", 0.5)
+                    beta = integrator.get("beta", 0.25)
+                    test_type = stage_analysis.get("test_type", "NormUnbalance")
+                    if test_type not in ("NormUnbalance", "NormDispIncr", "EnergyIncr"):
+                        raise ValueError(
+                            "transient_nonlinear test_type must be NormUnbalance, NormDispIncr, or EnergyIncr"
+                        )
+                    tol = stage_analysis.get("tol", 1.0e-10)
+                    max_iters = stage_analysis.get("max_iters", 20)
+                    primary_algorithm = _algorithm_cmd(algorithm, stage_analysis)
+                    f.write(f"test {test_type} {tol} {max_iters}\n")
+                    f.write(f"algorithm {primary_algorithm}\n")
+                    f.write(f"integrator Newmark {gamma} {beta}\n")
+                    f.write("analysis Transient\n")
+                    if fallback_algorithm is not None:
+                        fallback_test_type = stage_analysis.get(
+                            "fallback_test_type", test_type
+                        )
+                        if fallback_test_type not in (
+                            "NormUnbalance",
+                            "NormDispIncr",
+                            "EnergyIncr",
+                        ):
+                            raise ValueError(
+                                "transient_nonlinear fallback_test_type must be NormUnbalance, NormDispIncr, or EnergyIncr"
+                            )
+                        fallback_tol = stage_analysis.get("fallback_tol", tol)
+                        fallback_max_iters = stage_analysis.get(
+                            "fallback_max_iters", max_iters
+                        )
+                        fallback_algorithm_cmd = _algorithm_cmd(
+                            fallback_algorithm,
+                            stage_analysis,
+                            prefix="fallback_",
+                        )
+                        f.write("set strut_tr_ok 0\n")
+                        f.write(
+                            f"for {{set strut_tr_step 0}} {{$strut_tr_step < {stage_steps} && $strut_tr_ok == 0}} {{incr strut_tr_step}} {{\n"
+                        )
+                        f.write(f"  set strut_tr_ok [analyze 1 {stage_dt}]\n")
+                        f.write("  if {$strut_tr_ok != 0} {\n")
+                        f.write(
+                            f"    test {fallback_test_type} {fallback_tol} {fallback_max_iters}\n"
+                        )
+                        f.write(f"    algorithm {fallback_algorithm_cmd}\n")
+                        f.write(f"    set strut_tr_ok [analyze 1 {stage_dt}]\n")
+                        f.write(f"    test {test_type} {tol} {max_iters}\n")
+                        f.write(f"    algorithm {primary_algorithm}\n")
+                        f.write("  }\n")
+                        f.write("}\n")
+                        f.write("if {$strut_tr_ok != 0} {\n")
+                        f.write("  error \"analysis failed\"\n")
+                        f.write("}\n")
+                        stage_transient_nl_emits_analyze = False
+                elif stage_type == "modal_eigen":
+                    num_modes = int(stage_analysis.get("num_modes", 0))
+                    if num_modes < 1:
+                        raise ValueError("modal_eigen requires num_modes >= 1")
+                else:
+                    raise ValueError(
+                        f"unsupported staged analysis type: {stage_type}"
+                    )
+
+                if stage_type == "transient_linear" or (
+                    stage_type == "transient_nonlinear"
+                    and stage_transient_nl_emits_analyze
+                ):
+                    f.write(f"analyze {stage_steps} {stage_dt}\n")
+                elif stage_type == "modal_eigen":
+                    num_modes = int(stage_analysis.get("num_modes", 0))
+                    f.write(f"set strut_modal_lambda [eigen {num_modes}]\n")
+                elif stage_type == "static_nonlinear":
+                    integrator = stage_analysis.get("integrator", {"type": "LoadControl"})
+                    if integrator.get("type", "LoadControl") == "LoadControl":
+                        f.write(f"set strut_nl_ok [analyze {stage_steps}]\n")
+                        f.write("if {$strut_nl_ok != 0} {\n")
+                        f.write("  error \"analysis failed\"\n")
+                        f.write("}\n")
+                    elif stage_static_nl_post_lines is not None:
+                        for line in stage_static_nl_post_lines:
+                            f.write(line + "\n")
+                else:
+                    f.write(f"analyze {stage_steps}\n")
+
+                load_const = stage.get("load_const")
+                if load_const is not None and load_const is not False:
+                    if isinstance(load_const, dict):
+                        lc_time = float(load_const.get("time", 0.0))
+                    elif isinstance(load_const, bool):
+                        lc_time = 0.0
+                    else:
+                        lc_time = float(load_const)
+                    f.write(f"loadConst -time {lc_time}\n")
+            return
+
         if steps < 1:
             raise ValueError("analysis steps must be >= 1")
         if constraints_handler not in ("Plain", "Transformation"):
@@ -735,7 +1167,13 @@ def main():
             if dt is None or dt <= 0.0:
                 raise ValueError("transient_nonlinear requires dt > 0")
             algorithm = analysis.get("algorithm", "Newton")
-            if algorithm not in ("Newton", "ModifiedNewton", "ModifiedNewtonInitial"):
+            if algorithm not in (
+                "Newton",
+                "ModifiedNewton",
+                "ModifiedNewtonInitial",
+                "Broyden",
+                "NewtonLineSearch",
+            ):
                 raise ValueError(
                     f"unsupported transient_nonlinear algorithm: {algorithm}"
                 )
@@ -744,6 +1182,8 @@ def main():
                 "Newton",
                 "ModifiedNewton",
                 "ModifiedNewtonInitial",
+                "Broyden",
+                "NewtonLineSearch",
             ):
                 raise ValueError(
                     f"unsupported transient_nonlinear fallback_algorithm: {fallback_algorithm}"
@@ -754,33 +1194,33 @@ def main():
             gamma = integrator.get("gamma", 0.5)
             beta = integrator.get("beta", 0.25)
             test_type = analysis.get("test_type", "NormUnbalance")
-            if test_type not in ("NormUnbalance", "NormDispIncr"):
+            if test_type not in ("NormUnbalance", "NormDispIncr", "EnergyIncr"):
                 raise ValueError(
-                    "transient_nonlinear test_type must be NormUnbalance or NormDispIncr"
+                    "transient_nonlinear test_type must be NormUnbalance, NormDispIncr, or EnergyIncr"
                 )
             tol = analysis.get("tol", 1.0e-10)
             max_iters = analysis.get("max_iters", 20)
-            primary_algorithm = (
-                "ModifiedNewton -initial"
-                if algorithm == "ModifiedNewtonInitial"
-                else algorithm
-            )
+            primary_algorithm = _algorithm_cmd(algorithm, analysis)
             f.write(f"test {test_type} {tol} {max_iters}\n")
             f.write(f"algorithm {primary_algorithm}\n")
             f.write(f"integrator Newmark {gamma} {beta}\n")
             f.write("analysis Transient\n")
             if fallback_algorithm is not None:
                 fallback_test_type = analysis.get("fallback_test_type", test_type)
-                if fallback_test_type not in ("NormUnbalance", "NormDispIncr"):
+                if fallback_test_type not in (
+                    "NormUnbalance",
+                    "NormDispIncr",
+                    "EnergyIncr",
+                ):
                     raise ValueError(
-                        "transient_nonlinear fallback_test_type must be NormUnbalance or NormDispIncr"
+                        "transient_nonlinear fallback_test_type must be NormUnbalance, NormDispIncr, or EnergyIncr"
                     )
                 fallback_tol = analysis.get("fallback_tol", tol)
                 fallback_max_iters = analysis.get("fallback_max_iters", max_iters)
-                fallback_algorithm_cmd = (
-                    "ModifiedNewton -initial"
-                    if fallback_algorithm == "ModifiedNewtonInitial"
-                    else fallback_algorithm
+                fallback_algorithm_cmd = _algorithm_cmd(
+                    fallback_algorithm,
+                    analysis,
+                    prefix="fallback_",
                 )
                 f.write("set strut_tr_ok 0\n")
                 f.write(
@@ -807,51 +1247,7 @@ def main():
             raise ValueError(f"unsupported analysis type: {analysis_type}")
 
         # Recorders
-        for rec in recorders:
-            rec_type = rec["type"]
-            if rec_type == "node_displacement":
-                dofs = rec["dofs"]
-                output = rec.get("output", "node_disp")
-                for node_id in rec["nodes"]:
-                    filename = f"{output}_node{node_id}.out"
-                    f.write(
-                        f"recorder Node -file {filename} -node {node_id} -dof {' '.join(str(d) for d in dofs)} disp\n"
-                    )
-            elif rec_type == "element_force":
-                output = rec.get("output", "element_force")
-                for elem_id in rec["elements"]:
-                    filename = f"{output}_ele{elem_id}.out"
-                    f.write(f"recorder Element -file {filename} -ele {elem_id} force\n")
-            elif rec_type == "node_reaction":
-                dofs = rec["dofs"]
-                output = rec.get("output", "reaction")
-                for node_id in rec["nodes"]:
-                    filename = f"{output}_node{node_id}.out"
-                    f.write(
-                        f"recorder Node -file {filename} -node {node_id} -dof {' '.join(str(d) for d in dofs)} reaction\n"
-                    )
-            elif rec_type == "drift":
-                i_node = rec["i_node"]
-                j_node = rec["j_node"]
-                dof = rec["dof"]
-                perp_dirn = rec["perp_dirn"]
-                output = rec.get("output", "drift")
-                filename = f"{output}_i{i_node}_j{j_node}.out"
-                f.write(
-                    f"recorder Drift -file {filename} -iNode {i_node} -jNode {j_node} -dof {dof} -perpDirn {perp_dirn}\n"
-                )
-            elif rec_type == "envelope_element_force":
-                output = rec.get("output", "envelope_element_force")
-                for elem_id in rec["elements"]:
-                    filename = f"{output}_ele{elem_id}.out"
-                    f.write(
-                        f"recorder EnvelopeElement -file {filename} -ele {elem_id} forces\n"
-                    )
-            elif rec_type == "modal_eigen":
-                # Modal outputs are emitted explicitly after `eigen`, not through recorder commands.
-                pass
-            else:
-                raise ValueError(f"unsupported recorder type: {rec_type}")
+        _emit_recorders(f, recorders, node_by_id, ndf)
 
         if analysis_type == "transient_linear" or (
             analysis_type == "transient_nonlinear" and transient_nonlinear_emits_analyze

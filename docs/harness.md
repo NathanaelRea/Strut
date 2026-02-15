@@ -26,8 +26,9 @@ Minimum required fields (v1.0):
 - `sections`: list of `{ id, type, params }`
   - Elastic: `ElasticSection2d`, `ElasticSection3d`, `ElasticMembranePlateSection`
   - Fiber (infrastructure): `FiberSection2d`
-    - `params.patches`: list of `rect` patches:
-      - `{ type: "rect", material, num_subdiv_y, num_subdiv_z, y_i, z_i, y_j, z_j }`
+    - `params.patches`: list of patches:
+      - `rect`: `{ type: "rect", material, num_subdiv_y, num_subdiv_z, y_i, z_i, y_j, z_j }`
+      - `quadr`: `{ type: "quadr", material, num_subdiv_y, num_subdiv_z, y_i, z_i, y_j, z_j, y_k, z_k, y_l, z_l }`
     - `params.layers`: list of `straight` layers:
       - `{ type: "straight", material, num_bars, bar_area, y_start, z_start, y_end, z_end }`
 - `elements`: list of `{ id, type, nodes, section, geomTransf }`
@@ -45,7 +46,7 @@ Minimum required fields (v1.0):
 - `loads`: list of `{ node, dof, value }` (`dof` must be in `1..ndf`)
 - `element_loads`: list of `{ element, type, w }` (optional, `type: "beamUniform"` only)
 - `rayleigh`: `{ alphaM?, betaK?, betaKInit?, betaKComm? }` (optional; top-level)
-- `analysis`: `{ type: "static_linear" | "static_nonlinear" | "transient_linear" | "transient_nonlinear" | "modal_eigen", steps: 1, constraints?, num_modes?, dt?, max_iters?, tol?, rel_tol?, integrator?, algorithm? }`
+- `analysis`: `{ type: "static_linear" | "static_nonlinear" | "transient_linear" | "transient_nonlinear" | "modal_eigen" | "staged", steps: 1, constraints?, num_modes?, dt?, max_iters?, tol?, rel_tol?, integrator?, algorithm?, stages? }`
   - `constraints`: `Plain` (default) or `Transformation`.
   - Nonlinear uniaxial materials require `static_nonlinear` or `transient_nonlinear`.
   - `modal_eigen` requires `num_modes >= 1` and positive nodal masses on free DOFs.
@@ -56,11 +57,15 @@ Minimum required fields (v1.0):
   - `transient_linear` requires `dt > 0` and supports `integrator: { type: "Newmark", gamma?, beta? }`
   - `transient_nonlinear` requires `dt > 0` and supports:
     - `integrator: { type: "Newmark", gamma?, beta? }`
-    - `algorithm: "Newton"` (default), `"ModifiedNewton"`, or `"ModifiedNewtonInitial"`
-    - `test_type: "MaxDispIncr"` (default), `"NormDispIncr"`, or `"NormUnbalance"`
+    - `algorithm: "Newton"` (default), `"ModifiedNewton"`, `"ModifiedNewtonInitial"`, `"Broyden"`, or `"NewtonLineSearch"` (`Broyden`/`NewtonLineSearch` currently map to Newton tangent refresh behavior in Mojo runtime)
+    - `test_type: "MaxDispIncr"` (default), `"NormDispIncr"`, `"NormUnbalance"`, or `"EnergyIncr"`
     - optional fallback controls:
-      - `fallback_algorithm: "Newton" | "ModifiedNewton" | "ModifiedNewtonInitial"`
+      - `fallback_algorithm: "Newton" | "ModifiedNewton" | "ModifiedNewtonInitial" | "Broyden" | "NewtonLineSearch"`
       - `fallback_test_type`, `fallback_tol`, `fallback_rel_tol`, `fallback_max_iters`
+  - `staged` analysis:
+    - `analysis.stages`: non-empty list of stage objects
+    - stage fields: `analysis` (required), optional `pattern`, `time_series`, `loads`, `element_loads`, `rayleigh`, `load_const`
+    - stage `analysis.type` supports `static_linear`, `static_nonlinear`, `transient_linear`, `transient_nonlinear`, `modal_eigen`
 - `masses`: list of `{ node, dof, value }` (optional; nodal lumped masses for dynamics)
 - `recorders`: list of
   - `{ type: "node_displacement", nodes, dofs, output }` (`dofs` in `1..ndf`)
@@ -68,6 +73,8 @@ Minimum required fields (v1.0):
   - `{ type: "node_reaction", nodes, dofs, output }` (`dofs` in `1..ndf`)
   - `{ type: "drift", i_node, j_node, dof, perp_dirn, output }`
   - `{ type: "envelope_element_force", elements, output }` (`truss`, `elasticBeamColumn2d`, `forceBeamColumn2d`, `dispBeamColumn2d`)
+  - `{ type: "section_force", elements, section | sections, output }` (`forceBeamColumn2d`, `dispBeamColumn2d`)
+  - `{ type: "section_deformation", elements, section | sections, output }` (`forceBeamColumn2d`, `dispBeamColumn2d`)
   - `{ type: "modal_eigen", modes, nodes, dofs, output }`
 - `parity_mode`: `"step"` (default) or `"max_abs"` for transient comparisons (optional; top-level)
   - `step`: strict step-by-step time-history comparison.
@@ -78,7 +85,7 @@ Current limitation: `forceBeamColumn2d`/`dispBeamColumn2d` support is currently 
 - `geomTransf: Linear | PDelta`
 - `integration: Lobatto`
 - `num_int_pts: 3 | 5`
-- `analysis.type: static_linear | static_nonlinear | transient_nonlinear`
+- `analysis.type: static_linear | static_nonlinear | transient_nonlinear | staged`
 
 ## Harness Workflow
 
@@ -88,6 +95,15 @@ Current limitation: `forceBeamColumn2d`/`dispBeamColumn2d` support is currently 
 4. `scripts/compare_case.py` compares displacement outputs with tolerances.
 5. `run_tests.py` provides a unified test runner for unit, schema, and parity checks.
 6. `scripts/run_and_plot_case.py <case.json>` runs a case and generates overlay plots for all comparable `.out` files/components.
+
+## Reproduction Commands
+
+- Run Ex2c staged parity case end-to-end:
+  - `STRUT_FORCE_CASE=1 uv run scripts/run_case.py tests/validation/opensees_example_ex2c_canti2d_inelastic_fiber/opensees_example_ex2c_canti2d_inelastic_fiber.json`
+- Re-run parity check only:
+  - `uv run scripts/compare_case.py --case opensees_example_ex2c_canti2d_inelastic_fiber`
+- Run per-case benchmark (no batch, no archive):
+  - `uv run scripts/run_benchmarks.py --cases opensees_example_ex2c_canti2d_inelastic_fiber --include-disabled --engine mojo --repeat 1 --warmup 0 --no-batch --no-archive`
 
 ## Output Format
 

@@ -1,0 +1,206 @@
+{
+  "schema_version": "1.0",
+  "enabled": false,
+  "status": "todo",
+  "metadata": {
+    "name": "opensees_example_ex2c_canti2d_inelastic_fiber",
+    "units": "kips-in-sec"
+  },
+  "source_doc": "docs/agent-reference/OpenSeesExamplesAdvanced/Ex2cCanti2DInelasticFiber/Ex2c.Canti2D.InelasticFiberSection.EQ.tcl",
+  "source_example": "docs/agent-reference/OpenSeesExamplesAdvanced/Ex2cCanti2DInelasticFiber/Ex2c.Canti2D.InelasticFiberSection.EQ.tcl",
+  "notes": "Adapted staged migration of OpenSees Ex2c with nonlinearBeamColumn mapped to forceBeamColumn2d, section recorders mapped to section_force/section_deformation, and a single configured fallback algorithm path.",
+  "migration": {
+    "open_sees_element": "nonlinearBeamColumn",
+    "strut_element": "forceBeamColumn2d",
+    "open_sees_dynamic_fallbacks": [
+      "Newton -initial",
+      "Broyden 8",
+      "NewtonLineSearch 0.8"
+    ],
+    "strut_dynamic_fallback": "ModifiedNewtonInitial",
+    "ground_motion": {
+      "source_file": "docs/agent-reference/OpenSeesExamplesAdvanced/Ex2cCanti2DInelasticFiber/BM68elc.acc",
+      "mapped_values_path": "BM68elc.acc",
+      "dt": 0.01,
+      "factor": 1.0
+    }
+  },
+  "parity_mode": "max_abs",
+  "parity_tolerance": {
+    "rtol": 0.2,
+    "atol": 5e-4
+  },
+  "benchmark_size": "large",
+  "model": {
+    "ndm": 2,
+    "ndf": 3
+  },
+  "nodes": [
+    { "id": 1, "x": 0.0, "y": 0.0, "constraints": [1, 2, 3] },
+    { "id": 2, "x": 0.0, "y": 432.0 }
+  ],
+  "materials": [
+    {
+      "id": 1,
+      "type": "Concrete02",
+      "params": {
+        "fpc": -4.0,
+        "epsc0": -0.003,
+        "fpcu": -0.8,
+        "epscu": -0.01,
+        "rat": 0.1,
+        "ft": 0.56,
+        "Ets": 280.0
+      }
+    },
+    {
+      "id": 2,
+      "type": "Steel02",
+      "params": {
+        "Fy": 66.8,
+        "E0": 29000.0,
+        "b": 0.01,
+        "R0": 18.0,
+        "cR1": 0.925,
+        "cR2": 0.15
+      }
+    }
+  ],
+  "sections": [
+    {
+      "id": 1,
+      "type": "FiberSection2d",
+      "params": {
+        "patches": [
+          {
+            "type": "quadr",
+            "material": 1,
+            "num_subdiv_y": 16,
+            "num_subdiv_z": 4,
+            "y_i": -30.0,
+            "z_i": 30.0,
+            "y_j": -30.0,
+            "z_j": -30.0,
+            "y_k": 30.0,
+            "z_k": -30.0,
+            "y_l": 30.0,
+            "z_l": 30.0
+          }
+        ],
+        "layers": [
+          {
+            "type": "straight",
+            "material": 2,
+            "num_bars": 16,
+            "bar_area": 2.25,
+            "y_start": -25.0,
+            "z_start": 25.0,
+            "y_end": -25.0,
+            "z_end": -25.0
+          },
+          {
+            "type": "straight",
+            "material": 2,
+            "num_bars": 16,
+            "bar_area": 2.25,
+            "y_start": 25.0,
+            "z_start": 25.0,
+            "y_end": 25.0,
+            "z_end": -25.0
+          }
+        ]
+      }
+    }
+  ],
+  "elements": [
+    {
+      "id": 1,
+      "type": "nonlinearBeamColumn",
+      "nodes": [1, 2],
+      "section": 1,
+      "geomTransf": "Linear",
+      "integration": "Lobatto",
+      "num_int_pts": 5
+    }
+  ],
+  "masses": [
+    { "node": 2, "dof": 1, "value": 5.1759834369 },
+    { "node": 2, "dof": 2, "value": 1e-9 }
+  ],
+  "time_series": [
+    { "type": "Linear", "tag": 1, "factor": 1.0 },
+    {
+      "type": "Path",
+      "tag": 2,
+      "dt": 0.01,
+      "values_path": "BM68elc.acc",
+      "factor": 1.0
+    }
+  ],
+  "pattern": {
+    "type": "Plain",
+    "tag": 1,
+    "time_series": 1
+  },
+  "loads": [
+    { "node": 2, "dof": 2, "value": -2000.0 }
+  ],
+  "analysis": {
+    "type": "staged",
+    "constraints": "Plain",
+    "stages": [
+      {
+        "analysis": {
+          "type": "static_nonlinear",
+          "steps": 10,
+          "algorithm": "Newton",
+          "tol": 1e-8,
+          "integrator": { "type": "LoadControl" }
+        },
+        "load_const": { "time": 0.0 }
+      },
+      {
+        "pattern": {
+          "type": "UniformExcitation",
+          "tag": 400,
+          "direction": 1,
+          "accel": 2
+        },
+        "rayleigh": {
+          "alphaM": 0.0,
+          "betaK": 0.0,
+          "betaKInit": 0.0,
+          "betaKComm": 0.0079936418
+        },
+        "analysis": {
+          "type": "transient_nonlinear",
+          "steps": 1000,
+          "dt": 0.01,
+          "algorithm": "ModifiedNewton",
+          "test_type": "EnergyIncr",
+          "tol": 1e-8,
+          "max_iters": 10,
+          "fallback_algorithm": "ModifiedNewtonInitial",
+          "fallback_test_type": "NormDispIncr",
+          "fallback_tol": 1e-8,
+          "fallback_max_iters": 1000,
+          "integrator": { "type": "Newmark", "gamma": 0.5, "beta": 0.25 }
+        }
+      }
+    ]
+  },
+  "recorders": [
+    { "type": "node_displacement", "nodes": [2], "dofs": [1, 2, 3], "output": "DFree" },
+    { "type": "node_displacement", "nodes": [1], "dofs": [1, 2, 3], "output": "DBase" },
+    { "type": "node_reaction", "nodes": [1], "dofs": [1, 2, 3], "output": "RBase" },
+    { "type": "drift", "i_node": 1, "j_node": 2, "dof": 1, "perp_dirn": 2, "output": "Drift" },
+    { "type": "element_force", "elements": [1], "output": "FCol" },
+    { "type": "section_force", "elements": [1], "sections": [1, 5], "output": "ForceColSec" },
+    {
+      "type": "section_deformation",
+      "elements": [1],
+      "sections": [1, 5],
+      "output": "DefoColSec"
+    }
+  ]
+}

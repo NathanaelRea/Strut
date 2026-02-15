@@ -5,6 +5,7 @@ Current implementation status:
 - `FiberSection2d` infrastructure exists in Mojo.
 - Supported primitives:
   - `patch rect`
+  - `patch quadr`
   - `layer straight`
 - Aggregation outputs:
   - axial force `N`
@@ -22,6 +23,10 @@ Current limitation:
 - `elasticBeamColumn2d` / `elasticBeamColumn3d` still do not consume fiber sections.
 - `forceBeamColumn2d` and `dispBeamColumn2d` are available in a minimum v1 scope only:
   - `geomTransf: Linear`
+  - `geomTransf: PDelta`
   - `integration: Lobatto`
-  - `num_int_pts: 3`
-  - `analysis.type: static_nonlinear`
+  - `num_int_pts: 3 | 5`
+  - `analysis.type: static_linear | static_nonlinear | transient_nonlinear | staged`
+  - section recorder outputs are available for both elements:
+    - `section_force` (`N`, `Mz`)
+    - `section_deformation` (`eps0`, `kappa`)

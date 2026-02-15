@@ -436,6 +436,301 @@ fn _disp_beam_column2d_element_force_global(
     return f_global^
 
 
+fn _lobatto_xi_for_section(num_int_pts: Int, ip: Int) -> Float64:
+    if num_int_pts == 3:
+        if ip == 0:
+            return 0.0
+        if ip == 1:
+            return 0.5
+        if ip == 2:
+            return 1.0
+    elif num_int_pts == 5:
+        if ip == 0:
+            return 0.0
+        if ip == 1:
+            return 0.1726731646460114
+        if ip == 2:
+            return 0.5
+        if ip == 3:
+            return 0.8273268353539886
+        if ip == 4:
+            return 1.0
+    abort("beam section recorder supports Lobatto num_int_pts=3 or 5")
+    return 0.0
+
+
+fn _fiber_section_force_from_offset(
+    sec_def: FiberSection2dDef,
+    fibers: List[FiberCell],
+    uniaxial_defs: List[UniMaterialDef],
+    mut uniaxial_states: List[UniMaterialState],
+    elem_state_ids: List[Int],
+    state_offset: Int,
+    state_count: Int,
+    eps0: Float64,
+    kappa: Float64,
+) raises -> List[Float64]:
+    if state_count != sec_def.fiber_count:
+        abort("section recorder fiber state count mismatch")
+    if state_offset < 0 or state_offset + state_count > len(elem_state_ids):
+        abort("section recorder fiber state offset out of range")
+
+    var axial_force = 0.0
+    var moment_z = 0.0
+    for i in range(state_count):
+        var cell = fibers[sec_def.fiber_offset + i]
+        var y_rel = cell.y - sec_def.y_bar
+        var eps = eps0 - y_rel * kappa
+        var state_index = elem_state_ids[state_offset + i]
+        if state_index < 0 or state_index >= len(uniaxial_states):
+            abort("section recorder fiber state index out of range")
+        if cell.def_index < 0 or cell.def_index >= len(uniaxial_defs):
+            abort("section recorder fiber material definition out of range")
+        var mat_def = uniaxial_defs[cell.def_index]
+        var state = uniaxial_states[state_index]
+        uniaxial_set_trial_strain(mat_def, state, eps)
+        uniaxial_states[state_index] = state
+
+        var fs = state.sig_t * cell.area
+        axial_force += fs
+        moment_z += -fs * y_rel
+    return [axial_force, moment_z]
+
+
+fn _force_beam_column2d_section_response(
+    elem_index: Int,
+    elem: ElementInput,
+    section_no: Int,
+    u: List[Float64],
+    nodes: List[NodeInput],
+    sections_by_id: List[SectionInput],
+    fiber_section_defs: List[FiberSection2dDef],
+    fiber_section_cells: List[FiberCell],
+    fiber_section_index_by_id: List[Int],
+    uniaxial_defs: List[UniMaterialDef],
+    mut uniaxial_states: List[UniMaterialState],
+    elem_uniaxial_offsets: List[Int],
+    elem_uniaxial_counts: List[Int],
+    elem_uniaxial_state_ids: List[Int],
+    force_basic_offsets: List[Int],
+    force_basic_counts: List[Int],
+    mut force_basic_q: List[Float64],
+    want_deformation: Bool,
+) raises -> List[Float64]:
+    var num_int_pts = elem.num_int_pts
+    if section_no < 1 or section_no > num_int_pts:
+        abort("section recorder section index out of range")
+    var ip = section_no - 1
+    var xi = _lobatto_xi_for_section(num_int_pts, ip)
+
+    # Refresh basic force/predictor state at the current displacement.
+    _ = _force_beam_column2d_element_force_global(
+        elem_index,
+        elem,
+        nodes,
+        sections_by_id,
+        3,
+        u,
+        fiber_section_defs,
+        fiber_section_cells,
+        fiber_section_index_by_id,
+        uniaxial_defs,
+        uniaxial_states,
+        elem_uniaxial_offsets,
+        elem_uniaxial_counts,
+        elem_uniaxial_state_ids,
+        force_basic_offsets,
+        force_basic_counts,
+        force_basic_q,
+    )
+
+    var q_offset = force_basic_offsets[elem_index]
+    var q_count = force_basic_counts[elem_index]
+    if q_count < 3:
+        abort("section recorder forceBeamColumn2d basic state missing")
+    var q0 = force_basic_q[q_offset]
+    var q1 = force_basic_q[q_offset + 1]
+    var q2 = force_basic_q[q_offset + 2]
+    var axial_force = q0
+    var moment_z = (xi - 1.0) * q1 + xi * q2
+
+    var sec = sections_by_id[elem.section]
+    var eps0 = 0.0
+    var kappa = 0.0
+    var has_predictor = q_count >= 3 + 2 * num_int_pts
+    if has_predictor:
+        eps0 = force_basic_q[q_offset + 3 + ip]
+        kappa = force_basic_q[q_offset + 3 + num_int_pts + ip]
+    elif sec.type == "ElasticSection2d":
+        if sec.E <= 0.0 or sec.A <= 0.0 or sec.I <= 0.0:
+            abort("section recorder ElasticSection2d requires positive E/A/I")
+        eps0 = axial_force / (sec.E * sec.A)
+        kappa = moment_z / (sec.E * sec.I)
+
+    if want_deformation:
+        return [eps0, kappa]
+    return [axial_force, moment_z]
+
+
+fn _disp_beam_column2d_section_response(
+    elem_index: Int,
+    elem: ElementInput,
+    section_no: Int,
+    ndf: Int,
+    u: List[Float64],
+    nodes: List[NodeInput],
+    sections_by_id: List[SectionInput],
+    fiber_section_defs: List[FiberSection2dDef],
+    fiber_section_cells: List[FiberCell],
+    fiber_section_index_by_id: List[Int],
+    uniaxial_defs: List[UniMaterialDef],
+    mut uniaxial_states: List[UniMaterialState],
+    elem_uniaxial_offsets: List[Int],
+    elem_uniaxial_counts: List[Int],
+    elem_uniaxial_state_ids: List[Int],
+    want_deformation: Bool,
+) raises -> List[Float64]:
+    if ndf != 3:
+        abort("dispBeamColumn2d section recorder requires ndf=3")
+    var num_int_pts = elem.num_int_pts
+    if section_no < 1 or section_no > num_int_pts:
+        abort("section recorder section index out of range")
+    var ip = section_no - 1
+    var xi = _lobatto_xi_for_section(num_int_pts, ip)
+
+    var i1 = elem.node_index_1
+    var i2 = elem.node_index_2
+    var node1 = nodes[i1]
+    var node2 = nodes[i2]
+    var dx = node2.x - node1.x
+    var dy = node2.y - node1.y
+    var L = sqrt(dx * dx + dy * dy)
+    if L == 0.0:
+        abort("zero-length element")
+    var c = dx / L
+    var s = dy / L
+    var dof_map = [
+        node_dof_index(i1, 1, ndf),
+        node_dof_index(i1, 2, ndf),
+        node_dof_index(i1, 3, ndf),
+        node_dof_index(i2, 1, ndf),
+        node_dof_index(i2, 2, ndf),
+        node_dof_index(i2, 3, ndf),
+    ]
+    var u_local: List[Float64] = []
+    u_local.resize(6, 0.0)
+    u_local[0] = c * u[dof_map[0]] + s * u[dof_map[1]]
+    u_local[1] = -s * u[dof_map[0]] + c * u[dof_map[1]]
+    u_local[2] = u[dof_map[2]]
+    u_local[3] = c * u[dof_map[3]] + s * u[dof_map[4]]
+    u_local[4] = -s * u[dof_map[3]] + c * u[dof_map[4]]
+    u_local[5] = u[dof_map[5]]
+
+    var inv_L = 1.0 / L
+    var eps0 = (-inv_L) * u_local[0] + inv_L * u_local[3]
+    var kappa = (
+        ((-6.0 + 12.0 * xi) / (L * L)) * u_local[1]
+        + ((-4.0 + 6.0 * xi) / L) * u_local[2]
+        + ((6.0 - 12.0 * xi) / (L * L)) * u_local[4]
+        + ((-2.0 + 6.0 * xi) / L) * u_local[5]
+    )
+    if want_deformation:
+        return [eps0, kappa]
+
+    var sec = sections_by_id[elem.section]
+    if sec.type == "ElasticSection2d":
+        if sec.E <= 0.0 or sec.A <= 0.0 or sec.I <= 0.0:
+            abort("section recorder ElasticSection2d requires positive E/A/I")
+        return [sec.E * sec.A * eps0, sec.E * sec.I * kappa]
+
+    var sec_id = elem.section
+    if sec_id >= len(fiber_section_index_by_id):
+        abort("section recorder section not found")
+    var sec_index = fiber_section_index_by_id[sec_id]
+    if sec_index < 0 or sec_index >= len(fiber_section_defs):
+        abort("section recorder fiber section not found")
+    var sec_def = fiber_section_defs[sec_index]
+    var elem_offset = elem_uniaxial_offsets[elem_index]
+    var fibers_per_section = sec_def.fiber_count
+    var ip_offset = elem_offset + ip * fibers_per_section
+    return _fiber_section_force_from_offset(
+        sec_def,
+        fiber_section_cells,
+        uniaxial_defs,
+        uniaxial_states,
+        elem_uniaxial_state_ids,
+        ip_offset,
+        fibers_per_section,
+        eps0,
+        kappa,
+    )
+
+
+fn _section_response_for_recorder(
+    elem_index: Int,
+    elem: ElementInput,
+    section_no: Int,
+    ndf: Int,
+    u: List[Float64],
+    nodes: List[NodeInput],
+    sections_by_id: List[SectionInput],
+    fiber_section_defs: List[FiberSection2dDef],
+    fiber_section_cells: List[FiberCell],
+    fiber_section_index_by_id: List[Int],
+    uniaxial_defs: List[UniMaterialDef],
+    mut uniaxial_states: List[UniMaterialState],
+    elem_uniaxial_offsets: List[Int],
+    elem_uniaxial_counts: List[Int],
+    elem_uniaxial_state_ids: List[Int],
+    force_basic_offsets: List[Int],
+    force_basic_counts: List[Int],
+    mut force_basic_q: List[Float64],
+    want_deformation: Bool,
+) raises -> List[Float64]:
+    if elem.type_tag == ElementTypeTag.ForceBeamColumn2d:
+        return _force_beam_column2d_section_response(
+            elem_index,
+            elem,
+            section_no,
+            u,
+            nodes,
+            sections_by_id,
+            fiber_section_defs,
+            fiber_section_cells,
+            fiber_section_index_by_id,
+            uniaxial_defs,
+            uniaxial_states,
+            elem_uniaxial_offsets,
+            elem_uniaxial_counts,
+            elem_uniaxial_state_ids,
+            force_basic_offsets,
+            force_basic_counts,
+            force_basic_q,
+            want_deformation,
+        )
+    if elem.type_tag == ElementTypeTag.DispBeamColumn2d:
+        return _disp_beam_column2d_section_response(
+            elem_index,
+            elem,
+            section_no,
+            ndf,
+            u,
+            nodes,
+            sections_by_id,
+            fiber_section_defs,
+            fiber_section_cells,
+            fiber_section_index_by_id,
+            uniaxial_defs,
+            uniaxial_states,
+            elem_uniaxial_offsets,
+            elem_uniaxial_counts,
+            elem_uniaxial_state_ids,
+            want_deformation,
+        )
+    abort("section recorder supports forceBeamColumn2d or dispBeamColumn2d only")
+    return []
+
+
 fn _append_output(
     mut filenames: List[String],
     mut buffers: List[List[String]],

@@ -1,4 +1,5 @@
 from collections import List
+from elements import beam_uniform_load_global
 from os import abort
 from python import Python, PythonObject
 
@@ -19,16 +20,29 @@ from solver.run_case.analysis.static_nonlinear import (
 from solver.run_case.analysis.transient_linear import run_transient_linear
 from solver.run_case.analysis.transient_nonlinear import run_transient_nonlinear
 from solver.run_case.analysis.modal_eigen import run_modal_eigen
+from solver.run_case.input_types import (
+    ElementInput,
+    NodeInput,
+    parse_analysis_input_from_raw,
+)
 from solver.run_case.helpers import (
     _drift_value,
     _element_force_global_for_recorder,
     _enforce_equal_dof_values,
     _format_values_line,
     _has_recorder_type,
+    _section_response_for_recorder,
     _scaled_forces,
     _update_envelope,
 )
 from solver.run_case.loader import load_case_state
+from solver.time_series import (
+    TimeSeriesInput,
+    eval_time_series_input,
+    find_time_series_input,
+    parse_time_series_inputs,
+)
+from strut_io import py_len
 from tag_types import RecorderTypeTag
 
 
@@ -42,6 +56,96 @@ fn _write_output_chunk_files(
         for j in range(len(buffers[i])):
             file_obj.write(PythonObject(buffers[i][j]))
         file_obj.close()
+
+
+fn _build_stage_force_vector(
+    loads_raw: PythonObject,
+    element_loads_raw: PythonObject,
+    typed_nodes: List[NodeInput],
+    typed_elements: List[ElementInput],
+    elem_id_to_index: List[Int],
+    id_to_index: List[Int],
+    ndf: Int,
+    total_dofs: Int,
+) raises -> List[Float64]:
+    var F_stage: List[Float64] = []
+    F_stage.resize(total_dofs, 0.0)
+
+    for i in range(py_len(element_loads_raw)):
+        var load = element_loads_raw[i]
+        var load_type = String(load.get("type", ""))
+        if load_type != "beamUniform":
+            abort("unsupported element load type: " + load_type)
+        var elem_id = Int(load["element"])
+        if elem_id >= len(elem_id_to_index) or elem_id_to_index[elem_id] < 0:
+            abort("element load refers to unknown element")
+        var elem_index = elem_id_to_index[elem_id]
+        var elem = typed_elements[elem_index]
+        if elem.type != "elasticBeamColumn2d":
+            abort("beamUniform requires elasticBeamColumn2d")
+        if ndf != 3:
+            abort("beamUniform requires ndf=3")
+        var n1 = typed_nodes[elem.node_index_1]
+        var n2 = typed_nodes[elem.node_index_2]
+        var w = Float64(load.get("w", 0.0))
+        var f_global = beam_uniform_load_global(
+            n1.x,
+            n1.y,
+            n2.x,
+            n2.y,
+            w,
+        )
+        F_stage[node_dof_index(elem.node_index_1, 1, ndf)] += f_global[0]
+        F_stage[node_dof_index(elem.node_index_1, 2, ndf)] += f_global[1]
+        F_stage[node_dof_index(elem.node_index_1, 3, ndf)] += f_global[2]
+        F_stage[node_dof_index(elem.node_index_2, 1, ndf)] += f_global[3]
+        F_stage[node_dof_index(elem.node_index_2, 2, ndf)] += f_global[4]
+        F_stage[node_dof_index(elem.node_index_2, 3, ndf)] += f_global[5]
+
+    for i in range(py_len(loads_raw)):
+        var load = loads_raw[i]
+        var node_id = Int(load["node"])
+        if node_id >= len(id_to_index) or id_to_index[node_id] < 0:
+            abort("load node not found")
+        var dof = Int(load["dof"])
+        require_dof_in_range(dof, ndf, "load")
+        var idx = node_dof_index(id_to_index[node_id], dof, ndf)
+        F_stage[idx] += Float64(load["value"])
+    return F_stage^
+
+
+fn _append_stage_time_series(
+    data: PythonObject,
+    stage_ts_raw: PythonObject,
+    mut time_series: List[TimeSeriesInput],
+    mut time_series_values: List[Float64],
+    mut time_series_times: List[Float64],
+) raises:
+    var builtins = Python.import_module("builtins")
+    var stage_data = builtins.dict()
+    stage_data["time_series"] = stage_ts_raw
+    if data.__contains__("__strut_case_dir"):
+        stage_data["__strut_case_dir"] = data["__strut_case_dir"]
+
+    var parsed: List[TimeSeriesInput] = []
+    var values_pool: List[Float64] = []
+    var time_pool: List[Float64] = []
+    parse_time_series_inputs(stage_data, parsed, values_pool, time_pool)
+
+    var values_offset = len(time_series_values)
+    var time_offset = len(time_series_times)
+    for i in range(len(values_pool)):
+        time_series_values.append(values_pool[i])
+    for i in range(len(time_pool)):
+        time_series_times.append(time_pool[i])
+
+    for i in range(len(parsed)):
+        var ts = parsed[i]
+        if find_time_series_input(time_series, ts.tag) >= 0:
+            abort("duplicate time_series tag in staged analysis")
+        ts.values_offset += values_offset
+        ts.time_offset += time_offset
+        time_series.append(ts)
 
 
 def run_case(data: PythonObject, output_path: String, profile_path: String):
@@ -108,6 +212,7 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
     var recorder_elements_pool = state.recorder_elements_pool.copy()
     var recorder_dofs_pool = state.recorder_dofs_pool.copy()
     var recorder_modes_pool = state.recorder_modes_pool.copy()
+    var recorder_sections_pool = state.recorder_sections_pool.copy()
     var recorders = state.recorders.copy()
 
     var id_to_index = state.id_to_index.copy()
@@ -234,6 +339,7 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
                 recorder_nodes_pool,
                 recorder_elements_pool,
                 recorder_dofs_pool,
+                recorder_sections_pool,
                 elem_id_to_index,
                 static_output_files,
                 static_output_buffers,
@@ -286,6 +392,7 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
                 recorder_nodes_pool,
                 recorder_elements_pool,
                 recorder_dofs_pool,
+                recorder_sections_pool,
                 elem_id_to_index,
                 static_output_files,
                 static_output_buffers,
@@ -344,6 +451,7 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
             recorder_nodes_pool,
             recorder_elements_pool,
             recorder_dofs_pool,
+            recorder_sections_pool,
             elem_id_to_index,
             fiber_section_defs,
             fiber_section_cells,
@@ -395,6 +503,7 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
             recorder_nodes_pool,
             recorder_elements_pool,
             recorder_dofs_pool,
+            recorder_sections_pool,
             elem_id_to_index,
             fiber_section_defs,
             fiber_section_cells,
@@ -405,6 +514,467 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
             rep_dof,
             constrained,
         )
+    elif analysis_type == "staged":
+        var builtins = Python.import_module("builtins")
+        var analysis_raw = data.get("analysis", None)
+        if analysis_raw is None or not analysis_raw.__contains__("stages"):
+            abort("staged analysis requires analysis.stages")
+        var stages = analysis_raw["stages"]
+        if py_len(stages) < 1:
+            abort("staged analysis requires non-empty analysis.stages")
+
+        var empty_list = builtins.list()
+        var top_level_loads = data.get("loads", empty_list)
+        var top_level_element_loads = data.get("element_loads", empty_list)
+
+        var stage_pattern_type = pattern_type
+        var stage_ts_index = ts_index
+        var stage_uniform_excitation_direction = uniform_excitation_direction
+        var stage_uniform_accel_ts_index = uniform_accel_ts_index
+        var stage_rayleigh_alpha_m = rayleigh_alpha_m
+        var stage_rayleigh_beta_k = rayleigh_beta_k
+        var stage_rayleigh_beta_k_init = rayleigh_beta_k_init
+        var stage_rayleigh_beta_k_comm = rayleigh_beta_k_comm
+        var stage_F_base = F_total.copy()
+        var stage_F = F_total.copy()
+
+        for stage_idx in range(py_len(stages)):
+            var stage = stages[stage_idx]
+            var stage_analysis_raw = stage.get("analysis", stage)
+            var stage_analysis_targets_pool: List[Float64] = []
+            var stage_analysis = parse_analysis_input_from_raw(
+                stage_analysis_raw, stage_analysis_targets_pool
+            )
+            var stage_type = stage_analysis.type
+            if stage_analysis.steps < 1:
+                abort("analysis steps must be >= 1")
+            if (
+                stage_analysis.constraints != "Plain"
+                and stage_analysis.constraints != "Transformation"
+            ):
+                abort(
+                    "unsupported staged constraints handler: "
+                    + stage_analysis.constraints
+                )
+            if stage_analysis.constraints != state.constraints_handler:
+                abort(
+                    "staged analysis requires a single constraints handler "
+                    "for all stages"
+                )
+
+            if stage.__contains__("time_series"):
+                _append_stage_time_series(
+                    data,
+                    stage["time_series"],
+                    time_series,
+                    time_series_values,
+                    time_series_times,
+                )
+
+            var stage_loads_raw = stage.get("loads", None)
+            var stage_element_loads_raw = stage.get("element_loads", None)
+            var has_stage_loads = stage_loads_raw is not None and py_len(stage_loads_raw) > 0
+            var has_stage_element_loads = (
+                stage_element_loads_raw is not None and py_len(stage_element_loads_raw) > 0
+            )
+
+            if stage.__contains__("pattern"):
+                var stage_pattern = stage["pattern"]
+                var stage_pattern_type_next = String(stage_pattern.get("type", "Plain"))
+                if stage_pattern_type_next == "Plain":
+                    if not stage_pattern.__contains__("time_series"):
+                        abort("pattern missing time_series")
+                    var stage_ts_tag = Int(stage_pattern["time_series"])
+                    stage_ts_index = find_time_series_input(time_series, stage_ts_tag)
+                    if stage_ts_index < 0:
+                        abort("time_series tag not found")
+                    if stage_loads_raw is None:
+                        if stage_idx == 0:
+                            stage_loads_raw = top_level_loads
+                        else:
+                            stage_loads_raw = empty_list
+                    if stage_element_loads_raw is None:
+                        if stage_idx == 0:
+                            stage_element_loads_raw = top_level_element_loads
+                        else:
+                            stage_element_loads_raw = empty_list
+                    stage_F_base = _build_stage_force_vector(
+                        stage_loads_raw,
+                        stage_element_loads_raw,
+                        typed_nodes,
+                        typed_elements,
+                        elem_id_to_index,
+                        id_to_index,
+                        ndf,
+                        total_dofs,
+                    )
+                    stage_F = stage_F_base.copy()
+                    stage_pattern_type = "Plain"
+                    stage_uniform_excitation_direction = 0
+                    stage_uniform_accel_ts_index = -1
+                elif stage_pattern_type_next == "UniformExcitation":
+                    if has_stage_loads or has_stage_element_loads:
+                        abort("UniformExcitation does not support nodal/element loads")
+                    if not stage_pattern.__contains__("direction"):
+                        abort("UniformExcitation pattern missing direction")
+                    stage_uniform_excitation_direction = Int(stage_pattern["direction"])
+                    if (
+                        stage_uniform_excitation_direction < 1
+                        or stage_uniform_excitation_direction > ndm
+                    ):
+                        abort("UniformExcitation direction out of range 1..ndm")
+                    var accel_tag = -1
+                    if stage_pattern.__contains__("accel"):
+                        accel_tag = Int(stage_pattern["accel"])
+                    elif stage_pattern.__contains__("time_series"):
+                        accel_tag = Int(stage_pattern["time_series"])
+                    else:
+                        abort("UniformExcitation pattern missing accel time_series tag")
+                    stage_uniform_accel_ts_index = find_time_series_input(
+                        time_series, accel_tag
+                    )
+                    if stage_uniform_accel_ts_index < 0:
+                        abort("UniformExcitation accel time_series tag not found")
+                    stage_pattern_type = "UniformExcitation"
+                    stage_ts_index = -1
+                else:
+                    abort("unsupported staged pattern type: " + stage_pattern_type_next)
+            elif stage_idx > 0 and (has_stage_loads or has_stage_element_loads):
+                abort("staged analysis stage loads require an explicit stage pattern")
+
+            if stage.__contains__("rayleigh"):
+                var stage_rayleigh = stage["rayleigh"]
+                stage_rayleigh_alpha_m = Float64(stage_rayleigh.get("alphaM", 0.0))
+                stage_rayleigh_beta_k = Float64(stage_rayleigh.get("betaK", 0.0))
+                stage_rayleigh_beta_k_init = Float64(stage_rayleigh.get("betaKInit", 0.0))
+                stage_rayleigh_beta_k_comm = Float64(stage_rayleigh.get("betaKComm", 0.0))
+
+            if stage_type == "static_linear":
+                if stage_pattern_type != "Plain":
+                    abort("staged static_linear only supports Plain pattern")
+                run_static_linear(
+                    typed_nodes,
+                    typed_elements,
+                    typed_sections_by_id,
+                    typed_materials_by_id,
+                    id_to_index,
+                    node_count,
+                    ndf,
+                    ndm,
+                    u,
+                    stage_F,
+                    uniaxial_defs,
+                    uniaxial_state_defs,
+                    uniaxial_states,
+                    elem_uniaxial_offsets,
+                    elem_uniaxial_counts,
+                    elem_uniaxial_state_ids,
+                    force_basic_offsets,
+                    force_basic_counts,
+                    force_basic_q,
+                    fiber_section_defs,
+                    fiber_section_cells,
+                    fiber_section_index_by_id,
+                    use_banded_linear,
+                    free_index,
+                    free,
+                    stage_ts_index,
+                    time_series,
+                    time_series_values,
+                    time_series_times,
+                    do_profile,
+                    t0,
+                    events,
+                    events_need_comma,
+                    frame_assemble_stiffness,
+                    frame_kff_extract,
+                    frame_solve_linear,
+                    total_dofs,
+                    has_transformation_mpc,
+                    rep_dof,
+                    constrained,
+                )
+            elif stage_type == "static_nonlinear":
+                var stage_integrator_type = stage_analysis.integrator_type
+                if stage_integrator_type == "":
+                    stage_integrator_type = "LoadControl"
+                if stage_integrator_type == "LoadControl":
+                    run_static_nonlinear_load_control(
+                        stage_analysis,
+                        stage_analysis.steps,
+                        stage_ts_index,
+                        time_series,
+                        time_series_values,
+                        time_series_times,
+                        typed_nodes,
+                        typed_elements,
+                        typed_sections_by_id,
+                        typed_materials_by_id,
+                        id_to_index,
+                        node_count,
+                        ndf,
+                        ndm,
+                        u,
+                        uniaxial_defs,
+                        uniaxial_state_defs,
+                        uniaxial_states,
+                        elem_uniaxial_offsets,
+                        elem_uniaxial_counts,
+                        elem_uniaxial_state_ids,
+                        force_basic_offsets,
+                        force_basic_counts,
+                        force_basic_q,
+                        fiber_section_defs,
+                        fiber_section_cells,
+                        fiber_section_index_by_id,
+                        total_dofs,
+                        stage_F,
+                        use_banded_nonlinear,
+                        free,
+                        free_index,
+                        recorders,
+                        recorder_nodes_pool,
+                        recorder_elements_pool,
+                        recorder_dofs_pool,
+                        recorder_sections_pool,
+                        elem_id_to_index,
+                        transient_output_files,
+                        transient_output_buffers,
+                        do_profile,
+                        t0,
+                        events,
+                        events_need_comma,
+                        frame_assemble_stiffness,
+                        frame_kff_extract,
+                        frame_solve_nonlinear,
+                        frame_nonlinear_step,
+                        frame_nonlinear_iter,
+                        has_transformation_mpc,
+                        rep_dof,
+                        constrained,
+                    )
+                elif stage_integrator_type == "DisplacementControl":
+                    var stage_disp_steps = stage_analysis.steps
+                    run_static_nonlinear_displacement_control(
+                        stage_analysis,
+                        stage_disp_steps,
+                        stage_ts_index,
+                        time_series,
+                        stage_analysis_targets_pool,
+                        typed_nodes,
+                        typed_elements,
+                        typed_sections_by_id,
+                        typed_materials_by_id,
+                        id_to_index,
+                        node_count,
+                        ndf,
+                        ndm,
+                        u,
+                        uniaxial_defs,
+                        uniaxial_state_defs,
+                        uniaxial_states,
+                        elem_uniaxial_offsets,
+                        elem_uniaxial_counts,
+                        elem_uniaxial_state_ids,
+                        force_basic_offsets,
+                        force_basic_counts,
+                        force_basic_q,
+                        fiber_section_defs,
+                        fiber_section_cells,
+                        fiber_section_index_by_id,
+                        total_dofs,
+                        stage_F,
+                        constrained,
+                        free,
+                        recorders,
+                        recorder_nodes_pool,
+                        recorder_elements_pool,
+                        recorder_dofs_pool,
+                        recorder_sections_pool,
+                        elem_id_to_index,
+                        transient_output_files,
+                        transient_output_buffers,
+                        do_profile,
+                        t0,
+                        events,
+                        events_need_comma,
+                        frame_assemble_stiffness,
+                        frame_kff_extract,
+                        frame_solve_nonlinear,
+                        frame_nonlinear_step,
+                        frame_nonlinear_iter,
+                        has_transformation_mpc,
+                        rep_dof,
+                    )
+                else:
+                    abort(
+                        "unsupported static_nonlinear integrator: "
+                        + stage_integrator_type
+                    )
+            elif stage_type == "transient_linear":
+                run_transient_linear(
+                    stage_analysis,
+                    stage_analysis.steps,
+                    stage_ts_index,
+                    time_series,
+                    time_series_values,
+                    time_series_times,
+                    stage_pattern_type,
+                    stage_uniform_excitation_direction,
+                    stage_uniform_accel_ts_index,
+                    stage_rayleigh_alpha_m,
+                    stage_rayleigh_beta_k,
+                    stage_rayleigh_beta_k_init,
+                    stage_rayleigh_beta_k_comm,
+                    typed_nodes,
+                    typed_elements,
+                    typed_sections_by_id,
+                    typed_materials_by_id,
+                    id_to_index,
+                    node_count,
+                    ndf,
+                    ndm,
+                    total_dofs,
+                    u,
+                    uniaxial_defs,
+                    uniaxial_state_defs,
+                    uniaxial_states,
+                    elem_uniaxial_offsets,
+                    elem_uniaxial_counts,
+                    elem_uniaxial_state_ids,
+                    force_basic_offsets,
+                    force_basic_counts,
+                    force_basic_q,
+                    stage_F,
+                    M_total,
+                    free,
+                    recorders,
+                    recorder_nodes_pool,
+                    recorder_elements_pool,
+                    recorder_dofs_pool,
+                    recorder_sections_pool,
+                    elem_id_to_index,
+                    fiber_section_defs,
+                    fiber_section_cells,
+                    fiber_section_index_by_id,
+                    transient_output_files,
+                    transient_output_buffers,
+                    has_transformation_mpc,
+                    rep_dof,
+                    constrained,
+                )
+            elif stage_type == "transient_nonlinear":
+                run_transient_nonlinear(
+                    stage_analysis,
+                    stage_analysis.steps,
+                    stage_ts_index,
+                    time_series,
+                    time_series_values,
+                    time_series_times,
+                    stage_pattern_type,
+                    stage_uniform_excitation_direction,
+                    stage_uniform_accel_ts_index,
+                    stage_rayleigh_alpha_m,
+                    stage_rayleigh_beta_k,
+                    stage_rayleigh_beta_k_init,
+                    stage_rayleigh_beta_k_comm,
+                    typed_nodes,
+                    typed_elements,
+                    typed_sections_by_id,
+                    typed_materials_by_id,
+                    id_to_index,
+                    node_count,
+                    ndf,
+                    ndm,
+                    total_dofs,
+                    u,
+                    uniaxial_defs,
+                    uniaxial_state_defs,
+                    uniaxial_states,
+                    elem_uniaxial_offsets,
+                    elem_uniaxial_counts,
+                    elem_uniaxial_state_ids,
+                    force_basic_offsets,
+                    force_basic_counts,
+                    force_basic_q,
+                    stage_F,
+                    M_total,
+                    free,
+                    recorders,
+                    recorder_nodes_pool,
+                    recorder_elements_pool,
+                    recorder_dofs_pool,
+                    recorder_sections_pool,
+                    elem_id_to_index,
+                    fiber_section_defs,
+                    fiber_section_cells,
+                    fiber_section_index_by_id,
+                    transient_output_files,
+                    transient_output_buffers,
+                    has_transformation_mpc,
+                    rep_dof,
+                    constrained,
+                )
+            elif stage_type == "modal_eigen":
+                if stage_analysis.num_modes < 1:
+                    abort("modal_eigen requires num_modes >= 1")
+                run_modal_eigen(
+                    stage_analysis.num_modes,
+                    typed_nodes,
+                    typed_elements,
+                    typed_sections_by_id,
+                    typed_materials_by_id,
+                    id_to_index,
+                    node_count,
+                    ndf,
+                    ndm,
+                    total_dofs,
+                    u,
+                    uniaxial_defs,
+                    uniaxial_state_defs,
+                    uniaxial_states,
+                    elem_uniaxial_offsets,
+                    elem_uniaxial_counts,
+                    elem_uniaxial_state_ids,
+                    force_basic_offsets,
+                    force_basic_counts,
+                    force_basic_q,
+                    fiber_section_defs,
+                    fiber_section_cells,
+                    fiber_section_index_by_id,
+                    M_total,
+                    constrained,
+                    free,
+                    has_transformation_mpc,
+                    rep_dof,
+                    recorders,
+                    recorder_nodes_pool,
+                    recorder_dofs_pool,
+                    recorder_modes_pool,
+                    transient_output_files,
+                    transient_output_buffers,
+                )
+            else:
+                abort("unsupported staged analysis type: " + stage_type)
+
+            if stage.__contains__("load_const"):
+                var load_const_raw = stage["load_const"]
+                var apply_load_const = True
+                if load_const_raw is None:
+                    apply_load_const = False
+                elif (
+                    Bool(builtins.isinstance(load_const_raw, builtins.bool))
+                    and not Bool(load_const_raw)
+                ):
+                    apply_load_const = False
+                if apply_load_const:
+                    if stage_pattern_type == "UniformExcitation":
+                        stage_F_base = stage_F.copy()
+                    stage_F = stage_F_base.copy()
+                    stage_pattern_type = "Plain"
+                    stage_ts_index = -1
+                    stage_uniform_excitation_direction = 0
+                    stage_uniform_accel_ts_index = -1
     elif analysis_type == "modal_eigen":
         run_modal_eigen(
             modal_num_modes,
@@ -458,7 +1028,11 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
     out_dir.mkdir(parents=True, exist_ok=True)
     var analysis_path = out_dir.joinpath("analysis_time_us.txt")
     analysis_path.write_text(PythonObject(String(analysis_us) + "\n"))
-    if analysis_type == "transient_linear" or analysis_type == "transient_nonlinear":
+    if (
+        analysis_type == "transient_linear"
+        or analysis_type == "transient_nonlinear"
+        or (analysis_type == "staged" and len(transient_output_files) > 0)
+    ):
         _write_output_chunk_files(
             out_dir, transient_output_files, transient_output_buffers
         )
@@ -614,6 +1188,50 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
                         envelope_max,
                         envelope_abs,
                     )
+            elif (
+                rec.type_tag == RecorderTypeTag.SectionForce
+                or rec.type_tag == RecorderTypeTag.SectionDeformation
+            ):
+                var want_defo = rec.type_tag == RecorderTypeTag.SectionDeformation
+                for eidx in range(rec.element_count):
+                    var elem_id = recorder_elements_pool[rec.element_offset + eidx]
+                    if elem_id >= len(elem_id_to_index) or elem_id_to_index[elem_id] < 0:
+                        abort("recorder element not found")
+                    var elem_index = elem_id_to_index[elem_id]
+                    var elem = typed_elements[elem_index]
+                    for sidx in range(rec.section_count):
+                        var sec_no = recorder_sections_pool[rec.section_offset + sidx]
+                        var values = _section_response_for_recorder(
+                            elem_index,
+                            elem,
+                            sec_no,
+                            ndf,
+                            u,
+                            typed_nodes,
+                            typed_sections_by_id,
+                            fiber_section_defs,
+                            fiber_section_cells,
+                            fiber_section_index_by_id,
+                            uniaxial_defs,
+                            uniaxial_states,
+                            elem_uniaxial_offsets,
+                            elem_uniaxial_counts,
+                            elem_uniaxial_state_ids,
+                            force_basic_offsets,
+                            force_basic_counts,
+                            force_basic_q,
+                            want_defo,
+                        )
+                        var filename = (
+                            rec.output
+                            + "_ele"
+                            + String(elem_id)
+                            + "_sec"
+                            + String(sec_no)
+                            + ".out"
+                        )
+                        var file_path = out_dir.joinpath(filename)
+                        file_path.write_text(PythonObject(_format_values_line(values)))
             else:
                 abort("unsupported recorder type")
         for i in range(len(envelope_files)):

@@ -34,6 +34,7 @@ from solver.run_case.helpers import (
     _flush_envelope_outputs,
     _format_values_line,
     _has_recorder_type,
+    _section_response_for_recorder,
     _scaled_forces,
     _solve_linear_system,
     _update_envelope,
@@ -76,6 +77,7 @@ fn run_static_nonlinear_load_control(
     recorder_nodes_pool: List[Int],
     recorder_elements_pool: List[Int],
     recorder_dofs_pool: List[Int],
+    recorder_sections_pool: List[Int],
     elem_id_to_index: List[Int],
     mut static_output_files: List[String],
     mut static_output_buffers: List[List[String]],
@@ -483,6 +485,57 @@ fn run_static_nonlinear_load_control(
                         envelope_max,
                         envelope_abs,
                     )
+            elif (
+                rec.type_tag == RecorderTypeTag.SectionForce
+                or rec.type_tag == RecorderTypeTag.SectionDeformation
+            ):
+                var want_defo = rec.type_tag == RecorderTypeTag.SectionDeformation
+                for eidx in range(rec.element_count):
+                    var elem_id = recorder_elements_pool[rec.element_offset + eidx]
+                    if (
+                        elem_id >= len(elem_id_to_index)
+                        or elem_id_to_index[elem_id] < 0
+                    ):
+                        abort("recorder element not found")
+                    var elem_index = elem_id_to_index[elem_id]
+                    var elem = typed_elements[elem_index]
+                    for sidx in range(rec.section_count):
+                        var sec_no = recorder_sections_pool[rec.section_offset + sidx]
+                        var values = _section_response_for_recorder(
+                            elem_index,
+                            elem,
+                            sec_no,
+                            ndf,
+                            u,
+                            typed_nodes,
+                            typed_sections_by_id,
+                            fiber_section_defs,
+                            fiber_section_cells,
+                            fiber_section_index_by_id,
+                            uniaxial_defs,
+                            uniaxial_states,
+                            elem_uniaxial_offsets,
+                            elem_uniaxial_counts,
+                            elem_uniaxial_state_ids,
+                            force_basic_offsets,
+                            force_basic_counts,
+                            force_basic_q,
+                            want_defo,
+                        )
+                        var filename = (
+                            rec.output
+                            + "_ele"
+                            + String(elem_id)
+                            + "_sec"
+                            + String(sec_no)
+                            + ".out"
+                        )
+                        _append_output(
+                            static_output_files,
+                            static_output_buffers,
+                            filename,
+                            _format_values_line(values),
+                        )
             else:
                 abort("unsupported recorder type")
     _flush_envelope_outputs(
@@ -529,6 +582,7 @@ fn run_static_nonlinear_displacement_control(
     recorder_nodes_pool: List[Int],
     recorder_elements_pool: List[Int],
     recorder_dofs_pool: List[Int],
+    recorder_sections_pool: List[Int],
     elem_id_to_index: List[Int],
     mut static_output_files: List[String],
     mut static_output_buffers: List[List[String]],
@@ -1010,6 +1064,57 @@ fn run_static_nonlinear_displacement_control(
                         envelope_max,
                         envelope_abs,
                     )
+            elif (
+                rec.type_tag == RecorderTypeTag.SectionForce
+                or rec.type_tag == RecorderTypeTag.SectionDeformation
+            ):
+                var want_defo = rec.type_tag == RecorderTypeTag.SectionDeformation
+                for eidx in range(rec.element_count):
+                    var elem_id = recorder_elements_pool[rec.element_offset + eidx]
+                    if (
+                        elem_id >= len(elem_id_to_index)
+                        or elem_id_to_index[elem_id] < 0
+                    ):
+                        abort("recorder element not found")
+                    var elem_index = elem_id_to_index[elem_id]
+                    var elem = typed_elements[elem_index]
+                    for sidx in range(rec.section_count):
+                        var sec_no = recorder_sections_pool[rec.section_offset + sidx]
+                        var values = _section_response_for_recorder(
+                            elem_index,
+                            elem,
+                            sec_no,
+                            ndf,
+                            u,
+                            typed_nodes,
+                            typed_sections_by_id,
+                            fiber_section_defs,
+                            fiber_section_cells,
+                            fiber_section_index_by_id,
+                            uniaxial_defs,
+                            uniaxial_states,
+                            elem_uniaxial_offsets,
+                            elem_uniaxial_counts,
+                            elem_uniaxial_state_ids,
+                            force_basic_offsets,
+                            force_basic_counts,
+                            force_basic_q,
+                            want_defo,
+                        )
+                        var filename = (
+                            rec.output
+                            + "_ele"
+                            + String(elem_id)
+                            + "_sec"
+                            + String(sec_no)
+                            + ".out"
+                        )
+                        _append_output(
+                            static_output_files,
+                            static_output_buffers,
+                            filename,
+                            _format_values_line(values),
+                        )
             else:
                 abort("unsupported recorder type")
     _flush_envelope_outputs(

@@ -34,19 +34,54 @@ def _run_section_path(case_data):
 def _discretize_fibers(section_params):
     fibers = []
     for patch in section_params.get("patches", []):
-        assert patch["type"] == "rect"
-        ny = patch["num_subdiv_y"]
-        nz = patch["num_subdiv_z"]
-        y0, y1 = sorted([patch["y_i"], patch["y_j"]])
-        z0, z1 = sorted([patch["z_i"], patch["z_j"]])
-        dy = (y1 - y0) / ny
-        dz = (z1 - z0) / nz
-        area = dy * dz
-        for iy in range(ny):
-            y = y0 + (iy + 0.5) * dy
-            for iz in range(nz):
-                z = z0 + (iz + 0.5) * dz
-                fibers.append((y, z, area, patch["material"]))
+        patch_type = patch["type"]
+        if patch_type == "quad":
+            patch_type = "quadr"
+        if patch_type == "rect":
+            ny = patch["num_subdiv_y"]
+            nz = patch["num_subdiv_z"]
+            y0, y1 = sorted([patch["y_i"], patch["y_j"]])
+            z0, z1 = sorted([patch["z_i"], patch["z_j"]])
+            dy = (y1 - y0) / ny
+            dz = (z1 - z0) / nz
+            area = dy * dz
+            for iy in range(ny):
+                    y = y0 + (iy + 0.5) * dy
+                    for iz in range(nz):
+                        z = z0 + (iz + 0.5) * dz
+                        fibers.append((y, z, area, patch["material"]))
+        elif patch_type == "quadr":
+            ny = patch["num_subdiv_y"]
+            nz = patch["num_subdiv_z"]
+            yi, zi = patch["y_i"], patch["z_i"]
+            yj, zj = patch["y_j"], patch["z_j"]
+            yk, zk = patch["y_k"], patch["z_k"]
+            yl, zl = patch["y_l"], patch["z_l"]
+            for i in range(ny):
+                u0 = i / ny
+                u1 = (i + 1) / ny
+                uc = 0.5 * (u0 + u1)
+                for j in range(nz):
+                    v0 = j / nz
+                    v1 = (j + 1) / nz
+                    vc = 0.5 * (v0 + v1)
+                    y00 = (1 - u0) * (1 - v0) * yi + u0 * (1 - v0) * yj + u0 * v0 * yk + (1 - u0) * v0 * yl
+                    z00 = (1 - u0) * (1 - v0) * zi + u0 * (1 - v0) * zj + u0 * v0 * zk + (1 - u0) * v0 * zl
+                    y10 = (1 - u1) * (1 - v0) * yi + u1 * (1 - v0) * yj + u1 * v0 * yk + (1 - u1) * v0 * yl
+                    z10 = (1 - u1) * (1 - v0) * zi + u1 * (1 - v0) * zj + u1 * v0 * zk + (1 - u1) * v0 * zl
+                    y11 = (1 - u1) * (1 - v1) * yi + u1 * (1 - v1) * yj + u1 * v1 * yk + (1 - u1) * v1 * yl
+                    z11 = (1 - u1) * (1 - v1) * zi + u1 * (1 - v1) * zj + u1 * v1 * zk + (1 - u1) * v1 * zl
+                    y01 = (1 - u0) * (1 - v1) * yi + u0 * (1 - v1) * yj + u0 * v1 * yk + (1 - u0) * v1 * yl
+                    z01 = (1 - u0) * (1 - v1) * zi + u0 * (1 - v1) * zj + u0 * v1 * zk + (1 - u0) * v1 * zl
+                    area = 0.5 * abs(
+                        y00 * z10 + y10 * z11 + y11 * z01 + y01 * z00
+                        - z00 * y10 - z10 * y11 - z11 * y01 - z01 * y00
+                    )
+                    y = (1 - uc) * (1 - vc) * yi + uc * (1 - vc) * yj + uc * vc * yk + (1 - uc) * vc * yl
+                    z = (1 - uc) * (1 - vc) * zi + uc * (1 - vc) * zj + uc * vc * zk + (1 - uc) * vc * zl
+                    fibers.append((y, z, area, patch["material"]))
+        else:
+            raise AssertionError(f"unsupported patch type {patch['type']}")
     for layer in section_params.get("layers", []):
         assert layer["type"] == "straight"
         n = layer["num_bars"]
@@ -158,3 +193,42 @@ def test_fiber_section_straight_layer_single_bar_midpoint():
     assert got["k11"] > 0.0
     assert math.isclose(got["k12"], 0.0, rel_tol=0.0, abs_tol=1e-12)
     assert math.isclose(got["k22"], 0.0, rel_tol=0.0, abs_tol=1e-12)
+
+
+def test_fiber_section_quadr_patch_elastic_aggregation():
+    case_data = {
+        "materials": [{"id": 1, "type": "Elastic", "params": {"E": 3.0e10}}],
+        "section": {
+            "id": 2,
+            "type": "FiberSection2d",
+            "params": {
+                "patches": [
+                    {
+                        "type": "quadr",
+                        "material": 1,
+                        "num_subdiv_y": 4,
+                        "num_subdiv_z": 3,
+                        "y_i": -0.4,
+                        "z_i": 0.2,
+                        "y_j": -0.2,
+                        "z_j": -0.2,
+                        "y_k": 0.4,
+                        "z_k": -0.1,
+                        "y_l": 0.2,
+                        "z_l": 0.3,
+                    }
+                ],
+                "layers": [],
+            },
+        },
+        "deformation_path": [{"eps0": 8.0e-5, "kappa": -1.5e-3}],
+    }
+    rows = _run_section_path(case_data)
+    assert len(rows) == 1
+    got = rows[0]
+    expected = _expected_elastic_response(case_data, eps0=8.0e-5, kappa=-1.5e-3)
+    assert math.isclose(got["N"], expected["N"], rel_tol=1e-10, abs_tol=1e-10)
+    assert math.isclose(got["Mz"], expected["Mz"], rel_tol=1e-10, abs_tol=1e-10)
+    assert math.isclose(got["k11"], expected["k11"], rel_tol=1e-10, abs_tol=1e-10)
+    assert math.isclose(got["k12"], expected["k12"], rel_tol=1e-10, abs_tol=1e-10)
+    assert math.isclose(got["k22"], expected["k22"], rel_tol=1e-10, abs_tol=1e-10)

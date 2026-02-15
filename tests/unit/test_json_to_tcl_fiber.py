@@ -94,7 +94,7 @@ def test_json_to_tcl_emits_fiber_section_rect_and_straight():
     assert fiber_block in text
 
 
-def test_json_to_tcl_rejects_unsupported_fiber_patch_type():
+def test_json_to_tcl_emits_fiber_section_quadr_patch():
     case_data = _base_case()
     case_data["sections"] = [
         {
@@ -109,8 +109,37 @@ def test_json_to_tcl_rejects_unsupported_fiber_patch_type():
                         "num_subdiv_z": 2,
                         "y_i": -0.2,
                         "z_i": -0.1,
-                        "y_j": 0.2,
+                        "y_j": -0.2,
                         "z_j": 0.1,
+                        "y_k": 0.2,
+                        "z_k": 0.1,
+                        "y_l": 0.2,
+                        "z_l": -0.1,
+                    }
+                ],
+                "layers": [],
+            },
+        }
+    ]
+
+    proc, text = _run_json_to_tcl(case_data)
+    assert proc.returncode == 0, proc.stderr
+    assert "patch quadr 1 2 2 -0.2 -0.1 -0.2 0.1 0.2 0.1 0.2 -0.1\n" in text
+
+
+def test_json_to_tcl_rejects_unsupported_fiber_patch_type():
+    case_data = _base_case()
+    case_data["sections"] = [
+        {
+            "id": 10,
+            "type": "FiberSection2d",
+            "params": {
+                "patches": [
+                    {
+                        "type": "triangle",
+                        "material": 1,
+                        "num_subdiv_y": 2,
+                        "num_subdiv_z": 2,
                     }
                 ],
                 "layers": [],
@@ -120,7 +149,7 @@ def test_json_to_tcl_rejects_unsupported_fiber_patch_type():
 
     proc, _ = _run_json_to_tcl(case_data)
     assert proc.returncode != 0
-    assert "unsupported FiberSection2d patch type: quad" in proc.stderr
+    assert "unsupported FiberSection2d patch type: triangle" in proc.stderr
 
 
 def test_json_to_tcl_emits_force_beam_column2d_with_lobatto():
@@ -260,6 +289,34 @@ def test_json_to_tcl_emits_force_beam_column2d_with_elastic_section2d():
     assert proc.returncode == 0, proc.stderr
     assert "beamIntegration Lobatto 1 3 5\n" in text
     assert "element forceBeamColumn 5 1 2 1 1\n" in text
+
+
+def test_json_to_tcl_maps_nonlinear_beam_column_to_force_beam_column():
+    case_data = _base_case()
+    case_data["sections"] = [
+        {
+            "id": 3,
+            "type": "ElasticSection2d",
+            "params": {"E": 200000000000.0, "A": 0.02, "I": 0.00008},
+        }
+    ]
+    case_data["elements"] = [
+        {
+            "id": 8,
+            "type": "nonlinearBeamColumn",
+            "nodes": [1, 2],
+            "section": 3,
+            "geomTransf": "Linear",
+            "integration": "Lobatto",
+            "num_int_pts": 5,
+        }
+    ]
+    case_data["analysis"] = {"type": "static_nonlinear", "steps": 1}
+
+    proc, text = _run_json_to_tcl(case_data)
+    assert proc.returncode == 0, proc.stderr
+    assert "beamIntegration Lobatto 1 3 5\n" in text
+    assert "element forceBeamColumn 8 1 2 1 1\n" in text
 
 
 def test_json_to_tcl_emits_zero_length_section():

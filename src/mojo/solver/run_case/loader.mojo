@@ -93,6 +93,7 @@ struct RunCaseState(Movable):
     var recorder_elements_pool: List[Int]
     var recorder_dofs_pool: List[Int]
     var recorder_modes_pool: List[Int]
+    var recorder_sections_pool: List[Int]
     var recorders: List[RecorderInput]
 
     fn __init__(out self):
@@ -150,6 +151,7 @@ struct RunCaseState(Movable):
         self.recorder_elements_pool = []
         self.recorder_dofs_pool = []
         self.recorder_modes_pool = []
+        self.recorder_sections_pool = []
         self.recorders = []
 
 
@@ -1062,15 +1064,22 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
             analysis_type != "static_linear"
             and analysis_type != "static_nonlinear"
             and analysis_type != "transient_nonlinear"
+            and analysis_type != "staged"
         ):
             abort(
                 "forceBeamColumn2d/dispBeamColumn2d requires static_linear, "
-                "static_nonlinear, or transient_nonlinear analysis"
+                "static_nonlinear, transient_nonlinear, or staged analysis"
             )
         if analysis_type == "transient_nonlinear":
             if force_beam_mode != "auto":
                 abort(
                     "force_beam_mode is only supported for static forceBeamColumn2d/"
+                    "dispBeamColumn2d analyses"
+                )
+        elif analysis_type == "staged":
+            if force_beam_mode != "auto":
+                abort(
+                    "force_beam_mode is only supported for non-staged static forceBeamColumn2d/"
                     "dispBeamColumn2d analyses"
                 )
         else:
@@ -1098,6 +1107,7 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
         analysis_type != "static_nonlinear"
         and analysis_type != "transient_nonlinear"
         and analysis_type != "modal_eigen"
+        and analysis_type != "staged"
         and used_nonelastic_uniaxial
     ):
         abort("nonlinear uniaxial materials require static_nonlinear or transient_nonlinear analysis")
@@ -1272,7 +1282,11 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
             if ts_index < 0:
                 abort("time_series tag not found")
         else:
-            if analysis_type != "transient_linear" and analysis_type != "transient_nonlinear":
+            if (
+                analysis_type != "transient_linear"
+                and analysis_type != "transient_nonlinear"
+                and analysis_type != "staged"
+            ):
                 abort("UniformExcitation requires transient analysis")
             if not pattern_input.has_direction:
                 abort("UniformExcitation pattern missing direction")
@@ -1358,6 +1372,7 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
     state.recorder_elements_pool = input.recorder_elements_pool.copy()
     state.recorder_dofs_pool = input.recorder_dofs_pool.copy()
     state.recorder_modes_pool = input.recorder_modes_pool.copy()
+    state.recorder_sections_pool = input.recorder_sections_pool.copy()
     state.recorders = input.recorders.copy()
 
     return state^

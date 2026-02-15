@@ -113,6 +113,65 @@ def test_json_to_tcl_emits_transient_nonlinear_fallback_loop():
     assert "analyze 2 0.1\n" not in text
 
 
+def test_json_to_tcl_emits_energy_incr_and_advanced_fallback_algorithms():
+    case = _base_uniform_case()
+    case["analysis"]["algorithm"] = "NewtonLineSearch"
+    case["analysis"]["line_search_eta"] = 0.7
+    case["analysis"]["test_type"] = "EnergyIncr"
+    case["analysis"]["fallback_algorithm"] = "Broyden"
+    case["analysis"]["fallback_broyden_count"] = 6
+    case["analysis"]["fallback_test_type"] = "EnergyIncr"
+
+    text = _run_json_to_tcl(case)
+
+    assert "test EnergyIncr 1e-09 15\n" in text
+    assert "algorithm NewtonLineSearch 0.7\n" in text
+    assert "algorithm Broyden 6\n" in text
+
+
+def test_json_to_tcl_emits_staged_analysis_with_load_const_and_pattern_override():
+    case = _base_uniform_case()
+    case["time_series"] = [
+        {"type": "Linear", "tag": 1, "factor": 1.0},
+        {"type": "Path", "tag": 2, "dt": 0.1, "values": [0.0, 1.0, 0.0]},
+    ]
+    case["pattern"] = {"type": "Plain", "tag": 1, "time_series": 1}
+    case["loads"] = [{"node": 2, "dof": 1, "value": 1.0}]
+    case["analysis"] = {
+        "type": "staged",
+        "constraints": "Plain",
+        "stages": [
+            {
+                "analysis": {"type": "static_nonlinear", "steps": 2, "algorithm": "Newton"},
+                "load_const": {"time": 0.0},
+            },
+            {
+                "pattern": {
+                    "type": "UniformExcitation",
+                    "tag": 3,
+                    "direction": 1,
+                    "accel": 2,
+                },
+                "rayleigh": {"betaKComm": 0.02},
+                "analysis": {
+                    "type": "transient_nonlinear",
+                    "steps": 2,
+                    "dt": 0.1,
+                    "algorithm": "Newton",
+                    "integrator": {"type": "Newmark", "gamma": 0.5, "beta": 0.25},
+                },
+            },
+        ],
+    }
+
+    text = _run_json_to_tcl(case)
+    assert "loadConst -time 0.0\n" in text
+    assert "pattern UniformExcitation 3 1 -accel 2\n" in text
+    assert "rayleigh 0.0 0.0 0.0 0.02\n" in text
+    assert text.count("analysis Static\n") == 1
+    assert text.count("analysis Transient\n") == 1
+
+
 def test_json_to_tcl_rejects_uniform_excitation_with_nodal_loads():
     case = _base_uniform_case()
     case["loads"] = [{"node": 2, "dof": 1, "value": 1.0}]

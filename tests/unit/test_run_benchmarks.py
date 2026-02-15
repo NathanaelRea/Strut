@@ -156,6 +156,20 @@ def test_case_free_dofs_counts_boolean_and_index_constraints(tmp_path: Path):
     assert run_benchmarks._case_free_dofs(case_path) == 6
 
 
+def test_absolutize_time_series_paths_resolves_relative_values_path(tmp_path: Path):
+    case_json = tmp_path / "validation" / "case_a" / "case_a.json"
+    case_json.parent.mkdir(parents=True, exist_ok=True)
+    motion = case_json.parent / "gm.acc"
+    motion.write_text("0.0 1.0\n", encoding="utf-8")
+    case_data = {"time_series": [{"type": "Path", "tag": 1, "values_path": "gm.acc"}]}
+
+    run_benchmarks._absolutize_time_series_paths(case_data, case_json)
+
+    resolved = Path(case_data["time_series"][0]["values_path"])
+    assert resolved.is_absolute()
+    assert resolved == motion.resolve()
+
+
 def test_inject_opensees_timing_wraps_first_analyze_call():
     lines = ["wipe", "analyze 10", "analyze 5"]
     timed = run_benchmarks._inject_opensees_timing(lines, "analysis_time_us.txt")

@@ -120,6 +120,33 @@ def load_case_enabled(path: Path) -> bool:
     return runnable
 
 
+def _absolutize_time_series_paths(case_data: dict, case_json_path: Path) -> None:
+    time_series = case_data.get("time_series")
+    if isinstance(time_series, dict):
+        entries = [time_series]
+    elif isinstance(time_series, list):
+        entries = time_series
+    else:
+        return
+    for ts in entries:
+        if not isinstance(ts, dict):
+            continue
+        key = None
+        if "values_path" in ts:
+            key = "values_path"
+        elif "path" in ts:
+            key = "path"
+        if key is None:
+            continue
+        raw = ts.get(key)
+        if not isinstance(raw, str):
+            continue
+        raw_path = Path(raw)
+        if raw_path.is_absolute():
+            continue
+        ts[key] = str((case_json_path.parent / raw_path).resolve())
+
+
 def filter_cases_by_enabled(
     case_specs: List[CaseSpec],
     include_disabled: bool,
@@ -897,6 +924,7 @@ def main() -> None:
             if compute:
                 compute_case = json.loads(Path(entry["json"]).read_text())
                 compute_case["recorders"] = []
+                _absolutize_time_series_paths(compute_case, Path(entry["json"]))
                 compute_json = results_root / ".tmp" / f"{case_name}_compute_batch.json"
                 compute_json.write_text(
                     json.dumps(compute_case, indent=2) + "\n", encoding="utf-8"
@@ -1011,6 +1039,7 @@ def main() -> None:
             if compute:
                 compute_case = json.loads(Path(entry["json"]).read_text())
                 compute_case["recorders"] = []
+                _absolutize_time_series_paths(compute_case, Path(entry["json"]))
                 compute_json = results_root / ".tmp" / f"{case_name}_compute_batch_fallback.json"
                 compute_json.write_text(json.dumps(compute_case, indent=2) + "\n", encoding="utf-8")
                 input_path = compute_json
@@ -1366,6 +1395,7 @@ def main() -> None:
                 target_dir = tmp_dir
             compute_case = json.loads(Path(case_entry["json"]).read_text())
             compute_case["recorders"] = []
+            _absolutize_time_series_paths(compute_case, Path(case_entry["json"]))
             compute_json = results_root / ".tmp" / f"{case_name}_compute.json"
             compute_json.write_text(json.dumps(compute_case, indent=2) + "\n", encoding="utf-8")
             run(
@@ -1856,6 +1886,85 @@ def main() -> None:
                                 )
                                 parity_failures.extend([f"  {err}" for err in errors])
                                 break
+                elif rec_type in ("section_force", "section_deformation"):
+                    default_output = (
+                        "section_force"
+                        if rec_type == "section_force"
+                        else "section_deformation"
+                    )
+                    output = rec.get("output", default_output)
+                    sections = rec.get("sections")
+                    if sections is None:
+                        if "section" not in rec:
+                            parity_failures.append(
+                                f"{case_name}: {rec_type} recorder missing section/sections"
+                            )
+                            continue
+                        sections = [rec["section"]]
+                    for elem_id in rec.get("elements", []):
+                        for sec_no in sections:
+                            ref_file = (
+                                results_root
+                                / "opensees"
+                                / case_name
+                                / f"{output}_ele{elem_id}_sec{sec_no}.out"
+                            )
+                            mojo_file = (
+                                results_root
+                                / "mojo"
+                                / case_name
+                                / f"{output}_ele{elem_id}_sec{sec_no}.out"
+                            )
+                            if not ref_file.exists():
+                                parity_failures.append(
+                                    f"{case_name}: missing OpenSees output: {ref_file}"
+                                )
+                                continue
+                            if not mojo_file.exists():
+                                parity_failures.append(
+                                    f"{case_name}: missing Mojo output: {mojo_file}"
+                                )
+                                continue
+                            try:
+                                if is_transient:
+                                    ref_vals = _load_all_values(ref_file)
+                                    mojo_vals = _load_all_values(mojo_file)
+                                else:
+                                    ref_vals, mojo_vals = _load_last_comparable_values(
+                                        ref_file,
+                                        mojo_file,
+                                        use_last_common_row=use_last_common_row,
+                                    )
+                            except ValueError as exc:
+                                parity_failures.append(f"{case_name}: {exc}")
+                                continue
+                            if is_transient:
+                                if len(ref_vals) != len(mojo_vals):
+                                    parity_failures.append(
+                                        f"{case_name}: {rec_type} element {elem_id} section {sec_no} step count mismatch: {len(ref_vals)} != {len(mojo_vals)}"
+                                    )
+                                    continue
+                                for step, (rvec, gvec) in enumerate(
+                                    zip(ref_vals, mojo_vals), start=1
+                                ):
+                                    ok, errors = _compare_vectors(
+                                        rvec, gvec, rtol=rtol, atol=atol
+                                    )
+                                    if not ok:
+                                        parity_failures.append(
+                                            f"{case_name}: {rec_type} element {elem_id} section {sec_no} mismatch at step {step}"
+                                        )
+                                        parity_failures.extend([f"  {err}" for err in errors])
+                                        break
+                            else:
+                                ok, errors = _compare_vectors(
+                                    ref_vals, mojo_vals, rtol=rtol, atol=atol
+                                )
+                                if not ok:
+                                    parity_failures.append(
+                                        f"{case_name}: {rec_type} element {elem_id} section {sec_no} mismatch"
+                                    )
+                                    parity_failures.extend([f"  {err}" for err in errors])
                 elif rec_type == "modal_eigen":
                     output = rec.get("output", "modal")
                     eig_ref = (

@@ -482,6 +482,8 @@ struct RecorderInput(Movable, ImplicitlyCopyable):
     var dof_count: Int
     var mode_offset: Int
     var mode_count: Int
+    var section_offset: Int
+    var section_count: Int
     var i_node: Int
     var j_node: Int
     var drift_dof: Int
@@ -498,6 +500,8 @@ struct RecorderInput(Movable, ImplicitlyCopyable):
         self.dof_count = 0
         self.mode_offset = 0
         self.mode_count = 0
+        self.section_offset = 0
+        self.section_count = 0
         self.i_node = -1
         self.j_node = -1
         self.drift_dof = -1
@@ -523,6 +527,7 @@ struct CaseInput(Movable):
     var recorder_elements_pool: List[Int]
     var recorder_dofs_pool: List[Int]
     var recorder_modes_pool: List[Int]
+    var recorder_sections_pool: List[Int]
     var recorders: List[RecorderInput]
 
     fn __init__(out self):
@@ -544,6 +549,7 @@ struct CaseInput(Movable):
         self.recorder_elements_pool = []
         self.recorder_dofs_pool = []
         self.recorder_modes_pool = []
+        self.recorder_sections_pool = []
         self.recorders = []
 
 
@@ -551,6 +557,8 @@ fn element_type_tag(type_name: String) -> Int:
     if type_name == "elasticBeamColumn2d":
         return ElementTypeTag.ElasticBeamColumn2d
     if type_name == "forceBeamColumn2d":
+        return ElementTypeTag.ForceBeamColumn2d
+    if type_name == "nonlinearBeamColumn":
         return ElementTypeTag.ForceBeamColumn2d
     if type_name == "dispBeamColumn2d":
         return ElementTypeTag.DispBeamColumn2d
@@ -592,7 +600,80 @@ fn recorder_type_tag(type_name: String) -> Int:
         return RecorderTypeTag.EnvelopeElementForce
     if type_name == "modal_eigen":
         return RecorderTypeTag.ModalEigen
+    if type_name == "section_force":
+        return RecorderTypeTag.SectionForce
+    if type_name == "section_deformation":
+        return RecorderTypeTag.SectionDeformation
     return RecorderTypeTag.Unknown
+
+
+fn parse_analysis_input_from_raw(
+    analysis_raw: PythonObject, mut integrator_targets_pool: List[Float64]
+) raises -> AnalysisInput:
+    var analysis = AnalysisInput()
+    analysis.type = String(analysis_raw.get("type", "static_linear"))
+    analysis.constraints = String(analysis_raw.get("constraints", "Plain"))
+    analysis.steps = Int(analysis_raw.get("steps", 1))
+    analysis.num_modes = Int(analysis_raw.get("num_modes", 0))
+    analysis.force_beam_mode = String(analysis_raw.get("force_beam_mode", "auto"))
+    analysis.dt = Float64(analysis_raw.get("dt", 0.0))
+    analysis.algorithm = String(analysis_raw.get("algorithm", "Newton"))
+    analysis.max_iters = Int(analysis_raw.get("max_iters", 20))
+    analysis.tol = Float64(analysis_raw.get("tol", 1.0e-10))
+    analysis.rel_tol = Float64(analysis_raw.get("rel_tol", 1.0e-8))
+    analysis.fallback_algorithm = String(analysis_raw.get("fallback_algorithm", ""))
+    analysis.test_type = String(analysis_raw.get("test_type", "MaxDispIncr"))
+    analysis.fallback_test_type = String(
+        analysis_raw.get("fallback_test_type", analysis.test_type)
+    )
+    analysis.fallback_max_iters = Int(
+        analysis_raw.get("fallback_max_iters", analysis.max_iters)
+    )
+    analysis.fallback_tol = Float64(analysis_raw.get("fallback_tol", analysis.tol))
+    analysis.fallback_rel_tol = Float64(
+        analysis_raw.get("fallback_rel_tol", analysis.rel_tol)
+    )
+    if analysis_raw.__contains__("system"):
+        analysis.solver = String(analysis_raw["system"])
+    elif analysis_raw.__contains__("solver"):
+        analysis.solver = String(analysis_raw["solver"])
+    else:
+        analysis.solver = "auto"
+    analysis.band_threshold = Int(analysis_raw.get("band_threshold", 128))
+    var integrator_raw = analysis_raw.get("integrator", {})
+    var default_integrator_type = ""
+    if analysis.type == "static_nonlinear":
+        default_integrator_type = "LoadControl"
+    elif analysis.type == "transient_linear" or analysis.type == "transient_nonlinear":
+        default_integrator_type = "Newmark"
+    analysis.integrator_type = String(
+        integrator_raw.get("type", default_integrator_type)
+    )
+    analysis.integrator_gamma = Float64(integrator_raw.get("gamma", 0.5))
+    analysis.integrator_beta = Float64(integrator_raw.get("beta", 0.25))
+    if integrator_raw.__contains__("node"):
+        analysis.integrator_node = Int(integrator_raw["node"])
+    if integrator_raw.__contains__("dof"):
+        analysis.integrator_dof = Int(integrator_raw["dof"])
+    analysis.integrator_cutback = Float64(
+        integrator_raw.get("cutback", analysis_raw.get("cutback", 0.5))
+    )
+    analysis.integrator_max_cutbacks = Int(
+        integrator_raw.get("max_cutbacks", analysis_raw.get("max_cutbacks", 8))
+    )
+    analysis.integrator_min_du = Float64(
+        integrator_raw.get("min_du", analysis_raw.get("min_du", 1.0e-10))
+    )
+    analysis.has_integrator_du = integrator_raw.__contains__("du")
+    if analysis.has_integrator_du:
+        analysis.integrator_du = Float64(integrator_raw["du"])
+    if integrator_raw.__contains__("targets"):
+        var targets = integrator_raw["targets"]
+        analysis.integrator_targets_offset = len(integrator_targets_pool)
+        analysis.integrator_targets_count = py_len(targets)
+        for i in range(py_len(targets)):
+            integrator_targets_pool.append(Float64(targets[i]))
+    return analysis^
 
 
 fn parse_case_input(data: PythonObject) raises -> CaseInput:
@@ -813,72 +894,9 @@ fn parse_case_input(data: PythonObject) raises -> CaseInput:
         )
 
     var analysis_raw = data.get("analysis", {"type": "static_linear", "steps": 1})
-    var analysis = AnalysisInput()
-    analysis.type = String(analysis_raw.get("type", "static_linear"))
-    analysis.constraints = String(analysis_raw.get("constraints", "Plain"))
-    analysis.steps = Int(analysis_raw.get("steps", 1))
-    analysis.num_modes = Int(analysis_raw.get("num_modes", 0))
-    analysis.force_beam_mode = String(analysis_raw.get("force_beam_mode", "auto"))
-    analysis.dt = Float64(analysis_raw.get("dt", 0.0))
-    analysis.algorithm = String(analysis_raw.get("algorithm", "Newton"))
-    analysis.max_iters = Int(analysis_raw.get("max_iters", 20))
-    analysis.tol = Float64(analysis_raw.get("tol", 1.0e-10))
-    analysis.rel_tol = Float64(analysis_raw.get("rel_tol", 1.0e-8))
-    analysis.fallback_algorithm = String(analysis_raw.get("fallback_algorithm", ""))
-    analysis.test_type = String(analysis_raw.get("test_type", "MaxDispIncr"))
-    analysis.fallback_test_type = String(
-        analysis_raw.get("fallback_test_type", analysis.test_type)
+    case_input.analysis = parse_analysis_input_from_raw(
+        analysis_raw, case_input.analysis_integrator_targets_pool
     )
-    analysis.fallback_max_iters = Int(
-        analysis_raw.get("fallback_max_iters", analysis.max_iters)
-    )
-    analysis.fallback_tol = Float64(analysis_raw.get("fallback_tol", analysis.tol))
-    analysis.fallback_rel_tol = Float64(
-        analysis_raw.get("fallback_rel_tol", analysis.rel_tol)
-    )
-    if analysis_raw.__contains__("system"):
-        analysis.solver = String(analysis_raw["system"])
-    elif analysis_raw.__contains__("solver"):
-        analysis.solver = String(analysis_raw["solver"])
-    else:
-        analysis.solver = "auto"
-    analysis.band_threshold = Int(analysis_raw.get("band_threshold", 128))
-    var integrator_raw = analysis_raw.get("integrator", {})
-    var default_integrator_type = ""
-    if analysis.type == "static_nonlinear":
-        default_integrator_type = "LoadControl"
-    elif analysis.type == "transient_linear" or analysis.type == "transient_nonlinear":
-        default_integrator_type = "Newmark"
-    analysis.integrator_type = String(
-        integrator_raw.get("type", default_integrator_type)
-    )
-    analysis.integrator_gamma = Float64(integrator_raw.get("gamma", 0.5))
-    analysis.integrator_beta = Float64(integrator_raw.get("beta", 0.25))
-    if integrator_raw.__contains__("node"):
-        analysis.integrator_node = Int(integrator_raw["node"])
-    if integrator_raw.__contains__("dof"):
-        analysis.integrator_dof = Int(integrator_raw["dof"])
-    analysis.integrator_cutback = Float64(
-        integrator_raw.get("cutback", analysis_raw.get("cutback", 0.5))
-    )
-    analysis.integrator_max_cutbacks = Int(
-        integrator_raw.get("max_cutbacks", analysis_raw.get("max_cutbacks", 8))
-    )
-    analysis.integrator_min_du = Float64(
-        integrator_raw.get("min_du", analysis_raw.get("min_du", 1.0e-10))
-    )
-    analysis.has_integrator_du = integrator_raw.__contains__("du")
-    if analysis.has_integrator_du:
-        analysis.integrator_du = Float64(integrator_raw["du"])
-    if integrator_raw.__contains__("targets"):
-        var targets = integrator_raw["targets"]
-        analysis.integrator_targets_offset = len(
-            case_input.analysis_integrator_targets_pool
-        )
-        analysis.integrator_targets_count = py_len(targets)
-        for i in range(py_len(targets)):
-            case_input.analysis_integrator_targets_pool.append(Float64(targets[i]))
-    case_input.analysis = analysis^
 
     var mpc_raw = data.get("mp_constraints", [])
     for i in range(py_len(mpc_raw)):
@@ -1006,6 +1024,35 @@ fn parse_case_input(data: PythonObject) raises -> CaseInput:
             parsed.element_count = py_len(elements_raw)
             for j in range(py_len(elements_raw)):
                 case_input.recorder_elements_pool.append(Int(elements_raw[j]))
+        elif (
+            parsed.type_tag == RecorderTypeTag.SectionForce
+            or parsed.type_tag == RecorderTypeTag.SectionDeformation
+        ):
+            if parsed.type_tag == RecorderTypeTag.SectionForce:
+                parsed.output = String(rec.get("output", "section_force"))
+            else:
+                parsed.output = String(rec.get("output", "section_deformation"))
+            if not rec.__contains__("elements"):
+                abort("section recorder requires elements")
+            var elements_raw = rec["elements"]
+            parsed.element_offset = len(case_input.recorder_elements_pool)
+            parsed.element_count = py_len(elements_raw)
+            for j in range(py_len(elements_raw)):
+                case_input.recorder_elements_pool.append(Int(elements_raw[j]))
+
+            var sections_raw = rec.get("sections", None)
+            if sections_raw is None:
+                if not rec.__contains__("section"):
+                    abort("section recorder requires section or sections")
+                var builtins = Python.import_module("builtins")
+                sections_raw = builtins.list()
+                sections_raw.append(rec["section"])
+            parsed.section_offset = len(case_input.recorder_sections_pool)
+            parsed.section_count = py_len(sections_raw)
+            if parsed.section_count < 1:
+                abort("section recorder requires non-empty sections")
+            for j in range(py_len(sections_raw)):
+                case_input.recorder_sections_pool.append(Int(sections_raw[j]))
         else:
             parsed.output = String(rec.get("output", "modal"))
             if not rec.__contains__("nodes") or not rec.__contains__("dofs"):

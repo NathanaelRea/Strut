@@ -25,6 +25,7 @@ from solver.run_case.helpers import (
     _format_values_line,
     _has_recorder_type,
     _drift_value,
+    _section_response_for_recorder,
     _update_envelope,
 )
 from tag_types import RecorderTypeTag
@@ -69,6 +70,7 @@ fn run_transient_linear(
     recorder_nodes_pool: List[Int],
     recorder_elements_pool: List[Int],
     recorder_dofs_pool: List[Int],
+    recorder_sections_pool: List[Int],
     elem_id_to_index: List[Int],
     fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
@@ -202,7 +204,7 @@ fn run_transient_linear(
             _enforce_equal_dof_values(a, rep_dof, constrained)
         var t = Float64(step + 1) * dt
         for i in range(total_dofs):
-            F_ext_step[i] = 0.0
+            F_ext_step[i] = F_total[i]
         var factor = 1.0
         if pattern_type == "UniformExcitation":
             var ag = eval_time_series_input(
@@ -213,7 +215,7 @@ fn run_transient_linear(
             )
             for i in range(total_dofs):
                 if (i % ndf) + 1 == uniform_excitation_direction:
-                    F_ext_step[i] = -M_total[i] * ag
+                    F_ext_step[i] += -M_total[i] * ag
         else:
             if ts_index >= 0:
                 factor = eval_time_series_input(
@@ -427,6 +429,54 @@ fn run_transient_linear(
                         envelope_max,
                         envelope_abs,
                     )
+            elif (
+                rec.type_tag == RecorderTypeTag.SectionForce
+                or rec.type_tag == RecorderTypeTag.SectionDeformation
+            ):
+                var want_defo = rec.type_tag == RecorderTypeTag.SectionDeformation
+                for eidx in range(rec.element_count):
+                    var elem_id = recorder_elements_pool[rec.element_offset + eidx]
+                    if elem_id >= len(elem_id_to_index) or elem_id_to_index[elem_id] < 0:
+                        abort("recorder element not found")
+                    var elem_index = elem_id_to_index[elem_id]
+                    var elem = typed_elements[elem_index]
+                    for sidx in range(rec.section_count):
+                        var sec_no = recorder_sections_pool[rec.section_offset + sidx]
+                        var values = _section_response_for_recorder(
+                            elem_index,
+                            elem,
+                            sec_no,
+                            ndf,
+                            u,
+                            typed_nodes,
+                            typed_sections_by_id,
+                            fiber_section_defs,
+                            fiber_section_cells,
+                            fiber_section_index_by_id,
+                            uniaxial_defs,
+                            uniaxial_states,
+                            elem_uniaxial_offsets,
+                            elem_uniaxial_counts,
+                            elem_uniaxial_state_ids,
+                            force_basic_offsets,
+                            force_basic_counts,
+                            force_basic_q,
+                            want_defo,
+                        )
+                        var filename = (
+                            rec.output
+                            + "_ele"
+                            + String(elem_id)
+                            + "_sec"
+                            + String(sec_no)
+                            + ".out"
+                        )
+                        _append_output(
+                            transient_output_files,
+                            transient_output_buffers,
+                            filename,
+                            _format_values_line(values),
+                        )
             else:
                 abort("unsupported recorder type")
     _flush_envelope_outputs(

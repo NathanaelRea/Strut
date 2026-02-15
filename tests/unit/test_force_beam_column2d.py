@@ -128,6 +128,41 @@ def test_force_beam_column2d_smoke_static_nonlinear_modified_newton():
     assert all(math.isfinite(value) for row in rows for value in row)
 
 
+def test_force_beam_column2d_section_recorders_emit_force_and_deformation():
+    case_data = _base_force_beam_case(
+        {"id": 1, "type": "Elastic", "params": {"E": 30000000000.0}}
+    )
+    case_data["analysis"] = {
+        "type": "static_nonlinear",
+        "steps": 2,
+        "max_iters": 20,
+        "tol": 1e-10,
+        "integrator": {"type": "LoadControl"},
+    }
+    case_data["recorders"] = [
+        {"type": "section_force", "elements": [1], "sections": [1, 3], "output": "sec_force"},
+        {
+            "type": "section_deformation",
+            "elements": [1],
+            "sections": [1, 3],
+            "output": "sec_defo",
+        },
+    ]
+
+    with tempfile.TemporaryDirectory() as tmp:
+        out_dir = Path(tmp)
+        _run_mojo_case(case_data, out_dir)
+        force_rows = _read_rows(out_dir / "sec_force_ele1_sec1.out")
+        defo_rows = _read_rows(out_dir / "sec_defo_ele1_sec3.out")
+
+    assert len(force_rows) == 2
+    assert len(defo_rows) == 2
+    assert all(len(row) == 2 for row in force_rows)
+    assert all(len(row) == 2 for row in defo_rows)
+    assert all(math.isfinite(value) for row in force_rows for value in row)
+    assert all(math.isfinite(value) for row in defo_rows for value in row)
+
+
 def test_force_beam_column2d_displacement_control_cyclic_sign_reversal():
     case_data = _base_force_beam_case(
         {
