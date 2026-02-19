@@ -1,5 +1,5 @@
 from collections import List
-from elements import beam_uniform_load_global
+from elements import beam_uniform_load_global_2d
 from os import abort
 from python import PythonObject
 
@@ -905,23 +905,30 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
             abort("element load refers to unknown element")
         var elem_index = elem_id_to_index[elem_id]
         var elem = typed_elements[elem_index]
-        var elem_type = elem.type
         var load_type = load.type
         if load_type == "beamUniform":
-            if elem_type != "elasticBeamColumn2d":
-                abort("beamUniform requires elasticBeamColumn2d")
+            if (
+                elem.type_tag != ElementTypeTag.ElasticBeamColumn2d
+                and elem.type_tag != ElementTypeTag.ForceBeamColumn2d
+                and elem.type_tag != ElementTypeTag.DispBeamColumn2d
+            ):
+                abort(
+                    "beamUniform requires elasticBeamColumn2d, forceBeamColumn2d, "
+                    "or dispBeamColumn2d"
+                )
             if ndf != 3:
                 abort("beamUniform requires ndf=3")
             var i1 = elem.node_index_1
             var i2 = elem.node_index_2
             var node1 = input.nodes[i1]
             var node2 = input.nodes[i2]
-            var f_global = beam_uniform_load_global(
+            var f_global = beam_uniform_load_global_2d(
                 node1.x,
                 node1.y,
                 node2.x,
                 node2.y,
-                load.w,
+                load.wy,
+                load.wx,
             )
             var dof_map = [
                 node_dof_index(i1, 1, ndf),
@@ -933,7 +940,8 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
             ]
             for a in range(6):
                 F_total[dof_map[a]] += f_global[a]
-            elem.uniform_load_w += load.w
+            elem.uniform_load_wy += load.wy
+            elem.uniform_load_wx += load.wx
             typed_elements[elem_index] = elem
         else:
             abort("unsupported element load type")

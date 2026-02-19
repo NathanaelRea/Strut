@@ -739,8 +739,12 @@ def main():
                     if elem_load["type"] != "beamUniform":
                         raise ValueError(f"unsupported element load type: {elem_load['type']}")
                     elem_id = elem_load["element"]
-                    w = elem_load["w"]
-                    f.write(f"  eleLoad -ele {elem_id} -type -beamUniform {w}\n")
+                    wy = elem_load.get("wy", elem_load.get("w", 0.0))
+                    if "wx" in elem_load:
+                        wx = elem_load["wx"]
+                        f.write(f"  eleLoad -ele {elem_id} -type -beamUniform {wy} {wx}\n")
+                    else:
+                        f.write(f"  eleLoad -ele {elem_id} -type -beamUniform {wy}\n")
                 f.write("}\n")
             elif pattern_type == "UniformExcitation":
                 if loads or element_loads:
@@ -842,8 +846,14 @@ def main():
                                     f"unsupported element load type: {elem_load['type']}"
                                 )
                             elem_id = elem_load["element"]
-                            w = elem_load["w"]
-                            f.write(f"  eleLoad -ele {elem_id} -type -beamUniform {w}\n")
+                            wy = elem_load.get("wy", elem_load.get("w", 0.0))
+                            if "wx" in elem_load:
+                                wx = elem_load["wx"]
+                                f.write(
+                                    f"  eleLoad -ele {elem_id} -type -beamUniform {wy} {wx}\n"
+                                )
+                            else:
+                                f.write(f"  eleLoad -ele {elem_id} -type -beamUniform {wy}\n")
                         f.write("}\n")
                     elif stage_pattern_type == "UniformExcitation":
                         if stage_loads or stage_element_loads:

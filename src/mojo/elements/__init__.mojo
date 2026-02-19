@@ -5,6 +5,7 @@ from elements.beam2d import (
     beam2d_pdelta_global_stiffness,
     beam_global_stiffness,
     beam_local_stiffness,
+    beam_uniform_load_global_2d,
     beam_uniform_load_global,
 )
 from elements.beam3d import beam3d_global_stiffness, beam3d_local_stiffness

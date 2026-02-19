@@ -79,3 +79,77 @@ def test_json_to_tcl_emits_reaction_drift_and_envelope_recorders():
     assert "recorder EnvelopeElement -file env_force_ele1.out -ele 1 forces\n" in text
     assert "recorder Element -file sec_force_ele1_sec1.out -ele 1 section 1 force\n" in text
     assert "recorder Element -file sec_defo_ele1_sec1.out -ele 1 section 1 deformation\n" in text
+
+
+def test_json_to_tcl_emits_beam_uniform_with_optional_wx():
+    case = {
+        "schema_version": "1.0",
+        "metadata": {"name": "beam_uniform_tcl_unit", "units": "SI"},
+        "model": {"ndm": 2, "ndf": 3},
+        "nodes": [
+            {"id": 1, "x": 0.0, "y": 0.0, "constraints": [1, 2, 3]},
+            {"id": 2, "x": 3.0, "y": 0.0},
+        ],
+        "materials": [{"id": 1, "type": "Elastic", "params": {"E": 2.0e11}}],
+        "sections": [
+            {
+                "id": 1,
+                "type": "ElasticSection2d",
+                "params": {"E": 2.0e11, "A": 0.02, "I": 8.0e-5},
+            }
+        ],
+        "elements": [
+            {
+                "id": 1,
+                "type": "elasticBeamColumn2d",
+                "nodes": [1, 2],
+                "section": 1,
+                "geomTransf": "Linear",
+            }
+        ],
+        "pattern": {"type": "Plain", "tag": 1, "time_series": 1},
+        "time_series": [{"type": "Linear", "tag": 1, "factor": 1.0}],
+        "element_loads": [{"element": 1, "type": "beamUniform", "wy": -2.0, "wx": -0.5}],
+        "analysis": {"type": "static_linear", "steps": 1},
+        "recorders": [{"type": "element_force", "elements": [1], "output": "force"}],
+    }
+
+    text = _run_json_to_tcl(case)
+    assert "eleLoad -ele 1 -type -beamUniform -2.0 -0.5\n" in text
+
+
+def test_json_to_tcl_emits_legacy_beam_uniform_w_alias():
+    case = {
+        "schema_version": "1.0",
+        "metadata": {"name": "beam_uniform_legacy_tcl_unit", "units": "SI"},
+        "model": {"ndm": 2, "ndf": 3},
+        "nodes": [
+            {"id": 1, "x": 0.0, "y": 0.0, "constraints": [1, 2, 3]},
+            {"id": 2, "x": 3.0, "y": 0.0},
+        ],
+        "materials": [{"id": 1, "type": "Elastic", "params": {"E": 2.0e11}}],
+        "sections": [
+            {
+                "id": 1,
+                "type": "ElasticSection2d",
+                "params": {"E": 2.0e11, "A": 0.02, "I": 8.0e-5},
+            }
+        ],
+        "elements": [
+            {
+                "id": 1,
+                "type": "elasticBeamColumn2d",
+                "nodes": [1, 2],
+                "section": 1,
+                "geomTransf": "Linear",
+            }
+        ],
+        "pattern": {"type": "Plain", "tag": 1, "time_series": 1},
+        "time_series": [{"type": "Linear", "tag": 1, "factor": 1.0}],
+        "element_loads": [{"element": 1, "type": "beamUniform", "w": -2.0}],
+        "analysis": {"type": "static_linear", "steps": 1},
+        "recorders": [{"type": "element_force", "elements": [1], "output": "force"}],
+    }
+
+    text = _run_json_to_tcl(case)
+    assert "eleLoad -ele 1 -type -beamUniform -2.0\n" in text

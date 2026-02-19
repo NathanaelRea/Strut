@@ -128,12 +128,13 @@ fn beam_global_stiffness(
     return _beam2d_transform_stiffness_local_to_global(c, s, k_local)
 
 
-fn beam_uniform_load_global(
+fn beam_uniform_load_global_2d(
     x1: Float64,
     y1: Float64,
     x2: Float64,
     y2: Float64,
-    w: Float64,
+    wy: Float64,
+    wx: Float64,
 ) -> List[Float64]:
     var dx = x2 - x1
     var dy = y2 - y1
@@ -144,15 +145,25 @@ fn beam_uniform_load_global(
     var s = dy / L
 
     var f_local: List[Float64] = [
-        0.0,
-        w * L / 2.0,
-        w * L * L / 12.0,
-        0.0,
-        w * L / 2.0,
-        -w * L * L / 12.0,
+        wx * L / 2.0,
+        wy * L / 2.0,
+        wy * L * L / 12.0,
+        wx * L / 2.0,
+        wy * L / 2.0,
+        -wy * L * L / 12.0,
     ]
 
     return _beam2d_transform_force_local_to_global(c, s, f_local)
+
+
+fn beam_uniform_load_global(
+    x1: Float64,
+    y1: Float64,
+    x2: Float64,
+    y2: Float64,
+    w: Float64,
+) -> List[Float64]:
+    return beam_uniform_load_global_2d(x1, y1, x2, y2, w, 0.0)
 
 
 fn beam2d_pdelta_global_stiffness(

@@ -6,7 +6,7 @@ from elements import (
     beam2d_corotational_global_internal_force,
     beam2d_pdelta_global_stiffness,
     beam_global_stiffness,
-    beam_uniform_load_global,
+    beam_uniform_load_global_2d,
     disp_beam_column2d_global_tangent_and_internal,
     force_beam_column2d_global_tangent_and_internal,
 )
@@ -20,6 +20,12 @@ from solver.run_case.input_types import (
 )
 from sections import FiberCell, FiberSection2dDef
 from tag_types import ElementTypeTag
+
+
+fn _beam_uniform_load_for_element_global(
+    node1: NodeInput, node2: NodeInput, wy: Float64, wx: Float64
+) -> List[Float64]:
+    return beam_uniform_load_global_2d(node1.x, node1.y, node2.x, node2.y, wy, wx)
 
 
 fn _beam2d_element_force_global(
@@ -111,13 +117,9 @@ fn _beam2d_element_force_global(
                 sum += k_global[i][j] * u_elem[j]
             f_elem[i] = sum
 
-    if elem.uniform_load_w != 0.0:
-        var f_load = beam_uniform_load_global(
-            node1.x,
-            node1.y,
-            node2.x,
-            node2.y,
-            elem.uniform_load_w,
+    if elem.uniform_load_wy != 0.0 or elem.uniform_load_wx != 0.0:
+        var f_load = _beam_uniform_load_for_element_global(
+            node1, node2, elem.uniform_load_wy, elem.uniform_load_wx
         )
         for i in range(6):
             f_elem[i] -= f_load[i]
@@ -286,6 +288,12 @@ fn _force_beam_column2d_element_force_global(
             for b in range(6):
                 sum += k_global[a][b] * u_elem[b]
             f_global_elastic[a] = sum
+        if elem.uniform_load_wy != 0.0 or elem.uniform_load_wx != 0.0:
+            var f_load = _beam_uniform_load_for_element_global(
+                node1, node2, elem.uniform_load_wy, elem.uniform_load_wx
+            )
+            for a in range(6):
+                f_global_elastic[a] -= f_load[a]
         return f_global_elastic^
 
     var sec_id = elem.section
@@ -320,6 +328,12 @@ fn _force_beam_column2d_element_force_global(
         k_dummy,
         f_global,
     )
+    if elem.uniform_load_wy != 0.0 or elem.uniform_load_wx != 0.0:
+        var f_load = _beam_uniform_load_for_element_global(
+            node1, node2, elem.uniform_load_wy, elem.uniform_load_wx
+        )
+        for a in range(6):
+            f_global[a] -= f_load[a]
     return f_global^
 
 
@@ -402,6 +416,12 @@ fn _disp_beam_column2d_element_force_global(
             for b in range(6):
                 sum += k_global[a][b] * u_elem[b]
             f_global_elastic[a] = sum
+        if elem.uniform_load_wy != 0.0 or elem.uniform_load_wx != 0.0:
+            var f_load = _beam_uniform_load_for_element_global(
+                node1, node2, elem.uniform_load_wy, elem.uniform_load_wx
+            )
+            for a in range(6):
+                f_global_elastic[a] -= f_load[a]
         return f_global_elastic^
 
     var sec_id = elem.section
@@ -433,6 +453,12 @@ fn _disp_beam_column2d_element_force_global(
         k_dummy,
         f_global,
     )
+    if elem.uniform_load_wy != 0.0 or elem.uniform_load_wx != 0.0:
+        var f_load = _beam_uniform_load_for_element_global(
+            node1, node2, elem.uniform_load_wy, elem.uniform_load_wx
+        )
+        for a in range(6):
+            f_global[a] -= f_load[a]
     return f_global^
 
 

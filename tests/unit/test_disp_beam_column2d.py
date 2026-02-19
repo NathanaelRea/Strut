@@ -135,6 +135,23 @@ def test_disp_beam_column2d_static_nonlinear_fiber_runs():
     assert all(math.isfinite(value) for row in rows for value in row)
 
 
+def test_disp_beam_column2d_beam_uniform_reports_zero_free_end_forces():
+    case_data = _base_case("dispBeamColumn2d")
+    case_data["loads"] = []
+    case_data["element_loads"] = [{"element": 1, "type": "beamUniform", "wy": -2.0}]
+
+    with tempfile.TemporaryDirectory() as tmp:
+        out_dir = Path(tmp)
+        _run_mojo_case(case_data, out_dir)
+        rows = _read_rows(out_dir / "element_force_ele1.out")
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row[3] == pytest.approx(0.0, abs=1e-8)
+    assert row[4] == pytest.approx(0.0, abs=1e-8)
+    assert row[5] == pytest.approx(0.0, abs=1e-8)
+
+
 def test_disp_beam_column2d_rejects_unsupported_geom_transf():
     case_data = _base_case("dispBeamColumn2d")
     case_data["elements"][0]["geomTransf"] = "Corotational"

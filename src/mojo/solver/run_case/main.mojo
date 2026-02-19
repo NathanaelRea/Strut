@@ -1,5 +1,5 @@
 from collections import List
-from elements import beam_uniform_load_global
+from elements import beam_uniform_load_global_2d
 from os import abort
 from python import Python, PythonObject
 
@@ -43,7 +43,7 @@ from solver.time_series import (
     parse_time_series_inputs,
 )
 from strut_io import py_len
-from tag_types import RecorderTypeTag
+from tag_types import ElementTypeTag, RecorderTypeTag
 
 
 fn _write_output_chunk_files(
@@ -62,7 +62,7 @@ fn _build_stage_force_vector(
     loads_raw: PythonObject,
     element_loads_raw: PythonObject,
     typed_nodes: List[NodeInput],
-    typed_elements: List[ElementInput],
+    mut typed_elements: List[ElementInput],
     elem_id_to_index: List[Int],
     id_to_index: List[Int],
     ndf: Int,
@@ -70,6 +70,12 @@ fn _build_stage_force_vector(
 ) raises -> List[Float64]:
     var F_stage: List[Float64] = []
     F_stage.resize(total_dofs, 0.0)
+
+    for e in range(len(typed_elements)):
+        var elem = typed_elements[e]
+        elem.uniform_load_wy = 0.0
+        elem.uniform_load_wx = 0.0
+        typed_elements[e] = elem
 
     for i in range(py_len(element_loads_raw)):
         var load = element_loads_raw[i]
@@ -81,19 +87,28 @@ fn _build_stage_force_vector(
             abort("element load refers to unknown element")
         var elem_index = elem_id_to_index[elem_id]
         var elem = typed_elements[elem_index]
-        if elem.type != "elasticBeamColumn2d":
-            abort("beamUniform requires elasticBeamColumn2d")
+        if (
+            elem.type_tag != ElementTypeTag.ElasticBeamColumn2d
+            and elem.type_tag != ElementTypeTag.ForceBeamColumn2d
+            and elem.type_tag != ElementTypeTag.DispBeamColumn2d
+        ):
+            abort(
+                "beamUniform requires elasticBeamColumn2d, forceBeamColumn2d, "
+                "or dispBeamColumn2d"
+            )
         if ndf != 3:
             abort("beamUniform requires ndf=3")
         var n1 = typed_nodes[elem.node_index_1]
         var n2 = typed_nodes[elem.node_index_2]
-        var w = Float64(load.get("w", 0.0))
-        var f_global = beam_uniform_load_global(
+        var wy = Float64(load.get("wy", load.get("w", 0.0)))
+        var wx = Float64(load.get("wx", 0.0))
+        var f_global = beam_uniform_load_global_2d(
             n1.x,
             n1.y,
             n2.x,
             n2.y,
-            w,
+            wy,
+            wx,
         )
         F_stage[node_dof_index(elem.node_index_1, 1, ndf)] += f_global[0]
         F_stage[node_dof_index(elem.node_index_1, 2, ndf)] += f_global[1]
@@ -101,6 +116,9 @@ fn _build_stage_force_vector(
         F_stage[node_dof_index(elem.node_index_2, 1, ndf)] += f_global[3]
         F_stage[node_dof_index(elem.node_index_2, 2, ndf)] += f_global[4]
         F_stage[node_dof_index(elem.node_index_2, 3, ndf)] += f_global[5]
+        elem.uniform_load_wy += wy
+        elem.uniform_load_wx += wx
+        typed_elements[elem_index] = elem
 
     for i in range(py_len(loads_raw)):
         var load = loads_raw[i]

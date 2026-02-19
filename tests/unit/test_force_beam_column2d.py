@@ -298,6 +298,92 @@ def test_force_beam_column2d_with_elastic_section2d_static_linear_runs():
     assert all(math.isfinite(value) for value in rows[0])
 
 
+def test_force_beam_column2d_beam_uniform_reports_zero_free_end_forces():
+    case_data = {
+        "schema_version": "1.0",
+        "metadata": {"name": "force_beam_column2d_uniform_load_unit", "units": "SI"},
+        "model": {"ndm": 2, "ndf": 3},
+        "nodes": [
+            {"id": 1, "x": 0.0, "y": 0.0, "constraints": [1, 2, 3]},
+            {"id": 2, "x": 3.0, "y": 0.0},
+        ],
+        "sections": [
+            {
+                "id": 1,
+                "type": "ElasticSection2d",
+                "params": {"E": 30000000000.0, "A": 0.04, "I": 1.0e-4},
+            }
+        ],
+        "elements": [
+            {
+                "id": 1,
+                "type": "forceBeamColumn2d",
+                "nodes": [1, 2],
+                "section": 1,
+                "geomTransf": "Linear",
+                "integration": "Lobatto",
+                "num_int_pts": 5,
+            }
+        ],
+        "element_loads": [{"element": 1, "type": "beamUniform", "wy": -2.0}],
+        "analysis": {"type": "static_linear", "steps": 1, "force_beam_mode": "linear_if_elastic"},
+        "recorders": [{"type": "element_force", "elements": [1], "output": "element_force"}],
+    }
+
+    with tempfile.TemporaryDirectory() as tmp:
+        out_dir = Path(tmp)
+        _run_mojo_case(case_data, out_dir)
+        rows = _read_rows(out_dir / "element_force_ele1.out")
+
+    assert len(rows) == 1
+    row = rows[0]
+    # Cantilever free end should report near-zero end force under pure beamUniform loading.
+    assert row[3] == pytest.approx(0.0, abs=1e-8)
+    assert row[4] == pytest.approx(0.0, abs=1e-8)
+    assert row[5] == pytest.approx(0.0, abs=1e-8)
+
+
+def test_nonlinear_beam_column_alias_accepts_beam_uniform():
+    case_data = {
+        "schema_version": "1.0",
+        "metadata": {"name": "nonlinear_beam_column_uniform_load_unit", "units": "SI"},
+        "model": {"ndm": 2, "ndf": 3},
+        "nodes": [
+            {"id": 1, "x": 0.0, "y": 0.0, "constraints": [1, 2, 3]},
+            {"id": 2, "x": 3.0, "y": 0.0},
+        ],
+        "sections": [
+            {
+                "id": 1,
+                "type": "ElasticSection2d",
+                "params": {"E": 30000000000.0, "A": 0.04, "I": 1.0e-4},
+            }
+        ],
+        "elements": [
+            {
+                "id": 1,
+                "type": "nonlinearBeamColumn",
+                "nodes": [1, 2],
+                "section": 1,
+                "geomTransf": "Linear",
+                "integration": "Lobatto",
+                "num_int_pts": 5,
+            }
+        ],
+        "element_loads": [{"element": 1, "type": "beamUniform", "wy": -2.0}],
+        "analysis": {"type": "static_linear", "steps": 1},
+        "recorders": [{"type": "element_force", "elements": [1], "output": "element_force"}],
+    }
+
+    with tempfile.TemporaryDirectory() as tmp:
+        out_dir = Path(tmp)
+        _run_mojo_case(case_data, out_dir)
+        rows = _read_rows(out_dir / "element_force_ele1.out")
+
+    assert len(rows) == 1
+    assert len(rows[0]) == 6
+
+
 def test_force_beam_column2d_rejects_unsupported_geom_transf():
     case_data = _base_force_beam_case(
         {"id": 1, "type": "Elastic", "params": {"E": 30000000000.0}}

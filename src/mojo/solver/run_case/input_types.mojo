@@ -209,7 +209,8 @@ struct ElementInput(Movable, ImplicitlyCopyable):
     var geom_transf: String
     var integration: String
     var num_int_pts: Int
-    var uniform_load_w: Float64
+    var uniform_load_wy: Float64
+    var uniform_load_wx: Float64
     var dof_count: Int
     var dof_1: Int
     var dof_2: Int
@@ -272,7 +273,8 @@ struct ElementInput(Movable, ImplicitlyCopyable):
         self.geom_transf = "Linear"
         self.integration = "Lobatto"
         self.num_int_pts = 3
-        self.uniform_load_w = 0.0
+        self.uniform_load_wy = 0.0
+        self.uniform_load_wx = 0.0
         self.dof_count = 0
         self.dof_1 = -1
         self.dof_2 = -1
@@ -303,12 +305,14 @@ struct ElementInput(Movable, ImplicitlyCopyable):
 struct ElementLoadInput(Movable, ImplicitlyCopyable):
     var element: Int
     var type: String
-    var w: Float64
+    var wy: Float64
+    var wx: Float64
 
-    fn __init__(out self, element: Int, type: String, w: Float64):
+    fn __init__(out self, element: Int, type: String, wy: Float64, wx: Float64):
         self.element = element
         self.type = type
-        self.w = w
+        self.wy = wy
+        self.wx = wx
 
 
 struct NodalLoadInput(Movable, ImplicitlyCopyable):
@@ -873,10 +877,10 @@ fn parse_case_input(data: PythonObject) raises -> CaseInput:
     var element_loads_raw = data.get("element_loads", [])
     for i in range(py_len(element_loads_raw)):
         var load = element_loads_raw[i]
+        var wy = Float64(load.get("wy", load.get("w", 0.0)))
+        var wx = Float64(load.get("wx", 0.0))
         case_input.element_loads.append(
-            ElementLoadInput(
-                Int(load["element"]), String(load["type"]), Float64(load.get("w", 0.0))
-            )
+            ElementLoadInput(Int(load["element"]), String(load["type"]), wy, wx)
         )
 
     var loads_raw = data.get("loads", [])

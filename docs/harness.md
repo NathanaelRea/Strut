@@ -44,7 +44,9 @@ Minimum required fields (v1.0):
   - `Plain`: `{ type: "Plain", tag, time_series }`
   - `UniformExcitation`: `{ type: "UniformExcitation", tag, direction, accel }`
 - `loads`: list of `{ node, dof, value }` (`dof` must be in `1..ndf`)
-- `element_loads`: list of `{ element, type, w }` (optional, `type: "beamUniform"` only)
+- `element_loads`: list of `{ element, type, wy | w, wx? }` (optional, `type: "beamUniform"` only)
+  - `wy` (or legacy alias `w`): local y-direction uniform load intensity.
+  - `wx` (optional): local x-direction uniform load intensity.
 - `rayleigh`: `{ alphaM?, betaK?, betaKInit?, betaKComm? }` (optional; top-level)
 - `analysis`: `{ type: "static_linear" | "static_nonlinear" | "transient_linear" | "transient_nonlinear" | "modal_eigen" | "staged", steps: 1, constraints?, num_modes?, dt?, max_iters?, tol?, rel_tol?, integrator?, algorithm?, stages? }`
   - `constraints`: `Plain` (default) or `Transformation`.

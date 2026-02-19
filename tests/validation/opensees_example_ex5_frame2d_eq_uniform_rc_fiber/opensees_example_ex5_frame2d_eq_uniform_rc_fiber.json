@@ -9,7 +9,7 @@
   },
   "source_doc": "docs/agent-reference/OpenSeesExamplesAdvanced/Ex5Fram2DEQUniform/Ex5.Frame2D.analyze.Dynamic.EQ.Uniform.tcl",
   "source_example": "docs/agent-reference/OpenSeesExamplesAdvanced/Ex5Fram2DEQUniform/Ex5.Frame2D.build.InelasticFiberRCSection.tcl",
-  "notes": "Ex5 RC fiber frame migrated as staged gravity + uniform-support excitation using nonlinearBeamColumn mapping and supported recorder set.",
+  "notes": "Ex5 RC fiber frame migrated as staged gravity + uniform-support excitation using nonlinearBeamColumn mapping, beam/column beamUniform gravity loads, and supported recorder set.",
   "parity_tolerance": {
     "rtol": 0.1,
     "atol": 0.01
@@ -370,19 +370,28 @@
     "tag": 101,
     "time_series": 1
   },
-  "loads": [
-    { "node": 21, "dof": 2, "value": -24.324 },
-    { "node": 22, "dof": 2, "value": -47.052 },
-    { "node": 23, "dof": 2, "value": -47.052 },
-    { "node": 24, "dof": 2, "value": -24.324 },
-    { "node": 31, "dof": 2, "value": -24.324 },
-    { "node": 32, "dof": 2, "value": -47.052 },
-    { "node": 33, "dof": 2, "value": -47.052 },
-    { "node": 34, "dof": 2, "value": -24.324 },
-    { "node": 41, "dof": 2, "value": -23.526 },
-    { "node": 42, "dof": 2, "value": -46.254 },
-    { "node": 43, "dof": 2, "value": -46.254 },
-    { "node": 44, "dof": 2, "value": -23.526 }
+  "element_loads": [
+    { "element": 221, "type": "beamUniform", "wy": -0.15783333333333333 },
+    { "element": 222, "type": "beamUniform", "wy": -0.15783333333333333 },
+    { "element": 223, "type": "beamUniform", "wy": -0.15783333333333333 },
+    { "element": 231, "type": "beamUniform", "wy": -0.15783333333333333 },
+    { "element": 232, "type": "beamUniform", "wy": -0.15783333333333333 },
+    { "element": 233, "type": "beamUniform", "wy": -0.15783333333333333 },
+    { "element": 241, "type": "beamUniform", "wy": -0.15783333333333333 },
+    { "element": 242, "type": "beamUniform", "wy": -0.15783333333333333 },
+    { "element": 243, "type": "beamUniform", "wy": -0.15783333333333333 },
+    { "element": 111, "type": "beamUniform", "wy": 0.0, "wx": -0.0095 },
+    { "element": 112, "type": "beamUniform", "wy": 0.0, "wx": -0.0095 },
+    { "element": 113, "type": "beamUniform", "wy": 0.0, "wx": -0.0095 },
+    { "element": 114, "type": "beamUniform", "wy": 0.0, "wx": -0.0095 },
+    { "element": 121, "type": "beamUniform", "wy": 0.0, "wx": -0.0095 },
+    { "element": 122, "type": "beamUniform", "wy": 0.0, "wx": -0.0095 },
+    { "element": 123, "type": "beamUniform", "wy": 0.0, "wx": -0.0095 },
+    { "element": 124, "type": "beamUniform", "wy": 0.0, "wx": -0.0095 },
+    { "element": 131, "type": "beamUniform", "wy": 0.0, "wx": -0.0095 },
+    { "element": 132, "type": "beamUniform", "wy": 0.0, "wx": -0.0095 },
+    { "element": 133, "type": "beamUniform", "wy": 0.0, "wx": -0.0095 },
+    { "element": 134, "type": "beamUniform", "wy": 0.0, "wx": -0.0095 }
   ],
   "analysis": {
     "type": "staged",
