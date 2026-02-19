@@ -19,7 +19,7 @@ def _run_section_path(case_data):
         subprocess.check_call(
             [
                 sys.executable,
-                str(repo_root / "scripts" / "run_mojo_section_path.py"),
+                str(repo_root / "scripts" / "run_strut_section_path.py"),
                 "--input",
                 str(input_path),
                 "--output",
@@ -46,10 +46,10 @@ def _discretize_fibers(section_params):
             dz = (z1 - z0) / nz
             area = dy * dz
             for iy in range(ny):
-                    y = y0 + (iy + 0.5) * dy
-                    for iz in range(nz):
-                        z = z0 + (iz + 0.5) * dz
-                        fibers.append((y, z, area, patch["material"]))
+                y = y0 + (iy + 0.5) * dy
+                for iz in range(nz):
+                    z = z0 + (iz + 0.5) * dz
+                    fibers.append((y, z, area, patch["material"]))
         elif patch_type == "quadr":
             ny = patch["num_subdiv_y"]
             nz = patch["num_subdiv_z"]
@@ -65,20 +65,76 @@ def _discretize_fibers(section_params):
                     v0 = j / nz
                     v1 = (j + 1) / nz
                     vc = 0.5 * (v0 + v1)
-                    y00 = (1 - u0) * (1 - v0) * yi + u0 * (1 - v0) * yj + u0 * v0 * yk + (1 - u0) * v0 * yl
-                    z00 = (1 - u0) * (1 - v0) * zi + u0 * (1 - v0) * zj + u0 * v0 * zk + (1 - u0) * v0 * zl
-                    y10 = (1 - u1) * (1 - v0) * yi + u1 * (1 - v0) * yj + u1 * v0 * yk + (1 - u1) * v0 * yl
-                    z10 = (1 - u1) * (1 - v0) * zi + u1 * (1 - v0) * zj + u1 * v0 * zk + (1 - u1) * v0 * zl
-                    y11 = (1 - u1) * (1 - v1) * yi + u1 * (1 - v1) * yj + u1 * v1 * yk + (1 - u1) * v1 * yl
-                    z11 = (1 - u1) * (1 - v1) * zi + u1 * (1 - v1) * zj + u1 * v1 * zk + (1 - u1) * v1 * zl
-                    y01 = (1 - u0) * (1 - v1) * yi + u0 * (1 - v1) * yj + u0 * v1 * yk + (1 - u0) * v1 * yl
-                    z01 = (1 - u0) * (1 - v1) * zi + u0 * (1 - v1) * zj + u0 * v1 * zk + (1 - u0) * v1 * zl
-                    area = 0.5 * abs(
-                        y00 * z10 + y10 * z11 + y11 * z01 + y01 * z00
-                        - z00 * y10 - z10 * y11 - z11 * y01 - z01 * y00
+                    y00 = (
+                        (1 - u0) * (1 - v0) * yi
+                        + u0 * (1 - v0) * yj
+                        + u0 * v0 * yk
+                        + (1 - u0) * v0 * yl
                     )
-                    y = (1 - uc) * (1 - vc) * yi + uc * (1 - vc) * yj + uc * vc * yk + (1 - uc) * vc * yl
-                    z = (1 - uc) * (1 - vc) * zi + uc * (1 - vc) * zj + uc * vc * zk + (1 - uc) * vc * zl
+                    z00 = (
+                        (1 - u0) * (1 - v0) * zi
+                        + u0 * (1 - v0) * zj
+                        + u0 * v0 * zk
+                        + (1 - u0) * v0 * zl
+                    )
+                    y10 = (
+                        (1 - u1) * (1 - v0) * yi
+                        + u1 * (1 - v0) * yj
+                        + u1 * v0 * yk
+                        + (1 - u1) * v0 * yl
+                    )
+                    z10 = (
+                        (1 - u1) * (1 - v0) * zi
+                        + u1 * (1 - v0) * zj
+                        + u1 * v0 * zk
+                        + (1 - u1) * v0 * zl
+                    )
+                    y11 = (
+                        (1 - u1) * (1 - v1) * yi
+                        + u1 * (1 - v1) * yj
+                        + u1 * v1 * yk
+                        + (1 - u1) * v1 * yl
+                    )
+                    z11 = (
+                        (1 - u1) * (1 - v1) * zi
+                        + u1 * (1 - v1) * zj
+                        + u1 * v1 * zk
+                        + (1 - u1) * v1 * zl
+                    )
+                    y01 = (
+                        (1 - u0) * (1 - v1) * yi
+                        + u0 * (1 - v1) * yj
+                        + u0 * v1 * yk
+                        + (1 - u0) * v1 * yl
+                    )
+                    z01 = (
+                        (1 - u0) * (1 - v1) * zi
+                        + u0 * (1 - v1) * zj
+                        + u0 * v1 * zk
+                        + (1 - u0) * v1 * zl
+                    )
+                    area = 0.5 * abs(
+                        y00 * z10
+                        + y10 * z11
+                        + y11 * z01
+                        + y01 * z00
+                        - z00 * y10
+                        - z10 * y11
+                        - z11 * y01
+                        - z01 * y00
+                    )
+                    y = (
+                        (1 - uc) * (1 - vc) * yi
+                        + uc * (1 - vc) * yj
+                        + uc * vc * yk
+                        + (1 - uc) * vc * yl
+                    )
+                    z = (
+                        (1 - uc) * (1 - vc) * zi
+                        + uc * (1 - vc) * zj
+                        + uc * vc * zk
+                        + (1 - uc) * vc * zl
+                    )
                     fibers.append((y, z, area, patch["material"]))
         else:
             raise AssertionError(f"unsupported patch type {patch['type']}")
@@ -95,13 +151,17 @@ def _discretize_fibers(section_params):
         else:
             for i in range(n):
                 t = i / (n - 1)
-                fibers.append((ys + (ye - ys) * t, zs + (ze - zs) * t, area, layer["material"]))
+                fibers.append(
+                    (ys + (ye - ys) * t, zs + (ze - zs) * t, area, layer["material"])
+                )
     return fibers
 
 
 def _expected_elastic_response(case_data, eps0, kappa):
     e_by_mat = {
-        m["id"]: m["params"]["E"] for m in case_data["materials"] if m["type"] == "Elastic"
+        m["id"]: m["params"]["E"]
+        for m in case_data["materials"]
+        if m["type"] == "Elastic"
     }
     fibers = _discretize_fibers(case_data["section"]["params"])
     a_sum = sum(area for y, z, area, mat in fibers)

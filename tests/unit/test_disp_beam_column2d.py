@@ -11,13 +11,13 @@ import pytest
 repo_root = Path(__file__).resolve().parents[2]
 
 
-def _run_mojo_case(case_data, out_dir: Path):
+def _run_strut_case(case_data, out_dir: Path):
     input_path = out_dir / "input.json"
     input_path.write_text(json.dumps(case_data), encoding="utf-8")
     subprocess.check_call(
         [
             sys.executable,
-            str(repo_root / "scripts" / "run_mojo_case.py"),
+            str(repo_root / "scripts" / "run_strut_case.py"),
             "--input",
             str(input_path),
             "--output",
@@ -70,7 +70,9 @@ def _base_case(element_type: str):
             "steps": 1,
             "force_beam_mode": "linear_if_elastic",
         },
-        "recorders": [{"type": "element_force", "elements": [1], "output": "element_force"}],
+        "recorders": [
+            {"type": "element_force", "elements": [1], "output": "element_force"}
+        ],
     }
 
 
@@ -80,7 +82,7 @@ def test_disp_beam_column2d_static_linear_elastic_runs():
 
     with tempfile.TemporaryDirectory() as tmp:
         out_dir = Path(tmp)
-        _run_mojo_case(case_data, out_dir)
+        _run_strut_case(case_data, out_dir)
         rows = _read_rows(out_dir / "element_force_ele1.out")
 
     assert len(rows) == 1
@@ -127,7 +129,7 @@ def test_disp_beam_column2d_static_nonlinear_fiber_runs():
 
     with tempfile.TemporaryDirectory() as tmp:
         out_dir = Path(tmp)
-        _run_mojo_case(case_data, out_dir)
+        _run_strut_case(case_data, out_dir)
         rows = _read_rows(out_dir / "element_force_ele1.out")
 
     assert len(rows) == 3
@@ -142,7 +144,7 @@ def test_disp_beam_column2d_beam_uniform_reports_zero_free_end_forces():
 
     with tempfile.TemporaryDirectory() as tmp:
         out_dir = Path(tmp)
-        _run_mojo_case(case_data, out_dir)
+        _run_strut_case(case_data, out_dir)
         rows = _read_rows(out_dir / "element_force_ele1.out")
 
     assert len(rows) == 1
@@ -159,7 +161,7 @@ def test_disp_beam_column2d_rejects_unsupported_geom_transf():
     with tempfile.TemporaryDirectory() as tmp:
         out_dir = Path(tmp)
         with pytest.raises(subprocess.CalledProcessError):
-            _run_mojo_case(case_data, out_dir)
+            _run_strut_case(case_data, out_dir)
 
 
 def test_disp_beam_column2d_rejects_non_lobatto_integration():
@@ -176,7 +178,7 @@ def test_disp_beam_column2d_rejects_non_lobatto_integration():
     with tempfile.TemporaryDirectory() as tmp:
         out_dir = Path(tmp)
         with pytest.raises(subprocess.CalledProcessError):
-            _run_mojo_case(case_data, out_dir)
+            _run_strut_case(case_data, out_dir)
 
 
 def test_disp_beam_column_alias_rejected():
@@ -185,4 +187,4 @@ def test_disp_beam_column_alias_rejected():
     with tempfile.TemporaryDirectory() as tmp:
         out_dir = Path(tmp)
         with pytest.raises(subprocess.CalledProcessError):
-            _run_mojo_case(case_data, out_dir)
+            _run_strut_case(case_data, out_dir)

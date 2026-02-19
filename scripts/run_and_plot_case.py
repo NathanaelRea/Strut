@@ -75,7 +75,9 @@ def _build_node_xy(case_data: dict) -> dict[int, tuple[float, float]]:
     return node_xy
 
 
-def _build_edges(case_data: dict, node_xy: dict[int, tuple[float, float]]) -> list[tuple[int, int]]:
+def _build_edges(
+    case_data: dict, node_xy: dict[int, tuple[float, float]]
+) -> list[tuple[int, int]]:
     edges: list[tuple[int, int]] = []
     seen: set[tuple[int, int]] = set()
 
@@ -117,7 +119,9 @@ def _dof_series(rows, dofs: list[int], dof: int):
     return vals
 
 
-def _collect_node_displacements(case_data: dict, out_dir: Path, node_xy: dict[int, tuple[float, float]]):
+def _collect_node_displacements(
+    case_data: dict, out_dir: Path, node_xy: dict[int, tuple[float, float]]
+):
     raw: dict[int, dict[int, list[float]]] = {}
     for rec in case_data.get("recorders", []):
         if rec.get("type") != "node_displacement":
@@ -281,9 +285,25 @@ def _plot_structure_animation(
     ax.set_title(f"{case_name} :: Structural Response")
     ax.legend(
         handles=[
-            Line2D([], [], color="#8f8f8f", linestyle=":", linewidth=1.0, label="Undeformed"),
-            Line2D([], [], color=OPENSEES_BLUE, linestyle="-", linewidth=2.0, label="OpenSees reference"),
-            Line2D([], [], color=MOJO_ORANGE, linestyle="--", linewidth=1.8, label="Strut"),
+            Line2D(
+                [],
+                [],
+                color="#8f8f8f",
+                linestyle=":",
+                linewidth=1.0,
+                label="Undeformed",
+            ),
+            Line2D(
+                [],
+                [],
+                color=OPENSEES_BLUE,
+                linestyle="-",
+                linewidth=2.0,
+                label="OpenSees reference",
+            ),
+            Line2D(
+                [], [], color=MOJO_ORANGE, linestyle="--", linewidth=1.8, label="Strut"
+            ),
         ],
         loc="best",
     )
@@ -294,7 +314,12 @@ def _plot_structure_animation(
         transform=ax.transAxes,
         va="top",
         ha="left",
-        bbox={"boxstyle": "round,pad=0.2", "facecolor": "white", "alpha": 0.85, "edgecolor": "none"},
+        bbox={
+            "boxstyle": "round,pad=0.2",
+            "facecolor": "white",
+            "alpha": 0.85,
+            "edgecolor": "none",
+        },
     )
     ax.text(
         0.015,
@@ -303,7 +328,12 @@ def _plot_structure_animation(
         transform=ax.transAxes,
         va="bottom",
         ha="left",
-        bbox={"boxstyle": "round,pad=0.2", "facecolor": "white", "alpha": 0.85, "edgecolor": "none"},
+        bbox={
+            "boxstyle": "round,pad=0.2",
+            "facecolor": "white",
+            "alpha": 0.85,
+            "edgecolor": "none",
+        },
     )
 
     def _frame_label(frame_idx: int) -> str:
@@ -381,8 +411,17 @@ def _plot_one(
     peak_rel_err = peak_abs_err / max(ref_peak, 1.0e-30)
 
     single_sample = len(x_vals) == 1
-    ref_style = {"label": "OpenSees reference", "linewidth": 2.0, "color": OPENSEES_BLUE}
-    strut_style = {"label": "Strut", "linewidth": 1.6, "linestyle": "--", "color": MOJO_ORANGE}
+    ref_style = {
+        "label": "OpenSees reference",
+        "linewidth": 2.0,
+        "color": OPENSEES_BLUE,
+    }
+    strut_style = {
+        "label": "Strut",
+        "linewidth": 1.6,
+        "linestyle": "--",
+        "color": MOJO_ORANGE,
+    }
     if single_sample:
         ref_style.update({"marker": "o", "markersize": 6.0})
         strut_style.update({"marker": "x", "markersize": 6.0})
@@ -404,7 +443,9 @@ def _plot_one(
         pdf.savefig(fig, dpi=140)
     plt.close(fig)
 
-    print(f"  peak(ref)={ref_peak:.6e} peak(strut)={strut_peak:.6e} peak_rel={peak_rel_err:.6e} rmse={rmse:.6e}")
+    print(
+        f"  peak(ref)={ref_peak:.6e} peak(strut)={strut_peak:.6e} peak_rel={peak_rel_err:.6e} rmse={rmse:.6e}"
+    )
 
 
 def main():
@@ -481,7 +522,7 @@ def main():
     dt = float(analysis.get("dt", 1.0))
 
     ref_dir = case_root / "reference"
-    strut_dir = case_root / "mojo"
+    strut_dir = case_root / "strut"
     if not ref_dir.exists() or not strut_dir.exists():
         raise SystemExit(
             f"missing output directories: reference={ref_dir.exists()} strut={strut_dir.exists()}"
@@ -562,7 +603,9 @@ def main():
                 component = comp_idx + 1
                 ref_vals = _series(ref_rows, comp_idx)
                 strut_vals = _series(strut_rows, comp_idx)
-                out_path = None if args.no_png else (plot_dir / f"{stem}_c{component}.png")
+                out_path = (
+                    None if args.no_png else (plot_dir / f"{stem}_c{component}.png")
+                )
                 _plot_one(
                     case_name,
                     ref_file.name,

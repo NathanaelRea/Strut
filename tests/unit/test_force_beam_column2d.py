@@ -11,13 +11,13 @@ import pytest
 repo_root = Path(__file__).resolve().parents[2]
 
 
-def _run_mojo_case(case_data, out_dir: Path):
+def _run_strut_case(case_data, out_dir: Path):
     input_path = out_dir / "input.json"
     input_path.write_text(json.dumps(case_data), encoding="utf-8")
     subprocess.check_call(
         [
             sys.executable,
-            str(repo_root / "scripts" / "run_mojo_case.py"),
+            str(repo_root / "scripts" / "run_strut_case.py"),
             "--input",
             str(input_path),
             "--output",
@@ -69,7 +69,9 @@ def _base_force_beam_case(material):
             }
         ],
         "loads": [{"node": 2, "dof": 2, "value": 1.0}],
-        "recorders": [{"type": "element_force", "elements": [1], "output": "element_force"}],
+        "recorders": [
+            {"type": "element_force", "elements": [1], "output": "element_force"}
+        ],
     }
 
 
@@ -97,7 +99,7 @@ def test_force_beam_column2d_smoke_static_nonlinear_load_control():
 
     with tempfile.TemporaryDirectory() as tmp:
         out_dir = Path(tmp)
-        _run_mojo_case(case_data, out_dir)
+        _run_strut_case(case_data, out_dir)
         rows = _read_rows(out_dir / "element_force_ele1.out")
 
     assert len(rows) == 3
@@ -120,7 +122,7 @@ def test_force_beam_column2d_smoke_static_nonlinear_modified_newton():
 
     with tempfile.TemporaryDirectory() as tmp:
         out_dir = Path(tmp)
-        _run_mojo_case(case_data, out_dir)
+        _run_strut_case(case_data, out_dir)
         rows = _read_rows(out_dir / "element_force_ele1.out")
 
     assert len(rows) == 3
@@ -140,7 +142,12 @@ def test_force_beam_column2d_section_recorders_emit_force_and_deformation():
         "integrator": {"type": "LoadControl"},
     }
     case_data["recorders"] = [
-        {"type": "section_force", "elements": [1], "sections": [1, 3], "output": "sec_force"},
+        {
+            "type": "section_force",
+            "elements": [1],
+            "sections": [1, 3],
+            "output": "sec_force",
+        },
         {
             "type": "section_deformation",
             "elements": [1],
@@ -151,7 +158,7 @@ def test_force_beam_column2d_section_recorders_emit_force_and_deformation():
 
     with tempfile.TemporaryDirectory() as tmp:
         out_dir = Path(tmp)
-        _run_mojo_case(case_data, out_dir)
+        _run_strut_case(case_data, out_dir)
         force_rows = _read_rows(out_dir / "sec_force_ele1_sec1.out")
         defo_rows = _read_rows(out_dir / "sec_defo_ele1_sec3.out")
 
@@ -188,7 +195,7 @@ def test_force_beam_column2d_displacement_control_cyclic_sign_reversal():
 
     with tempfile.TemporaryDirectory() as tmp:
         out_dir = Path(tmp)
-        _run_mojo_case(case_data, out_dir)
+        _run_strut_case(case_data, out_dir)
         rows = _read_rows(out_dir / "element_force_ele1.out")
 
     assert len(rows) == 3
@@ -208,7 +215,7 @@ def test_force_beam_column2d_static_linear_elastic_runs():
 
     with tempfile.TemporaryDirectory() as tmp:
         out_dir = Path(tmp)
-        _run_mojo_case(case_data, out_dir)
+        _run_strut_case(case_data, out_dir)
         rows = _read_rows(out_dir / "element_force_ele1.out")
 
     assert len(rows) == 1
@@ -228,7 +235,7 @@ def test_force_beam_column2d_static_linear_elastic_unit_tip_load_equilibrium():
 
     with tempfile.TemporaryDirectory() as tmp:
         out_dir = Path(tmp)
-        _run_mojo_case(case_data, out_dir)
+        _run_strut_case(case_data, out_dir)
         rows = _read_rows(out_dir / "element_force_ele1.out")
 
     assert len(rows) == 1
@@ -253,13 +260,16 @@ def test_force_beam_column2d_static_linear_nonelastic_rejected():
     with tempfile.TemporaryDirectory() as tmp:
         out_dir = Path(tmp)
         with pytest.raises(subprocess.CalledProcessError):
-            _run_mojo_case(case_data, out_dir)
+            _run_strut_case(case_data, out_dir)
 
 
 def test_force_beam_column2d_with_elastic_section2d_static_linear_runs():
     case_data = {
         "schema_version": "1.0",
-        "metadata": {"name": "force_beam_column2d_elastic_section2d_unit", "units": "SI"},
+        "metadata": {
+            "name": "force_beam_column2d_elastic_section2d_unit",
+            "units": "SI",
+        },
         "model": {"ndm": 2, "ndf": 3},
         "nodes": [
             {"id": 1, "x": 0.0, "y": 0.0, "constraints": [1, 2, 3]},
@@ -285,12 +295,14 @@ def test_force_beam_column2d_with_elastic_section2d_static_linear_runs():
         ],
         "loads": [{"node": 2, "dof": 2, "value": 1.0}],
         "analysis": {"type": "static_linear", "steps": 1},
-        "recorders": [{"type": "element_force", "elements": [1], "output": "element_force"}],
+        "recorders": [
+            {"type": "element_force", "elements": [1], "output": "element_force"}
+        ],
     }
 
     with tempfile.TemporaryDirectory() as tmp:
         out_dir = Path(tmp)
-        _run_mojo_case(case_data, out_dir)
+        _run_strut_case(case_data, out_dir)
         rows = _read_rows(out_dir / "element_force_ele1.out")
 
     assert len(rows) == 1
@@ -326,13 +338,19 @@ def test_force_beam_column2d_beam_uniform_reports_zero_free_end_forces():
             }
         ],
         "element_loads": [{"element": 1, "type": "beamUniform", "wy": -2.0}],
-        "analysis": {"type": "static_linear", "steps": 1, "force_beam_mode": "linear_if_elastic"},
-        "recorders": [{"type": "element_force", "elements": [1], "output": "element_force"}],
+        "analysis": {
+            "type": "static_linear",
+            "steps": 1,
+            "force_beam_mode": "linear_if_elastic",
+        },
+        "recorders": [
+            {"type": "element_force", "elements": [1], "output": "element_force"}
+        ],
     }
 
     with tempfile.TemporaryDirectory() as tmp:
         out_dir = Path(tmp)
-        _run_mojo_case(case_data, out_dir)
+        _run_strut_case(case_data, out_dir)
         rows = _read_rows(out_dir / "element_force_ele1.out")
 
     assert len(rows) == 1
@@ -372,12 +390,14 @@ def test_nonlinear_beam_column_alias_accepts_beam_uniform():
         ],
         "element_loads": [{"element": 1, "type": "beamUniform", "wy": -2.0}],
         "analysis": {"type": "static_linear", "steps": 1},
-        "recorders": [{"type": "element_force", "elements": [1], "output": "element_force"}],
+        "recorders": [
+            {"type": "element_force", "elements": [1], "output": "element_force"}
+        ],
     }
 
     with tempfile.TemporaryDirectory() as tmp:
         out_dir = Path(tmp)
-        _run_mojo_case(case_data, out_dir)
+        _run_strut_case(case_data, out_dir)
         rows = _read_rows(out_dir / "element_force_ele1.out")
 
     assert len(rows) == 1
@@ -398,7 +418,7 @@ def test_force_beam_column2d_rejects_unsupported_geom_transf():
     with tempfile.TemporaryDirectory() as tmp:
         out_dir = Path(tmp)
         with pytest.raises(subprocess.CalledProcessError):
-            _run_mojo_case(case_data, out_dir)
+            _run_strut_case(case_data, out_dir)
 
 
 def test_force_beam_column2d_rejects_non_lobatto_integration():
@@ -415,4 +435,4 @@ def test_force_beam_column2d_rejects_non_lobatto_integration():
     with tempfile.TemporaryDirectory() as tmp:
         out_dir = Path(tmp)
         with pytest.raises(subprocess.CalledProcessError):
-            _run_mojo_case(case_data, out_dir)
+            _run_strut_case(case_data, out_dir)

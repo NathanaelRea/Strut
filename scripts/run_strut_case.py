@@ -23,7 +23,9 @@ def _resolve_optional_repo_path(path_text, repo_root: Path):
     return (repo_root / path_obj).resolve()
 
 
-def _resolve_values_path(values_path: str, case_json_path: Path, case_data: dict, repo_root: Path):
+def _resolve_values_path(
+    values_path: str, case_json_path: Path, case_data: dict, repo_root: Path
+):
     src = Path(values_path)
     candidates = []
     if src.is_absolute():
@@ -33,7 +35,9 @@ def _resolve_values_path(values_path: str, case_json_path: Path, case_data: dict
         candidates.append((case_dir / src).resolve())
         candidates.append((repo_root / src).resolve())
 
-        source_example = _resolve_optional_repo_path(case_data.get("source_example"), repo_root)
+        source_example = _resolve_optional_repo_path(
+            case_data.get("source_example"), repo_root
+        )
         if source_example is not None:
             candidates.append((source_example.parent / src).resolve())
 
@@ -42,8 +46,12 @@ def _resolve_values_path(values_path: str, case_json_path: Path, case_data: dict
             candidates.append((source_doc.parent / src).resolve())
 
         migration = case_data.get("migration", {})
-        ground_motion = migration.get("ground_motion", {}) if isinstance(migration, dict) else {}
-        source_file = _resolve_optional_repo_path(ground_motion.get("source_file"), repo_root)
+        ground_motion = (
+            migration.get("ground_motion", {}) if isinstance(migration, dict) else {}
+        )
+        source_file = _resolve_optional_repo_path(
+            ground_motion.get("source_file"), repo_root
+        )
         if source_file is not None:
             candidates.append((source_file.parent / src).resolve())
 
@@ -58,7 +66,9 @@ def _resolve_values_path(values_path: str, case_json_path: Path, case_data: dict
     return resolved
 
 
-def _normalize_time_series_paths(case_data: dict, case_json_path: Path, repo_root: Path):
+def _normalize_time_series_paths(
+    case_data: dict, case_json_path: Path, repo_root: Path
+):
     changed = False
 
     def _normalize_list(ts_list):
@@ -76,7 +86,9 @@ def _normalize_time_series_paths(case_data: dict, case_json_path: Path, repo_roo
             values_path = ts.get("values_path", ts.get("path"))
             if not isinstance(values_path, str) or not values_path:
                 continue
-            resolved = _resolve_values_path(values_path, case_json_path, case_data, repo_root)
+            resolved = _resolve_values_path(
+                values_path, case_json_path, case_data, repo_root
+            )
             resolved_text = str(resolved)
             if ts.get("values_path") != resolved_text:
                 ts["values_path"] = resolved_text
@@ -114,13 +126,13 @@ def main():
     if solver_bin:
         solver_path = Path(solver_bin)
     else:
-        solver_path = repo_root / "build" / "mojo" / "strut"
+        solver_path = repo_root / "build" / "strut" / "strut"
 
     rebuild = not solver_path.exists()
     if not rebuild and not solver_bin:
-        src_dir = repo_root / "src" / "mojo"
+        src_dir = repo_root / "src" / "strut"
         latest_src = max(
-            (p.stat().st_mtime for p in src_dir.rglob("*.mojo")),
+            (p.stat().st_mtime for p in src_dir.rglob("*.strut")),
             default=0.0,
         )
         if solver_path.stat().st_mtime < latest_src:
@@ -132,7 +144,7 @@ def main():
             [
                 uv,
                 "run",
-                "mojo",
+                "strut",
                 "build",
                 str(repo_root / "src" / "mojo" / "strut.mojo"),
                 "-o",

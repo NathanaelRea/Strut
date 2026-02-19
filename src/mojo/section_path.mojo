@@ -156,7 +156,7 @@ def run_section_path():
     var input_path = arg_value(args, "--input")
     var output_path = arg_value(args, "--output")
     if input_path == "" or output_path == "":
-        abort("usage: section_path.mojo --input <json> --output <csv>")
+        abort("usage: section_path.strut --input <json> --output <csv>")
 
     var data = load_json(input_path)
     var materials = data["materials"]

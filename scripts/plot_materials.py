@@ -26,7 +26,7 @@ def run(cmd: List[str]) -> None:
 
 
 def _engine_display_name(engine: str) -> str:
-    if engine == "mojo":
+    if engine == "strut":
         return "Strut"
     if engine == "opensees":
         return "OpenSees"
@@ -241,7 +241,7 @@ def _strain_path(
         for i in range(1, cycles + 1):
             scale = float(i) / float(cycles) if ramp else 1.0
             if ramp and ramp_power != 1.0:
-                scale = scale ** ramp_power
+                scale = scale**ramp_power
             path_targets.append(max_val * scale)
             if min_val != 0.0:
                 if ramp_positive_only:
@@ -397,11 +397,11 @@ def run_case(repo_root: Path, case_json: Path, out_dir: Path, engine: str) -> Pa
                 str(out_dir),
             ]
         )
-    elif engine == "mojo":
+    elif engine == "strut":
         run(
             [
                 sys.executable,
-                str(repo_root / "scripts" / "run_mojo_case.py"),
+                str(repo_root / "scripts" / "run_strut_case.py"),
                 "--input",
                 str(case_json),
                 "--output",
@@ -446,14 +446,14 @@ def plot_material(
 ) -> Tuple[Path, "plt.Figure"]:
     fig, ax = plt.subplots(figsize=(7, 4))
     engine_colors = {
-        "mojo": MOJO_ORANGE,
+        "strut": MOJO_ORANGE,
         "opensees": OPENSEES_BLUE,
     }
     engine_linestyles = {
-        "mojo": "--",
+        "strut": "--",
         "opensees": "-",
     }
-    for engine in ("opensees", "mojo"):
+    for engine in ("opensees", "strut"):
         series = data.get(engine)
         if not series:
             continue
@@ -499,14 +499,14 @@ def plot_hysteresis(
 ) -> Tuple[Path, "plt.Figure"]:
     fig, ax = plt.subplots(figsize=(7, 4))
     engine_colors = {
-        "mojo": MOJO_ORANGE,
+        "strut": MOJO_ORANGE,
         "opensees": OPENSEES_BLUE,
     }
     engine_linestyles = {
-        "mojo": "--",
+        "strut": "--",
         "opensees": "-",
     }
-    for engine in ("opensees", "mojo"):
+    for engine in ("opensees", "strut"):
         series = data.get(engine)
         if not series:
             continue
@@ -536,7 +536,9 @@ def plot_hysteresis(
     return out_path, fig
 
 
-def _bbox(strains: List[float], stresses: List[float]) -> Tuple[float, float, float, float]:
+def _bbox(
+    strains: List[float], stresses: List[float]
+) -> Tuple[float, float, float, float]:
     if not strains or not stresses:
         return (0.0, 0.0, 0.0, 0.0)
     return (min(strains), max(strains), min(stresses), max(stresses))
@@ -562,7 +564,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--engine",
-        choices=["mojo", "opensees", "both"],
+        choices=["strut", "opensees", "both"],
         default="both",
         help="Which solver(s) to run.",
     )
@@ -597,7 +599,7 @@ def main() -> None:
 
     repo_root = Path(__file__).resolve().parents[1]
     requested = [m.lower() for m in args.materials] if args.materials else None
-    engines = ["mojo", "opensees"] if args.engine == "both" else [args.engine]
+    engines = ["strut", "opensees"] if args.engine == "both" else [args.engine]
 
     pdf_path = args.output_dir / "material_curves.pdf"
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -649,10 +651,10 @@ def main() -> None:
                     csv_path = material_out / f"{engine}_{direction}.csv"
                     write_csv(csv_path, strains, stresses)
 
-            if "mojo" in curve_data and "opensees" in curve_data:
+            if "strut" in curve_data and "opensees" in curve_data:
                 print(f"{material_name} bbox:")
                 directions = sorted(
-                    set(curve_data["mojo"].keys()) | set(curve_data["opensees"].keys())
+                    set(curve_data["strut"].keys()) | set(curve_data["opensees"].keys())
                 )
                 if "tension" in directions and "compression" in directions:
                     directions = ["tension", "compression"] + [
@@ -660,13 +662,13 @@ def main() -> None:
                     ]
                 for direction in directions:
                     if (
-                        direction not in curve_data["mojo"]
+                        direction not in curve_data["strut"]
                         or direction not in curve_data["opensees"]
                     ):
                         msg = f"  {direction}: missing data"
                         print(_color(msg, "33", not args.no_color))
                         continue
-                    strut_eps, strut_sig = curve_data["mojo"][direction]
+                    strut_eps, strut_sig = curve_data["strut"][direction]
                     o_eps, o_sig = curve_data["opensees"][direction]
                     strut_bbox = _bbox(strut_eps, strut_sig)
                     o_bbox = _bbox(o_eps, o_sig)
@@ -674,9 +676,13 @@ def main() -> None:
                     diffs = []
                     ok = True
                     for name, strut_val, o_val in zip(labels, strut_bbox, o_bbox):
-                        if not _isclose(strut_val, o_val, args.bbox_rtol, args.bbox_atol):
+                        if not _isclose(
+                            strut_val, o_val, args.bbox_rtol, args.bbox_atol
+                        ):
                             ok = False
-                            diffs.append(f"{name}: strut={strut_val:.6e} open={o_val:.6e}")
+                            diffs.append(
+                                f"{name}: strut={strut_val:.6e} open={o_val:.6e}"
+                            )
                     if ok:
                         msg = f"  {direction}: OK"
                         print(_color(msg, "32", not args.no_color))
@@ -689,7 +695,9 @@ def main() -> None:
                 print(f"{material_name} bbox: skip (need both strut and opensees)")
 
             units = str(material.get("units", ""))
-            plot_path, fig = plot_material(material_name, curve_data, material_out, units)
+            plot_path, fig = plot_material(
+                material_name, curve_data, material_out, units
+            )
             print(f"wrote {plot_path}")
             pdf.savefig(fig)
             plt.close(fig)
@@ -706,7 +714,9 @@ def main() -> None:
                     cycles=int(hysteresis_cfg.get("cycles", 1)),
                     targets=hysteresis_cfg.get("targets"),
                     ramp=bool(hysteresis_cfg.get("ramp", False)),
-                    ramp_positive_only=bool(hysteresis_cfg.get("ramp_positive_only", False)),
+                    ramp_positive_only=bool(
+                        hysteresis_cfg.get("ramp_positive_only", False)
+                    ),
                     ramp_power=float(hysteresis_cfg.get("ramp_power", 1.0)),
                 )
                 hyst_case = build_displacement_case(
@@ -714,12 +724,24 @@ def main() -> None:
                     f"{material_name}_hysteresis",
                     strain_history,
                     {
-                        "max_iters": hysteresis_cfg.get("max_iters", analysis_cfg.get("max_iters", 80)),
-                        "tol": hysteresis_cfg.get("tol", analysis_cfg.get("tol", 1.0e-10)),
-                        "rel_tol": hysteresis_cfg.get("rel_tol", analysis_cfg.get("rel_tol", 1.0e-8)),
-                        "cutback": hysteresis_cfg.get("cutback", analysis_cfg.get("cutback", 0.5)),
-                        "max_cutbacks": hysteresis_cfg.get("max_cutbacks", analysis_cfg.get("max_cutbacks", 12)),
-                        "min_du": hysteresis_cfg.get("min_du", analysis_cfg.get("min_du", 1.0e-8)),
+                        "max_iters": hysteresis_cfg.get(
+                            "max_iters", analysis_cfg.get("max_iters", 80)
+                        ),
+                        "tol": hysteresis_cfg.get(
+                            "tol", analysis_cfg.get("tol", 1.0e-10)
+                        ),
+                        "rel_tol": hysteresis_cfg.get(
+                            "rel_tol", analysis_cfg.get("rel_tol", 1.0e-8)
+                        ),
+                        "cutback": hysteresis_cfg.get(
+                            "cutback", analysis_cfg.get("cutback", 0.5)
+                        ),
+                        "max_cutbacks": hysteresis_cfg.get(
+                            "max_cutbacks", analysis_cfg.get("max_cutbacks", 12)
+                        ),
+                        "min_du": hysteresis_cfg.get(
+                            "min_du", analysis_cfg.get("min_du", 1.0e-8)
+                        ),
                     },
                 )
 
@@ -751,7 +773,9 @@ def main() -> None:
                     write_csv(csv_path, strains, stresses)
 
                 if hyst_data:
-                    hyst_path, hyst_fig = plot_hysteresis(material_name, hyst_data, material_out, units)
+                    hyst_path, hyst_fig = plot_hysteresis(
+                        material_name, hyst_data, material_out, units
+                    )
                     print(f"wrote {hyst_path}")
                     pdf.savefig(hyst_fig)
                     plt.close(hyst_fig)

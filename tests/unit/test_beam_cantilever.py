@@ -8,7 +8,8 @@ import sys
 repo_root = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(repo_root))
 
-def _run_mojo_case(case_data, out_dir: Path):
+
+def _run_strut_case(case_data, out_dir: Path):
     with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as tmp:
         tmp.write(json.dumps(case_data))
         tmp_path = Path(tmp.name)
@@ -16,7 +17,7 @@ def _run_mojo_case(case_data, out_dir: Path):
         subprocess.check_call(
             [
                 sys.executable,
-                str(repo_root / "scripts" / "run_mojo_case.py"),
+                str(repo_root / "scripts" / "run_strut_case.py"),
                 "--input",
                 str(tmp_path),
                 "--output",
@@ -38,7 +39,7 @@ def test_cantilever_tip_deflection():
 
     with tempfile.TemporaryDirectory() as tmp:
         out_dir = Path(tmp)
-        _run_mojo_case(case_data, out_dir)
+        _run_strut_case(case_data, out_dir)
         disp_file = out_dir / "node_disp_node2.out"
         values = [float(v) for v in disp_file.read_text().split()]
 

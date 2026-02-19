@@ -11,14 +11,14 @@ import pytest
 repo_root = Path(__file__).resolve().parents[2]
 
 
-def _run_mojo_case(case_data, out_dir: Path):
+def _run_strut_case(case_data, out_dir: Path):
     out_dir.mkdir(parents=True, exist_ok=True)
     input_path = out_dir / "input.json"
     input_path.write_text(json.dumps(case_data), encoding="utf-8")
     subprocess.check_call(
         [
             sys.executable,
-            str(repo_root / "scripts" / "run_mojo_case.py"),
+            str(repo_root / "scripts" / "run_strut_case.py"),
             "--input",
             str(input_path),
             "--output",
@@ -48,19 +48,33 @@ def _base_truss_dynamic_case(material):
         ],
         "materials": [material],
         "sections": [],
-        "elements": [{"id": 1, "type": "truss", "nodes": [1, 2], "area": 1.0, "material": 1}],
+        "elements": [
+            {"id": 1, "type": "truss", "nodes": [1, 2], "area": 1.0, "material": 1}
+        ],
         "masses": [{"node": 2, "dof": 1, "value": 1.0}],
         "recorders": [
-            {"type": "node_displacement", "nodes": [2], "dofs": [1], "output": "node_disp"},
+            {
+                "type": "node_displacement",
+                "nodes": [2],
+                "dofs": [1],
+                "output": "node_disp",
+            },
             {"type": "element_force", "elements": [1], "output": "element_force"},
         ],
     }
 
 
 def test_transient_linear_rayleigh_reduces_tail_response():
-    base = _base_truss_dynamic_case({"id": 1, "type": "Elastic", "params": {"E": 100.0}})
+    base = _base_truss_dynamic_case(
+        {"id": 1, "type": "Elastic", "params": {"E": 100.0}}
+    )
     base["time_series"] = [
-        {"type": "Path", "tag": 1, "dt": 0.02, "values": [0.0, 1.0, 1.0, 0.5, 0.0, 0.0, 0.0, 0.0]}
+        {
+            "type": "Path",
+            "tag": 1,
+            "dt": 0.02,
+            "values": [0.0, 1.0, 1.0, 0.5, 0.0, 0.0, 0.0, 0.0],
+        }
     ]
     base["pattern"] = {"type": "Plain", "tag": 1, "time_series": 1}
     base["loads"] = [{"node": 2, "dof": 1, "value": 1.0}]
@@ -74,12 +88,12 @@ def test_transient_linear_rayleigh_reduces_tail_response():
     with tempfile.TemporaryDirectory() as tmp:
         out_dir = Path(tmp)
         undamped = json.loads(json.dumps(base))
-        _run_mojo_case(undamped, out_dir / "undamped")
+        _run_strut_case(undamped, out_dir / "undamped")
         undamped_rows = _read_rows(out_dir / "undamped" / "node_disp_node2.out")
 
         damped = json.loads(json.dumps(base))
         damped["rayleigh"] = {"alphaM": 4.0}
-        _run_mojo_case(damped, out_dir / "damped")
+        _run_strut_case(damped, out_dir / "damped")
         damped_rows = _read_rows(out_dir / "damped" / "node_disp_node2.out")
 
     undamped_tail = sum(abs(row[0]) for row in undamped_rows[4:]) / 4.0
@@ -88,9 +102,18 @@ def test_transient_linear_rayleigh_reduces_tail_response():
 
 
 def test_transient_linear_uniform_excitation_direction_sign():
-    case_data = _base_truss_dynamic_case({"id": 1, "type": "Elastic", "params": {"E": 100.0}})
-    case_data["time_series"] = [{"type": "Path", "tag": 2, "dt": 0.02, "values": [0.0, 1.0, 0.0, 0.0]}]
-    case_data["pattern"] = {"type": "UniformExcitation", "tag": 2, "direction": 1, "accel": 2}
+    case_data = _base_truss_dynamic_case(
+        {"id": 1, "type": "Elastic", "params": {"E": 100.0}}
+    )
+    case_data["time_series"] = [
+        {"type": "Path", "tag": 2, "dt": 0.02, "values": [0.0, 1.0, 0.0, 0.0]}
+    ]
+    case_data["pattern"] = {
+        "type": "UniformExcitation",
+        "tag": 2,
+        "direction": 1,
+        "accel": 2,
+    }
     case_data["analysis"] = {
         "type": "transient_linear",
         "steps": 3,
@@ -100,7 +123,7 @@ def test_transient_linear_uniform_excitation_direction_sign():
 
     with tempfile.TemporaryDirectory() as tmp:
         out_dir = Path(tmp)
-        _run_mojo_case(case_data, out_dir)
+        _run_strut_case(case_data, out_dir)
         rows = _read_rows(out_dir / "node_disp_node2.out")
 
     assert len(rows) == 3
@@ -114,7 +137,12 @@ def test_transient_nonlinear_newmark_newton_smoke():
     case_data["time_series"] = [
         {"type": "Path", "tag": 3, "dt": 0.02, "values": [1.0, 1.0, 0.0, 0.0, 0.0, 0.0]}
     ]
-    case_data["pattern"] = {"type": "UniformExcitation", "tag": 3, "direction": 1, "accel": 3}
+    case_data["pattern"] = {
+        "type": "UniformExcitation",
+        "tag": 3,
+        "direction": 1,
+        "accel": 3,
+    }
     case_data["rayleigh"] = {"alphaM": 0.2, "betaKComm": 0.01}
     case_data["analysis"] = {
         "type": "transient_nonlinear",
@@ -129,7 +157,7 @@ def test_transient_nonlinear_newmark_newton_smoke():
 
     with tempfile.TemporaryDirectory() as tmp:
         out_dir = Path(tmp)
-        _run_mojo_case(case_data, out_dir)
+        _run_strut_case(case_data, out_dir)
         disp_rows = _read_rows(out_dir / "node_disp_node2.out")
         force_rows = _read_rows(out_dir / "element_force_ele1.out")
 
@@ -146,7 +174,12 @@ def test_transient_nonlinear_modified_newton_smoke():
     case_data["time_series"] = [
         {"type": "Path", "tag": 4, "dt": 0.02, "values": [1.0, 1.0, 0.5, 0.0, 0.0, 0.0]}
     ]
-    case_data["pattern"] = {"type": "UniformExcitation", "tag": 4, "direction": 1, "accel": 4}
+    case_data["pattern"] = {
+        "type": "UniformExcitation",
+        "tag": 4,
+        "direction": 1,
+        "accel": 4,
+    }
     case_data["analysis"] = {
         "type": "transient_nonlinear",
         "steps": 6,
@@ -160,7 +193,7 @@ def test_transient_nonlinear_modified_newton_smoke():
 
     with tempfile.TemporaryDirectory() as tmp:
         out_dir = Path(tmp)
-        _run_mojo_case(case_data, out_dir)
+        _run_strut_case(case_data, out_dir)
         disp_rows = _read_rows(out_dir / "node_disp_node2.out")
 
     assert len(disp_rows) == 6
@@ -174,7 +207,12 @@ def test_transient_nonlinear_newton_without_fallback_can_fail():
     case_data["time_series"] = [
         {"type": "Path", "tag": 5, "dt": 0.02, "values": [1.0, 1.0, 0.5, 0.0, 0.0, 0.0]}
     ]
-    case_data["pattern"] = {"type": "UniformExcitation", "tag": 5, "direction": 1, "accel": 5}
+    case_data["pattern"] = {
+        "type": "UniformExcitation",
+        "tag": 5,
+        "direction": 1,
+        "accel": 5,
+    }
     case_data["analysis"] = {
         "type": "transient_nonlinear",
         "steps": 6,
@@ -189,7 +227,7 @@ def test_transient_nonlinear_newton_without_fallback_can_fail():
     with tempfile.TemporaryDirectory() as tmp:
         out_dir = Path(tmp)
         with pytest.raises(subprocess.CalledProcessError):
-            _run_mojo_case(case_data, out_dir)
+            _run_strut_case(case_data, out_dir)
 
 
 def test_transient_nonlinear_newton_fallback_modified_initial_smoke():
@@ -199,7 +237,12 @@ def test_transient_nonlinear_newton_fallback_modified_initial_smoke():
     case_data["time_series"] = [
         {"type": "Path", "tag": 6, "dt": 0.02, "values": [1.0, 1.0, 0.5, 0.0, 0.0, 0.0]}
     ]
-    case_data["pattern"] = {"type": "UniformExcitation", "tag": 6, "direction": 1, "accel": 6}
+    case_data["pattern"] = {
+        "type": "UniformExcitation",
+        "tag": 6,
+        "direction": 1,
+        "accel": 6,
+    }
     case_data["analysis"] = {
         "type": "transient_nonlinear",
         "steps": 6,
@@ -218,7 +261,7 @@ def test_transient_nonlinear_newton_fallback_modified_initial_smoke():
 
     with tempfile.TemporaryDirectory() as tmp:
         out_dir = Path(tmp)
-        _run_mojo_case(case_data, out_dir)
+        _run_strut_case(case_data, out_dir)
         disp_rows = _read_rows(out_dir / "node_disp_node2.out")
 
     assert len(disp_rows) == 6
@@ -232,7 +275,12 @@ def test_transient_nonlinear_energy_incr_with_mapped_algorithms_smoke():
     case_data["time_series"] = [
         {"type": "Path", "tag": 7, "dt": 0.02, "values": [1.0, 0.5, 0.0, 0.0, 0.0]}
     ]
-    case_data["pattern"] = {"type": "UniformExcitation", "tag": 7, "direction": 1, "accel": 7}
+    case_data["pattern"] = {
+        "type": "UniformExcitation",
+        "tag": 7,
+        "direction": 1,
+        "accel": 7,
+    }
     case_data["analysis"] = {
         "type": "transient_nonlinear",
         "steps": 5,
@@ -250,7 +298,7 @@ def test_transient_nonlinear_energy_incr_with_mapped_algorithms_smoke():
 
     with tempfile.TemporaryDirectory() as tmp:
         out_dir = Path(tmp)
-        _run_mojo_case(case_data, out_dir)
+        _run_strut_case(case_data, out_dir)
         disp_rows = _read_rows(out_dir / "node_disp_node2.out")
 
     assert len(disp_rows) == 5
@@ -258,7 +306,9 @@ def test_transient_nonlinear_energy_incr_with_mapped_algorithms_smoke():
 
 
 def test_staged_analysis_gravity_load_const_then_uniform_excitation_smoke():
-    case_data = _base_truss_dynamic_case({"id": 1, "type": "Elastic", "params": {"E": 100.0}})
+    case_data = _base_truss_dynamic_case(
+        {"id": 1, "type": "Elastic", "params": {"E": 100.0}}
+    )
     case_data["time_series"] = [
         {"type": "Linear", "tag": 1, "factor": 1.0},
         {"type": "Path", "tag": 2, "dt": 0.02, "values": [0.0, 1.0, 0.0]},
@@ -279,7 +329,12 @@ def test_staged_analysis_gravity_load_const_then_uniform_excitation_smoke():
                 "load_const": {"time": 0.0},
             },
             {
-                "pattern": {"type": "UniformExcitation", "tag": 2, "direction": 1, "accel": 2},
+                "pattern": {
+                    "type": "UniformExcitation",
+                    "tag": 2,
+                    "direction": 1,
+                    "accel": 2,
+                },
                 "analysis": {
                     "type": "transient_linear",
                     "steps": 3,
@@ -292,7 +347,7 @@ def test_staged_analysis_gravity_load_const_then_uniform_excitation_smoke():
 
     with tempfile.TemporaryDirectory() as tmp:
         out_dir = Path(tmp)
-        _run_mojo_case(case_data, out_dir)
+        _run_strut_case(case_data, out_dir)
         disp_rows = _read_rows(out_dir / "node_disp_node2.out")
         force_rows = _read_rows(out_dir / "element_force_ele1.out")
 

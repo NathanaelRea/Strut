@@ -8,7 +8,8 @@ import sys
 repo_root = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(repo_root))
 
-def _run_mojo_case(case_data, out_dir: Path):
+
+def _run_strut_case(case_data, out_dir: Path):
     with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as tmp:
         tmp.write(json.dumps(case_data))
         tmp_path = Path(tmp.name)
@@ -16,7 +17,7 @@ def _run_mojo_case(case_data, out_dir: Path):
         subprocess.check_call(
             [
                 sys.executable,
-                str(repo_root / "scripts" / "run_mojo_case.py"),
+                str(repo_root / "scripts" / "run_strut_case.py"),
                 "--input",
                 str(tmp_path),
                 "--output",
@@ -48,19 +49,36 @@ def test_simply_supported_midspan_point_load():
             {"id": 1, "type": "ElasticSection2d", "params": {"E": E, "A": A, "I": I}}
         ],
         "elements": [
-            {"id": 1, "type": "elasticBeamColumn2d", "nodes": [1, 2], "section": 1, "geomTransf": "Linear"},
-            {"id": 2, "type": "elasticBeamColumn2d", "nodes": [2, 3], "section": 1, "geomTransf": "Linear"},
+            {
+                "id": 1,
+                "type": "elasticBeamColumn2d",
+                "nodes": [1, 2],
+                "section": 1,
+                "geomTransf": "Linear",
+            },
+            {
+                "id": 2,
+                "type": "elasticBeamColumn2d",
+                "nodes": [2, 3],
+                "section": 1,
+                "geomTransf": "Linear",
+            },
         ],
         "loads": [{"node": 2, "dof": 2, "value": -P}],
         "analysis": {"type": "static_linear", "steps": 1},
         "recorders": [
-            {"type": "node_displacement", "nodes": [2], "dofs": [1, 2, 3], "output": "node_disp"}
+            {
+                "type": "node_displacement",
+                "nodes": [2],
+                "dofs": [1, 2, 3],
+                "output": "node_disp",
+            }
         ],
     }
 
     with tempfile.TemporaryDirectory() as tmp:
         out_dir = Path(tmp)
-        _run_mojo_case(case_data, out_dir)
+        _run_strut_case(case_data, out_dir)
         disp_file = out_dir / "node_disp_node2.out"
         values = [float(v) for v in disp_file.read_text().split()]
 
@@ -91,8 +109,20 @@ def test_simply_supported_uniform_load():
             {"id": 1, "type": "ElasticSection2d", "params": {"E": E, "A": A, "I": I}}
         ],
         "elements": [
-            {"id": 1, "type": "elasticBeamColumn2d", "nodes": [1, 2], "section": 1, "geomTransf": "Linear"},
-            {"id": 2, "type": "elasticBeamColumn2d", "nodes": [2, 3], "section": 1, "geomTransf": "Linear"},
+            {
+                "id": 1,
+                "type": "elasticBeamColumn2d",
+                "nodes": [1, 2],
+                "section": 1,
+                "geomTransf": "Linear",
+            },
+            {
+                "id": 2,
+                "type": "elasticBeamColumn2d",
+                "nodes": [2, 3],
+                "section": 1,
+                "geomTransf": "Linear",
+            },
         ],
         "element_loads": [
             {"element": 1, "type": "beamUniform", "w": w},
@@ -100,13 +130,18 @@ def test_simply_supported_uniform_load():
         ],
         "analysis": {"type": "static_linear", "steps": 1},
         "recorders": [
-            {"type": "node_displacement", "nodes": [2], "dofs": [1, 2, 3], "output": "node_disp"}
+            {
+                "type": "node_displacement",
+                "nodes": [2],
+                "dofs": [1, 2, 3],
+                "output": "node_disp",
+            }
         ],
     }
 
     with tempfile.TemporaryDirectory() as tmp:
         out_dir = Path(tmp)
-        _run_mojo_case(case_data, out_dir)
+        _run_strut_case(case_data, out_dir)
         disp_file = out_dir / "node_disp_node2.out"
         values = [float(v) for v in disp_file.read_text().split()]
 

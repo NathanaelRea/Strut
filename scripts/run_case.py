@@ -36,7 +36,7 @@ def main():
     case_root.mkdir(parents=True, exist_ok=True)
     (case_root / "generated").mkdir(parents=True, exist_ok=True)
     (case_root / "reference").mkdir(parents=True, exist_ok=True)
-    (case_root / "mojo").mkdir(parents=True, exist_ok=True)
+    (case_root / "strut").mkdir(parents=True, exist_ok=True)
 
     tgt_json = case_root / f"{case_name}.json"
     if case_json != tgt_json:
@@ -64,7 +64,9 @@ def main():
     ref_hash_file = case_root / "reference" / ".ref_hash"
     if not refresh_reference:
         current_hash = _compute_hash(tgt_json)
-        stored_hash = ref_hash_file.read_text().strip() if ref_hash_file.exists() else None
+        stored_hash = (
+            ref_hash_file.read_text().strip() if ref_hash_file.exists() else None
+        )
         if stored_hash != current_hash:
             refresh_reference = True
 
@@ -86,11 +88,11 @@ def main():
     run(
         [
             "python",
-            str(repo_root / "scripts" / "run_mojo_case.py"),
+            str(repo_root / "scripts" / "run_strut_case.py"),
             "--input",
             str(tgt_json),
             "--output",
-            str(case_root / "mojo"),
+            str(case_root / "strut"),
         ],
         env=env,
         verbose=verbose,

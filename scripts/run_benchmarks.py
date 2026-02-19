@@ -16,6 +16,7 @@ from typing import Dict, Iterable, List, Optional, Tuple
 ABS_TOL = 1e-8
 REL_TOL = 1e-5
 
+
 @dataclass(frozen=True)
 class CaseSpec:
     name: str
@@ -44,7 +45,9 @@ BENCHMARK_SUITES: Dict[str, List[str]] = {
 }
 
 
-def run(cmd: List[str], env=None, verbose=False, capture_on_error: bool = False) -> None:
+def run(
+    cmd: List[str], env=None, verbose=False, capture_on_error: bool = False
+) -> None:
     if verbose:
         print("+", " ".join(cmd))
     if not capture_on_error:
@@ -69,11 +72,14 @@ def run(cmd: List[str], env=None, verbose=False, capture_on_error: bool = False)
 def log(msg: str) -> None:
     print(msg, flush=True)
 
+
 def _color(text: str, code: str) -> str:
     return f"\033[{code}m{text}\033[0m"
 
+
 def log_ok(msg: str) -> None:
     log(_color(msg, "32"))
+
 
 def log_err(msg: str) -> None:
     log(_color(msg, "31"))
@@ -233,7 +239,9 @@ def resolve_case_from_path(path: Path) -> Optional[CaseSpec]:
     return CaseSpec(name=path.stem, json_path=path)
 
 
-def expand_case_patterns(validation_root: Path, patterns: Iterable[str]) -> List[CaseSpec]:
+def expand_case_patterns(
+    validation_root: Path, patterns: Iterable[str]
+) -> List[CaseSpec]:
     cases = []
     for pattern in patterns:
         if any(ch in pattern for ch in "*?["):
@@ -324,14 +332,16 @@ def run_engine(
     return times
 
 
-def ensure_mojo_solver(repo_root: Path, verbose: bool, profile: bool) -> Path:
+def ensure_strut_solver(repo_root: Path, verbose: bool, profile: bool) -> Path:
     mojo = shutil.which("mojo")
     if mojo is None:
-        raise SystemExit("mojo executable not found on PATH; required to run benchmarks.")
+        raise SystemExit(
+            "mojo executable not found on PATH; required to run benchmarks."
+        )
     solver_path = os.getenv("STRUT_MOJO_BIN")
     if solver_path:
         return Path(solver_path)
-    solver_path = repo_root / "build" / "mojo" / "strut"
+    solver_path = repo_root / "build" / "strut" / "strut"
     solver_path.parent.mkdir(parents=True, exist_ok=True)
     log("Building Mojo solver...")
     build_cmd = [mojo, "build", str(repo_root / "src" / "mojo" / "strut.mojo")]
@@ -381,10 +391,9 @@ def _load_last_comparable_values(
         return ref_rows[-1], got_rows[-1]
     shared = min(len(ref_rows), len(got_rows))
     if shared == 0:
-        raise ValueError(
-            f"empty comparable output rows: {ref_path} vs {got_path}"
-        )
+        raise ValueError(f"empty comparable output rows: {ref_path} vs {got_path}")
     return ref_rows[shared - 1], got_rows[shared - 1]
+
 
 def _isclose(a: float, b: float, rtol: float = REL_TOL, atol: float = ABS_TOL) -> bool:
     return abs(a - b) <= (atol + rtol * abs(b))
@@ -440,18 +449,20 @@ def _inject_opensees_timing(tcl_lines: List[str], timing_file: str) -> List[str]
         has_analyze = stripped.startswith("analyze ") or "[analyze " in stripped
         has_eigen = stripped.startswith("eigen ") or "[eigen " in stripped
         if has_analyze or has_eigen:
-            out.append('set __strut_t0 [clock microseconds]')
+            out.append("set __strut_t0 [clock microseconds]")
             out.append(line)
-            out.append('set __strut_t1 [clock microseconds]')
-            out.append('incr __strut_analysis_us [expr {$__strut_t1 - $__strut_t0}]')
+            out.append("set __strut_t1 [clock microseconds]")
+            out.append("incr __strut_analysis_us [expr {$__strut_t1 - $__strut_t0}]")
             injected = True
             continue
         out.append(line)
     if not injected:
-        raise ValueError("failed to inject timing: analyze/eigen command not found in Tcl")
+        raise ValueError(
+            "failed to inject timing: analyze/eigen command not found in Tcl"
+        )
     out.append(f'set __strut_fp [open "{timing_file}" w]')
-    out.append('puts $__strut_fp $__strut_analysis_us')
-    out.append('close $__strut_fp')
+    out.append("puts $__strut_fp $__strut_analysis_us")
+    out.append("close $__strut_fp")
     return out
 
 
@@ -606,7 +617,9 @@ def _summarize_parity_failures(parity_failures: List[str]) -> List[str]:
             lines.append("Missing all Mojo Outputs")
         else:
             if missing_opensees:
-                lines.append(f"Missing Opensees outputs: {json.dumps(missing_opensees)}")
+                lines.append(
+                    f"Missing Opensees outputs: {json.dumps(missing_opensees)}"
+                )
             if missing_strut:
                 lines.append(f"Missing Mojo outputs: {json.dumps(missing_strut)}")
         for category in category_order:
@@ -660,7 +673,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--engine",
-        choices=("both", "opensees", "mojo"),
+        choices=("both", "opensees", "strut"),
         default=os.getenv("STRUT_BENCH_ENGINE", "both"),
         help="Which engine(s) to benchmark.",
     )
@@ -735,7 +748,9 @@ def main() -> None:
         args.gen_frame_stories = 17
 
     if (args.gen_frame_bays is None) != (args.gen_frame_stories is None):
-        raise SystemExit("--gen-frame-bays and --gen-frame-stories must be provided together.")
+        raise SystemExit(
+            "--gen-frame-bays and --gen-frame-stories must be provided together."
+        )
     if args.gen_frame_bays is not None and args.gen_frame_stories is not None:
         if args.gen_frame_bays <= 0 or args.gen_frame_stories <= 0:
             raise SystemExit("--gen-frame-bays and --gen-frame-stories must be > 0.")
@@ -744,7 +759,10 @@ def main() -> None:
             default_prefix = "force_beam_column2d_fiber_frame"
         if args.gen_frame_element == "dispBeamColumn2d":
             default_prefix = "disp_beam_column2d_fiber_frame"
-        name = args.gen_frame_name or f"{default_prefix}_{args.gen_frame_bays}bay_{args.gen_frame_stories}story"
+        name = (
+            args.gen_frame_name
+            or f"{default_prefix}_{args.gen_frame_bays}bay_{args.gen_frame_stories}story"
+        )
         gen_dir = repo_root / "benchmark" / ".tmp"
         gen_dir.mkdir(parents=True, exist_ok=True)
         gen_path = gen_dir / f"{name}.json"
@@ -767,9 +785,8 @@ def main() -> None:
         )
         generated_cases.append(CaseSpec(name=name, json_path=gen_path))
         if (
-            (auto_batch_default_gen or generate_suite_force_pair)
-            and args.gen_frame_element != "forceBeamColumn2d"
-        ):
+            auto_batch_default_gen or generate_suite_force_pair
+        ) and args.gen_frame_element != "forceBeamColumn2d":
             fiber_name = (
                 f"force_beam_column2d_fiber_frame_{args.gen_frame_bays}bay_"
                 f"{args.gen_frame_stories}story"
@@ -816,17 +833,21 @@ def main() -> None:
         case_specs.extend(generated_cases)
 
     if not case_specs:
-        raise SystemExit("No benchmark cases found. Provide --cases or add validation cases.")
+        raise SystemExit(
+            "No benchmark cases found. Provide --cases or add validation cases."
+        )
 
     include_disabled_effective = args.include_disabled or (
         args.cases is None and os.getenv("STRUT_RUN_ALL_CASES") == "1"
     )
-    case_specs, disabled_selected_count, skipped_disabled_count = filter_cases_by_enabled(
-        case_specs, include_disabled=include_disabled_effective
+    case_specs, disabled_selected_count, skipped_disabled_count = (
+        filter_cases_by_enabled(case_specs, include_disabled=include_disabled_effective)
     )
 
     if not case_specs:
-        raise SystemExit("All selected cases are disabled. Use --include-disabled to run.")
+        raise SystemExit(
+            "All selected cases are disabled. Use --include-disabled to run."
+        )
 
     if args.profile and not args.no_archive:
         args.no_archive = True
@@ -838,14 +859,23 @@ def main() -> None:
     else:
         results_root = repo_root / "benchmark" / "results"
     archive_root = (
-        Path(args.archive_root) if args.archive_root else repo_root / "benchmark" / "archive"
+        Path(args.archive_root)
+        if args.archive_root
+        else repo_root / "benchmark" / "archive"
     )
     profile_root = None
     if args.profile:
         profile_root = Path(args.profile)
         ensure_clean_dir(profile_root)
 
-    for sub in ("opensees", "mojo", "opensees_compute", "mojo_compute", "tcl", ".tmp"):
+    for sub in (
+        "opensees",
+        "strut",
+        "opensees_compute",
+        "strut_compute",
+        "tcl",
+        ".tmp",
+    ):
         ensure_clean_dir(results_root / sub)
 
     env = os.environ.copy()
@@ -863,13 +893,13 @@ def main() -> None:
     )
 
     run_opensees = args.engine in ("both", "opensees")
-    run_mojo = args.engine in ("both", "mojo")
-    mojo_solver = None
-    if run_mojo:
-        mojo_solver = ensure_mojo_solver(repo_root, verbose, args.profile)
+    run_strut = args.engine in ("both", "strut")
+    strut_solver = None
+    if run_strut:
+        strut_solver = ensure_strut_solver(repo_root, verbose, args.profile)
 
-    if not run_opensees and not run_mojo:
-        raise SystemExit("No engines selected. Use --engine opensees|mojo|both.")
+    if not run_opensees and not run_strut:
+        raise SystemExit("No engines selected. Use --engine opensees|strut|both.")
 
     def build_case_tcl(case: CaseSpec) -> dict:
         case_name = case.name
@@ -897,12 +927,15 @@ def main() -> None:
         tcl_timed = results_root / "tcl" / f"{case_name}_timed.tcl"
         tcl_lines = tcl_out.read_text().splitlines()
         tcl_compute.write_text(
-            "\n".join(line for line in tcl_lines if not line.lstrip().startswith("recorder "))
+            "\n".join(
+                line for line in tcl_lines if not line.lstrip().startswith("recorder ")
+            )
             + "\n",
             encoding="utf-8",
         )
         tcl_timed.write_text(
-            "\n".join(_inject_opensees_timing(tcl_lines, "analysis_time_us.txt")) + "\n",
+            "\n".join(_inject_opensees_timing(tcl_lines, "analysis_time_us.txt"))
+            + "\n",
             encoding="utf-8",
         )
         case_entry["tcl"] = str(tcl_out)
@@ -962,10 +995,14 @@ def main() -> None:
             lines.append(f"cd {{{case_out}}}")
             lines.append("wipe")
             lines.append("set __strut_case_t0 [clock microseconds]")
-            lines.append(f"set __strut_case_err [catch {{source {{{tcl_path}}}}} __strut_case_msg]")
+            lines.append(
+                f"set __strut_case_err [catch {{source {{{tcl_path}}}}} __strut_case_msg]"
+            )
             lines.append("set __strut_case_t1 [clock microseconds]")
             lines.append('set __strut_fp [open "case_time_us.txt" w]')
-            lines.append('puts $__strut_fp [expr {$__strut_case_t1 - $__strut_case_t0}]')
+            lines.append(
+                "puts $__strut_fp [expr {$__strut_case_t1 - $__strut_case_t0}]"
+            )
             lines.append("close $__strut_fp")
             lines.append("if {$__strut_case_err != 0} {")
             lines.append('  set __strut_err_fp [open "case_error.txt" w]')
@@ -974,13 +1011,15 @@ def main() -> None:
             lines.append("}")
             lines.append("cd $__strut_repo")
             lines.append("wipe")
-        batch_path = results_root / "tcl" / (
-            "batch_opensees_compute.tcl" if compute else "batch_opensees_timed.tcl"
+        batch_path = (
+            results_root
+            / "tcl"
+            / ("batch_opensees_compute.tcl" if compute else "batch_opensees_timed.tcl")
         )
         batch_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         return batch_path
 
-    def _write_mojo_batch_manifest(
+    def _write_strut_batch_manifest(
         entries: List[dict], output_root: Path, compute: bool
     ) -> Path:
         batch_entries = []
@@ -1007,13 +1046,17 @@ def main() -> None:
                 )
             batch_entries.append(batch_entry)
         batch = {"cases": batch_entries}
-        batch_path = results_root / ".tmp" / (
-            "mojo_batch_compute.json" if compute else "mojo_batch.json"
+        batch_path = (
+            results_root
+            / ".tmp"
+            / ("strut_batch_compute.json" if compute else "strut_batch.json")
         )
         batch_path.write_text(json.dumps(batch, indent=2) + "\n", encoding="utf-8")
         return batch_path
 
-    def run_opensees_batch(entries: List[dict], output_root: Path, compute: bool) -> None:
+    def run_opensees_batch(
+        entries: List[dict], output_root: Path, compute: bool
+    ) -> None:
         ensure_clean_dir(output_root)
         batch_script = _write_batch_tcl(entries, output_root, compute)
         run(
@@ -1056,7 +1099,9 @@ def main() -> None:
             end = time.perf_counter()
             times.append(end - start)
 
-            analysis_map = _load_case_metric(output_root, entries, "analysis_time_us.txt")
+            analysis_map = _load_case_metric(
+                output_root, entries, "analysis_time_us.txt"
+            )
             total_map = _load_case_metric(output_root, entries, "case_time_us.txt")
             for name in names:
                 analysis_us = analysis_map.get(name)
@@ -1068,30 +1113,30 @@ def main() -> None:
 
         return times, analysis_by_case, total_by_case
 
-    def run_mojo_batch(entries: List[dict], output_root: Path, compute: bool) -> bool:
+    def run_strut_batch(entries: List[dict], output_root: Path, compute: bool) -> bool:
         ensure_clean_dir(output_root)
-        if mojo_solver is None:
+        if strut_solver is None:
             raise SystemExit("Mojo solver not initialized.")
-        batch_manifest = _write_mojo_batch_manifest(entries, output_root, compute)
+        batch_manifest = _write_strut_batch_manifest(entries, output_root, compute)
         try:
             run(
                 [
-                    str(mojo_solver),
+                    str(strut_solver),
                     "--batch",
-                str(batch_manifest),
+                    str(batch_manifest),
                 ],
                 env=env,
                 verbose=verbose,
                 capture_on_error=True,
             )
         except subprocess.CalledProcessError as exc:
-            msg = f"mojo batch aborted (exit {exc.returncode})"
+            msg = f"strut batch aborted (exit {exc.returncode})"
             for entry in entries:
                 _write_case_error(output_root / entry["name"], msg)
             return False
         return True
 
-    def run_mojo_batch_repeated(
+    def run_strut_batch_repeated(
         entries: List[dict], output_root: Path, compute: bool, repeat: int, warmup: int
     ):
         if not entries:
@@ -1104,7 +1149,7 @@ def main() -> None:
         total_by_case = {name: [] for name in names}
         had_abort = False
 
-        def run_mojo_case_fallback(entry: dict) -> None:
+        def run_strut_case_fallback(entry: dict) -> None:
             case_name = entry["name"]
             target_dir = output_root / case_name
             ensure_clean_dir(target_dir)
@@ -1112,14 +1157,18 @@ def main() -> None:
                 compute_case = json.loads(Path(entry["json"]).read_text())
                 compute_case["recorders"] = []
                 _absolutize_time_series_paths(compute_case, Path(entry["json"]))
-                compute_json = results_root / ".tmp" / f"{case_name}_compute_batch_fallback.json"
-                compute_json.write_text(json.dumps(compute_case, indent=2) + "\n", encoding="utf-8")
+                compute_json = (
+                    results_root / ".tmp" / f"{case_name}_compute_batch_fallback.json"
+                )
+                compute_json.write_text(
+                    json.dumps(compute_case, indent=2) + "\n", encoding="utf-8"
+                )
                 input_path = compute_json
             else:
                 input_path = Path(entry["json"])
             try:
                 cmd = [
-                    str(mojo_solver),
+                    str(strut_solver),
                     "--input",
                     str(input_path),
                     "--output",
@@ -1137,17 +1186,19 @@ def main() -> None:
                     capture_on_error=True,
                 )
             except subprocess.CalledProcessError as exc:
-                _write_case_error(target_dir, f"mojo case aborted (exit {exc.returncode})")
+                _write_case_error(
+                    target_dir, f"strut case aborted (exit {exc.returncode})"
+                )
 
         for i in range(warmup):
             log(f"Mojo batch {pass_label} warmup {i + 1}/{warmup}...")
             offset = i % n
             rotated = entries[offset:] + entries[:offset]
-            ok = run_mojo_batch(rotated, output_root, compute)
+            ok = run_strut_batch(rotated, output_root, compute)
             if not ok:
                 had_abort = True
                 for entry in rotated:
-                    run_mojo_case_fallback(entry)
+                    run_strut_case_fallback(entry)
 
         times = []
         for i in range(repeat):
@@ -1155,15 +1206,17 @@ def main() -> None:
             offset = i % n
             rotated = entries[offset:] + entries[:offset]
             start = time.perf_counter()
-            ok = run_mojo_batch(rotated, output_root, compute)
+            ok = run_strut_batch(rotated, output_root, compute)
             if not ok:
                 had_abort = True
                 for entry in rotated:
-                    run_mojo_case_fallback(entry)
+                    run_strut_case_fallback(entry)
             end = time.perf_counter()
             times.append(end - start)
 
-            analysis_map = _load_case_metric(output_root, entries, "analysis_time_us.txt")
+            analysis_map = _load_case_metric(
+                output_root, entries, "analysis_time_us.txt"
+            )
             total_map = _load_case_metric(output_root, entries, "case_time_us.txt")
             for name in names:
                 analysis_us = analysis_map.get(name)
@@ -1176,15 +1229,17 @@ def main() -> None:
         return times, analysis_by_case, total_by_case, had_abort
 
     run_opensees_per_case = run_opensees and not batch_mode
-    run_mojo_per_case = run_mojo and not batch_mode
+    run_strut_per_case = run_strut and not batch_mode
     if run_opensees and batch_mode:
         log("Running OpenSees in batch mode.")
-        opensees_times, batch_analysis_hist, batch_total_hist = run_opensees_batch_repeated(
-            case_entries,
-            results_root / "opensees",
-            compute=False,
-            repeat=args.repeat,
-            warmup=args.warmup,
+        opensees_times, batch_analysis_hist, batch_total_hist = (
+            run_opensees_batch_repeated(
+                case_entries,
+                results_root / "opensees",
+                compute=False,
+                repeat=args.repeat,
+                warmup=args.warmup,
+            )
         )
         log_ok("OpenSees batch pass OK.")
         batch_stats = {
@@ -1235,19 +1290,27 @@ def main() -> None:
                     "mode": "total_batch_case",
                     "repeat": "",
                     "warmup": "",
-                    "mean_s": f"{(total_us or 0) / 1e6:.6f}" if total_us is not None else "",
-                    "median_s": f"{(total_median or 0) / 1e6:.6f}"
-                    if total_median is not None
-                    else "",
-                    "min_s": f"{(min(total_hist) if total_hist else 0) / 1e6:.6f}"
-                    if total_hist
-                    else "",
+                    "mean_s": (
+                        f"{(total_us or 0) / 1e6:.6f}" if total_us is not None else ""
+                    ),
+                    "median_s": (
+                        f"{(total_median or 0) / 1e6:.6f}"
+                        if total_median is not None
+                        else ""
+                    ),
+                    "min_s": (
+                        f"{(min(total_hist) if total_hist else 0) / 1e6:.6f}"
+                        if total_hist
+                        else ""
+                    ),
                     "analysis_us": analysis_us,
                 }
             )
         if not args.skip_compute_only:
             opensees_compute = run_engine(
-                lambda out, last_run: run_opensees_batch(case_entries, out, compute=True),
+                lambda out, last_run: run_opensees_batch(
+                    case_entries, out, compute=True
+                ),
                 results_root / "opensees_compute",
                 args.repeat,
                 args.warmup,
@@ -1274,30 +1337,32 @@ def main() -> None:
                 }
             )
 
-    if run_mojo and batch_mode:
+    if run_strut and batch_mode:
         log("Running Mojo in batch mode.")
-        mojo_times, batch_analysis_hist, batch_total_hist, mojo_batch_had_abort = run_mojo_batch_repeated(
-            case_entries,
-            results_root / "mojo",
-            compute=False,
-            repeat=args.repeat,
-            warmup=args.warmup,
+        strut_times, batch_analysis_hist, batch_total_hist, strut_batch_had_abort = (
+            run_strut_batch_repeated(
+                case_entries,
+                results_root / "strut",
+                compute=False,
+                repeat=args.repeat,
+                warmup=args.warmup,
+            )
         )
-        if mojo_batch_had_abort:
+        if strut_batch_had_abort:
             log_err("Mojo batch aborted for one or more cases; used per-case fallback.")
         else:
             log_ok("Mojo batch pass OK.")
         batch_stats = {
-            "times_s": mojo_times,
-            "mean_s": mean(mojo_times),
-            "median_s": median(mojo_times),
-            "min_s": min(mojo_times),
+            "times_s": strut_times,
+            "mean_s": mean(strut_times),
+            "median_s": median(strut_times),
+            "min_s": min(strut_times),
         }
         csv_rows.append(
             {
-                "case": "mojo_batch",
+                "case": "strut_batch",
                 "dofs": "",
-                "engine": "mojo",
+                "engine": "strut",
                 "mode": "total_batch",
                 "repeat": args.repeat,
                 "warmup": args.warmup,
@@ -1325,8 +1390,8 @@ def main() -> None:
                 "min_s": min(total_s) if total_s else None,
                 "analysis_us": analysis_us,
             }
-            case_entry["mojo"] = stats
-            batch_entry = case_entry.setdefault("mojo_batch", {})
+            case_entry["strut"] = stats
+            batch_entry = case_entry.setdefault("strut_batch", {})
             batch_entry["analysis_us"] = analysis_us
             batch_entry["total_us"] = total_us
             batch_entry["analysis_mean_us"] = analysis_mean
@@ -1338,45 +1403,51 @@ def main() -> None:
                 {
                     "case": case_name,
                     "dofs": case_entry.get("dofs", ""),
-                    "engine": "mojo",
+                    "engine": "strut",
                     "mode": "total_batch_case",
                     "repeat": "",
                     "warmup": "",
-                    "mean_s": f"{(total_us or 0) / 1e6:.6f}" if total_us is not None else "",
-                    "median_s": f"{(total_median or 0) / 1e6:.6f}"
-                    if total_median is not None
-                    else "",
-                    "min_s": f"{(min(total_hist) if total_hist else 0) / 1e6:.6f}"
-                    if total_hist
-                    else "",
+                    "mean_s": (
+                        f"{(total_us or 0) / 1e6:.6f}" if total_us is not None else ""
+                    ),
+                    "median_s": (
+                        f"{(total_median or 0) / 1e6:.6f}"
+                        if total_median is not None
+                        else ""
+                    ),
+                    "min_s": (
+                        f"{(min(total_hist) if total_hist else 0) / 1e6:.6f}"
+                        if total_hist
+                        else ""
+                    ),
                     "analysis_us": analysis_us,
                 }
             )
         if not args.skip_compute_only:
-            mojo_compute, _, _, mojo_compute_had_abort = run_mojo_batch_repeated(
+            strut_compute, _, _, strut_compute_had_abort = run_strut_batch_repeated(
                 case_entries,
-                results_root / "mojo_compute",
+                results_root / "strut_compute",
                 compute=True,
                 repeat=args.repeat,
                 warmup=args.warmup,
             )
-            if mojo_compute_had_abort:
+            if strut_compute_had_abort:
                 log_err(
                     "Mojo batch compute-only aborted for one or more cases; used per-case fallback."
                 )
             else:
                 log_ok("Mojo batch compute-only pass OK.")
             compute_stats = {
-                "times_s": mojo_compute,
-                "mean_s": mean(mojo_compute),
-                "median_s": median(mojo_compute),
-                "min_s": min(mojo_compute),
+                "times_s": strut_compute,
+                "mean_s": mean(strut_compute),
+                "median_s": median(strut_compute),
+                "min_s": min(strut_compute),
             }
             csv_rows.append(
                 {
-                    "case": "mojo_batch",
+                    "case": "strut_batch",
                     "dofs": "",
-                    "engine": "mojo",
+                    "engine": "strut",
                     "mode": "compute_only_batch",
                     "repeat": args.repeat,
                     "warmup": args.warmup,
@@ -1436,18 +1507,18 @@ def main() -> None:
             if not last_run:
                 shutil.rmtree(target_dir, ignore_errors=True)
 
-        def mojo_cmd(output_dir: Path, last_run: bool) -> None:
+        def strut_cmd(output_dir: Path, last_run: bool) -> None:
             if last_run:
                 ensure_clean_dir(output_dir)
                 target_dir = output_dir
             else:
-                tmp_dir = results_root / ".tmp" / "mojo" / case_name
+                tmp_dir = results_root / ".tmp" / "strut" / case_name
                 ensure_clean_dir(tmp_dir)
                 target_dir = tmp_dir
-            if mojo_solver is None:
+            if strut_solver is None:
                 raise SystemExit("Mojo solver not initialized.")
             cmd = [
-                str(mojo_solver),
+                str(strut_solver),
                 "--input",
                 str(case_entry["json"]),
                 "--output",
@@ -1465,22 +1536,24 @@ def main() -> None:
             if not last_run:
                 shutil.rmtree(target_dir, ignore_errors=True)
 
-        def mojo_compute_cmd(output_dir: Path, last_run: bool) -> None:
+        def strut_compute_cmd(output_dir: Path, last_run: bool) -> None:
             if last_run:
                 ensure_clean_dir(output_dir)
                 target_dir = output_dir
             else:
-                tmp_dir = results_root / ".tmp" / "mojo_compute" / case_name
+                tmp_dir = results_root / ".tmp" / "strut_compute" / case_name
                 ensure_clean_dir(tmp_dir)
                 target_dir = tmp_dir
             compute_case = json.loads(Path(case_entry["json"]).read_text())
             compute_case["recorders"] = []
             _absolutize_time_series_paths(compute_case, Path(case_entry["json"]))
             compute_json = results_root / ".tmp" / f"{case_name}_compute.json"
-            compute_json.write_text(json.dumps(compute_case, indent=2) + "\n", encoding="utf-8")
+            compute_json.write_text(
+                json.dumps(compute_case, indent=2) + "\n", encoding="utf-8"
+            )
             run(
                 [
-                    str(mojo_solver),
+                    str(strut_solver),
                     "--input",
                     str(compute_json),
                     "--output",
@@ -1509,7 +1582,9 @@ def main() -> None:
                 "min_s": min(opensees_times),
             }
             case_entry["opensees"] = stats
-            analysis_file = results_root / "opensees" / case_name / "analysis_time_us.txt"
+            analysis_file = (
+                results_root / "opensees" / case_name / "analysis_time_us.txt"
+            )
             if analysis_file.exists():
                 try:
                     case_entry["opensees"]["analysis_us"] = int(
@@ -1536,7 +1611,9 @@ def main() -> None:
             if not args.skip_compute_only:
                 log(f"[{case_name}] OpenSees compute-only pass...")
                 opensees_compute = run_engine(
-                    lambda out, last_run: opensees_compute_cmd(out / case_name, last_run),
+                    lambda out, last_run: opensees_compute_cmd(
+                        out / case_name, last_run
+                    ),
                     results_root / "opensees_compute",
                     args.repeat,
                     args.warmup,
@@ -1564,37 +1641,41 @@ def main() -> None:
                     }
                 )
 
-        if run_mojo_per_case:
+        if run_strut_per_case:
             log(f"[{case_name}] Mojo total pass...")
             try:
-                mojo_times = run_engine(
-                    lambda out, last_run: mojo_cmd(out / case_name, last_run),
-                    results_root / "mojo",
+                strut_times = run_engine(
+                    lambda out, last_run: strut_cmd(out / case_name, last_run),
+                    results_root / "strut",
                     args.repeat,
                     args.warmup,
                 )
             except subprocess.CalledProcessError as exc:
                 _write_case_error(
-                    results_root / "mojo" / case_name,
-                    f"mojo total pass aborted (exit {exc.returncode})",
+                    results_root / "strut" / case_name,
+                    f"strut total pass aborted (exit {exc.returncode})",
                 )
-                log_err(f"[{case_name}] Mojo total pass aborted (exit {exc.returncode}).")
+                log_err(
+                    f"[{case_name}] Mojo total pass aborted (exit {exc.returncode})."
+                )
             else:
                 log_ok(f"[{case_name}] Mojo total pass OK.")
                 stats = {
-                    "times_s": mojo_times,
-                    "mean_s": mean(mojo_times),
-                    "median_s": median(mojo_times),
-                    "min_s": min(mojo_times),
+                    "times_s": strut_times,
+                    "mean_s": mean(strut_times),
+                    "median_s": median(strut_times),
+                    "min_s": min(strut_times),
                 }
-                analysis_file = results_root / "mojo" / case_name / "analysis_time_us.txt"
+                analysis_file = (
+                    results_root / "strut" / case_name / "analysis_time_us.txt"
+                )
                 stats["analysis_us"] = _read_analysis_us(analysis_file)
-                case_entry["mojo"] = stats
+                case_entry["strut"] = stats
                 csv_rows.append(
                     {
                         "case": case_name,
                         "dofs": case_entry.get("dofs", ""),
-                        "engine": "mojo",
+                        "engine": "strut",
                         "mode": "total",
                         "repeat": args.repeat,
                         "warmup": args.warmup,
@@ -1607,16 +1688,18 @@ def main() -> None:
             if not args.skip_compute_only:
                 log(f"[{case_name}] Mojo compute-only pass...")
                 try:
-                    mojo_compute = run_engine(
-                        lambda out, last_run: mojo_compute_cmd(out / case_name, last_run),
-                        results_root / "mojo_compute",
+                    strut_compute = run_engine(
+                        lambda out, last_run: strut_compute_cmd(
+                            out / case_name, last_run
+                        ),
+                        results_root / "strut_compute",
                         args.repeat,
                         args.warmup,
                     )
                 except subprocess.CalledProcessError as exc:
                     _write_case_error(
-                        results_root / "mojo_compute" / case_name,
-                        f"mojo compute-only pass aborted (exit {exc.returncode})",
+                        results_root / "strut_compute" / case_name,
+                        f"strut compute-only pass aborted (exit {exc.returncode})",
                     )
                     log_err(
                         f"[{case_name}] Mojo compute-only pass aborted (exit {exc.returncode})."
@@ -1624,21 +1707,24 @@ def main() -> None:
                 else:
                     log_ok(f"[{case_name}] Mojo compute-only pass OK.")
                     compute_stats = {
-                        "times_s": mojo_compute,
-                        "mean_s": mean(mojo_compute),
-                        "median_s": median(mojo_compute),
-                        "min_s": min(mojo_compute),
+                        "times_s": strut_compute,
+                        "mean_s": mean(strut_compute),
+                        "median_s": median(strut_compute),
+                        "min_s": min(strut_compute),
                     }
-                    case_entry["mojo_compute_only"] = compute_stats
+                    case_entry["strut_compute_only"] = compute_stats
                     compute_analysis_file = (
-                        results_root / "mojo_compute" / case_name / "analysis_time_us.txt"
+                        results_root
+                        / "strut_compute"
+                        / case_name
+                        / "analysis_time_us.txt"
                     )
                     compute_analysis_us = _read_analysis_us(compute_analysis_file)
                     csv_rows.append(
                         {
                             "case": case_name,
                             "dofs": case_entry.get("dofs", ""),
-                            "engine": "mojo",
+                            "engine": "strut",
                             "mode": "compute_only",
                             "repeat": args.repeat,
                             "warmup": args.warmup,
@@ -1649,7 +1735,7 @@ def main() -> None:
                         }
                     )
 
-        if run_opensees and run_mojo:
+        if run_opensees and run_strut:
             case_data = json.loads(Path(case_entry["json"]).read_text())
             recorders = case_data.get("recorders", [])
             analysis = case_data.get("analysis", {})
@@ -1674,7 +1760,7 @@ def main() -> None:
                         )
                         strut_file = (
                             results_root
-                            / "mojo"
+                            / "strut"
                             / case_name
                             / f"{output}_node{node_id}.out"
                         )
@@ -1717,14 +1803,18 @@ def main() -> None:
                                     parity_failures.append(
                                         f"{case_name}: node {node_id} mismatch at step {step}"
                                     )
-                                    parity_failures.extend([f"  {err}" for err in errors])
+                                    parity_failures.extend(
+                                        [f"  {err}" for err in errors]
+                                    )
                                     break
                         else:
                             ok, errors = _compare_vectors(
                                 ref_vals, strut_vals, rtol=rtol, atol=atol
                             )
                             if not ok:
-                                parity_failures.append(f"{case_name}: node {node_id} mismatch")
+                                parity_failures.append(
+                                    f"{case_name}: node {node_id} mismatch"
+                                )
                                 parity_failures.extend([f"  {err}" for err in errors])
                 elif rec_type == "element_force":
                     output = rec.get("output", "element_force")
@@ -1737,7 +1827,7 @@ def main() -> None:
                         )
                         strut_file = (
                             results_root
-                            / "mojo"
+                            / "strut"
                             / case_name
                             / f"{output}_ele{elem_id}.out"
                         )
@@ -1780,7 +1870,9 @@ def main() -> None:
                                     parity_failures.append(
                                         f"{case_name}: element {elem_id} mismatch at step {step}"
                                     )
-                                    parity_failures.extend([f"  {err}" for err in errors])
+                                    parity_failures.extend(
+                                        [f"  {err}" for err in errors]
+                                    )
                                     break
                         else:
                             ok, errors = _compare_vectors(
@@ -1802,7 +1894,7 @@ def main() -> None:
                         )
                         strut_file = (
                             results_root
-                            / "mojo"
+                            / "strut"
                             / case_name
                             / f"{output}_node{node_id}.out"
                         )
@@ -1845,7 +1937,9 @@ def main() -> None:
                                     parity_failures.append(
                                         f"{case_name}: reaction node {node_id} mismatch at step {step}"
                                     )
-                                    parity_failures.extend([f"  {err}" for err in errors])
+                                    parity_failures.extend(
+                                        [f"  {err}" for err in errors]
+                                    )
                                     break
                         else:
                             ok, errors = _compare_vectors(
@@ -1868,7 +1962,7 @@ def main() -> None:
                     )
                     strut_file = (
                         results_root
-                        / "mojo"
+                        / "strut"
                         / case_name
                         / f"{output}_i{i_node}_j{j_node}.out"
                     )
@@ -1933,7 +2027,7 @@ def main() -> None:
                         )
                         strut_file = (
                             results_root
-                            / "mojo"
+                            / "strut"
                             / case_name
                             / f"{output}_ele{elem_id}.out"
                         )
@@ -1958,7 +2052,9 @@ def main() -> None:
                                 f"{case_name}: envelope element {elem_id} row count mismatch: {len(ref_vals)} != {len(strut_vals)}"
                             )
                             continue
-                        for row, (rvec, gvec) in enumerate(zip(ref_vals, strut_vals), start=1):
+                        for row, (rvec, gvec) in enumerate(
+                            zip(ref_vals, strut_vals), start=1
+                        ):
                             ok, errors = _compare_vectors(
                                 rvec, gvec, rtol=rtol, atol=atol
                             )
@@ -1993,7 +2089,7 @@ def main() -> None:
                             )
                             strut_file = (
                                 results_root
-                                / "mojo"
+                                / "strut"
                                 / case_name
                                 / f"{output}_ele{elem_id}_sec{sec_no}.out"
                             )
@@ -2036,7 +2132,9 @@ def main() -> None:
                                         parity_failures.append(
                                             f"{case_name}: {rec_type} element {elem_id} section {sec_no} mismatch at step {step}"
                                         )
-                                        parity_failures.extend([f"  {err}" for err in errors])
+                                        parity_failures.extend(
+                                            [f"  {err}" for err in errors]
+                                        )
                                         break
                             else:
                                 ok, errors = _compare_vectors(
@@ -2046,13 +2144,20 @@ def main() -> None:
                                     parity_failures.append(
                                         f"{case_name}: {rec_type} element {elem_id} section {sec_no} mismatch"
                                     )
-                                    parity_failures.extend([f"  {err}" for err in errors])
+                                    parity_failures.extend(
+                                        [f"  {err}" for err in errors]
+                                    )
                 elif rec_type == "modal_eigen":
                     output = rec.get("output", "modal")
                     eig_ref = (
-                        results_root / "opensees" / case_name / f"{output}_eigenvalues.out"
+                        results_root
+                        / "opensees"
+                        / case_name
+                        / f"{output}_eigenvalues.out"
                     )
-                    eig_strut = results_root / "mojo" / case_name / f"{output}_eigenvalues.out"
+                    eig_strut = (
+                        results_root / "strut" / case_name / f"{output}_eigenvalues.out"
+                    )
                     if not eig_ref.exists():
                         parity_failures.append(
                             f"{case_name}: missing OpenSees output: {eig_ref}"
@@ -2071,9 +2176,13 @@ def main() -> None:
                         continue
                     ref_vals = [row[0] for row in ref_rows]
                     strut_vals = [row[0] for row in strut_rows]
-                    ok, errors = _compare_vectors(ref_vals, strut_vals, rtol=rtol, atol=atol)
+                    ok, errors = _compare_vectors(
+                        ref_vals, strut_vals, rtol=rtol, atol=atol
+                    )
                     if not ok:
-                        parity_failures.append(f"{case_name}: modal eigenvalue mismatch")
+                        parity_failures.append(
+                            f"{case_name}: modal eigenvalue mismatch"
+                        )
                         parity_failures.extend([f"  {err}" for err in errors])
 
                     for mode_no in rec.get("modes", []):
@@ -2086,7 +2195,7 @@ def main() -> None:
                             )
                             strut_file = (
                                 results_root
-                                / "mojo"
+                                / "strut"
                                 / case_name
                                 / f"{output}_mode{int(mode_no)}_node{int(node_id)}.out"
                             )

@@ -14,11 +14,11 @@ Examples:
 uv run scripts/run_benchmarks.py
 uv run scripts/run_benchmarks.py --cases elastic_beam_cantilever,elastic_frame_portal
 uv run scripts/run_benchmarks.py --cases tests/validation/elastic_frame_two_story/elastic_frame_two_story.json
-uv run scripts/run_benchmarks.py --engine mojo
+uv run scripts/run_benchmarks.py --engine strut
 uv run scripts/run_benchmarks.py --no-batch
 uv run scripts/run_benchmarks.py --gen-frame-bays 18 --gen-frame-stories 17 --gen-frame-element forceBeamColumn2d --cases force_beam_column2d_fiber_frame_18bay_17story --no-archive
 uv run scripts/run_benchmarks.py --benchmark-suite root_cause_v1
-uv run scripts/run_benchmarks.py --engine mojo --cases opensees_example_rc_frame_earthquake --profile benchmark/speedscope --no-archive
+uv run scripts/run_benchmarks.py --engine strut --cases opensees_example_rc_frame_earthquake --profile benchmark/speedscope --no-archive
 ```
 
 Upcoming element benchmarks (disabled until element support lands):
@@ -40,7 +40,7 @@ uv run scripts/run_benchmarks.py --cases elastic_truss_basic,elastic_four_node_q
 - `benchmark/results/` contains the latest run (summary plus last-run outputs).
 - Runs with `--profile` write to `benchmark/results-profile/` and default to `--no-archive`.
 - `--profile <DIR>` works in both per-case and batch runs and writes per-case files as `<case>.speedscope.json` into `DIR`.
-- Compute-only outputs are written to `benchmark/results/opensees_compute/` and `benchmark/results/mojo_compute/` (or the `results-profile` equivalents when profiling).
+- Compute-only outputs are written to `benchmark/results/opensees_compute/` and `benchmark/results/strut_compute/` (or the `results-profile` equivalents when profiling).
 - `benchmark/archive/` contains timestamped summary snapshots.
 - When running both engines, the runner compares outputs and fails on mismatch.
 - The runner performs a second pass without recorders to estimate compute-only time.

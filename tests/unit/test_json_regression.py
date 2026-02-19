@@ -7,7 +7,8 @@ import sys
 repo_root = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(repo_root))
 
-def _run_mojo_case(case_data, out_dir: Path):
+
+def _run_strut_case(case_data, out_dir: Path):
     with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as tmp:
         tmp.write(json.dumps(case_data))
         tmp_path = Path(tmp.name)
@@ -15,7 +16,7 @@ def _run_mojo_case(case_data, out_dir: Path):
         subprocess.check_call(
             [
                 sys.executable,
-                str(repo_root / "scripts" / "run_mojo_case.py"),
+                str(repo_root / "scripts" / "run_strut_case.py"),
                 "--input",
                 str(tmp_path),
                 "--output",
@@ -24,6 +25,7 @@ def _run_mojo_case(case_data, out_dir: Path):
         )
     finally:
         tmp_path.unlink(missing_ok=True)
+
 
 ABS_TOL = 1e-8
 REL_TOL = 1e-5
@@ -82,7 +84,7 @@ def test_json_case_regressions():
 
         with tempfile.TemporaryDirectory() as tmp:
             out_dir = Path(tmp)
-            _run_mojo_case(case_data, out_dir)
+            _run_strut_case(case_data, out_dir)
 
             for rec in case_data.get("recorders", []):
                 if rec["type"] not in {
@@ -98,9 +100,9 @@ def test_json_case_regressions():
                 output = rec.get("output", "node_disp")
                 for node_id in rec["nodes"]:
                     ref_file = case_root / "reference" / f"{output}_node{node_id}.out"
-                    mojo_file = out_dir / f"{output}_node{node_id}.out"
+                    strut_file = out_dir / f"{output}_node{node_id}.out"
                     assert ref_file.exists(), f"missing reference output: {ref_file}"
-                    assert mojo_file.exists(), f"missing mojo output: {mojo_file}"
+                    assert strut_file.exists(), f"missing strut output: {strut_file}"
                     ref_vals = _load_last_values(ref_file)
-                    mojo_vals = _load_last_values(mojo_file)
-                    _compare_vectors(ref_vals, mojo_vals)
+                    strut_vals = _load_last_values(strut_file)
+                    _compare_vectors(ref_vals, strut_vals)

@@ -9,7 +9,7 @@ repo_root = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(repo_root))
 
 
-def _run_mojo_case(case_data, out_dir: Path):
+def _run_strut_case(case_data, out_dir: Path):
     with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as tmp:
         tmp.write(json.dumps(case_data))
         tmp_path = Path(tmp.name)
@@ -17,7 +17,7 @@ def _run_mojo_case(case_data, out_dir: Path):
         subprocess.check_call(
             [
                 sys.executable,
-                str(repo_root / "scripts" / "run_mojo_case.py"),
+                str(repo_root / "scripts" / "run_strut_case.py"),
                 "--input",
                 str(tmp_path),
                 "--output",
@@ -67,7 +67,9 @@ def _time_series_factor(ts, t):
         if t < times[0]:
             return 0.0
         if t >= times[-1]:
-            return factor * (values[-1] if ts.get("use_last", False) or t == times[-1] else 0.0)
+            return factor * (
+                values[-1] if ts.get("use_last", False) or t == times[-1] else 0.0
+            )
         for i in range(len(values) - 1):
             t1, t2 = times[i], times[i + 1]
             if t == t2:
@@ -108,7 +110,7 @@ def _run_with_time_series(ts_def):
 
     with tempfile.TemporaryDirectory() as tmp:
         out_dir = Path(tmp)
-        _run_mojo_case(case_data, out_dir)
+        _run_strut_case(case_data, out_dir)
         disp_file = out_dir / "node_disp_node2.out"
         values = [float(v) for v in disp_file.read_text().split()]
     return values
@@ -151,7 +153,9 @@ def test_time_series_path_file():
     finally:
         tmp_path.unlink(missing_ok=True)
     expected_v, expected_theta = _expected_cantilever()
-    scale = _time_series_factor({"type": "Path", "dt": 0.5, "values": [0.0, 1.0, 2.0]}, 1.0)
+    scale = _time_series_factor(
+        {"type": "Path", "dt": 0.5, "values": [0.0, 1.0, 2.0]}, 1.0
+    )
     assert math.isclose(values[1], expected_v * scale, rel_tol=1e-6, abs_tol=1e-12)
     assert math.isclose(values[2], expected_theta * scale, rel_tol=1e-6, abs_tol=1e-12)
 

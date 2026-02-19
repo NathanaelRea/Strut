@@ -9,13 +9,13 @@ from pathlib import Path
 repo_root = Path(__file__).resolve().parents[2]
 
 
-def _run_mojo_case(case_data, out_dir: Path):
+def _run_strut_case(case_data, out_dir: Path):
     input_path = out_dir / "input.json"
     input_path.write_text(json.dumps(case_data), encoding="utf-8")
     subprocess.check_call(
         [
             sys.executable,
-            str(repo_root / "scripts" / "run_mojo_case.py"),
+            str(repo_root / "scripts" / "run_strut_case.py"),
             "--input",
             str(input_path),
             "--output",
@@ -63,15 +63,27 @@ def test_reaction_drift_and_envelope_recorders_static_linear():
         "loads": [{"node": 2, "dof": 1, "value": 1000.0}],
         "analysis": {"type": "static_linear", "steps": 1},
         "recorders": [
-            {"type": "node_reaction", "nodes": [1], "dofs": [1, 2, 3], "output": "reaction"},
-            {"type": "drift", "i_node": 1, "j_node": 2, "dof": 1, "perp_dirn": 2, "output": "drift"},
+            {
+                "type": "node_reaction",
+                "nodes": [1],
+                "dofs": [1, 2, 3],
+                "output": "reaction",
+            },
+            {
+                "type": "drift",
+                "i_node": 1,
+                "j_node": 2,
+                "dof": 1,
+                "perp_dirn": 2,
+                "output": "drift",
+            },
             {"type": "envelope_element_force", "elements": [1], "output": "env_force"},
         ],
     }
 
     with tempfile.TemporaryDirectory() as tmp:
         out_dir = Path(tmp)
-        _run_mojo_case(case_data, out_dir)
+        _run_strut_case(case_data, out_dir)
 
         reaction_rows = _read_rows(out_dir / "reaction_node1.out")
         drift_rows = _read_rows(out_dir / "drift_i1_j2.out")

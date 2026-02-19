@@ -85,9 +85,13 @@ def _max_abs_vector(rows):
     return peaks
 
 
-def _compare_transient_rows(ref_vals, strut_vals, label, failures, rtol, atol, parity_mode):
+def _compare_transient_rows(
+    ref_vals, strut_vals, label, failures, rtol, atol, parity_mode
+):
     if len(ref_vals) != len(strut_vals):
-        failures.append(f"{label} step count mismatch: {len(ref_vals)} != {len(strut_vals)}")
+        failures.append(
+            f"{label} step count mismatch: {len(ref_vals)} != {len(strut_vals)}"
+        )
         return
     if parity_mode == "max_abs":
         ref_peak = _max_abs_vector(ref_vals)
@@ -124,13 +128,15 @@ def main():
     atol = tol.get("atol", ABS_TOL)
     parity_mode = str(data.get("parity_mode", "step")).strip().lower()
     if parity_mode not in ("step", "max_abs"):
-        raise ValueError(f"unsupported parity_mode: {parity_mode} (expected step|max_abs)")
+        raise ValueError(
+            f"unsupported parity_mode: {parity_mode} (expected step|max_abs)"
+        )
     analysis = data.get("analysis", {})
     analysis_type = analysis.get("type", "static_linear")
     is_transient = str(analysis_type).startswith("transient")
 
     ref_dir = case_root / "reference"
-    strut_dir = case_root / "mojo"
+    strut_dir = case_root / "strut"
 
     failures = []
     for rec in recorders:
@@ -195,7 +201,9 @@ def main():
                 else:
                     ref_vals = _load_last_values(ref_file)
                     strut_vals = _load_last_values(strut_file)
-                    ok, errors = _compare_vectors(ref_vals, strut_vals, rtol=rtol, atol=atol)
+                    ok, errors = _compare_vectors(
+                        ref_vals, strut_vals, rtol=rtol, atol=atol
+                    )
                     if not ok:
                         failures.append(f"element {elem_id} mismatch")
                         failures.extend([f"  {err}" for err in errors])
@@ -225,7 +233,9 @@ def main():
                 else:
                     ref_vals = _load_last_values(ref_file)
                     strut_vals = _load_last_values(strut_file)
-                    ok, errors = _compare_vectors(ref_vals, strut_vals, rtol=rtol, atol=atol)
+                    ok, errors = _compare_vectors(
+                        ref_vals, strut_vals, rtol=rtol, atol=atol
+                    )
                     if not ok:
                         failures.append(f"reaction node {node_id} mismatch")
                         failures.extend([f"  {err}" for err in errors])
@@ -256,7 +266,9 @@ def main():
             else:
                 ref_vals = _load_last_values(ref_file)
                 strut_vals = _load_last_values(strut_file)
-                ok, errors = _compare_vectors(ref_vals, strut_vals, rtol=rtol, atol=atol)
+                ok, errors = _compare_vectors(
+                    ref_vals, strut_vals, rtol=rtol, atol=atol
+                )
                 if not ok:
                     failures.append(f"drift i{i_node}-j{j_node} mismatch")
                     failures.extend([f"  {err}" for err in errors])
@@ -278,7 +290,9 @@ def main():
                         f"envelope element {elem_id} row count mismatch: {len(ref_vals)} != {len(strut_vals)}"
                     )
                     continue
-                for row_idx, (rvec, gvec) in enumerate(zip(ref_vals, strut_vals), start=1):
+                for row_idx, (rvec, gvec) in enumerate(
+                    zip(ref_vals, strut_vals), start=1
+                ):
                     ok, errors = _compare_vectors(rvec, gvec, rtol=rtol, atol=atol)
                     if not ok:
                         failures.append(
@@ -287,7 +301,11 @@ def main():
                         failures.extend([f"  {err}" for err in errors])
                         break
         elif rec_type in ("section_force", "section_deformation"):
-            default_output = "section_force" if rec_type == "section_force" else "section_deformation"
+            default_output = (
+                "section_force"
+                if rec_type == "section_force"
+                else "section_deformation"
+            )
             output = rec.get("output", default_output)
             sections = rec.get("sections")
             if sections is None:
@@ -320,7 +338,9 @@ def main():
                     else:
                         ref_vals = _load_last_values(ref_file)
                         strut_vals = _load_last_values(strut_file)
-                        ok, errors = _compare_vectors(ref_vals, strut_vals, rtol=rtol, atol=atol)
+                        ok, errors = _compare_vectors(
+                            ref_vals, strut_vals, rtol=rtol, atol=atol
+                        )
                         if not ok:
                             failures.append(
                                 f"{rec_type} element {elem_id} section {sec_no} mismatch"

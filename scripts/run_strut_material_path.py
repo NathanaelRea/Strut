@@ -19,29 +19,18 @@ def main():
     args = parser.parse_args()
 
     repo_root = Path(__file__).resolve().parents[1]
-    mojo = shutil.which("mojo")
+    mojo = shutil.which("strut")
     if mojo is None:
-        raise SystemExit("mojo executable not found on PATH; required to run section path.")
+        raise SystemExit(
+            "mojo executable not found on PATH; required to run material path."
+        )
 
     verbose = os.getenv("STRUT_VERBOSE") == "1"
-    bin_path = repo_root / "build" / "mojo" / "section_path"
+    bin_path = repo_root / "build" / "strut" / "material_path"
     rebuild = not bin_path.exists()
     if not rebuild:
-        src_roots = [
-            repo_root / "src" / "mojo" / "section_path.mojo",
-            repo_root / "src" / "mojo" / "sections",
-            repo_root / "src" / "mojo" / "materials",
-        ]
-        latest_src = 0.0
-        for src in src_roots:
-            if src.is_dir():
-                latest_src = max(
-                    latest_src,
-                    max((p.stat().st_mtime for p in src.rglob("*.mojo")), default=0.0),
-                )
-            else:
-                latest_src = max(latest_src, src.stat().st_mtime)
-        rebuild = bin_path.stat().st_mtime < latest_src
+        src = repo_root / "src" / "strut" / "material_path.strut"
+        rebuild = bin_path.stat().st_mtime < src.stat().st_mtime
 
     if rebuild:
         bin_path.parent.mkdir(parents=True, exist_ok=True)
@@ -49,7 +38,7 @@ def main():
             [
                 mojo,
                 "build",
-                str(repo_root / "src" / "mojo" / "section_path.mojo"),
+                str(repo_root / "src" / "strut" / "material_path.strut"),
                 "-o",
                 str(bin_path),
             ],

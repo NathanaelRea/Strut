@@ -72,7 +72,7 @@ def main():
     is_transient = str(analysis.get("type", "")).startswith("transient")
 
     ref_path = case_root / "reference" / args.series_file
-    strut_path = case_root / "mojo" / args.series_file
+    strut_path = case_root / "strut" / args.series_file
     if not ref_path.exists():
         raise SystemExit(f"missing reference file: {ref_path}")
     if not strut_path.exists():

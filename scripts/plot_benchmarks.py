@@ -77,7 +77,7 @@ def collect_recent_cases(
     names = [case["name"] for case in cases]
     engines = {}
     errors = {}
-    for engine in ("opensees", "mojo"):
+    for engine in ("opensees", "strut"):
         values_us = []
         errs_us = []
         for case in cases:
@@ -210,8 +210,8 @@ def collect_archive_trend(
     medium_threshold: int,
     large_threshold: int,
 ) -> Tuple[List[datetime], Dict[str, List[float]], Dict[str, List[float]]]:
-    engine_means: Dict[str, List[float]] = {"opensees": [], "mojo": []}
-    engine_stds: Dict[str, List[float]] = {"opensees": [], "mojo": []}
+    engine_means: Dict[str, List[float]] = {"opensees": [], "strut": []}
+    engine_stds: Dict[str, List[float]] = {"opensees": [], "strut": []}
     timestamps: List[datetime] = []
     files = sorted(archive_dir.glob("*-summary.json"))
     if not files:
@@ -222,7 +222,7 @@ def collect_archive_trend(
     for path in files:
         data = load_summary(path)
         run_medians: Dict[str, float] = {}
-        for engine in ("opensees", "mojo"):
+        for engine in ("opensees", "strut"):
             values: List[float] = []
             for case in data.get("cases", []):
                 if size_filter:
@@ -243,7 +243,9 @@ def collect_archive_trend(
 
         git_rev = data.get("git_rev")
         hash_key = (
-            git_rev.strip() if isinstance(git_rev, str) and git_rev.strip() else "unknown"
+            git_rev.strip()
+            if isinstance(git_rev, str) and git_rev.strip()
+            else "unknown"
         )
         per_hash_entries.setdefault(hash_key, []).append(
             (parse_timestamp(path, data), run_medians)
@@ -270,7 +272,7 @@ def collect_archive_trend(
 
     for latest_ts, entries in ordered_batches:
         timestamps.append(latest_ts)
-        for engine in ("opensees", "mojo"):
+        for engine in ("opensees", "strut"):
             values = [run_vals.get(engine, float("nan")) for _, run_vals in entries]
             mean_val, std_val = _mean_std(values)
             engine_means[engine].append(mean_val)
@@ -461,7 +463,7 @@ def plot_recent_bar(
         group_centers = []
     width = 0.38
     opensees_vals = [v * scale for v in engines.get("opensees", [])]
-    strut_vals = [v * scale for v in engines.get("mojo", [])]
+    strut_vals = [v * scale for v in engines.get("strut", [])]
 
     ax.bar(
         [i - width / 2 for i in x],
@@ -519,9 +521,9 @@ def plot_archive_trend(
     fig, ax = plt.subplots(figsize=(10, 4))
     if timestamps:
         opensees_means = means.get("opensees", [])
-        strut_means = means.get("mojo", [])
+        strut_means = means.get("strut", [])
         opensees_stds = stds.get("opensees", [])
-        strut_stds = stds.get("mojo", [])
+        strut_stds = stds.get("strut", [])
         # Draw both series as filled circles and distinguish by color only.
         ax.errorbar(
             timestamps,
