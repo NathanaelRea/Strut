@@ -85,20 +85,20 @@ def _max_abs_vector(rows):
     return peaks
 
 
-def _compare_transient_rows(ref_vals, mojo_vals, label, failures, rtol, atol, parity_mode):
-    if len(ref_vals) != len(mojo_vals):
-        failures.append(f"{label} step count mismatch: {len(ref_vals)} != {len(mojo_vals)}")
+def _compare_transient_rows(ref_vals, strut_vals, label, failures, rtol, atol, parity_mode):
+    if len(ref_vals) != len(strut_vals):
+        failures.append(f"{label} step count mismatch: {len(ref_vals)} != {len(strut_vals)}")
         return
     if parity_mode == "max_abs":
         ref_peak = _max_abs_vector(ref_vals)
-        mojo_peak = _max_abs_vector(mojo_vals)
-        ok, errors = _compare_vectors(ref_peak, mojo_peak, rtol=rtol, atol=atol)
+        strut_peak = _max_abs_vector(strut_vals)
+        ok, errors = _compare_vectors(ref_peak, strut_peak, rtol=rtol, atol=atol)
         if not ok:
             failures.append(f"{label} max-abs mismatch")
             failures.extend([f"  {err}" for err in errors])
         return
 
-    for step, (rvec, gvec) in enumerate(zip(ref_vals, mojo_vals), start=1):
+    for step, (rvec, gvec) in enumerate(zip(ref_vals, strut_vals), start=1):
         ok, errors = _compare_vectors(rvec, gvec, rtol=rtol, atol=atol)
         if not ok:
             failures.append(f"{label} mismatch at step {step}")
@@ -130,7 +130,7 @@ def main():
     is_transient = str(analysis_type).startswith("transient")
 
     ref_dir = case_root / "reference"
-    mojo_dir = case_root / "mojo"
+    strut_dir = case_root / "mojo"
 
     failures = []
     for rec in recorders:
@@ -141,19 +141,19 @@ def main():
             output = rec.get("output", "node_disp")
             for node_id in rec["nodes"]:
                 ref_file = ref_dir / f"{output}_node{node_id}.out"
-                mojo_file = mojo_dir / f"{output}_node{node_id}.out"
+                strut_file = strut_dir / f"{output}_node{node_id}.out"
                 if not ref_file.exists():
                     failures.append(f"missing reference output: {ref_file}")
                     continue
-                if not mojo_file.exists():
-                    failures.append(f"missing mojo output: {mojo_file}")
+                if not strut_file.exists():
+                    failures.append(f"missing strut output: {strut_file}")
                     continue
                 if is_transient:
                     ref_vals = _load_all_values(ref_file)
-                    mojo_vals = _load_all_values(mojo_file)
+                    strut_vals = _load_all_values(strut_file)
                     _compare_transient_rows(
                         ref_vals,
-                        mojo_vals,
+                        strut_vals,
                         f"node {node_id}",
                         failures,
                         rtol,
@@ -162,9 +162,9 @@ def main():
                     )
                 else:
                     ref_vals = _load_last_values(ref_file)
-                    mojo_vals = _load_last_values(mojo_file)
+                    strut_vals = _load_last_values(strut_file)
                     ok, errors = _compare_mode_shape_vectors(
-                        ref_vals, mojo_vals, rtol=rtol, atol=atol
+                        ref_vals, strut_vals, rtol=rtol, atol=atol
                     )
                     if not ok:
                         failures.append(f"node {node_id} mismatch")
@@ -173,19 +173,19 @@ def main():
             output = rec.get("output", "element_force")
             for elem_id in rec["elements"]:
                 ref_file = ref_dir / f"{output}_ele{elem_id}.out"
-                mojo_file = mojo_dir / f"{output}_ele{elem_id}.out"
+                strut_file = strut_dir / f"{output}_ele{elem_id}.out"
                 if not ref_file.exists():
                     failures.append(f"missing reference output: {ref_file}")
                     continue
-                if not mojo_file.exists():
-                    failures.append(f"missing mojo output: {mojo_file}")
+                if not strut_file.exists():
+                    failures.append(f"missing strut output: {strut_file}")
                     continue
                 if is_transient:
                     ref_vals = _load_all_values(ref_file)
-                    mojo_vals = _load_all_values(mojo_file)
+                    strut_vals = _load_all_values(strut_file)
                     _compare_transient_rows(
                         ref_vals,
-                        mojo_vals,
+                        strut_vals,
                         f"element {elem_id}",
                         failures,
                         rtol,
@@ -194,8 +194,8 @@ def main():
                     )
                 else:
                     ref_vals = _load_last_values(ref_file)
-                    mojo_vals = _load_last_values(mojo_file)
-                    ok, errors = _compare_vectors(ref_vals, mojo_vals, rtol=rtol, atol=atol)
+                    strut_vals = _load_last_values(strut_file)
+                    ok, errors = _compare_vectors(ref_vals, strut_vals, rtol=rtol, atol=atol)
                     if not ok:
                         failures.append(f"element {elem_id} mismatch")
                         failures.extend([f"  {err}" for err in errors])
@@ -203,19 +203,19 @@ def main():
             output = rec.get("output", "reaction")
             for node_id in rec["nodes"]:
                 ref_file = ref_dir / f"{output}_node{node_id}.out"
-                mojo_file = mojo_dir / f"{output}_node{node_id}.out"
+                strut_file = strut_dir / f"{output}_node{node_id}.out"
                 if not ref_file.exists():
                     failures.append(f"missing reference output: {ref_file}")
                     continue
-                if not mojo_file.exists():
-                    failures.append(f"missing mojo output: {mojo_file}")
+                if not strut_file.exists():
+                    failures.append(f"missing strut output: {strut_file}")
                     continue
                 if is_transient:
                     ref_vals = _load_all_values(ref_file)
-                    mojo_vals = _load_all_values(mojo_file)
+                    strut_vals = _load_all_values(strut_file)
                     _compare_transient_rows(
                         ref_vals,
-                        mojo_vals,
+                        strut_vals,
                         f"reaction node {node_id}",
                         failures,
                         rtol,
@@ -224,8 +224,8 @@ def main():
                     )
                 else:
                     ref_vals = _load_last_values(ref_file)
-                    mojo_vals = _load_last_values(mojo_file)
-                    ok, errors = _compare_vectors(ref_vals, mojo_vals, rtol=rtol, atol=atol)
+                    strut_vals = _load_last_values(strut_file)
+                    ok, errors = _compare_vectors(ref_vals, strut_vals, rtol=rtol, atol=atol)
                     if not ok:
                         failures.append(f"reaction node {node_id} mismatch")
                         failures.extend([f"  {err}" for err in errors])
@@ -234,19 +234,19 @@ def main():
             i_node = int(rec["i_node"])
             j_node = int(rec["j_node"])
             ref_file = ref_dir / f"{output}_i{i_node}_j{j_node}.out"
-            mojo_file = mojo_dir / f"{output}_i{i_node}_j{j_node}.out"
+            strut_file = strut_dir / f"{output}_i{i_node}_j{j_node}.out"
             if not ref_file.exists():
                 failures.append(f"missing reference output: {ref_file}")
                 continue
-            if not mojo_file.exists():
-                failures.append(f"missing mojo output: {mojo_file}")
+            if not strut_file.exists():
+                failures.append(f"missing strut output: {strut_file}")
                 continue
             if is_transient:
                 ref_vals = _load_all_values(ref_file)
-                mojo_vals = _load_all_values(mojo_file)
+                strut_vals = _load_all_values(strut_file)
                 _compare_transient_rows(
                     ref_vals,
-                    mojo_vals,
+                    strut_vals,
                     f"drift i{i_node}-j{j_node}",
                     failures,
                     rtol,
@@ -255,8 +255,8 @@ def main():
                 )
             else:
                 ref_vals = _load_last_values(ref_file)
-                mojo_vals = _load_last_values(mojo_file)
-                ok, errors = _compare_vectors(ref_vals, mojo_vals, rtol=rtol, atol=atol)
+                strut_vals = _load_last_values(strut_file)
+                ok, errors = _compare_vectors(ref_vals, strut_vals, rtol=rtol, atol=atol)
                 if not ok:
                     failures.append(f"drift i{i_node}-j{j_node} mismatch")
                     failures.extend([f"  {err}" for err in errors])
@@ -264,21 +264,21 @@ def main():
             output = rec.get("output", "envelope_element_force")
             for elem_id in rec["elements"]:
                 ref_file = ref_dir / f"{output}_ele{elem_id}.out"
-                mojo_file = mojo_dir / f"{output}_ele{elem_id}.out"
+                strut_file = strut_dir / f"{output}_ele{elem_id}.out"
                 if not ref_file.exists():
                     failures.append(f"missing reference output: {ref_file}")
                     continue
-                if not mojo_file.exists():
-                    failures.append(f"missing mojo output: {mojo_file}")
+                if not strut_file.exists():
+                    failures.append(f"missing strut output: {strut_file}")
                     continue
                 ref_vals = _load_all_values(ref_file)
-                mojo_vals = _load_all_values(mojo_file)
-                if len(ref_vals) != len(mojo_vals):
+                strut_vals = _load_all_values(strut_file)
+                if len(ref_vals) != len(strut_vals):
                     failures.append(
-                        f"envelope element {elem_id} row count mismatch: {len(ref_vals)} != {len(mojo_vals)}"
+                        f"envelope element {elem_id} row count mismatch: {len(ref_vals)} != {len(strut_vals)}"
                     )
                     continue
-                for row_idx, (rvec, gvec) in enumerate(zip(ref_vals, mojo_vals), start=1):
+                for row_idx, (rvec, gvec) in enumerate(zip(ref_vals, strut_vals), start=1):
                     ok, errors = _compare_vectors(rvec, gvec, rtol=rtol, atol=atol)
                     if not ok:
                         failures.append(
@@ -298,19 +298,19 @@ def main():
             for elem_id in rec["elements"]:
                 for sec_no in sections:
                     ref_file = ref_dir / f"{output}_ele{elem_id}_sec{sec_no}.out"
-                    mojo_file = mojo_dir / f"{output}_ele{elem_id}_sec{sec_no}.out"
+                    strut_file = strut_dir / f"{output}_ele{elem_id}_sec{sec_no}.out"
                     if not ref_file.exists():
                         failures.append(f"missing reference output: {ref_file}")
                         continue
-                    if not mojo_file.exists():
-                        failures.append(f"missing mojo output: {mojo_file}")
+                    if not strut_file.exists():
+                        failures.append(f"missing strut output: {strut_file}")
                         continue
                     if is_transient:
                         ref_vals = _load_all_values(ref_file)
-                        mojo_vals = _load_all_values(mojo_file)
+                        strut_vals = _load_all_values(strut_file)
                         _compare_transient_rows(
                             ref_vals,
-                            mojo_vals,
+                            strut_vals,
                             f"{rec_type} element {elem_id} section {sec_no}",
                             failures,
                             rtol,
@@ -319,8 +319,8 @@ def main():
                         )
                     else:
                         ref_vals = _load_last_values(ref_file)
-                        mojo_vals = _load_last_values(mojo_file)
-                        ok, errors = _compare_vectors(ref_vals, mojo_vals, rtol=rtol, atol=atol)
+                        strut_vals = _load_last_values(strut_file)
+                        ok, errors = _compare_vectors(ref_vals, strut_vals, rtol=rtol, atol=atol)
                         if not ok:
                             failures.append(
                                 f"{rec_type} element {elem_id} section {sec_no} mismatch"
@@ -333,18 +333,18 @@ def main():
                 failures.append("modal_eigen recorder missing modes")
                 continue
             eig_ref = ref_dir / f"{output}_eigenvalues.out"
-            eig_mojo = mojo_dir / f"{output}_eigenvalues.out"
+            eig_strut = strut_dir / f"{output}_eigenvalues.out"
             if not eig_ref.exists():
                 failures.append(f"missing reference output: {eig_ref}")
                 continue
-            if not eig_mojo.exists():
-                failures.append(f"missing mojo output: {eig_mojo}")
+            if not eig_strut.exists():
+                failures.append(f"missing strut output: {eig_strut}")
                 continue
             ref_rows = _load_all_values(eig_ref)
-            mojo_rows = _load_all_values(eig_mojo)
+            strut_rows = _load_all_values(eig_strut)
             ref_vals = [row[0] for row in ref_rows]
-            mojo_vals = [row[0] for row in mojo_rows]
-            ok, errors = _compare_vectors(ref_vals, mojo_vals, rtol=rtol, atol=atol)
+            strut_vals = [row[0] for row in strut_rows]
+            ok, errors = _compare_vectors(ref_vals, strut_vals, rtol=rtol, atol=atol)
             if not ok:
                 failures.append("modal eigenvalue mismatch")
                 failures.extend([f"  {err}" for err in errors])
@@ -353,17 +353,17 @@ def main():
                 mode_no = int(mode)
                 for node_id in rec["nodes"]:
                     ref_file = ref_dir / f"{output}_mode{mode_no}_node{node_id}.out"
-                    mojo_file = mojo_dir / f"{output}_mode{mode_no}_node{node_id}.out"
+                    strut_file = strut_dir / f"{output}_mode{mode_no}_node{node_id}.out"
                     if not ref_file.exists():
                         failures.append(f"missing reference output: {ref_file}")
                         continue
-                    if not mojo_file.exists():
-                        failures.append(f"missing mojo output: {mojo_file}")
+                    if not strut_file.exists():
+                        failures.append(f"missing strut output: {strut_file}")
                         continue
                     ref_vals = _load_last_values(ref_file)
-                    mojo_vals = _load_last_values(mojo_file)
+                    strut_vals = _load_last_values(strut_file)
                     ok, errors = _compare_mode_shape_vectors(
-                        ref_vals, mojo_vals, rtol=rtol, atol=atol
+                        ref_vals, strut_vals, rtol=rtol, atol=atol
                     )
                     if not ok:
                         failures.append(

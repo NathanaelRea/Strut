@@ -180,7 +180,7 @@ def _plot_structure_animation(
     case_name: str,
     case_data: dict,
     ref_dir: Path,
-    mojo_dir: Path,
+    strut_dir: Path,
     is_transient: bool,
     dt: float,
     out_path: Path,
@@ -193,15 +193,15 @@ def _plot_structure_animation(
         return False
 
     ref_disp, n_ref = _collect_node_displacements(case_data, ref_dir, node_xy)
-    mojo_disp, n_mojo = _collect_node_displacements(case_data, mojo_dir, node_xy)
-    n = min(n_ref, n_mojo)
+    strut_disp, n_strut = _collect_node_displacements(case_data, strut_dir, node_xy)
+    n = min(n_ref, n_strut)
     if n <= 0:
         print("skip animation: no comparable node displacement history found")
         return False
 
     for node_id in node_xy:
         ref_disp[node_id] = ref_disp[node_id][:n]
-        mojo_disp[node_id] = mojo_disp[node_id][:n]
+        strut_disp[node_id] = strut_disp[node_id][:n]
 
     frame_indices, frame_step = _animation_frame_indices(n, max_frames)
     if not frame_indices:
@@ -213,7 +213,7 @@ def _plot_structure_animation(
     span = max(max(xs) - min(xs), max(ys) - min(ys), 1.0e-9)
 
     max_disp = 0.0
-    for node_disp in (ref_disp, mojo_disp):
+    for node_disp in (ref_disp, strut_disp):
         for series in node_disp.values():
             for ux, uy in series:
                 max_disp = max(max_disp, abs(ux), abs(uy))
@@ -238,7 +238,7 @@ def _plot_structure_animation(
     for frame_idx in frame_indices:
         for node_id in node_xy:
             rx, ry = _node_pos(node_id, frame_idx, ref_disp)
-            mx, my = _node_pos(node_id, frame_idx, mojo_disp)
+            mx, my = _node_pos(node_id, frame_idx, strut_disp)
             all_x.extend((rx, mx))
             all_y.extend((ry, my))
     pad = max(0.05 * span, 1.0e-8)
@@ -262,7 +262,7 @@ def _plot_structure_animation(
         linestyles="-",
         zorder=2,
     )
-    mojo_lines = LineCollection(
+    strut_lines = LineCollection(
         [],
         colors=MOJO_ORANGE,
         linewidths=1.8,
@@ -271,7 +271,7 @@ def _plot_structure_animation(
     )
     ax.add_collection(undeformed)
     ax.add_collection(ref_lines)
-    ax.add_collection(mojo_lines)
+    ax.add_collection(strut_lines)
     ax.set_xlim(x_min, x_max)
     ax.set_ylim(y_min, y_max)
     ax.set_aspect("equal", adjustable="box")
@@ -283,7 +283,7 @@ def _plot_structure_animation(
         handles=[
             Line2D([], [], color="#8f8f8f", linestyle=":", linewidth=1.0, label="Undeformed"),
             Line2D([], [], color=OPENSEES_BLUE, linestyle="-", linewidth=2.0, label="OpenSees reference"),
-            Line2D([], [], color=MOJO_ORANGE, linestyle="--", linewidth=1.8, label="Strut mojo"),
+            Line2D([], [], color=MOJO_ORANGE, linestyle="--", linewidth=1.8, label="Strut"),
         ],
         loc="best",
     )
@@ -314,9 +314,9 @@ def _plot_structure_animation(
 
     def _draw(frame_idx: int):
         ref_lines.set_segments(_segments(ref_disp, frame_idx))
-        mojo_lines.set_segments(_segments(mojo_disp, frame_idx))
+        strut_lines.set_segments(_segments(strut_disp, frame_idx))
         time_text.set_text(_frame_label(frame_idx))
-        return ref_lines, mojo_lines, time_text
+        return ref_lines, strut_lines, time_text
 
     _draw(frame_indices[0])
     fig.tight_layout()
@@ -367,29 +367,29 @@ def _plot_one(
     out_name: str,
     component: int,
     ref_vals,
-    mojo_vals,
+    strut_vals,
     x_vals,
     x_label: str,
     out_path: Path | None,
     pdf: PdfPages | None,
 ):
-    diffs = [g - r for r, g in zip(ref_vals, mojo_vals)]
+    diffs = [g - r for r, g in zip(ref_vals, strut_vals)]
     rmse = (sum(d * d for d in diffs) / max(len(diffs), 1)) ** 0.5
     ref_peak = _max_abs(ref_vals)
-    mojo_peak = _max_abs(mojo_vals)
-    peak_abs_err = abs(mojo_peak - ref_peak)
+    strut_peak = _max_abs(strut_vals)
+    peak_abs_err = abs(strut_peak - ref_peak)
     peak_rel_err = peak_abs_err / max(ref_peak, 1.0e-30)
 
     single_sample = len(x_vals) == 1
     ref_style = {"label": "OpenSees reference", "linewidth": 2.0, "color": OPENSEES_BLUE}
-    mojo_style = {"label": "Strut mojo", "linewidth": 1.6, "linestyle": "--", "color": MOJO_ORANGE}
+    strut_style = {"label": "Strut", "linewidth": 1.6, "linestyle": "--", "color": MOJO_ORANGE}
     if single_sample:
         ref_style.update({"marker": "o", "markersize": 6.0})
-        mojo_style.update({"marker": "x", "markersize": 6.0})
+        strut_style.update({"marker": "x", "markersize": 6.0})
 
     fig, ax = plt.subplots(figsize=(9, 4.8))
     ax.plot(x_vals, ref_vals, **ref_style)
-    ax.plot(x_vals, mojo_vals, **mojo_style)
+    ax.plot(x_vals, strut_vals, **strut_style)
     ax.set_xlabel(x_label)
     ax.set_ylabel(f"Component {component}")
     ax.set_title(f"{case_name} :: {out_name} :: c{component}")
@@ -404,12 +404,12 @@ def _plot_one(
         pdf.savefig(fig, dpi=140)
     plt.close(fig)
 
-    print(f"  peak(ref)={ref_peak:.6e} peak(mojo)={mojo_peak:.6e} peak_rel={peak_rel_err:.6e} rmse={rmse:.6e}")
+    print(f"  peak(ref)={ref_peak:.6e} peak(strut)={strut_peak:.6e} peak_rel={peak_rel_err:.6e} rmse={rmse:.6e}")
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Run a validation case and plot all comparable reference/mojo output files."
+        description="Run a validation case and plot all comparable reference/strut output files."
     )
     parser.add_argument("case_json", help="path to case JSON")
     parser.add_argument(
@@ -481,10 +481,10 @@ def main():
     dt = float(analysis.get("dt", 1.0))
 
     ref_dir = case_root / "reference"
-    mojo_dir = case_root / "mojo"
-    if not ref_dir.exists() or not mojo_dir.exists():
+    strut_dir = case_root / "mojo"
+    if not ref_dir.exists() or not strut_dir.exists():
         raise SystemExit(
-            f"missing output directories: reference={ref_dir.exists()} mojo={mojo_dir.exists()}"
+            f"missing output directories: reference={ref_dir.exists()} strut={strut_dir.exists()}"
         )
 
     if args.output_dir:
@@ -514,7 +514,7 @@ def main():
                 case_name,
                 case_data,
                 ref_dir,
-                mojo_dir,
+                strut_dir,
                 is_transient,
                 dt,
                 animation_path,
@@ -522,32 +522,32 @@ def main():
             )
 
         for ref_file in out_files:
-            mojo_file = mojo_dir / ref_file.name
-            if not mojo_file.exists():
-                print(f"skip (missing mojo): {mojo_file}")
+            strut_file = strut_dir / ref_file.name
+            if not strut_file.exists():
+                print(f"skip (missing strut): {strut_file}")
                 continue
             try:
                 ref_rows = _parse_rows(ref_file)
-                mojo_rows = _parse_rows(mojo_file)
+                strut_rows = _parse_rows(strut_file)
             except ValueError as exc:
                 print(f"skip ({exc})")
                 continue
 
-            n = min(len(ref_rows), len(mojo_rows))
+            n = min(len(ref_rows), len(strut_rows))
             if n == 0:
                 print(f"skip (no comparable rows): {ref_file.name}")
                 continue
-            if len(ref_rows) != len(mojo_rows):
+            if len(ref_rows) != len(strut_rows):
                 print(
-                    f"warning: row mismatch in {ref_file.name}; ref={len(ref_rows)} mojo={len(mojo_rows)} using first {n}"
+                    f"warning: row mismatch in {ref_file.name}; ref={len(ref_rows)} strut={len(strut_rows)} using first {n}"
                 )
             ref_rows = ref_rows[:n]
-            mojo_rows = mojo_rows[:n]
+            strut_rows = strut_rows[:n]
 
-            width = min(len(ref_rows[0]), len(mojo_rows[0]))
-            if len(ref_rows[0]) != len(mojo_rows[0]):
+            width = min(len(ref_rows[0]), len(strut_rows[0]))
+            if len(ref_rows[0]) != len(strut_rows[0]):
                 print(
-                    f"warning: column mismatch in {ref_file.name}; ref={len(ref_rows[0])} mojo={len(mojo_rows[0])} using first {width}"
+                    f"warning: column mismatch in {ref_file.name}; ref={len(ref_rows[0])} strut={len(strut_rows[0])} using first {width}"
                 )
 
             if is_transient:
@@ -561,14 +561,14 @@ def main():
             for comp_idx in range(width):
                 component = comp_idx + 1
                 ref_vals = _series(ref_rows, comp_idx)
-                mojo_vals = _series(mojo_rows, comp_idx)
+                strut_vals = _series(strut_rows, comp_idx)
                 out_path = None if args.no_png else (plot_dir / f"{stem}_c{component}.png")
                 _plot_one(
                     case_name,
                     ref_file.name,
                     component,
                     ref_vals,
-                    mojo_vals,
+                    strut_vals,
                     x_vals,
                     x_label,
                     out_path,

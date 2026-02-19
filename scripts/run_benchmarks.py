@@ -565,7 +565,7 @@ def _summarize_parity_failures(parity_failures: List[str]) -> List[str]:
             continue
         if detail.startswith("missing Mojo output:"):
             path = detail.split(":", 1)[1].strip()
-            add(case_name, "missing mojo files", Path(path).name)
+            add(case_name, "missing strut files", Path(path).name)
             continue
         if detail.startswith("node "):
             add(case_name, "node mismatch", detail)
@@ -599,16 +599,16 @@ def _summarize_parity_failures(parity_failures: List[str]) -> List[str]:
         lines.append(f"Error: {case_name}")
         case_categories = grouped[case_name]
         missing_opensees = case_categories.get("missing opensees files", [])
-        missing_mojo = case_categories.get("missing mojo files", [])
-        if missing_opensees and not missing_mojo:
+        missing_strut = case_categories.get("missing strut files", [])
+        if missing_opensees and not missing_strut:
             lines.append("Missing all Opensees Outputs")
-        elif missing_mojo and not missing_opensees:
+        elif missing_strut and not missing_opensees:
             lines.append("Missing all Mojo Outputs")
         else:
             if missing_opensees:
                 lines.append(f"Missing Opensees outputs: {json.dumps(missing_opensees)}")
-            if missing_mojo:
-                lines.append(f"Missing Mojo outputs: {json.dumps(missing_mojo)}")
+            if missing_strut:
+                lines.append(f"Missing Mojo outputs: {json.dumps(missing_strut)}")
         for category in category_order:
             details = case_categories.get(category)
             if details:
@@ -655,7 +655,7 @@ def main() -> None:
     parser.add_argument(
         "--repeat",
         type=int,
-        default=int(os.getenv("STRUT_BENCH_REPEAT", "3")),
+        default=int(os.getenv("STRUT_BENCH_REPEAT", "1")),
         help="Number of timed repetitions per engine.",
     )
     parser.add_argument(
@@ -672,7 +672,7 @@ def main() -> None:
     parser.add_argument(
         "--warmup",
         type=int,
-        default=int(os.getenv("STRUT_BENCH_WARMUP", "1")),
+        default=int(os.getenv("STRUT_BENCH_WARMUP", "0")),
         help="Warmup runs per engine (not timed).",
     )
     parser.add_argument(
@@ -1672,7 +1672,7 @@ def main() -> None:
                             / case_name
                             / f"{output}_node{node_id}.out"
                         )
-                        mojo_file = (
+                        strut_file = (
                             results_root
                             / "mojo"
                             / case_name
@@ -1683,32 +1683,32 @@ def main() -> None:
                                 f"{case_name}: missing OpenSees output: {ref_file}"
                             )
                             continue
-                        if not mojo_file.exists():
+                        if not strut_file.exists():
                             parity_failures.append(
-                                f"{case_name}: missing Mojo output: {mojo_file}"
+                                f"{case_name}: missing Mojo output: {strut_file}"
                             )
                             continue
                         try:
                             if is_transient:
                                 ref_vals = _load_all_values(ref_file)
-                                mojo_vals = _load_all_values(mojo_file)
+                                strut_vals = _load_all_values(strut_file)
                             else:
-                                ref_vals, mojo_vals = _load_last_comparable_values(
+                                ref_vals, strut_vals = _load_last_comparable_values(
                                     ref_file,
-                                    mojo_file,
+                                    strut_file,
                                     use_last_common_row=use_last_common_row,
                                 )
                         except ValueError as exc:
                             parity_failures.append(f"{case_name}: {exc}")
                             continue
                         if is_transient:
-                            if len(ref_vals) != len(mojo_vals):
+                            if len(ref_vals) != len(strut_vals):
                                 parity_failures.append(
-                                    f"{case_name}: node {node_id} step count mismatch: {len(ref_vals)} != {len(mojo_vals)}"
+                                    f"{case_name}: node {node_id} step count mismatch: {len(ref_vals)} != {len(strut_vals)}"
                                 )
                                 continue
                             for step, (rvec, gvec) in enumerate(
-                                zip(ref_vals, mojo_vals), start=1
+                                zip(ref_vals, strut_vals), start=1
                             ):
                                 ok, errors = _compare_vectors(
                                     rvec, gvec, rtol=rtol, atol=atol
@@ -1721,7 +1721,7 @@ def main() -> None:
                                     break
                         else:
                             ok, errors = _compare_vectors(
-                                ref_vals, mojo_vals, rtol=rtol, atol=atol
+                                ref_vals, strut_vals, rtol=rtol, atol=atol
                             )
                             if not ok:
                                 parity_failures.append(f"{case_name}: node {node_id} mismatch")
@@ -1735,7 +1735,7 @@ def main() -> None:
                             / case_name
                             / f"{output}_ele{elem_id}.out"
                         )
-                        mojo_file = (
+                        strut_file = (
                             results_root
                             / "mojo"
                             / case_name
@@ -1746,32 +1746,32 @@ def main() -> None:
                                 f"{case_name}: missing OpenSees output: {ref_file}"
                             )
                             continue
-                        if not mojo_file.exists():
+                        if not strut_file.exists():
                             parity_failures.append(
-                                f"{case_name}: missing Mojo output: {mojo_file}"
+                                f"{case_name}: missing Mojo output: {strut_file}"
                             )
                             continue
                         try:
                             if is_transient:
                                 ref_vals = _load_all_values(ref_file)
-                                mojo_vals = _load_all_values(mojo_file)
+                                strut_vals = _load_all_values(strut_file)
                             else:
-                                ref_vals, mojo_vals = _load_last_comparable_values(
+                                ref_vals, strut_vals = _load_last_comparable_values(
                                     ref_file,
-                                    mojo_file,
+                                    strut_file,
                                     use_last_common_row=use_last_common_row,
                                 )
                         except ValueError as exc:
                             parity_failures.append(f"{case_name}: {exc}")
                             continue
                         if is_transient:
-                            if len(ref_vals) != len(mojo_vals):
+                            if len(ref_vals) != len(strut_vals):
                                 parity_failures.append(
-                                    f"{case_name}: element {elem_id} step count mismatch: {len(ref_vals)} != {len(mojo_vals)}"
+                                    f"{case_name}: element {elem_id} step count mismatch: {len(ref_vals)} != {len(strut_vals)}"
                                 )
                                 continue
                             for step, (rvec, gvec) in enumerate(
-                                zip(ref_vals, mojo_vals), start=1
+                                zip(ref_vals, strut_vals), start=1
                             ):
                                 ok, errors = _compare_vectors(
                                     rvec, gvec, rtol=rtol, atol=atol
@@ -1784,7 +1784,7 @@ def main() -> None:
                                     break
                         else:
                             ok, errors = _compare_vectors(
-                                ref_vals, mojo_vals, rtol=rtol, atol=atol
+                                ref_vals, strut_vals, rtol=rtol, atol=atol
                             )
                             if not ok:
                                 parity_failures.append(
@@ -1800,7 +1800,7 @@ def main() -> None:
                             / case_name
                             / f"{output}_node{node_id}.out"
                         )
-                        mojo_file = (
+                        strut_file = (
                             results_root
                             / "mojo"
                             / case_name
@@ -1811,32 +1811,32 @@ def main() -> None:
                                 f"{case_name}: missing OpenSees output: {ref_file}"
                             )
                             continue
-                        if not mojo_file.exists():
+                        if not strut_file.exists():
                             parity_failures.append(
-                                f"{case_name}: missing Mojo output: {mojo_file}"
+                                f"{case_name}: missing Mojo output: {strut_file}"
                             )
                             continue
                         try:
                             if is_transient:
                                 ref_vals = _load_all_values(ref_file)
-                                mojo_vals = _load_all_values(mojo_file)
+                                strut_vals = _load_all_values(strut_file)
                             else:
-                                ref_vals, mojo_vals = _load_last_comparable_values(
+                                ref_vals, strut_vals = _load_last_comparable_values(
                                     ref_file,
-                                    mojo_file,
+                                    strut_file,
                                     use_last_common_row=use_last_common_row,
                                 )
                         except ValueError as exc:
                             parity_failures.append(f"{case_name}: {exc}")
                             continue
                         if is_transient:
-                            if len(ref_vals) != len(mojo_vals):
+                            if len(ref_vals) != len(strut_vals):
                                 parity_failures.append(
-                                    f"{case_name}: reaction node {node_id} step count mismatch: {len(ref_vals)} != {len(mojo_vals)}"
+                                    f"{case_name}: reaction node {node_id} step count mismatch: {len(ref_vals)} != {len(strut_vals)}"
                                 )
                                 continue
                             for step, (rvec, gvec) in enumerate(
-                                zip(ref_vals, mojo_vals), start=1
+                                zip(ref_vals, strut_vals), start=1
                             ):
                                 ok, errors = _compare_vectors(
                                     rvec, gvec, rtol=rtol, atol=atol
@@ -1849,7 +1849,7 @@ def main() -> None:
                                     break
                         else:
                             ok, errors = _compare_vectors(
-                                ref_vals, mojo_vals, rtol=rtol, atol=atol
+                                ref_vals, strut_vals, rtol=rtol, atol=atol
                             )
                             if not ok:
                                 parity_failures.append(
@@ -1866,7 +1866,7 @@ def main() -> None:
                         / case_name
                         / f"{output}_i{i_node}_j{j_node}.out"
                     )
-                    mojo_file = (
+                    strut_file = (
                         results_root
                         / "mojo"
                         / case_name
@@ -1877,32 +1877,32 @@ def main() -> None:
                             f"{case_name}: missing OpenSees output: {ref_file}"
                         )
                         continue
-                    if not mojo_file.exists():
+                    if not strut_file.exists():
                         parity_failures.append(
-                            f"{case_name}: missing Mojo output: {mojo_file}"
+                            f"{case_name}: missing Mojo output: {strut_file}"
                         )
                         continue
                     try:
                         if is_transient:
                             ref_vals = _load_all_values(ref_file)
-                            mojo_vals = _load_all_values(mojo_file)
+                            strut_vals = _load_all_values(strut_file)
                         else:
-                            ref_vals, mojo_vals = _load_last_comparable_values(
+                            ref_vals, strut_vals = _load_last_comparable_values(
                                 ref_file,
-                                mojo_file,
+                                strut_file,
                                 use_last_common_row=use_last_common_row,
                             )
                     except ValueError as exc:
                         parity_failures.append(f"{case_name}: {exc}")
                         continue
                     if is_transient:
-                        if len(ref_vals) != len(mojo_vals):
+                        if len(ref_vals) != len(strut_vals):
                             parity_failures.append(
-                                f"{case_name}: drift i{i_node}-j{j_node} step count mismatch: {len(ref_vals)} != {len(mojo_vals)}"
+                                f"{case_name}: drift i{i_node}-j{j_node} step count mismatch: {len(ref_vals)} != {len(strut_vals)}"
                             )
                             continue
                         for step, (rvec, gvec) in enumerate(
-                            zip(ref_vals, mojo_vals), start=1
+                            zip(ref_vals, strut_vals), start=1
                         ):
                             ok, errors = _compare_vectors(
                                 rvec, gvec, rtol=rtol, atol=atol
@@ -1915,7 +1915,7 @@ def main() -> None:
                                 break
                     else:
                         ok, errors = _compare_vectors(
-                            ref_vals, mojo_vals, rtol=rtol, atol=atol
+                            ref_vals, strut_vals, rtol=rtol, atol=atol
                         )
                         if not ok:
                             parity_failures.append(
@@ -1931,7 +1931,7 @@ def main() -> None:
                             / case_name
                             / f"{output}_ele{elem_id}.out"
                         )
-                        mojo_file = (
+                        strut_file = (
                             results_root
                             / "mojo"
                             / case_name
@@ -1942,23 +1942,23 @@ def main() -> None:
                                 f"{case_name}: missing OpenSees output: {ref_file}"
                             )
                             continue
-                        if not mojo_file.exists():
+                        if not strut_file.exists():
                             parity_failures.append(
-                                f"{case_name}: missing Mojo output: {mojo_file}"
+                                f"{case_name}: missing Mojo output: {strut_file}"
                             )
                             continue
                         try:
                             ref_vals = _load_all_values(ref_file)
-                            mojo_vals = _load_all_values(mojo_file)
+                            strut_vals = _load_all_values(strut_file)
                         except ValueError as exc:
                             parity_failures.append(f"{case_name}: {exc}")
                             continue
-                        if len(ref_vals) != len(mojo_vals):
+                        if len(ref_vals) != len(strut_vals):
                             parity_failures.append(
-                                f"{case_name}: envelope element {elem_id} row count mismatch: {len(ref_vals)} != {len(mojo_vals)}"
+                                f"{case_name}: envelope element {elem_id} row count mismatch: {len(ref_vals)} != {len(strut_vals)}"
                             )
                             continue
-                        for row, (rvec, gvec) in enumerate(zip(ref_vals, mojo_vals), start=1):
+                        for row, (rvec, gvec) in enumerate(zip(ref_vals, strut_vals), start=1):
                             ok, errors = _compare_vectors(
                                 rvec, gvec, rtol=rtol, atol=atol
                             )
@@ -1991,7 +1991,7 @@ def main() -> None:
                                 / case_name
                                 / f"{output}_ele{elem_id}_sec{sec_no}.out"
                             )
-                            mojo_file = (
+                            strut_file = (
                                 results_root
                                 / "mojo"
                                 / case_name
@@ -2002,32 +2002,32 @@ def main() -> None:
                                     f"{case_name}: missing OpenSees output: {ref_file}"
                                 )
                                 continue
-                            if not mojo_file.exists():
+                            if not strut_file.exists():
                                 parity_failures.append(
-                                    f"{case_name}: missing Mojo output: {mojo_file}"
+                                    f"{case_name}: missing Mojo output: {strut_file}"
                                 )
                                 continue
                             try:
                                 if is_transient:
                                     ref_vals = _load_all_values(ref_file)
-                                    mojo_vals = _load_all_values(mojo_file)
+                                    strut_vals = _load_all_values(strut_file)
                                 else:
-                                    ref_vals, mojo_vals = _load_last_comparable_values(
+                                    ref_vals, strut_vals = _load_last_comparable_values(
                                         ref_file,
-                                        mojo_file,
+                                        strut_file,
                                         use_last_common_row=use_last_common_row,
                                     )
                             except ValueError as exc:
                                 parity_failures.append(f"{case_name}: {exc}")
                                 continue
                             if is_transient:
-                                if len(ref_vals) != len(mojo_vals):
+                                if len(ref_vals) != len(strut_vals):
                                     parity_failures.append(
-                                        f"{case_name}: {rec_type} element {elem_id} section {sec_no} step count mismatch: {len(ref_vals)} != {len(mojo_vals)}"
+                                        f"{case_name}: {rec_type} element {elem_id} section {sec_no} step count mismatch: {len(ref_vals)} != {len(strut_vals)}"
                                     )
                                     continue
                                 for step, (rvec, gvec) in enumerate(
-                                    zip(ref_vals, mojo_vals), start=1
+                                    zip(ref_vals, strut_vals), start=1
                                 ):
                                     ok, errors = _compare_vectors(
                                         rvec, gvec, rtol=rtol, atol=atol
@@ -2040,7 +2040,7 @@ def main() -> None:
                                         break
                             else:
                                 ok, errors = _compare_vectors(
-                                    ref_vals, mojo_vals, rtol=rtol, atol=atol
+                                    ref_vals, strut_vals, rtol=rtol, atol=atol
                                 )
                                 if not ok:
                                     parity_failures.append(
@@ -2052,26 +2052,26 @@ def main() -> None:
                     eig_ref = (
                         results_root / "opensees" / case_name / f"{output}_eigenvalues.out"
                     )
-                    eig_mojo = results_root / "mojo" / case_name / f"{output}_eigenvalues.out"
+                    eig_strut = results_root / "mojo" / case_name / f"{output}_eigenvalues.out"
                     if not eig_ref.exists():
                         parity_failures.append(
                             f"{case_name}: missing OpenSees output: {eig_ref}"
                         )
                         continue
-                    if not eig_mojo.exists():
+                    if not eig_strut.exists():
                         parity_failures.append(
-                            f"{case_name}: missing Mojo output: {eig_mojo}"
+                            f"{case_name}: missing Mojo output: {eig_strut}"
                         )
                         continue
                     try:
                         ref_rows = _load_all_values(eig_ref)
-                        mojo_rows = _load_all_values(eig_mojo)
+                        strut_rows = _load_all_values(eig_strut)
                     except ValueError as exc:
                         parity_failures.append(f"{case_name}: {exc}")
                         continue
                     ref_vals = [row[0] for row in ref_rows]
-                    mojo_vals = [row[0] for row in mojo_rows]
-                    ok, errors = _compare_vectors(ref_vals, mojo_vals, rtol=rtol, atol=atol)
+                    strut_vals = [row[0] for row in strut_rows]
+                    ok, errors = _compare_vectors(ref_vals, strut_vals, rtol=rtol, atol=atol)
                     if not ok:
                         parity_failures.append(f"{case_name}: modal eigenvalue mismatch")
                         parity_failures.extend([f"  {err}" for err in errors])
@@ -2084,7 +2084,7 @@ def main() -> None:
                                 / case_name
                                 / f"{output}_mode{int(mode_no)}_node{int(node_id)}.out"
                             )
-                            mojo_file = (
+                            strut_file = (
                                 results_root
                                 / "mojo"
                                 / case_name
@@ -2095,19 +2095,19 @@ def main() -> None:
                                     f"{case_name}: missing OpenSees output: {ref_file}"
                                 )
                                 continue
-                            if not mojo_file.exists():
+                            if not strut_file.exists():
                                 parity_failures.append(
-                                    f"{case_name}: missing Mojo output: {mojo_file}"
+                                    f"{case_name}: missing Mojo output: {strut_file}"
                                 )
                                 continue
                             try:
                                 ref_vec = _load_last_values(ref_file)
-                                mojo_vec = _load_last_values(mojo_file)
+                                strut_vec = _load_last_values(strut_file)
                             except ValueError as exc:
                                 parity_failures.append(f"{case_name}: {exc}")
                                 continue
                             ok, errors = _compare_mode_shape_vectors(
-                                ref_vec, mojo_vec, rtol=rtol, atol=atol
+                                ref_vec, strut_vec, rtol=rtol, atol=atol
                             )
                             if not ok:
                                 parity_failures.append(

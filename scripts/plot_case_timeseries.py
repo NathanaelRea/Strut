@@ -40,13 +40,13 @@ def _max_abs(values):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Plot reference vs mojo time-series output for a parity case."
+        description="Plot reference vs strut time-series output for a parity case."
     )
     parser.add_argument("--case", required=True, help="validation case directory name")
     parser.add_argument(
         "--series-file",
         required=True,
-        help="output filename inside reference/mojo (e.g. node_disp_node4.out)",
+        help="output filename inside reference/strut outputs (e.g. node_disp_node4.out)",
     )
     parser.add_argument(
         "--component",
@@ -72,22 +72,22 @@ def main():
     is_transient = str(analysis.get("type", "")).startswith("transient")
 
     ref_path = case_root / "reference" / args.series_file
-    mojo_path = case_root / "mojo" / args.series_file
+    strut_path = case_root / "mojo" / args.series_file
     if not ref_path.exists():
         raise SystemExit(f"missing reference file: {ref_path}")
-    if not mojo_path.exists():
-        raise SystemExit(f"missing mojo file: {mojo_path}")
+    if not strut_path.exists():
+        raise SystemExit(f"missing strut file: {strut_path}")
 
     ref_rows = _parse_rows(ref_path)
-    mojo_rows = _parse_rows(mojo_path)
-    n = min(len(ref_rows), len(mojo_rows))
-    if len(ref_rows) != len(mojo_rows):
+    strut_rows = _parse_rows(strut_path)
+    n = min(len(ref_rows), len(strut_rows))
+    if len(ref_rows) != len(strut_rows):
         print(
-            f"warning: row count mismatch ref={len(ref_rows)} mojo={len(mojo_rows)}; plotting first {n}"
+            f"warning: row count mismatch ref={len(ref_rows)} strut={len(strut_rows)}; plotting first {n}"
         )
 
     ref_vals = _series(ref_rows[:n], args.component)
-    mojo_vals = _series(mojo_rows[:n], args.component)
+    strut_vals = _series(strut_rows[:n], args.component)
 
     if is_transient:
         x_vals = [dt * (i + 1) for i in range(n)]
@@ -96,23 +96,23 @@ def main():
         x_vals = [i + 1 for i in range(n)]
         x_label = "Step"
 
-    diffs = [g - r for r, g in zip(ref_vals, mojo_vals)]
+    diffs = [g - r for r, g in zip(ref_vals, strut_vals)]
     rmse = (sum(d * d for d in diffs) / max(len(diffs), 1)) ** 0.5
     ref_peak = _max_abs(ref_vals)
-    mojo_peak = _max_abs(mojo_vals)
-    peak_abs_err = abs(mojo_peak - ref_peak)
+    strut_peak = _max_abs(strut_vals)
+    peak_abs_err = abs(strut_peak - ref_peak)
     peak_rel_err = peak_abs_err / max(ref_peak, 1.0e-30)
 
     single_sample = len(x_vals) == 1
     ref_style = {"label": "OpenSees reference", "linewidth": 2.0}
-    mojo_style = {"label": "Strut mojo", "linewidth": 1.6, "linestyle": "--"}
+    strut_style = {"label": "Strut", "linewidth": 1.6, "linestyle": "--"}
     if single_sample:
         ref_style.update({"marker": "o", "markersize": 6.0})
-        mojo_style.update({"marker": "x", "markersize": 6.0})
+        strut_style.update({"marker": "x", "markersize": 6.0})
 
     fig, ax = plt.subplots(figsize=(9, 4.8))
     ax.plot(x_vals, ref_vals, **ref_style)
-    ax.plot(x_vals, mojo_vals, **mojo_style)
+    ax.plot(x_vals, strut_vals, **strut_style)
     ax.set_xlabel(x_label)
     ax.set_ylabel(f"Component {args.component}")
     ax.set_title(f"{args.case} :: {args.series_file}")
@@ -133,7 +133,7 @@ def main():
     print(f"saved plot: {out_path}")
     print(f"rows compared: {n}")
     print(f"reference peak |max|: {ref_peak:.6e}")
-    print(f"mojo peak |max|:      {mojo_peak:.6e}")
+    print(f"strut peak |max|:     {strut_peak:.6e}")
     print(f"peak abs error:       {peak_abs_err:.6e}")
     print(f"peak rel error:       {peak_rel_err:.6e}")
     print(f"RMSE:                 {rmse:.6e}")

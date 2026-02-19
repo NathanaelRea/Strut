@@ -11,10 +11,10 @@ import math
 from typing import Dict, List, Optional, Tuple
 
 try:
-    from .plot_constants import MOJO_ORANGE
+    from .plot_constants import MOJO_ORANGE, OPENSEES_BLUE
 except ImportError:
     # Allow running as a standalone script.
-    from plot_constants import MOJO_ORANGE
+    from plot_constants import MOJO_ORANGE, OPENSEES_BLUE
 
 try:
     import matplotlib.pyplot as plt
@@ -94,6 +94,37 @@ def collect_recent_cases(
         engines[engine] = values_us
         errors[engine] = errs_us
     return names, engines, errors
+
+
+def _finite_positive(values: List[float]) -> List[float]:
+    return [
+        float(v)
+        for v in values
+        if isinstance(v, (int, float)) and math.isfinite(float(v)) and float(v) > 0.0
+    ]
+
+
+def _recent_should_use_log_scale(
+    engines: Dict[str, List[float]],
+    mode: str,
+    ratio_threshold: float,
+) -> bool:
+    if mode == "off":
+        return False
+    if mode == "on":
+        return True
+    if mode != "auto":
+        return False
+    positive: List[float] = []
+    for values in engines.values():
+        positive.extend(_finite_positive(values))
+    if len(positive) < 2:
+        return False
+    lo = min(positive)
+    hi = max(positive)
+    if lo <= 0.0:
+        return False
+    return (hi / lo) >= ratio_threshold
 
 
 def _count_constrained_dofs(node: dict, ndf: int) -> int:
@@ -391,6 +422,7 @@ def plot_recent_bar(
     title: str = "Recent benchmark (analysis time per case)",
     unit_label: str = "us",
     scale: float = 1.0,
+    y_scale: str = "linear",
 ):
     fig, ax = plt.subplots(figsize=(10, 5))
     if group_spans:
@@ -429,9 +461,7 @@ def plot_recent_bar(
         group_centers = []
     width = 0.38
     opensees_vals = [v * scale for v in engines.get("opensees", [])]
-    mojo_vals = [v * scale for v in engines.get("mojo", [])]
-    opensees_err = errors.get("opensees", [])
-    mojo_err = errors.get("mojo", [])
+    strut_vals = [v * scale for v in engines.get("mojo", [])]
 
     ax.bar(
         [i - width / 2 for i in x],
@@ -441,14 +471,18 @@ def plot_recent_bar(
     )
     ax.bar(
         [i + width / 2 for i in x],
-        mojo_vals,
+        strut_vals,
         width,
-        label="Mojo",
+        label="Strut",
         color=MOJO_ORANGE,
     )
 
     ax.set_ylabel(f"Analysis time ({unit_label})")
     ax.set_title(title)
+    if y_scale == "log":
+        ax.set_yscale("log")
+    elif y_scale != "linear":
+        raise ValueError(f"unsupported y scale: {y_scale}")
     ax.set_xticks(list(x))
     display_names = [_truncate_label(name, label_max_len) for name in names]
     ax.set_xticklabels(display_names, rotation=45, ha="right", fontsize=8)
@@ -485,9 +519,20 @@ def plot_archive_trend(
     fig, ax = plt.subplots(figsize=(10, 4))
     if timestamps:
         opensees_means = means.get("opensees", [])
-        mojo_means = means.get("mojo", [])
+        strut_means = means.get("mojo", [])
         opensees_stds = stds.get("opensees", [])
-        mojo_stds = stds.get("mojo", [])
+        strut_stds = stds.get("mojo", [])
+        # Draw both series as filled circles and distinguish by color only.
+        ax.errorbar(
+            timestamps,
+            [v * scale for v in strut_means],
+            yerr=[v * scale for v in strut_stds],
+            marker="o",
+            linestyle="none",
+            label="Strut",
+            color=MOJO_ORANGE,
+            capsize=3,
+        )
         ax.errorbar(
             timestamps,
             [v * scale for v in opensees_means],
@@ -495,16 +540,7 @@ def plot_archive_trend(
             marker="o",
             linestyle="none",
             label="OpenSees",
-            capsize=3,
-        )
-        ax.errorbar(
-            timestamps,
-            [v * scale for v in mojo_means],
-            yerr=[v * scale for v in mojo_stds],
-            marker="o",
-            linestyle="none",
-            label="Mojo",
-            color=MOJO_ORANGE,
+            color=OPENSEES_BLUE,
             capsize=3,
         )
 
@@ -564,6 +600,21 @@ def main() -> None:
         type=int,
         default=300,
         help="Free-DOF threshold to split medium benchmarks (default: 300).",
+    )
+    parser.add_argument(
+        "--recent-log-scale",
+        choices=("off", "auto", "on"),
+        default="auto",
+        help="Use log-scale y-axis on recent case bar charts (default: auto).",
+    )
+    parser.add_argument(
+        "--recent-log-ratio-threshold",
+        type=float,
+        default=100.0,
+        help=(
+            "Enable recent log scale in auto mode when max/min positive timing ratio "
+            "reaches this threshold (default: 100)."
+        ),
     )
     parser.add_argument(
         "--open",
@@ -638,6 +689,31 @@ def main() -> None:
     medium_names, medium_engines, medium_errors, medium_spans = _prepare(medium_indices)
     large_names, large_engines, large_errors, large_spans = _prepare(large_indices)
 
+    if args.recent_log_scale == "auto":
+        small_log = False
+        medium_log = _recent_should_use_log_scale(
+            medium_engines,
+            "auto",
+            args.recent_log_ratio_threshold,
+        )
+        large_log = False
+    else:
+        small_log = _recent_should_use_log_scale(
+            small_engines,
+            args.recent_log_scale,
+            args.recent_log_ratio_threshold,
+        )
+        medium_log = _recent_should_use_log_scale(
+            medium_engines,
+            args.recent_log_scale,
+            args.recent_log_ratio_threshold,
+        )
+        large_log = _recent_should_use_log_scale(
+            large_engines,
+            args.recent_log_scale,
+            args.recent_log_ratio_threshold,
+        )
+
     with PdfPages(output_path) as pdf:
         if archive_dir.exists():
             archive_min_ts = archive_min_timestamp(archive_dir)
@@ -678,20 +754,25 @@ def main() -> None:
                 small_spans,
                 group_gap=args.group_gap,
                 title="Recent benchmark (small cases)",
+                y_scale="log" if small_log else "linear",
             )
             pdf.savefig(fig)
             plt.close(fig)
 
         if medium_names:
+            medium_title = "Recent benchmark (medium cases)"
+            if medium_log:
+                medium_title += " [log y]"
             fig = plot_recent_bar(
                 medium_names,
                 medium_engines,
                 medium_errors,
                 medium_spans,
                 group_gap=args.group_gap,
-                title="Recent benchmark (medium cases)",
+                title=medium_title,
                 unit_label="ms",
                 scale=1.0 / 1e3,
+                y_scale="log" if medium_log else "linear",
             )
             pdf.savefig(fig)
             plt.close(fig)
@@ -704,6 +785,7 @@ def main() -> None:
                 large_spans,
                 group_gap=args.group_gap,
                 title="Recent benchmark (large cases)",
+                y_scale="log" if large_log else "linear",
             )
             pdf.savefig(fig)
             plt.close(fig)

@@ -25,6 +25,14 @@ def run(cmd: List[str]) -> None:
     subprocess.check_call(cmd)
 
 
+def _engine_display_name(engine: str) -> str:
+    if engine == "mojo":
+        return "Strut"
+    if engine == "opensees":
+        return "OpenSees"
+    return engine
+
+
 def material_definitions() -> List[dict]:
     return [
         {
@@ -459,7 +467,14 @@ def plot_material(
         ys = [pt[1] for pt in points]
         line_color = engine_colors.get(engine, MOJO_ORANGE)
         line_style = engine_linestyles.get(engine, "-")
-        ax.plot(xs, ys, linestyle=line_style, color=line_color, label=engine, zorder=2)
+        ax.plot(
+            xs,
+            ys,
+            linestyle=line_style,
+            color=line_color,
+            label=_engine_display_name(engine),
+            zorder=2,
+        )
     ax.axhline(0.0, color="#777777", linewidth=0.8)
     ax.axvline(0.0, color="#777777", linewidth=0.8)
     ax.set_xlabel("strain (-)")
@@ -503,7 +518,7 @@ def plot_hysteresis(
             stresses,
             linestyle=engine_linestyles.get(engine, "-"),
             color=engine_colors.get(engine, MOJO_ORANGE),
-            label=engine,
+            label=_engine_display_name(engine),
         )
     ax.axhline(0.0, color="#777777", linewidth=0.8)
     ax.axvline(0.0, color="#777777", linewidth=0.8)
@@ -651,17 +666,17 @@ def main() -> None:
                         msg = f"  {direction}: missing data"
                         print(_color(msg, "33", not args.no_color))
                         continue
-                    m_eps, m_sig = curve_data["mojo"][direction]
+                    strut_eps, strut_sig = curve_data["mojo"][direction]
                     o_eps, o_sig = curve_data["opensees"][direction]
-                    m_bbox = _bbox(m_eps, m_sig)
+                    strut_bbox = _bbox(strut_eps, strut_sig)
                     o_bbox = _bbox(o_eps, o_sig)
                     labels = ["min_eps", "max_eps", "min_sig", "max_sig"]
                     diffs = []
                     ok = True
-                    for name, m_val, o_val in zip(labels, m_bbox, o_bbox):
-                        if not _isclose(m_val, o_val, args.bbox_rtol, args.bbox_atol):
+                    for name, strut_val, o_val in zip(labels, strut_bbox, o_bbox):
+                        if not _isclose(strut_val, o_val, args.bbox_rtol, args.bbox_atol):
                             ok = False
-                            diffs.append(f"{name}: mojo={m_val:.6e} open={o_val:.6e}")
+                            diffs.append(f"{name}: strut={strut_val:.6e} open={o_val:.6e}")
                     if ok:
                         msg = f"  {direction}: OK"
                         print(_color(msg, "32", not args.no_color))
@@ -671,7 +686,7 @@ def main() -> None:
                         for diff in diffs:
                             print(f"    {diff}")
             else:
-                print(f"{material_name} bbox: skip (need both mojo and opensees)")
+                print(f"{material_name} bbox: skip (need both strut and opensees)")
 
             units = str(material.get("units", ""))
             plot_path, fig = plot_material(material_name, curve_data, material_out, units)
@@ -720,13 +735,15 @@ def main() -> None:
                             args.skip_run,
                         )
                     except subprocess.CalledProcessError as exc:
+                        display_engine = _engine_display_name(engine)
                         print(
-                            f"{material_name} hysteresis: {engine} run failed ({exc.returncode}); skipping"
+                            f"{material_name} hysteresis: {display_engine} run failed ({exc.returncode}); skipping"
                         )
                         continue
                     except ValueError:
+                        display_engine = _engine_display_name(engine)
                         print(
-                            f"{material_name} hysteresis: {engine} produced empty outputs; skipping"
+                            f"{material_name} hysteresis: {display_engine} produced empty outputs; skipping"
                         )
                         continue
                     hyst_data[engine] = (strains, stresses)
