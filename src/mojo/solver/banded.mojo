@@ -1,10 +1,6 @@
 from collections import List
 from os import abort
-from python import PythonObject
-
-from solver.dof import node_dof_index
 from solver.run_case.input_types import ElementInput
-from strut_io import py_len
 
 
 fn banded_matrix(n: Int, bw: Int) -> List[List[Float64]]:
@@ -81,45 +77,6 @@ fn banded_gaussian_elimination(
         i -= 1
 
     return x^
-
-
-fn estimate_bandwidth(
-    elements: PythonObject,
-    id_to_index: List[Int],
-    ndf: Int,
-    free_index: List[Int],
-) raises -> Int:
-    var max_bw = 0
-    var elem_count = py_len(elements)
-    for e in range(elem_count):
-        var elem = elements[e]
-        var elem_nodes = elem["nodes"]
-        var node_len = py_len(elem_nodes)
-        if node_len == 0:
-            continue
-        var elem_dofs: List[Int] = []
-        for i in range(node_len):
-            var node_id = Int(elem_nodes[i])
-            if node_id >= len(id_to_index):
-                abort("element node id out of range")
-            var node_idx = id_to_index[node_id]
-            if node_idx < 0:
-                abort("element node not found")
-            for dof in range(1, ndf + 1):
-                var dof_idx = node_dof_index(node_idx, dof, ndf)
-                var free_idx = free_index[dof_idx]
-                if free_idx >= 0:
-                    elem_dofs.append(free_idx)
-        var dof_len = len(elem_dofs)
-        for a in range(dof_len):
-            var ia = elem_dofs[a]
-            for b in range(a + 1, dof_len):
-                var diff = ia - elem_dofs[b]
-                if diff < 0:
-                    diff = -diff
-                if diff > max_bw:
-                    max_bw = diff
-    return max_bw
 
 
 fn _elem_dof(elem: ElementInput, idx: Int) -> Int:

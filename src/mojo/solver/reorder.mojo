@@ -1,9 +1,7 @@
 from collections import List
 from os import abort
-from python import PythonObject
 
 from solver.run_case.input_types import ElementInput
-from strut_io import py_len
 
 
 fn _append_unique(mut items: List[Int], value: Int):
@@ -11,46 +9,6 @@ fn _append_unique(mut items: List[Int], value: Int):
         if items[i] == value:
             return
     items.append(value)
-
-
-fn build_node_adjacency(
-    elements: PythonObject,
-    node_count: Int,
-    id_to_index: List[Int],
-) raises -> List[List[Int]]:
-    var adjacency: List[List[Int]] = []
-    for _ in range(node_count):
-        var row: List[Int] = []
-        row.resize(0, 0)
-        adjacency.append(row^)
-
-    var elem_count = py_len(elements)
-    for e in range(elem_count):
-        var elem = elements[e]
-        var elem_nodes = elem["nodes"]
-        var node_len = py_len(elem_nodes)
-        if node_len < 2:
-            continue
-        var idxs: List[Int] = []
-        idxs.resize(node_len, 0)
-        for i in range(node_len):
-            var node_id = Int(elem_nodes[i])
-            if node_id >= len(id_to_index):
-                abort("element node id out of range")
-            var idx = id_to_index[node_id]
-            if idx < 0 or idx >= node_count:
-                abort("element node not found")
-            idxs[i] = idx
-        for i in range(node_len):
-            var a = idxs[i]
-            for j in range(i + 1, node_len):
-                var b = idxs[j]
-                if a == b:
-                    continue
-                _append_unique(adjacency[a], b)
-                _append_unique(adjacency[b], a)
-
-    return adjacency^
 
 
 fn _elem_node_index(elem: ElementInput, idx: Int) -> Int:
