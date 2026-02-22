@@ -4,7 +4,7 @@ from os import abort
 from python import Python
 from sections import FiberCell, FiberSection2dDef
 
-from linalg import gaussian_elimination
+from linalg import lu_factorize_into, lu_solve_into
 from solver.assembly import assemble_global_stiffness_typed, assemble_internal_forces_typed
 from solver.dof import node_dof_index, require_dof_in_range
 from solver.profile import _append_event
@@ -31,6 +31,177 @@ from solver.run_case.helpers import (
     _update_envelope,
 )
 from tag_types import RecorderTypeTag
+
+
+@always_inline
+fn _copy_vector_simd4(mut dst: List[Float64], src: List[Float64]):
+    if len(dst) != len(src):
+        abort("vector size mismatch in _copy_vector_simd4")
+    var n = len(dst)
+    var i = 0
+    while i + 3 < n:
+        var chunk = SIMD[DType.float64, 4](src[i], src[i + 1], src[i + 2], src[i + 3])
+        dst[i] = chunk[0]
+        dst[i + 1] = chunk[1]
+        dst[i + 2] = chunk[2]
+        dst[i + 3] = chunk[3]
+        i += 4
+    while i < n:
+        dst[i] = src[i]
+        i += 1
+
+
+@always_inline
+fn _copy_scaled_vector_simd4(mut dst: List[Float64], src: List[Float64], scale: Float64):
+    if len(dst) != len(src):
+        abort("vector size mismatch in _copy_scaled_vector_simd4")
+    var n = len(dst)
+    var i = 0
+    var scale_vec = SIMD[DType.float64, 4](scale)
+    while i + 3 < n:
+        var chunk = SIMD[DType.float64, 4](src[i], src[i + 1], src[i + 2], src[i + 3])
+        chunk = chunk * scale_vec
+        dst[i] = chunk[0]
+        dst[i + 1] = chunk[1]
+        dst[i + 2] = chunk[2]
+        dst[i + 3] = chunk[3]
+        i += 4
+    while i < n:
+        dst[i] = src[i] * scale
+        i += 1
+
+
+@always_inline
+fn _dot_row_simd4(row: List[Float64], vec: List[Float64], count: Int) -> Float64:
+    var sum = 0.0
+    var i = 0
+    while i + 3 < count:
+        var a = SIMD[DType.float64, 4](row[i], row[i + 1], row[i + 2], row[i + 3])
+        var b = SIMD[DType.float64, 4](vec[i], vec[i + 1], vec[i + 2], vec[i + 3])
+        sum += (a * b).reduce_add()
+        i += 4
+    while i < count:
+        sum += row[i] * vec[i]
+        i += 1
+    return sum
+
+
+@always_inline
+fn _build_effective_rhs_newmark_simd4(
+    free: List[Int],
+    u: List[Float64],
+    v: List[Float64],
+    a: List[Float64],
+    F_ext_step: List[Float64],
+    M_f: List[Float64],
+    a0: Float64,
+    a1: Float64,
+    a2: Float64,
+    a3: Float64,
+    a4: Float64,
+    a5: Float64,
+    mut P_ext_f: List[Float64],
+    mut C_term: List[Float64],
+    mut P_eff: List[Float64],
+):
+    var n = len(free)
+    var i = 0
+    var a0_vec = SIMD[DType.float64, 4](a0)
+    var a1_vec = SIMD[DType.float64, 4](a1)
+    var a2_vec = SIMD[DType.float64, 4](a2)
+    var a3_vec = SIMD[DType.float64, 4](a3)
+    var a4_vec = SIMD[DType.float64, 4](a4)
+    var a5_vec = SIMD[DType.float64, 4](a5)
+    while i + 3 < n:
+        var idx0 = free[i]
+        var idx1 = free[i + 1]
+        var idx2 = free[i + 2]
+        var idx3 = free[i + 3]
+        var u_vec = SIMD[DType.float64, 4](u[idx0], u[idx1], u[idx2], u[idx3])
+        var v_vec = SIMD[DType.float64, 4](v[idx0], v[idx1], v[idx2], v[idx3])
+        var a_vec = SIMD[DType.float64, 4](a[idx0], a[idx1], a[idx2], a[idx3])
+        var c_vec = a1_vec * u_vec + a4_vec * v_vec + a5_vec * a_vec
+        var p_ext_vec = SIMD[DType.float64, 4](
+            F_ext_step[idx0], F_ext_step[idx1], F_ext_step[idx2], F_ext_step[idx3]
+        )
+        var m_vec = SIMD[DType.float64, 4](M_f[i], M_f[i + 1], M_f[i + 2], M_f[i + 3])
+        var p_eff_vec = p_ext_vec + m_vec * (a0_vec * u_vec + a2_vec * v_vec + a3_vec * a_vec)
+        P_ext_f[i] = p_ext_vec[0]
+        P_ext_f[i + 1] = p_ext_vec[1]
+        P_ext_f[i + 2] = p_ext_vec[2]
+        P_ext_f[i + 3] = p_ext_vec[3]
+        C_term[i] = c_vec[0]
+        C_term[i + 1] = c_vec[1]
+        C_term[i + 2] = c_vec[2]
+        C_term[i + 3] = c_vec[3]
+        P_eff[i] = p_eff_vec[0]
+        P_eff[i + 1] = p_eff_vec[1]
+        P_eff[i + 2] = p_eff_vec[2]
+        P_eff[i + 3] = p_eff_vec[3]
+        i += 4
+    while i < n:
+        var idx = free[i]
+        P_ext_f[i] = F_ext_step[idx]
+        C_term[i] = a1 * u[idx] + a4 * v[idx] + a5 * a[idx]
+        P_eff[i] = P_ext_f[i] + M_f[i] * (a0 * u[idx] + a2 * v[idx] + a3 * a[idx])
+        i += 1
+
+
+@always_inline
+fn _update_newmark_state_from_solution_simd4(
+    free: List[Int],
+    mut u: List[Float64],
+    mut v: List[Float64],
+    mut a: List[Float64],
+    u_f: List[Float64],
+    a0: Float64,
+    a2: Float64,
+    a3: Float64,
+    gamma: Float64,
+    dt: Float64,
+):
+    var n = len(free)
+    var i = 0
+    var a0_vec = SIMD[DType.float64, 4](a0)
+    var a2_vec = SIMD[DType.float64, 4](a2)
+    var a3_vec = SIMD[DType.float64, 4](a3)
+    var gamma_vec = SIMD[DType.float64, 4](gamma)
+    var one_minus_gamma_vec = SIMD[DType.float64, 4](1.0 - gamma)
+    var dt_vec = SIMD[DType.float64, 4](dt)
+    while i + 3 < n:
+        var idx0 = free[i]
+        var idx1 = free[i + 1]
+        var idx2 = free[i + 2]
+        var idx3 = free[i + 3]
+        var u_old = SIMD[DType.float64, 4](u[idx0], u[idx1], u[idx2], u[idx3])
+        var v_old = SIMD[DType.float64, 4](v[idx0], v[idx1], v[idx2], v[idx3])
+        var a_old = SIMD[DType.float64, 4](a[idx0], a[idx1], a[idx2], a[idx3])
+        var u_next = SIMD[DType.float64, 4](u_f[i], u_f[i + 1], u_f[i + 2], u_f[i + 3])
+        var a_next = a0_vec * (u_next - u_old) - a2_vec * v_old - a3_vec * a_old
+        var v_next = v_old + dt_vec * (one_minus_gamma_vec * a_old + gamma_vec * a_next)
+        u[idx0] = u_next[0]
+        u[idx1] = u_next[1]
+        u[idx2] = u_next[2]
+        u[idx3] = u_next[3]
+        v[idx0] = v_next[0]
+        v[idx1] = v_next[1]
+        v[idx2] = v_next[2]
+        v[idx3] = v_next[3]
+        a[idx0] = a_next[0]
+        a[idx1] = a_next[1]
+        a[idx2] = a_next[2]
+        a[idx3] = a_next[3]
+        i += 4
+    while i < n:
+        var idx = free[i]
+        var u_next = u_f[i]
+        var a_next = a0 * (u_next - u[idx]) - a2 * v[idx] - a3 * a[idx]
+        var v_next = v[idx] + dt * ((1.0 - gamma) * a[idx] + gamma * a_next)
+        u[idx] = u_next
+        v[idx] = v_next
+        a[idx] = a_next
+        i += 1
+
 
 fn run_transient_linear(
     analysis: AnalysisInput,
@@ -106,6 +277,11 @@ fn run_transient_linear(
             abort("UniformExcitation direction out of range")
         if uniform_accel_ts_index < 0:
             abort("UniformExcitation missing accel time_series")
+    var uniform_excitation_dofs: List[Int] = []
+    if pattern_type == "UniformExcitation":
+        for i in range(total_dofs):
+            if (i % ndf) + 1 == uniform_excitation_direction:
+                uniform_excitation_dofs.append(i)
     var integrator_type = analysis.integrator_type
     if integrator_type == "":
         integrator_type = "Newmark"
@@ -221,6 +397,24 @@ fn run_transient_linear(
         for j in range(free_count):
             K_eff[i][j] = K_ff[i][j] + a1 * C_ff[i][j]
         K_eff[i][i] += a0 * M_f[i]
+    var K_lu: List[List[Float64]] = []
+    for i in range(free_count):
+        var row_lu: List[Float64] = []
+        row_lu.resize(free_count, 0.0)
+        K_lu.append(row_lu^)
+        for j in range(free_count):
+            K_lu[i][j] = K_eff[i][j]
+    var lu_pivots: List[Int] = []
+    lu_pivots.resize(free_count, 0)
+    if do_profile:
+        var t_fac_start = Int(time.perf_counter_ns())
+        var fac_start_us = (t_fac_start - t0) // 1000
+        _append_event(events, events_need_comma, "O", frame_factorize, fac_start_us)
+    lu_factorize_into(K_lu, lu_pivots)
+    if do_profile:
+        var t_fac_end = Int(time.perf_counter_ns())
+        var fac_end_us = (t_fac_end - t0) // 1000
+        _append_event(events, events_need_comma, "C", frame_factorize, fac_end_us)
 
     var v: List[Float64] = []
     v.resize(total_dofs, 0.0)
@@ -235,10 +429,24 @@ fn run_transient_linear(
     P_eff.resize(free_count, 0.0)
     var C_term: List[Float64] = []
     C_term.resize(free_count, 0.0)
+    var lu_rhs: List[Float64] = []
+    lu_rhs.resize(free_count, 0.0)
+    var lu_work: List[Float64] = []
+    lu_work.resize(free_count, 0.0)
+    var u_f: List[Float64] = []
+    u_f.resize(free_count, 0.0)
     var record_reactions = _has_recorder_type(recorders, RecorderTypeTag.NodeReaction)
     var record_any_element_force = (
         _has_recorder_type(recorders, RecorderTypeTag.ElementForce) or _has_recorder_type(recorders, RecorderTypeTag.EnvelopeElementForce)
     )
+    var elem_count = len(typed_elements)
+    var elem_force_cached: List[Bool] = []
+    var elem_force_values: List[List[Float64]] = []
+    if record_any_element_force:
+        elem_force_cached.resize(elem_count, False)
+        for _ in range(elem_count):
+            var empty_force: List[Float64] = []
+            elem_force_values.append(empty_force^)
     var envelope_files: List[String] = []
     var envelope_min: List[List[Float64]] = []
     var envelope_max: List[List[Float64]] = []
@@ -276,10 +484,8 @@ fn run_transient_linear(
                     constraints_end_us,
                 )
         var t = Float64(step + 1) * dt
-        for i in range(total_dofs):
-            F_ext_step[i] = F_total[i]
-        var factor = 1.0
         if pattern_type == "UniformExcitation":
+            _copy_vector_simd4(F_ext_step, F_total)
             if do_profile:
                 var t_ts_start = Int(time.perf_counter_ns())
                 var ts_start_us = (t_ts_start - t0) // 1000
@@ -306,9 +512,9 @@ fn run_transient_linear(
                     frame_time_series_eval,
                     ts_end_us,
                 )
-            for i in range(total_dofs):
-                if (i % ndf) + 1 == uniform_excitation_direction:
-                    F_ext_step[i] += -M_total[i] * ag
+            for i in range(len(uniform_excitation_dofs)):
+                var dof_idx = uniform_excitation_dofs[i]
+                F_ext_step[dof_idx] += -M_total[dof_idx] * ag
         else:
             if ts_index >= 0:
                 if do_profile:
@@ -321,7 +527,7 @@ fn run_transient_linear(
                         frame_time_series_eval,
                         ts_start_us,
                     )
-                factor = eval_time_series_input(
+                var factor = eval_time_series_input(
                     time_series[ts_index],
                     t,
                     time_series_values,
@@ -337,59 +543,30 @@ fn run_transient_linear(
                         frame_time_series_eval,
                         ts_end_us,
                     )
-            for i in range(total_dofs):
-                F_ext_step[i] = F_total[i] * factor
+                _copy_scaled_vector_simd4(F_ext_step, F_total, factor)
+            else:
+                _copy_vector_simd4(F_ext_step, F_total)
+        _build_effective_rhs_newmark_simd4(
+            free, u, v, a, F_ext_step, M_f, a0, a1, a2, a3, a4, a5, P_ext_f, C_term, P_eff
+        )
         for i in range(free_count):
-            var idx = free[i]
-            P_ext_f[i] = F_ext_step[idx]
-            C_term[i] = a1 * u[idx] + a4 * v[idx] + a5 * a[idx]
-            P_eff[i] = (
-                P_ext_f[i]
-                + M_f[i] * (a0 * u[idx] + a2 * v[idx] + a3 * a[idx])
-            )
-        for i in range(free_count):
-            var damp = 0.0
-            for j in range(free_count):
-                damp += C_ff[i][j] * C_term[j]
-            P_eff[i] += damp
-        var K_eff_step: List[List[Float64]] = []
-        for i in range(free_count):
-            var row: List[Float64] = []
-            row.resize(free_count, 0.0)
-            K_eff_step.append(row^)
-            for j in range(free_count):
-                K_eff_step[i][j] = K_eff[i][j]
-        var P_step: List[Float64] = []
-        P_step.resize(free_count, 0.0)
-        for i in range(free_count):
-            P_step[i] = P_eff[i]
+            lu_rhs[i] = P_eff[i] + _dot_row_simd4(C_ff[i], C_term, free_count)
         if do_profile:
             var t_solve_start = Int(time.perf_counter_ns())
             var solve_start_us = (t_solve_start - t0) // 1000
             _append_event(
                 events, events_need_comma, "O", frame_solve_linear, solve_start_us
             )
-            _append_event(
-                events, events_need_comma, "O", frame_factorize, solve_start_us
-            )
-        var u_f = gaussian_elimination(K_eff_step, P_step)
+        lu_solve_into(K_lu, lu_pivots, lu_rhs, lu_work, u_f)
         if do_profile:
             var t_solve_end = Int(time.perf_counter_ns())
             var solve_end_us = (t_solve_end - t0) // 1000
             _append_event(
-                events, events_need_comma, "C", frame_factorize, solve_end_us
-            )
-            _append_event(
                 events, events_need_comma, "C", frame_solve_linear, solve_end_us
             )
-        for i in range(free_count):
-            var idx = free[i]
-            var u_next = u_f[i]
-            var a_next = a0 * (u_next - u[idx]) - a2 * v[idx] - a3 * a[idx]
-            var v_next = v[idx] + dt * ((1.0 - gamma) * a[idx] + gamma * a_next)
-            u[idx] = u_next
-            v[idx] = v_next
-            a[idx] = a_next
+        _update_newmark_state_from_solution_simd4(
+            free, u, v, a, u_f, a0, a2, a3, gamma, dt
+        )
         if has_transformation_mpc:
             if do_profile:
                 var t_constraints_start = Int(time.perf_counter_ns())
@@ -444,14 +621,9 @@ fn run_transient_linear(
                 fiber_section_cells,
                 fiber_section_index_by_id,
             )
-
-        var elem_force_cached: List[Bool] = []
-        var elem_force_values: List[List[Float64]] = []
         if record_any_element_force:
-            elem_force_cached.resize(len(typed_elements), False)
-            for _ in range(len(typed_elements)):
-                var empty_force: List[Float64] = []
-                elem_force_values.append(empty_force^)
+            for i in range(elem_count):
+                elem_force_cached[i] = False
 
         for r in range(len(recorders)):
             var rec = recorders[r]

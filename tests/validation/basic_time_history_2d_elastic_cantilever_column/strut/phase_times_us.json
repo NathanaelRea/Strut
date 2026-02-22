@@ -1,0 +1,8 @@
+{
+  "case_load_parse_us": 7308,
+  "model_build_dof_map_us": 178,
+  "analysis_us": 92,
+  "solve_total_us": 92,
+  "output_write_us": 651,
+  "total_case_us": 8229
+}

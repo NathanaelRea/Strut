@@ -18,8 +18,16 @@ uv run scripts/run_benchmarks.py --engine strut
 uv run scripts/run_benchmarks.py --no-batch
 uv run scripts/run_benchmarks.py --gen-frame-bays 18 --gen-frame-stories 17 --gen-frame-element forceBeamColumn2d --cases force_beam_column2d_fiber_frame_18bay_17story --no-archive
 uv run scripts/run_benchmarks.py --benchmark-suite root_cause_v1
+uv run scripts/run_benchmarks.py --benchmark-suite opt_fast_v1 --engine strut --profile benchmark/speedscope --no-archive
+uv run scripts/run_benchmarks.py --benchmark-suite opt_full_v1 --engine both --profile benchmark/speedscope --no-archive
+uv run scripts/run_benchmarks.py --list-benchmark-suites
 uv run scripts/run_benchmarks.py --engine strut --cases opensees_example_rc_frame_earthquake --profile benchmark/speedscope --no-archive
 ```
+
+Optimization loop suites:
+
+- `opt_fast_v1`: short feedback loop for iterative profiling work.
+- `opt_full_v1`: broader end-to-end suite for milestone checks.
 
 Upcoming element benchmarks (disabled until element support lands):
 
@@ -41,6 +49,9 @@ uv run scripts/run_benchmarks.py --cases elastic_truss_basic,elastic_four_node_q
 - Runs with `--profile` write to `benchmark/results-profile/` and default to `--no-archive`.
 - `--profile <DIR>` works in both per-case and batch runs and writes per-case files as `<case>.speedscope.json` into `DIR`.
 - Compute-only outputs are written to `benchmark/results/opensees_compute/` and `benchmark/results/strut_compute/` (or the `results-profile` equivalents when profiling).
+- `metadata.json` records machine/build/run metadata for reproducible baseline/perf comparisons.
+- `phase_summary.csv` records per-case phase timing columns (parse/model-build/assembly/solve/output).
+- `phase_rollup.csv` records phase-level aggregates (mean/median/min/max).
 - `benchmark/archive/` contains timestamped summary snapshots.
 - When running both engines, the runner compares outputs and fails on mismatch.
 - The runner performs a second pass without recorders to estimate compute-only time.

@@ -49,6 +49,8 @@ fn run_static_nonlinear_load_control(
     time_series_times: List[Float64],
     typed_nodes: List[NodeInput],
     typed_elements: List[ElementInput],
+    elem_dof_offsets: List[Int],
+    elem_dof_pool: List[Int],
     typed_sections_by_id: List[SectionInput],
     typed_materials_by_id: List[MaterialInput],
     id_to_index: List[Int],
@@ -95,6 +97,9 @@ fn run_static_nonlinear_load_control(
     constrained: List[Bool],
 ) raises:
     var time = Python.import_module("time")
+    var asm_dof_map6: List[Int] = []
+    var asm_dof_map12: List[Int] = []
+    var asm_u_elem6: List[Float64] = []
     var max_iters = analysis.max_iters
     var tol = analysis.tol
     var rel_tol = analysis.rel_tol
@@ -207,6 +212,11 @@ fn run_static_nonlinear_load_control(
                 fiber_section_defs,
                 fiber_section_cells,
                 fiber_section_index_by_id,
+                elem_dof_offsets,
+                elem_dof_pool,
+                asm_dof_map6,
+                asm_dof_map12,
+                asm_u_elem6,
                 K,
                 F_int,
             )
@@ -229,16 +239,15 @@ fn run_static_nonlinear_load_control(
                 _append_event(
                     events, events_need_comma, "O", frame_kff_extract, kff_start_us
                 )
-            for i in range(free_count):
-                F_f[i] = F_total_free[i] * scale - F_int[free[i]]
+            var refresh_tangent = not use_modified_newton or not tangent_initialized
             if use_banded_loadcontrol:
-                if not use_modified_newton or not tangent_initialized:
+                if refresh_tangent:
                     var width = bw_nl * 2 + 1
                     for i in range(free_count):
                         for j in range(width):
                             K_ff_banded[i][j] = 0.0
-                    for i in range(free_count):
                         var row_i = free[i]
+                        F_f[i] = F_total_free[i] * scale - F_int[row_i]
                         var j0 = i - bw_nl
                         if j0 < 0:
                             j0 = 0
@@ -248,12 +257,20 @@ fn run_static_nonlinear_load_control(
                         for j in range(j0, j1 + 1):
                             K_ff_banded[i][j - i + bw_nl] = K[row_i][free[j]]
                     tangent_initialized = True
-            else:
-                if not use_modified_newton or not tangent_initialized:
+                else:
                     for i in range(free_count):
+                        F_f[i] = F_total_free[i] * scale - F_int[free[i]]
+            else:
+                if refresh_tangent:
+                    for i in range(free_count):
+                        var row_i = free[i]
+                        F_f[i] = F_total_free[i] * scale - F_int[row_i]
                         for j in range(free_count):
-                            K_ff[i][j] = K[free[i]][free[j]]
+                            K_ff[i][j] = K[row_i][free[j]]
                     tangent_initialized = True
+                else:
+                    for i in range(free_count):
+                        F_f[i] = F_total_free[i] * scale - F_int[free[i]]
             if do_profile:
                 var t_kff_end = Int(time.perf_counter_ns())
                 var kff_end_us = (t_kff_end - t0) // 1000
@@ -287,10 +304,11 @@ fn run_static_nonlinear_load_control(
                 )
             var max_diff = 0.0
             var max_u = 0.0
-            for i in range(len(free)):
+            for i in range(free_count):
                 var idx = free[i]
                 var du = u_f[i]
                 var value = u[idx] + du
+                u[idx] = value
                 var diff = abs(du)
                 if diff > max_diff:
                     max_diff = diff
@@ -304,8 +322,6 @@ fn run_static_nonlinear_load_control(
             if max_diff <= tol or max_diff <= scale_tol:
                 converged = True
                 converged_iter = True
-            for i in range(len(free)):
-                u[free[i]] += u_f[i]
             if has_transformation_mpc:
                 _enforce_equal_dof_values(u, rep_dof, constrained)
             if do_profile:
@@ -555,6 +571,8 @@ fn run_static_nonlinear_displacement_control(
     analysis_integrator_targets_pool: List[Float64],
     typed_nodes: List[NodeInput],
     typed_elements: List[ElementInput],
+    elem_dof_offsets: List[Int],
+    elem_dof_pool: List[Int],
     typed_sections_by_id: List[SectionInput],
     typed_materials_by_id: List[MaterialInput],
     id_to_index: List[Int],
@@ -599,6 +617,9 @@ fn run_static_nonlinear_displacement_control(
     rep_dof: List[Int],
 ) raises:
     var time = Python.import_module("time")
+    var asm_dof_map6: List[Int] = []
+    var asm_dof_map12: List[Int] = []
+    var asm_u_elem6: List[Float64] = []
     var max_iters = analysis.max_iters
     var tol = analysis.tol
     var rel_tol = analysis.rel_tol
@@ -777,6 +798,11 @@ fn run_static_nonlinear_displacement_control(
                         fiber_section_defs,
                         fiber_section_cells,
                         fiber_section_index_by_id,
+                        elem_dof_offsets,
+                        elem_dof_pool,
+                        asm_dof_map6,
+                        asm_dof_map12,
+                        asm_u_elem6,
                         K,
                         F_int,
                     )
@@ -801,13 +827,17 @@ fn run_static_nonlinear_displacement_control(
                             events, events_need_comma, "O", frame_kff_extract, kff_start_us
                         )
                     var load_scale = load_scale_derivative * load_factor
-                    for i in range(free_count):
-                        R_f[i] = load_scale * F_total_free[i] - F_int[free[i]]
-                    if not use_modified_newton or not tangent_initialized:
+                    var refresh_tangent = not use_modified_newton or not tangent_initialized
+                    if refresh_tangent:
                         for i in range(free_count):
+                            var row_i = free[i]
+                            R_f[i] = load_scale * F_total_free[i] - F_int[row_i]
                             for j in range(free_count):
-                                K_ff[i][j] = K[free[i]][free[j]]
+                                K_ff[i][j] = K[row_i][free[j]]
                         tangent_initialized = True
+                    else:
+                        for i in range(free_count):
+                            R_f[i] = load_scale * F_total_free[i] - F_int[free[i]]
                     if do_profile:
                         var t_kff_end = Int(time.perf_counter_ns())
                         var kff_end_us = (t_kff_end - t0) // 1000
@@ -859,14 +889,13 @@ fn run_static_nonlinear_displacement_control(
                         var idx = free[i]
                         var du = sol_aug[i]
                         var value = u[idx] + du
+                        u[idx] = value
                         var diff = abs(du)
                         if diff > max_diff:
                             max_diff = diff
                         var abs_val = abs(value)
                         if abs_val > max_u:
                             max_u = abs_val
-                    for i in range(free_count):
-                        u[free[i]] += sol_aug[i]
                     load_factor += sol_aug[free_count]
                     if has_transformation_mpc:
                         _enforce_equal_dof_values(u, rep_dof, constrained)

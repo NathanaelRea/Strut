@@ -3,6 +3,7 @@ import argparse
 import csv
 import json
 import os
+import platform
 import shutil
 import subprocess
 import time
@@ -42,6 +43,69 @@ BENCHMARK_SUITES: Dict[str, List[str]] = {
         "elastic_frame_18bay_17story",
         "force_beam_column2d_fiber_frame_18bay_17story",
     ],
+    "opt_fast_v1": [
+        "elastic_beam_cantilever",
+        "elastic_frame_portal",
+        "opensees_example_2d_elastic_cantileaver_column",
+        "force_beam_column2d_fiber_cantilever",
+        "opensees_example_rc_frame_earthquake",
+    ],
+    "opt_full_v1": [
+        "elastic_beam_cantilever",
+        "elastic_frame_portal",
+        "elastic_frame_two_bay",
+        "elastic_frame_two_story",
+        "elastic_frame_18bay_17story",
+        "force_beam_column2d_fiber_cantilever",
+        "force_beam_column2d_fiber_frame_18bay_17story",
+        "opensees_example_2d_elastic_cantileaver_column",
+        "opensees_example_rc_frame_earthquake",
+        "opensees_example_ex5_frame2d_eq_uniform_rc_fiber",
+        "elastic_transient_newmark_path",
+        "steel01_truss_transient_modified_newton_benchmark",
+    ],
+}
+
+STANDARD_OPT_COMMANDS = {
+    "fast_profile_strut": (
+        "uv run scripts/run_benchmarks.py "
+        "--benchmark-suite opt_fast_v1 "
+        "--engine strut "
+        "--profile benchmark/speedscope "
+        "--no-archive"
+    ),
+    "full_profile_both": (
+        "uv run scripts/run_benchmarks.py "
+        "--benchmark-suite opt_full_v1 "
+        "--engine both "
+        "--profile benchmark/speedscope "
+        "--no-archive"
+    ),
+}
+
+PHASE_COLUMNS = [
+    "case_load_parse_us",
+    "model_build_dof_map_us",
+    "global_assembly_us",
+    "element_state_update_us",
+    "linear_solve_us",
+    "nonlinear_solve_us",
+    "time_series_eval_us",
+    "constraints_us",
+    "recorders_us",
+    "output_write_us",
+    "solve_total_us",
+    "total_case_us",
+]
+
+PHASE_FRAME_MAP = {
+    "global_assembly_us": ("assemble_stiffness", "kff_extract"),
+    "element_state_update_us": ("nonlinear_iter", "nonlinear_step"),
+    "linear_solve_us": ("solve_linear",),
+    "nonlinear_solve_us": ("solve_nonlinear",),
+    "time_series_eval_us": ("time_series_eval",),
+    "constraints_us": ("constraints",),
+    "recorders_us": ("recorders",),
 }
 
 
@@ -293,6 +357,230 @@ def git_rev(repo_root: Path) -> Optional[str]:
     return out.decode("utf-8").strip()
 
 
+def _git_branch(repo_root: Path) -> Optional[str]:
+    try:
+        out = subprocess.check_output(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=repo_root
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return None
+    branch = out.decode("utf-8").strip()
+    return branch or None
+
+
+def _read_cpu_model() -> Optional[str]:
+    cpuinfo = Path("/proc/cpuinfo")
+    if cpuinfo.exists():
+        for line in cpuinfo.read_text(encoding="utf-8").splitlines():
+            if line.lower().startswith("model name"):
+                _, _, value = line.partition(":")
+                model = value.strip()
+                if model:
+                    return model
+    proc = platform.processor().strip()
+    return proc or None
+
+
+def _safe_check_output(cmd: List[str], cwd: Optional[Path] = None) -> Optional[str]:
+    try:
+        out = subprocess.check_output(cmd, cwd=cwd, stderr=subprocess.STDOUT)
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return None
+    text = out.decode("utf-8", errors="replace").strip()
+    return text or None
+
+
+def collect_run_metadata(
+    repo_root: Path,
+    args: argparse.Namespace,
+    results_root: Path,
+    profile_root: Optional[Path],
+    strut_solver: Optional[Path],
+) -> dict:
+    metadata = {
+        "platform": {
+            "system": platform.system(),
+            "release": platform.release(),
+            "machine": platform.machine(),
+            "python_version": platform.python_version(),
+            "cpu_model": _read_cpu_model(),
+        },
+        "git": {
+            "rev": git_rev(repo_root),
+            "branch": _git_branch(repo_root),
+        },
+        "runner": {
+            "benchmark_suite": args.benchmark_suite,
+            "engine": args.engine,
+            "batch_mode": not args.no_batch,
+            "repeat": args.repeat,
+            "warmup": args.warmup,
+            "profile_enabled": bool(args.profile),
+            "results_root": str(results_root),
+            "profile_root": str(profile_root) if profile_root is not None else None,
+            "standard_optimization_commands": STANDARD_OPT_COMMANDS,
+        },
+        "build": {
+            "strut_solver": str(strut_solver) if strut_solver is not None else None,
+            "profile_instrumented": bool(args.profile),
+            "mojo_version": _safe_check_output(
+                ["uv", "run", "mojo", "--version"], cwd=repo_root
+            ),
+        },
+    }
+    return metadata
+
+
+def _load_phase_times(path: Path) -> Dict[str, int]:
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    out: Dict[str, int] = {}
+    for key, value in data.items():
+        if isinstance(value, (int, float)):
+            out[str(key)] = int(value)
+    return out
+
+
+def _load_profile_frame_totals(profile_path: Path) -> Dict[str, int]:
+    if not profile_path.exists():
+        return {}
+    try:
+        data = json.loads(profile_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    shared = data.get("shared", {})
+    frames = shared.get("frames", [])
+    profiles = data.get("profiles", [])
+    if not isinstance(frames, list) or not profiles:
+        return {}
+    profile = profiles[0]
+    events = profile.get("events", [])
+    if not isinstance(events, list):
+        return {}
+
+    frame_names: Dict[int, str] = {}
+    for index, frame in enumerate(frames):
+        if not isinstance(frame, dict):
+            continue
+        name = frame.get("name")
+        if isinstance(name, str) and name:
+            frame_names[index] = name
+
+    open_stack: Dict[int, List[int]] = {}
+    totals: Dict[int, int] = {}
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        frame = event.get("frame")
+        event_type = event.get("type")
+        at = event.get("at")
+        if not isinstance(frame, int) or not isinstance(at, (int, float)):
+            continue
+        at_us = int(at)
+        if event_type == "O":
+            open_stack.setdefault(frame, []).append(at_us)
+            continue
+        if event_type != "C":
+            continue
+        stack = open_stack.get(frame)
+        if not stack:
+            continue
+        start = stack.pop()
+        if at_us < start:
+            continue
+        totals[frame] = totals.get(frame, 0) + (at_us - start)
+
+    named_totals: Dict[str, int] = {}
+    for frame, total in totals.items():
+        name = frame_names.get(frame)
+        if name is None:
+            continue
+        named_totals[name] = named_totals.get(name, 0) + total
+    return named_totals
+
+
+def _build_phase_row(
+    case_name: str,
+    dofs: Optional[int],
+    phase_times: Dict[str, int],
+    frame_totals: Dict[str, int],
+) -> dict:
+    row: Dict[str, object] = {"case": case_name, "dofs": dofs or ""}
+    row["case_load_parse_us"] = phase_times.get("case_load_parse_us")
+    row["model_build_dof_map_us"] = phase_times.get("model_build_dof_map_us")
+    row["output_write_us"] = phase_times.get("output_write_us")
+    row["solve_total_us"] = phase_times.get(
+        "solve_total_us", phase_times.get("analysis_us")
+    )
+    row["total_case_us"] = phase_times.get("total_case_us")
+
+    for key, frame_names in PHASE_FRAME_MAP.items():
+        total = sum(frame_totals.get(name, 0) for name in frame_names)
+        row[key] = total if total > 0 else None
+    return row
+
+
+def write_phase_summary_csv(path: Path, rows: List[dict]) -> None:
+    headers = ["case", "dofs"] + PHASE_COLUMNS
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=headers)
+        writer.writeheader()
+        for row in rows:
+            out = {"case": row.get("case", ""), "dofs": row.get("dofs", "")}
+            for key in PHASE_COLUMNS:
+                value = row.get(key)
+                out[key] = "" if value is None else value
+            writer.writerow(out)
+
+
+def write_phase_rollup_csv(path: Path, rows: List[dict]) -> None:
+    headers = ["phase", "count", "mean_us", "median_us", "min_us", "max_us"]
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=headers)
+        writer.writeheader()
+        for phase in PHASE_COLUMNS:
+            values = [
+                int(row[phase])
+                for row in rows
+                if isinstance(row.get(phase), (int, float))
+            ]
+            if not values:
+                continue
+            writer.writerow(
+                {
+                    "phase": phase,
+                    "count": len(values),
+                    "mean_us": int(mean(values)),
+                    "median_us": int(median(values)),
+                    "min_us": int(min(values)),
+                    "max_us": int(max(values)),
+                }
+            )
+
+
+def log_phase_table(rows: List[dict]) -> None:
+    if not rows:
+        return
+    log("Phase timing summary (mean, ms):")
+    for phase in PHASE_COLUMNS:
+        values = [
+            int(row[phase])
+            for row in rows
+            if isinstance(row.get(phase), (int, float))
+        ]
+        if not values:
+            continue
+        avg_ms = mean(values) / 1000.0
+        med_ms = median(values) / 1000.0
+        log(f"  {phase:<24} mean={avg_ms:>8.3f}  median={med_ms:>8.3f}")
+
+
 def write_summary_csv(path: Path, rows: List[dict]) -> None:
     headers = [
         "case",
@@ -333,10 +621,9 @@ def run_engine(
 
 
 def ensure_strut_solver(repo_root: Path, verbose: bool, profile: bool) -> Path:
-    mojo = shutil.which("mojo")
-    if mojo is None:
+    if shutil.which("uv") is None:
         raise SystemExit(
-            "mojo executable not found on PATH; required to run benchmarks."
+            "uv executable not found on PATH; required to build the Mojo solver."
         )
     solver_path = os.getenv("STRUT_MOJO_BIN")
     if solver_path:
@@ -344,7 +631,13 @@ def ensure_strut_solver(repo_root: Path, verbose: bool, profile: bool) -> Path:
     solver_path = repo_root / "build" / "strut" / "strut"
     solver_path.parent.mkdir(parents=True, exist_ok=True)
     log("Building Mojo solver...")
-    build_cmd = [mojo, "build", str(repo_root / "src" / "mojo" / "strut.mojo")]
+    build_cmd = [
+        "uv",
+        "run",
+        "mojo",
+        "build",
+        str(repo_root / "src" / "mojo" / "strut.mojo"),
+    ]
     if profile:
         build_cmd += ["-D", "STRUT_PROFILE=1"]
     build_cmd += ["-o", str(solver_path)]
@@ -643,6 +936,11 @@ def main() -> None:
         help="Run a predefined benchmark suite.",
     )
     parser.add_argument(
+        "--list-benchmark-suites",
+        action="store_true",
+        help="List available benchmark suites and exit.",
+    )
+    parser.add_argument(
         "--gen-frame-bays",
         type=int,
         default=None,
@@ -721,6 +1019,16 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    if args.list_benchmark_suites:
+        print("Available benchmark suites:")
+        for name in sorted(BENCHMARK_SUITES):
+            print(f"- {name}: {', '.join(BENCHMARK_SUITES[name])}")
+        print("")
+        print("Standard optimization commands:")
+        for key, value in STANDARD_OPT_COMMANDS.items():
+            print(f"- {key}: {value}")
+        return
+
     repo_root = Path(__file__).resolve().parents[1]
     validation_root = repo_root / "tests" / "validation"
     generated_cases: List[CaseSpec] = []
@@ -768,6 +1076,8 @@ def main() -> None:
         gen_path = gen_dir / f"{name}.json"
         run(
             [
+                "uv",
+                "run",
                 "python",
                 str(repo_root / "scripts" / "gen_frame_case.py"),
                 "--bays",
@@ -794,6 +1104,8 @@ def main() -> None:
             fiber_path = gen_dir / f"{fiber_name}.json"
             run(
                 [
+                    "uv",
+                    "run",
                     "python",
                     str(repo_root / "scripts" / "gen_frame_case.py"),
                     "--bays",
@@ -897,6 +1209,13 @@ def main() -> None:
     strut_solver = None
     if run_strut:
         strut_solver = ensure_strut_solver(repo_root, verbose, args.profile)
+    run_metadata = collect_run_metadata(
+        repo_root=repo_root,
+        args=args,
+        results_root=results_root,
+        profile_root=profile_root,
+        strut_solver=strut_solver,
+    )
 
     if not run_opensees and not run_strut:
         raise SystemExit("No engines selected. Use --engine opensees|strut|both.")
@@ -915,6 +1234,8 @@ def main() -> None:
         tcl_out = results_root / "tcl" / f"{case_name}.tcl"
         run(
             [
+                "uv",
+                "run",
                 "python",
                 str(repo_root / "scripts" / "json_to_tcl.py"),
                 str(case.json_path),
@@ -2230,28 +2551,65 @@ def main() -> None:
 
         summary_cases.append(case_entry)
 
+    phase_rows: List[dict] = []
+    if run_strut:
+        for case_entry in summary_cases:
+            case_name = case_entry["name"]
+            phase_path = results_root / "strut" / case_name / "phase_times_us.json"
+            phase_times = _load_phase_times(phase_path)
+            frame_totals: Dict[str, int] = {}
+            if profile_root is not None:
+                profile_path = profile_root / f"{case_name}.speedscope.json"
+                frame_totals = _load_profile_frame_totals(profile_path)
+            if not phase_times and not frame_totals:
+                continue
+            phase_rows.append(
+                _build_phase_row(
+                    case_name=case_name,
+                    dofs=case_entry.get("dofs"),
+                    phase_times=phase_times,
+                    frame_totals=frame_totals,
+                )
+            )
+
     generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     summary = {
         "generated_at": generated_at,
-        "git_rev": git_rev(repo_root),
+        "git_rev": run_metadata.get("git", {}).get("rev"),
         "repeat": args.repeat,
         "warmup": args.warmup,
+        "metadata": run_metadata,
+        "phase_columns": PHASE_COLUMNS,
+        "phase_summary": phase_rows,
         "cases": summary_cases,
     }
 
     summary_json = results_root / "summary.json"
     summary_csv = results_root / "summary.csv"
+    metadata_json = results_root / "metadata.json"
+    phase_summary_csv = results_root / "phase_summary.csv"
+    phase_rollup_csv = results_root / "phase_rollup.csv"
     summary_json.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
     write_summary_csv(summary_csv, csv_rows)
+    metadata_json.write_text(json.dumps(run_metadata, indent=2) + "\n", encoding="utf-8")
+    write_phase_summary_csv(phase_summary_csv, phase_rows)
+    write_phase_rollup_csv(phase_rollup_csv, phase_rows)
+    log_phase_table(phase_rows)
 
     if not args.no_archive:
         archive_root.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         shutil.copy2(summary_json, archive_root / f"{stamp}-summary.json")
         shutil.copy2(summary_csv, archive_root / f"{stamp}-summary.csv")
+        shutil.copy2(metadata_json, archive_root / f"{stamp}-metadata.json")
+        shutil.copy2(phase_summary_csv, archive_root / f"{stamp}-phase-summary.csv")
+        shutil.copy2(phase_rollup_csv, archive_root / f"{stamp}-phase-rollup.csv")
 
     print(f"Wrote {summary_json}")
     print(f"Wrote {summary_csv}")
+    print(f"Wrote {metadata_json}")
+    print(f"Wrote {phase_summary_csv}")
+    print(f"Wrote {phase_rollup_csv}")
     if parity_failures:
         log_err("PARITY FAILED")
         for failure in _summarize_parity_failures(parity_failures):

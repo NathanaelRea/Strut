@@ -51,6 +51,8 @@ struct RunCaseState(Movable):
     var typed_elements: List[ElementInput]
     var elem_count: Int
     var elem_id_to_index: List[Int]
+    var elem_dof_offsets: List[Int]
+    var elem_dof_pool: List[Int]
     var elem_uniaxial_offsets: List[Int]
     var elem_uniaxial_counts: List[Int]
     var elem_uniaxial_state_ids: List[Int]
@@ -113,6 +115,8 @@ struct RunCaseState(Movable):
         self.typed_elements = []
         self.elem_count = 0
         self.elem_id_to_index = []
+        self.elem_dof_offsets = []
+        self.elem_dof_pool = []
         self.elem_uniaxial_offsets = []
         self.elem_uniaxial_counts = []
         self.elem_uniaxial_state_ids = []
@@ -218,6 +222,56 @@ fn _elem_material(elem: ElementInput, idx: Int) -> Int:
     if idx == 4:
         return elem.material_5
     return elem.material_6
+
+
+fn _elem_dof(elem: ElementInput, idx: Int) -> Int:
+    if idx == 0:
+        return elem.dof_1
+    if idx == 1:
+        return elem.dof_2
+    if idx == 2:
+        return elem.dof_3
+    if idx == 3:
+        return elem.dof_4
+    if idx == 4:
+        return elem.dof_5
+    if idx == 5:
+        return elem.dof_6
+    if idx == 6:
+        return elem.dof_7
+    if idx == 7:
+        return elem.dof_8
+    if idx == 8:
+        return elem.dof_9
+    if idx == 9:
+        return elem.dof_10
+    if idx == 10:
+        return elem.dof_11
+    if idx == 11:
+        return elem.dof_12
+    if idx == 12:
+        return elem.dof_13
+    if idx == 13:
+        return elem.dof_14
+    if idx == 14:
+        return elem.dof_15
+    if idx == 15:
+        return elem.dof_16
+    if idx == 16:
+        return elem.dof_17
+    if idx == 17:
+        return elem.dof_18
+    if idx == 18:
+        return elem.dof_19
+    if idx == 19:
+        return elem.dof_20
+    if idx == 20:
+        return elem.dof_21
+    if idx == 21:
+        return elem.dof_22
+    if idx == 22:
+        return elem.dof_23
+    return elem.dof_24
 
 
 fn _elem_dir(elem: ElementInput, idx: Int) -> Int:
@@ -744,6 +798,21 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
             abort("unsupported element type: " + elem.type)
 
         typed_elements[i] = elem
+
+    var elem_dof_offsets: List[Int] = []
+    elem_dof_offsets.resize(elem_count + 1, 0)
+    var total_elem_dofs = 0
+    for e in range(elem_count):
+        elem_dof_offsets[e] = total_elem_dofs
+        total_elem_dofs += typed_elements[e].dof_count
+    elem_dof_offsets[elem_count] = total_elem_dofs
+    var elem_dof_pool: List[Int] = []
+    elem_dof_pool.resize(total_elem_dofs, -1)
+    for e in range(elem_count):
+        var elem = typed_elements[e]
+        var offset = elem_dof_offsets[e]
+        for d in range(elem.dof_count):
+            elem_dof_pool[offset + d] = _elem_dof(elem, d)
 
     var uniaxial_states: List[UniMaterialState] = []
     var uniaxial_state_defs: List[Int] = []
@@ -1340,6 +1409,8 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
     state.typed_elements = typed_elements^
     state.elem_count = elem_count
     state.elem_id_to_index = elem_id_to_index^
+    state.elem_dof_offsets = elem_dof_offsets^
+    state.elem_dof_pool = elem_dof_pool^
     state.elem_uniaxial_offsets = elem_uniaxial_offsets^
     state.elem_uniaxial_counts = elem_uniaxial_counts^
     state.elem_uniaxial_state_ids = elem_uniaxial_state_ids^

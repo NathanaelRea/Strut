@@ -40,6 +40,68 @@ fn _zero_matrix(mut mat: List[List[Float64]]):
             mat[i][j] = 0.0
 
 
+@always_inline
+fn _scatter_add_row_unrolled4(
+    mut K: List[List[Float64]],
+    row_index: Int,
+    k_row: List[Float64],
+    dof_map: List[Int],
+    count: Int,
+):
+    var b = 0
+    while b + 3 < count:
+        var b0 = dof_map[b]
+        var b1 = dof_map[b + 1]
+        var b2 = dof_map[b + 2]
+        var b3 = dof_map[b + 3]
+        K[row_index][b0] += k_row[b]
+        K[row_index][b1] += k_row[b + 1]
+        K[row_index][b2] += k_row[b + 2]
+        K[row_index][b3] += k_row[b + 3]
+        b += 4
+    while b < count:
+        var bidx = dof_map[b]
+        K[row_index][bidx] += k_row[b]
+        b += 1
+
+
+@always_inline
+fn _scatter_add_and_dot_row_simd4(
+    mut K: List[List[Float64]],
+    row_index: Int,
+    k_row: List[Float64],
+    dof_map: List[Int],
+    u: List[Float64],
+    count: Int,
+) -> Float64:
+    var sum = 0.0
+    var b = 0
+    while b + 3 < count:
+        var b0 = dof_map[b]
+        var b1 = dof_map[b + 1]
+        var b2 = dof_map[b + 2]
+        var b3 = dof_map[b + 3]
+        var k0 = k_row[b]
+        var k1 = k_row[b + 1]
+        var k2 = k_row[b + 2]
+        var k3 = k_row[b + 3]
+        K[row_index][b0] += k0
+        K[row_index][b1] += k1
+        K[row_index][b2] += k2
+        K[row_index][b3] += k3
+        var k_vec = SIMD[DType.float64, 4](k0, k1, k2, k3)
+        var u_vec = SIMD[DType.float64, 4](u[b0], u[b1], u[b2], u[b3])
+        sum += (k_vec * u_vec).reduce_add()
+        b += 4
+    while b < count:
+        var bidx = dof_map[b]
+        var kval = k_row[b]
+        K[row_index][bidx] += kval
+        sum += kval * u[bidx]
+        b += 1
+    return sum
+
+
 fn _elem_node(elem: ElementInput, idx: Int) -> Int:
     if idx == 0:
         return elem.node_1
@@ -128,6 +190,28 @@ fn _elem_dof(elem: ElementInput, idx: Int) -> Int:
     return elem.dof_24
 
 
+fn _build_elem_dof_soa(
+    elements: List[ElementInput],
+    mut elem_dof_offsets: List[Int],
+    mut elem_dof_pool: List[Int],
+):
+    var elem_count = len(elements)
+    elem_dof_offsets.resize(elem_count + 1, 0)
+
+    var total_elem_dofs = 0
+    for e in range(elem_count):
+        elem_dof_offsets[e] = total_elem_dofs
+        total_elem_dofs += elements[e].dof_count
+    elem_dof_offsets[elem_count] = total_elem_dofs
+
+    elem_dof_pool.resize(total_elem_dofs, -1)
+    for e in range(elem_count):
+        var elem = elements[e]
+        var offset = elem_dof_offsets[e]
+        for d in range(elem.dof_count):
+            elem_dof_pool[offset + d] = _elem_dof(elem, d)
+
+
 fn assemble_global_stiffness_banded_frame2d_typed(
     nodes: List[NodeInput],
     elements: List[ElementInput],
@@ -147,30 +231,55 @@ fn assemble_global_stiffness_banded_frame2d_typed(
     free_index: List[Int],
     free_count: Int,
     bw: Int,
+    elem_dof_offsets: List[Int],
+    elem_dof_pool: List[Int],
+    mut free_map: List[Int],
+    mut u_elem: List[Float64],
+    mut f_dummy: List[Float64],
 ) raises -> List[List[Float64]]:
     var K = banded_matrix(free_count, bw)
+    if len(elem_dof_offsets) != len(elements) + 1:
+        abort("invalid elem_dof_offsets size for banded frame2d assembly")
+    if len(elem_dof_pool) != elem_dof_offsets[len(elements)]:
+        abort("invalid elem_dof_pool size for banded frame2d assembly")
+    if len(free_map) != 6:
+        free_map.resize(6, -1)
+    if len(u_elem) != 6:
+        u_elem.resize(6, 0.0)
 
     for e in range(len(elements)):
         var elem = elements[e]
-        if elem.type_tag == ElementTypeTag.ElasticBeamColumn2d:
+        var elem_type = elem.type_tag
+        if (
+            elem_type != ElementTypeTag.ElasticBeamColumn2d
+            and elem_type != ElementTypeTag.ForceBeamColumn2d
+            and elem_type != ElementTypeTag.DispBeamColumn2d
+        ):
+            abort(
+                "typed frame2d banded assembly requires elasticBeamColumn2d, "
+                "forceBeamColumn2d, or dispBeamColumn2d"
+            )
+
+        var dof_offset = elem_dof_offsets[e]
+        var d0 = elem_dof_pool[dof_offset]
+        var d1 = elem_dof_pool[dof_offset + 1]
+        var d2 = elem_dof_pool[dof_offset + 2]
+        var d3 = elem_dof_pool[dof_offset + 3]
+        var d4 = elem_dof_pool[dof_offset + 4]
+        var d5 = elem_dof_pool[dof_offset + 5]
+        free_map[0] = free_index[d0]
+        free_map[1] = free_index[d1]
+        free_map[2] = free_index[d2]
+        free_map[3] = free_index[d3]
+        free_map[4] = free_index[d4]
+        free_map[5] = free_index[d5]
+
+        if elem_type == ElementTypeTag.ElasticBeamColumn2d:
             var i1 = elem.node_index_1
             var i2 = elem.node_index_2
             var node1 = nodes[i1]
             var node2 = nodes[i2]
             var sec = sections_by_id[elem.section]
-
-            var dof_map = [
-                _elem_dof(elem, 0),
-                _elem_dof(elem, 1),
-                _elem_dof(elem, 2),
-                _elem_dof(elem, 3),
-                _elem_dof(elem, 4),
-                _elem_dof(elem, 5),
-            ]
-            var free_map: List[Int] = []
-            free_map.resize(6, -1)
-            for i in range(6):
-                free_map[i] = free_index[dof_map[i]]
 
             var geom = elem.geom_transf
             var k_global: List[List[Float64]] = []
@@ -185,10 +294,12 @@ fn assemble_global_stiffness_banded_frame2d_typed(
                     node2.y,
                 )
             elif geom == "PDelta":
-                var u_elem: List[Float64] = []
-                u_elem.resize(6, 0.0)
-                for i in range(6):
-                    u_elem[i] = u[dof_map[i]]
+                u_elem[0] = u[d0]
+                u_elem[1] = u[d1]
+                u_elem[2] = u[d2]
+                u_elem[3] = u[d3]
+                u_elem[4] = u[d4]
+                u_elem[5] = u[d5]
                 k_global = beam2d_pdelta_global_stiffness(
                     sec.E,
                     sec.A,
@@ -200,10 +311,12 @@ fn assemble_global_stiffness_banded_frame2d_typed(
                     u_elem,
                 )
             elif geom == "Corotational":
-                var u_elem: List[Float64] = []
-                u_elem.resize(6, 0.0)
-                for i in range(6):
-                    u_elem[i] = u[dof_map[i]]
+                u_elem[0] = u[d0]
+                u_elem[1] = u[d1]
+                u_elem[2] = u[d2]
+                u_elem[3] = u[d3]
+                u_elem[4] = u[d4]
+                u_elem[5] = u[d5]
                 k_global = beam2d_corotational_global_stiffness(
                     sec.E,
                     sec.A,
@@ -225,33 +338,19 @@ fn assemble_global_stiffness_banded_frame2d_typed(
                     if Bidx < 0:
                         continue
                     banded_add(K, bw, Aidx, Bidx, k_global[a][b])
-        elif (
-            elem.type_tag == ElementTypeTag.ForceBeamColumn2d
-            or elem.type_tag == ElementTypeTag.DispBeamColumn2d
-        ):
+        else:
             var i1 = elem.node_index_1
             var i2 = elem.node_index_2
             var node1 = nodes[i1]
             var node2 = nodes[i2]
             var sec = sections_by_id[elem.section]
 
-            var dof_map = [
-                _elem_dof(elem, 0),
-                _elem_dof(elem, 1),
-                _elem_dof(elem, 2),
-                _elem_dof(elem, 3),
-                _elem_dof(elem, 4),
-                _elem_dof(elem, 5),
-            ]
-            var free_map: List[Int] = []
-            free_map.resize(6, -1)
-            for i in range(6):
-                free_map[i] = free_index[dof_map[i]]
-
-            var u_elem: List[Float64] = []
-            u_elem.resize(6, 0.0)
-            for i in range(6):
-                u_elem[i] = u[dof_map[i]]
+            u_elem[0] = u[d0]
+            u_elem[1] = u[d1]
+            u_elem[2] = u[d2]
+            u_elem[3] = u[d3]
+            u_elem[4] = u[d4]
+            u_elem[5] = u[d5]
             var k_global: List[List[Float64]] = []
             if sec.type == "ElasticSection2d":
                 var geom = elem.geom_transf
@@ -283,8 +382,7 @@ fn assemble_global_stiffness_banded_frame2d_typed(
                 var sec_def = fiber_section_defs[sec_index]
                 var elem_offset = elem_uniaxial_offsets[e]
                 var elem_state_count = elem_uniaxial_counts[e]
-                var f_dummy: List[Float64] = []
-                if elem.type_tag == ElementTypeTag.ForceBeamColumn2d:
+                if elem_type == ElementTypeTag.ForceBeamColumn2d:
                     force_beam_column2d_global_tangent_and_internal(
                         node1.x,
                         node1.y,
@@ -332,13 +430,60 @@ fn assemble_global_stiffness_banded_frame2d_typed(
                     if Bidx < 0:
                         continue
                     banded_add(K, bw, Aidx, Bidx, k_global[a][b])
-        else:
-            abort(
-                "typed frame2d banded assembly requires elasticBeamColumn2d, "
-                "forceBeamColumn2d, or dispBeamColumn2d"
-            )
-
     return K^
+
+
+fn assemble_global_stiffness_banded_frame2d_typed(
+    nodes: List[NodeInput],
+    elements: List[ElementInput],
+    sections_by_id: List[SectionInput],
+    u: List[Float64],
+    uniaxial_defs: List[UniMaterialDef],
+    mut uniaxial_states: List[UniMaterialState],
+    elem_uniaxial_offsets: List[Int],
+    elem_uniaxial_counts: List[Int],
+    elem_uniaxial_state_ids: List[Int],
+    force_basic_offsets: List[Int],
+    force_basic_counts: List[Int],
+    mut force_basic_q: List[Float64],
+    fiber_section_defs: List[FiberSection2dDef],
+    fiber_section_cells: List[FiberCell],
+    fiber_section_index_by_id: List[Int],
+    free_index: List[Int],
+    free_count: Int,
+    bw: Int,
+) raises -> List[List[Float64]]:
+    var elem_dof_offsets: List[Int] = []
+    var elem_dof_pool: List[Int] = []
+    _build_elem_dof_soa(elements, elem_dof_offsets, elem_dof_pool)
+    var free_map: List[Int] = []
+    var u_elem: List[Float64] = []
+    var f_dummy: List[Float64] = []
+    return assemble_global_stiffness_banded_frame2d_typed(
+        nodes,
+        elements,
+        sections_by_id,
+        u,
+        uniaxial_defs,
+        uniaxial_states,
+        elem_uniaxial_offsets,
+        elem_uniaxial_counts,
+        elem_uniaxial_state_ids,
+        force_basic_offsets,
+        force_basic_counts,
+        force_basic_q,
+        fiber_section_defs,
+        fiber_section_cells,
+        fiber_section_index_by_id,
+        free_index,
+        free_count,
+        bw,
+        elem_dof_offsets,
+        elem_dof_pool,
+        free_map,
+        u_elem,
+        f_dummy,
+    )
 
 
 fn assemble_global_stiffness_typed(
@@ -484,10 +629,89 @@ fn assemble_global_stiffness_and_internal(
     mut K: List[List[Float64]],
     mut F_int: List[Float64],
 ) raises:
+    var elem_dof_offsets: List[Int] = []
+    var elem_dof_pool: List[Int] = []
+    _build_elem_dof_soa(elements, elem_dof_offsets, elem_dof_pool)
+    var dof_map6: List[Int] = []
+    var dof_map12: List[Int] = []
+    var u_elem6: List[Float64] = []
+    assemble_global_stiffness_and_internal(
+        nodes,
+        elements,
+        sections_by_id,
+        materials_by_id,
+        id_to_index,
+        node_count,
+        ndf,
+        ndm,
+        u,
+        uniaxial_defs,
+        uniaxial_state_defs,
+        uniaxial_states,
+        elem_uniaxial_offsets,
+        elem_uniaxial_counts,
+        elem_uniaxial_state_ids,
+        force_basic_offsets,
+        force_basic_counts,
+        force_basic_q,
+        fiber_section_defs,
+        fiber_section_cells,
+        fiber_section_index_by_id,
+        elem_dof_offsets,
+        elem_dof_pool,
+        dof_map6,
+        dof_map12,
+        u_elem6,
+        K,
+        F_int,
+    )
+
+
+fn assemble_global_stiffness_and_internal(
+    nodes: List[NodeInput],
+    elements: List[ElementInput],
+    sections_by_id: List[SectionInput],
+    materials_by_id: List[MaterialInput],
+    id_to_index: List[Int],
+    node_count: Int,
+    ndf: Int,
+    ndm: Int,
+    u: List[Float64],
+    uniaxial_defs: List[UniMaterialDef],
+    uniaxial_state_defs: List[Int],
+    mut uniaxial_states: List[UniMaterialState],
+    elem_uniaxial_offsets: List[Int],
+    elem_uniaxial_counts: List[Int],
+    elem_uniaxial_state_ids: List[Int],
+    force_basic_offsets: List[Int],
+    force_basic_counts: List[Int],
+    mut force_basic_q: List[Float64],
+    fiber_section_defs: List[FiberSection2dDef],
+    fiber_section_cells: List[FiberCell],
+    fiber_section_index_by_id: List[Int],
+    elem_dof_offsets: List[Int],
+    elem_dof_pool: List[Int],
+    mut dof_map6: List[Int],
+    mut dof_map12: List[Int],
+    mut u_elem6: List[Float64],
+    mut K: List[List[Float64]],
+    mut F_int: List[Float64],
+) raises:
     _zero_matrix(K)
     _zero_vector(F_int)
 
     var elem_count = len(elements)
+    if len(elem_dof_offsets) != elem_count + 1:
+        abort("invalid elem_dof_offsets size for global assembly")
+    if len(elem_dof_pool) != elem_dof_offsets[elem_count]:
+        abort("invalid elem_dof_pool size for global assembly")
+    if len(dof_map6) != 6:
+        dof_map6.resize(6, 0)
+    if len(dof_map12) != 12:
+        dof_map12.resize(12, 0)
+    if len(u_elem6) != 6:
+        u_elem6.resize(6, 0.0)
+
     for e in range(elem_count):
         var elem = elements[e]
         var elem_type = elem.type_tag
@@ -501,15 +725,9 @@ fn assemble_global_stiffness_and_internal(
             var E = sec.E
             var A = sec.A
             var I = sec.I
-
-            var dof_map = [
-                _elem_dof(elem, 0),
-                _elem_dof(elem, 1),
-                _elem_dof(elem, 2),
-                _elem_dof(elem, 3),
-                _elem_dof(elem, 4),
-                _elem_dof(elem, 5),
-            ]
+            var dof_offset = elem_dof_offsets[e]
+            for i in range(6):
+                dof_map6[i] = elem_dof_pool[dof_offset + i]
 
             var geom = elem.geom_transf
             var k_global: List[List[Float64]] = []
@@ -525,10 +743,8 @@ fn assemble_global_stiffness_and_internal(
                     node2.y,
                 )
             elif geom == "PDelta":
-                var u_elem: List[Float64] = []
-                u_elem.resize(6, 0.0)
                 for i in range(6):
-                    u_elem[i] = u[dof_map[i]]
+                    u_elem6[i] = u[dof_map6[i]]
                 k_global = beam2d_pdelta_global_stiffness(
                     E,
                     A,
@@ -537,13 +753,11 @@ fn assemble_global_stiffness_and_internal(
                     node1.y,
                     node2.x,
                     node2.y,
-                    u_elem,
+                    u_elem6,
                 )
             elif geom == "Corotational":
-                var u_elem: List[Float64] = []
-                u_elem.resize(6, 0.0)
                 for i in range(6):
-                    u_elem[i] = u[dof_map[i]]
+                    u_elem6[i] = u[dof_map6[i]]
                 beam2d_corotational_global_tangent_and_internal(
                     E,
                     A,
@@ -552,7 +766,7 @@ fn assemble_global_stiffness_and_internal(
                     node1.y,
                     node2.x,
                     node2.y,
-                    u_elem,
+                    u_elem6,
                     k_global,
                     f_elem,
                 )
@@ -561,21 +775,15 @@ fn assemble_global_stiffness_and_internal(
 
             if geom == "Corotational":
                 for a in range(6):
-                    var Aidx = dof_map[a]
-                    for b in range(6):
-                        var Bidx = dof_map[b]
-                        K[Aidx][Bidx] += k_global[a][b]
+                    var Aidx = dof_map6[a]
+                    _scatter_add_row_unrolled4(K, Aidx, k_global[a], dof_map6, 6)
                     F_int[Aidx] += f_elem[a]
             else:
                 for a in range(6):
-                    var Aidx = dof_map[a]
-                    var sum = 0.0
-                    for b in range(6):
-                        var Bidx = dof_map[b]
-                        var kval = k_global[a][b]
-                        K[Aidx][Bidx] += kval
-                        sum += kval * u[Bidx]
-                    F_int[Aidx] += sum
+                    var Aidx = dof_map6[a]
+                    F_int[Aidx] += _scatter_add_and_dot_row_simd4(
+                        K, Aidx, k_global[a], dof_map6, u, 6
+                    )
         elif (
             elem_type == ElementTypeTag.ForceBeamColumn2d
             or elem_type == ElementTypeTag.DispBeamColumn2d
@@ -585,19 +793,10 @@ fn assemble_global_stiffness_and_internal(
             var node1 = nodes[i1]
             var node2 = nodes[i2]
             var sec = sections_by_id[elem.section]
-
-            var dof_map = [
-                _elem_dof(elem, 0),
-                _elem_dof(elem, 1),
-                _elem_dof(elem, 2),
-                _elem_dof(elem, 3),
-                _elem_dof(elem, 4),
-                _elem_dof(elem, 5),
-            ]
-            var u_elem: List[Float64] = []
-            u_elem.resize(6, 0.0)
+            var dof_offset = elem_dof_offsets[e]
             for i in range(6):
-                u_elem[i] = u[dof_map[i]]
+                dof_map6[i] = elem_dof_pool[dof_offset + i]
+                u_elem6[i] = u[dof_map6[i]]
             var k_global: List[List[Float64]] = []
             var f_global: List[Float64] = []
             if sec.type == "ElasticSection2d":
@@ -621,7 +820,7 @@ fn assemble_global_stiffness_and_internal(
                         node1.y,
                         node2.x,
                         node2.y,
-                        u_elem,
+                        u_elem6,
                     )
                 else:
                     abort("forceBeamColumn2d/dispBeamColumn2d supports geomTransf Linear or PDelta")
@@ -629,7 +828,7 @@ fn assemble_global_stiffness_and_internal(
                 for a in range(6):
                     var sum = 0.0
                     for b in range(6):
-                        sum += k_global[a][b] * u_elem[b]
+                        sum += k_global[a][b] * u_elem6[b]
                     f_global[a] = sum
             else:
                 var sec_index = fiber_section_index_by_id[elem.section]
@@ -642,7 +841,7 @@ fn assemble_global_stiffness_and_internal(
                         node1.y,
                         node2.x,
                         node2.y,
-                        u_elem,
+                        u_elem6,
                         sec_def,
                         fiber_section_cells,
                         uniaxial_defs,
@@ -663,7 +862,7 @@ fn assemble_global_stiffness_and_internal(
                         node1.y,
                         node2.x,
                         node2.y,
-                        u_elem,
+                        u_elem6,
                         sec_def,
                         fiber_section_cells,
                         uniaxial_defs,
@@ -676,10 +875,8 @@ fn assemble_global_stiffness_and_internal(
                         f_global,
                     )
             for a in range(6):
-                var Aidx = dof_map[a]
-                for b in range(6):
-                    var Bidx = dof_map[b]
-                    K[Aidx][Bidx] += k_global[a][b]
+                var Aidx = dof_map6[a]
+                _scatter_add_row_unrolled4(K, Aidx, k_global[a], dof_map6, 6)
                 F_int[Aidx] += f_global[a]
         elif elem_type == ElementTypeTag.ElasticBeamColumn3d:
             var i1 = elem.node_index_1
@@ -709,29 +906,14 @@ fn assemble_global_stiffness_and_internal(
                 node2.y,
                 node2.z,
             )
-            var dof_map = [
-                _elem_dof(elem, 0),
-                _elem_dof(elem, 1),
-                _elem_dof(elem, 2),
-                _elem_dof(elem, 3),
-                _elem_dof(elem, 4),
-                _elem_dof(elem, 5),
-                _elem_dof(elem, 6),
-                _elem_dof(elem, 7),
-                _elem_dof(elem, 8),
-                _elem_dof(elem, 9),
-                _elem_dof(elem, 10),
-                _elem_dof(elem, 11),
-            ]
+            var dof_offset = elem_dof_offsets[e]
+            for i in range(12):
+                dof_map12[i] = elem_dof_pool[dof_offset + i]
             for a in range(12):
-                var Aidx = dof_map[a]
-                var sum = 0.0
-                for b in range(12):
-                    var Bidx = dof_map[b]
-                    var kval = k_global[a][b]
-                    K[Aidx][Bidx] += kval
-                    sum += kval * u[Bidx]
-                F_int[Aidx] += sum
+                var Aidx = dof_map12[a]
+                F_int[Aidx] += _scatter_add_and_dot_row_simd4(
+                    K, Aidx, k_global[a], dof_map12, u, 12
+                )
         elif elem_type == ElementTypeTag.Truss:
             var i1 = elem.node_index_1
             var i2 = elem.node_index_2
@@ -997,13 +1179,9 @@ fn assemble_global_stiffness_and_internal(
             ]
             for a in range(8):
                 var Aidx = dof_map[a]
-                var sum = 0.0
-                for b in range(8):
-                    var Bidx = dof_map[b]
-                    var kval = k_global[a][b]
-                    K[Aidx][Bidx] += kval
-                    sum += kval * u[Bidx]
-                F_int[Aidx] += sum
+                F_int[Aidx] += _scatter_add_and_dot_row_simd4(
+                    K, Aidx, k_global[a], dof_map, u, 8
+                )
         elif elem_type == ElementTypeTag.Shell:
             var i1 = elem.node_index_1
             var i2 = elem.node_index_2
@@ -1067,12 +1245,8 @@ fn assemble_global_stiffness_and_internal(
             ]
             for a in range(24):
                 var Aidx = dof_map[a]
-                var sum = 0.0
-                for b in range(24):
-                    var Bidx = dof_map[b]
-                    var kval = k_global[a][b]
-                    K[Aidx][Bidx] += kval
-                    sum += kval * u[Bidx]
-                F_int[Aidx] += sum
+                F_int[Aidx] += _scatter_add_and_dot_row_simd4(
+                    K, Aidx, k_global[a], dof_map, u, 24
+                )
         else:
             abort("unsupported element type tag")

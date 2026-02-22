@@ -166,9 +166,15 @@ fn _append_stage_time_series(
         time_series.append(ts)
 
 
-def run_case(data: PythonObject, output_path: String, profile_path: String):
+def run_case(
+    data: PythonObject, output_path: String, profile_path: String, case_load_us: Int
+):
     var time = Python.import_module("time")
-    var t0 = Int(time.perf_counter_ns())
+    var t_start = Int(time.perf_counter_ns())
+    var safe_case_load_us = case_load_us
+    if safe_case_load_us < 0:
+        safe_case_load_us = 0
+    var t0 = t_start - safe_case_load_us * 1000
     var do_profile = _profile_enabled(profile_path)
 
     var frame_total = 0
@@ -186,6 +192,8 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
     var frame_recorders = 12
     var frame_factorize = 13
     var frame_transient_step = 14
+    var frame_case_load_parse = 15
+    var frame_model_build_dof_map = 16
 
     var frames = String()
     var events = String()
@@ -207,8 +215,21 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
         _append_frame(frames, frames_need_comma, "recorders")
         _append_frame(frames, frames_need_comma, "factorize")
         _append_frame(frames, frames_need_comma, "transient_step")
+        _append_frame(frames, frames_need_comma, "case_load_parse")
+        _append_frame(frames, frames_need_comma, "model_build_dof_map")
         _append_event(events, events_need_comma, "O", frame_total, 0)
-        _append_event(events, events_need_comma, "O", frame_assemble, 0)
+        _append_event(events, events_need_comma, "O", frame_case_load_parse, 0)
+        _append_event(
+            events, events_need_comma, "C", frame_case_load_parse, safe_case_load_us
+        )
+        _append_event(events, events_need_comma, "O", frame_assemble, safe_case_load_us)
+        _append_event(
+            events,
+            events_need_comma,
+            "O",
+            frame_model_build_dof_map,
+            safe_case_load_us,
+        )
 
     var state = load_case_state(data)
 
@@ -253,6 +274,8 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
     var fiber_section_cells = state.fiber_section_cells.copy()
     var fiber_section_index_by_id = state.fiber_section_index_by_id.copy()
     var elem_id_to_index = state.elem_id_to_index.copy()
+    var elem_dof_offsets = state.elem_dof_offsets.copy()
+    var elem_dof_pool = state.elem_dof_pool.copy()
     var elem_uniaxial_offsets = state.elem_uniaxial_offsets.copy()
     var elem_uniaxial_counts = state.elem_uniaxial_counts.copy()
     var elem_uniaxial_state_ids = state.elem_uniaxial_state_ids.copy()
@@ -277,8 +300,16 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
     var static_output_buffers: List[List[String]] = []
 
     var t_solve_start = Int(time.perf_counter_ns())
+    var model_build_dof_map_us = (t_solve_start - t_start) // 1000
     if do_profile:
         var assemble_end = (t_solve_start - t0) // 1000
+        _append_event(
+            events,
+            events_need_comma,
+            "C",
+            frame_model_build_dof_map,
+            assemble_end,
+        )
         _append_event(events, events_need_comma, "C", frame_assemble, assemble_end)
         _append_event(events, events_need_comma, "O", frame_solve, assemble_end)
 
@@ -286,6 +317,8 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
         run_static_linear(
             typed_nodes,
             typed_elements,
+            elem_dof_offsets,
+            elem_dof_pool,
             typed_sections_by_id,
             typed_materials_by_id,
             id_to_index,
@@ -339,6 +372,8 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
                 time_series_times,
                 typed_nodes,
                 typed_elements,
+                elem_dof_offsets,
+                elem_dof_pool,
                 typed_sections_by_id,
                 typed_materials_by_id,
                 id_to_index,
@@ -393,6 +428,8 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
                 analysis_integrator_targets_pool,
                 typed_nodes,
                 typed_elements,
+                elem_dof_offsets,
+                elem_dof_pool,
                 typed_sections_by_id,
                 typed_materials_by_id,
                 id_to_index,
@@ -518,6 +555,8 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
             rayleigh_beta_k_comm,
             typed_nodes,
             typed_elements,
+            elem_dof_offsets,
+            elem_dof_pool,
             typed_sections_by_id,
             typed_materials_by_id,
             id_to_index,
@@ -707,6 +746,8 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
                 run_static_linear(
                     typed_nodes,
                     typed_elements,
+                    elem_dof_offsets,
+                    elem_dof_pool,
                     typed_sections_by_id,
                     typed_materials_by_id,
                     id_to_index,
@@ -760,6 +801,8 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
                         time_series_times,
                         typed_nodes,
                         typed_elements,
+                        elem_dof_offsets,
+                        elem_dof_pool,
                         typed_sections_by_id,
                         typed_materials_by_id,
                         id_to_index,
@@ -815,6 +858,8 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
                         stage_analysis_targets_pool,
                         typed_nodes,
                         typed_elements,
+                        elem_dof_offsets,
+                        elem_dof_pool,
                         typed_sections_by_id,
                         typed_materials_by_id,
                         id_to_index,
@@ -943,6 +988,8 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
                     stage_rayleigh_beta_k_comm,
                     typed_nodes,
                     typed_elements,
+                    elem_dof_offsets,
+                    elem_dof_pool,
                     typed_sections_by_id,
                     typed_materials_by_id,
                     id_to_index,
@@ -1096,7 +1143,6 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
         _append_event(events, events_need_comma, "C", frame_solve, solve_end_us)
         _append_event(events, events_need_comma, "O", frame_output, solve_end_us)
 
-    # Match OpenSees timing injection (`analyze`/`eigen`) by timing solve only.
     var analysis_us = (t_solve_end - t_solve_start) // 1000
 
     var pathlib = Python.import_module("pathlib")
@@ -1320,6 +1366,20 @@ def run_case(data: PythonObject, output_path: String, profile_path: String):
 
     var t2 = Int(time.perf_counter_ns())
     var total_us = (t2 - t0) // 1000
+    var output_write_us = (t2 - t_solve_end) // 1000
+    var phase_json = String()
+    phase_json += "{\n"
+    phase_json += "  \"case_load_parse_us\": " + String(safe_case_load_us) + ",\n"
+    phase_json += (
+        "  \"model_build_dof_map_us\": " + String(model_build_dof_map_us) + ",\n"
+    )
+    phase_json += "  \"analysis_us\": " + String(analysis_us) + ",\n"
+    phase_json += "  \"solve_total_us\": " + String(analysis_us) + ",\n"
+    phase_json += "  \"output_write_us\": " + String(output_write_us) + ",\n"
+    phase_json += "  \"total_case_us\": " + String(total_us) + "\n"
+    phase_json += "}\n"
+    var phase_path = out_dir.joinpath("phase_times_us.json")
+    phase_path.write_text(PythonObject(phase_json))
 
     if do_profile:
         _append_event(events, events_need_comma, "C", frame_output, total_us)

@@ -6,6 +6,48 @@ from materials import UniMaterialDef, UniMaterialState, uniaxial_set_trial_strai
 from sections import FiberCell, FiberSection2dDef, FiberSection2dResponse
 
 
+@always_inline
+fn _dot6_simd4(lhs: List[Float64], rhs: List[Float64]) -> Float64:
+    var head = (
+        SIMD[DType.float64, 4](lhs[0], lhs[1], lhs[2], lhs[3])
+        * SIMD[DType.float64, 4](rhs[0], rhs[1], rhs[2], rhs[3])
+    ).reduce_add()
+    return head + lhs[4] * rhs[4] + lhs[5] * rhs[5]
+
+
+@always_inline
+fn _dot6_row_col_simd4(lhs_row: List[Float64], rhs: List[List[Float64]], col: Int) -> Float64:
+    var head = (
+        SIMD[DType.float64, 4](lhs_row[0], lhs_row[1], lhs_row[2], lhs_row[3])
+        * SIMD[DType.float64, 4](rhs[0][col], rhs[1][col], rhs[2][col], rhs[3][col])
+    ).reduce_add()
+    return head + lhs_row[4] * rhs[4][col] + lhs_row[5] * rhs[5][col]
+
+
+@always_inline
+fn _dot6_col_col_simd4(
+    lhs: List[List[Float64]], lhs_col: Int, rhs: List[List[Float64]], rhs_col: Int
+) -> Float64:
+    var head = (
+        SIMD[DType.float64, 4](
+            lhs[0][lhs_col], lhs[1][lhs_col], lhs[2][lhs_col], lhs[3][lhs_col]
+        )
+        * SIMD[DType.float64, 4](
+            rhs[0][rhs_col], rhs[1][rhs_col], rhs[2][rhs_col], rhs[3][rhs_col]
+        )
+    ).reduce_add()
+    return head + lhs[4][lhs_col] * rhs[4][rhs_col] + lhs[5][lhs_col] * rhs[5][rhs_col]
+
+
+@always_inline
+fn _dot6_col_vec_simd4(lhs: List[List[Float64]], col: Int, rhs: List[Float64]) -> Float64:
+    var head = (
+        SIMD[DType.float64, 4](lhs[0][col], lhs[1][col], lhs[2][col], lhs[3][col])
+        * SIMD[DType.float64, 4](rhs[0], rhs[1], rhs[2], rhs[3])
+    ).reduce_add()
+    return head + lhs[4][col] * rhs[4] + lhs[5][col] * rhs[5]
+
+
 fn _lobatto_xi_weight(num_int_pts: Int, ip: Int) -> (Float64, Float64):
     if num_int_pts == 3:
         if ip == 0:
@@ -239,10 +281,7 @@ fn force_beam_column2d_global_tangent_and_internal(
     var u_local: List[Float64] = []
     u_local.resize(6, 0.0)
     for i in range(6):
-        var sum = 0.0
-        for j in range(6):
-            sum += T[i][j] * u_elem_global[j]
-        u_local[i] = sum
+        u_local[i] = _dot6_simd4(T[i], u_elem_global)
 
     var chord_rotation = (u_local[4] - u_local[1]) / L
     var v_basic_0 = u_local[3] - u_local[0]
@@ -443,21 +482,12 @@ fn force_beam_column2d_global_tangent_and_internal(
 
     for i in range(6):
         for j in range(6):
-            var sum_temp = 0.0
-            for k in range(6):
-                sum_temp += k_local[i][k] * T[k][j]
-            k_temp[i][j] = sum_temp
+            k_temp[i][j] = _dot6_row_col_simd4(k_local[i], T, j)
     for i in range(6):
         for j in range(6):
-            var sum_global = 0.0
-            for k in range(6):
-                sum_global += T[k][i] * k_temp[k][j]
-            k_global[i][j] = sum_global
+            k_global[i][j] = _dot6_col_col_simd4(T, i, k_temp, j)
 
     f_global_out.resize(6, 0.0)
     for i in range(6):
-        var sum_f = 0.0
-        for j in range(6):
-            sum_f += T[j][i] * f_local[j]
-        f_global_out[i] = sum_f
+        f_global_out[i] = _dot6_col_vec_simd4(T, i, f_local)
     k_global_out = k_global^
