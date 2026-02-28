@@ -15,6 +15,13 @@ Strut is a Mojo-based adaptation of OpenSees for high-performance finite element
 - Run unit tests: `uv run run_tests.py`
 - Build/precompile Mojo solver: `scripts/build_mojo_solver.sh`
 
+## Reference
+
+When implementing OpenSees behavior, first inspect the real implementation
+
+- [`docs/agent-reference/OpenSees/`](../agent-reference/OpenSees/): source of truth for OpenSees behavior and benchmarks.
+- [`docs/agent-reference/modular/`](../agent-reference/modular/): source of truth for Mojo language/runtime docs, code, and examples.
+
 ## Mojo best practices
 
 ## 2. Common Patterns and Anti-patterns
