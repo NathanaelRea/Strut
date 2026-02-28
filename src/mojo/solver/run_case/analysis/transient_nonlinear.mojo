@@ -4,10 +4,11 @@ from materials import (
     UniMaterialDef,
     UniMaterialState,
     uniaxial_commit_all,
+    uniaxial_revert_trial_all,
 )
 from os import abort
 from python import Python
-from sections import FiberCell, FiberSection2dDef
+from sections import FiberCell, FiberSection2dDef, FiberSection3dDef
 
 from linalg import gaussian_elimination_into, lu_factorize_into, lu_solve_into
 from solver.assembly import (
@@ -18,11 +19,16 @@ from solver.dof import node_dof_index, require_dof_in_range
 from solver.profile import _append_event
 from solver.run_case.input_types import (
     AnalysisInput,
+    ElementLoadInput,
     ElementInput,
     MaterialInput,
     NodeInput,
     RecorderInput,
     SectionInput,
+)
+from solver.run_case.load_state import (
+    build_active_element_load_state,
+    build_active_nodal_load,
 )
 from solver.time_series import TimeSeriesInput, eval_time_series_input
 
@@ -37,6 +43,7 @@ from solver.run_case.helpers import (
     _has_recorder_type,
     _drift_value,
     _section_response_for_recorder,
+    _sync_force_beam_column2d_committed_basic_states,
     _update_envelope,
 )
 from tag_types import NonlinearAlgorithmMode, RecorderTypeTag
@@ -57,26 +64,6 @@ fn _copy_vector_simd4(mut dst: List[Float64], src: List[Float64]):
         i += 4
     while i < n:
         dst[i] = src[i]
-        i += 1
-
-
-@always_inline
-fn _copy_scaled_vector_simd4(mut dst: List[Float64], src: List[Float64], scale: Float64):
-    if len(dst) != len(src):
-        abort("vector size mismatch in _copy_scaled_vector_simd4")
-    var n = len(dst)
-    var i = 0
-    var scale_vec = SIMD[DType.float64, 4](scale)
-    while i + 3 < n:
-        var chunk = SIMD[DType.float64, 4](src[i], src[i + 1], src[i + 2], src[i + 3])
-        chunk = chunk * scale_vec
-        dst[i] = chunk[0]
-        dst[i + 1] = chunk[1]
-        dst[i + 2] = chunk[2]
-        dst[i + 3] = chunk[3]
-        i += 4
-    while i < n:
-        dst[i] = src[i] * scale
         i += 1
 
 
@@ -260,6 +247,40 @@ fn _scatter_add_from_free_simd4(free: List[Int], mut dst: List[Float64], add: Li
 
 
 @always_inline
+fn _predict_displacement_newmark_simd4(
+    free: List[Int],
+    mut u: List[Float64],
+    u_n: List[Float64],
+    v_n: List[Float64],
+    a_n: List[Float64],
+    dt: Float64,
+    beta: Float64,
+):
+    var n = len(free)
+    var i = 0
+    var dt_vec = SIMD[DType.float64, 4](dt)
+    var coeff_vec = SIMD[DType.float64, 4](dt * dt * (0.5 - beta))
+    while i + 3 < n:
+        var idx0 = free[i]
+        var idx1 = free[i + 1]
+        var idx2 = free[i + 2]
+        var idx3 = free[i + 3]
+        var u_prev = SIMD[DType.float64, 4](u_n[i], u_n[i + 1], u_n[i + 2], u_n[i + 3])
+        var v_prev = SIMD[DType.float64, 4](v_n[i], v_n[i + 1], v_n[i + 2], v_n[i + 3])
+        var a_prev = SIMD[DType.float64, 4](a_n[i], a_n[i + 1], a_n[i + 2], a_n[i + 3])
+        var u_pred = u_prev + dt_vec * v_prev + coeff_vec * a_prev
+        u[idx0] = u_pred[0]
+        u[idx1] = u_pred[1]
+        u[idx2] = u_pred[2]
+        u[idx3] = u_pred[3]
+        i += 4
+    var coeff = dt * dt * (0.5 - beta)
+    while i < n:
+        u[free[i]] = u_n[i] + dt * v_n[i] + coeff * a_n[i]
+        i += 1
+
+
+@always_inline
 fn _update_post_step_newmark_simd4(
     free: List[Int],
     u: List[Float64],
@@ -329,6 +350,8 @@ fn run_transient_nonlinear(
     typed_elements: List[ElementInput],
     elem_dof_offsets: List[Int],
     elem_dof_pool: List[Int],
+    const_element_loads: List[ElementLoadInput],
+    pattern_element_loads: List[ElementLoadInput],
     typed_sections_by_id: List[SectionInput],
     typed_materials_by_id: List[MaterialInput],
     id_to_index: List[Int],
@@ -346,7 +369,8 @@ fn run_transient_nonlinear(
     force_basic_offsets: List[Int],
     force_basic_counts: List[Int],
     mut force_basic_q: List[Float64],
-    mut F_total: List[Float64],
+    F_const: List[Float64],
+    F_pattern: List[Float64],
     M_total: List[Float64],
     free: List[Int],
     recorders: List[RecorderInput],
@@ -358,6 +382,9 @@ fn run_transient_nonlinear(
     fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
+    fiber_section3d_defs: List[FiberSection3dDef],
+    fiber_section3d_cells: List[FiberCell],
+    fiber_section3d_index_by_id: List[Int],
     mut transient_output_files: List[String],
     mut transient_output_buffers: List[List[String]],
     has_transformation_mpc: Bool,
@@ -547,9 +574,30 @@ fn run_transient_nonlinear(
         _append_event(
             events, events_need_comma, "O", frame_assemble_stiffness, asm_start_us
         )
+    var initial_pattern_scale = 0.0
+    if pattern_type == "Plain":
+        if ts_index >= 0:
+            initial_pattern_scale = eval_time_series_input(
+                time_series[ts_index], 0.0, time_series_values, time_series_times
+            )
+        else:
+            initial_pattern_scale = 1.0
+    var active_element_load_state = build_active_element_load_state(
+        const_element_loads,
+        pattern_element_loads,
+        initial_pattern_scale,
+        typed_elements,
+        elem_id_to_index,
+        ndm,
+        ndf,
+    )
     assemble_global_stiffness_and_internal(
         typed_nodes,
         typed_elements,
+        active_element_load_state.element_loads,
+        active_element_load_state.elem_load_offsets,
+        active_element_load_state.elem_load_pool,
+        1.0,
         typed_sections_by_id,
         typed_materials_by_id,
         id_to_index,
@@ -569,6 +617,9 @@ fn run_transient_nonlinear(
         fiber_section_defs,
         fiber_section_cells,
         fiber_section_index_by_id,
+        fiber_section3d_defs,
+        fiber_section3d_cells,
+        fiber_section3d_index_by_id,
         elem_dof_offsets,
         elem_dof_pool,
         asm_dof_map6,
@@ -609,6 +660,7 @@ fn run_transient_nonlinear(
         for j in range(free_count):
             K_init_ff[i][j] = K[free[i]][free[j]]
             K_comm_ff[i][j] = K_init_ff[i][j]
+    uniaxial_revert_trial_all(uniaxial_states)
 
     var v: List[Float64] = []
     v.resize(total_dofs, 0.0)
@@ -621,6 +673,8 @@ fn run_transient_nonlinear(
     v_n.resize(free_count, 0.0)
     var a_n: List[Float64] = []
     a_n.resize(free_count, 0.0)
+    var u_step_base: List[Float64] = []
+    u_step_base.resize(total_dofs, 0.0)
     var v_trial: List[Float64] = []
     v_trial.resize(free_count, 0.0)
     var a_trial: List[Float64] = []
@@ -696,10 +750,44 @@ fn run_transient_nonlinear(
                 )
 
         _gather_free_state_simd4(free, u, v, a, u_n, v_n, a_n)
+        _predict_displacement_newmark_simd4(free, u, u_n, v_n, a_n, dt, beta)
+        if has_transformation_mpc:
+            if do_profile:
+                var t_constraints_start = Int(time.perf_counter_ns())
+                var constraints_start_us = (t_constraints_start - t0) // 1000
+                _append_event(
+                    events,
+                    events_need_comma,
+                    "O",
+                    frame_constraints,
+                    constraints_start_us,
+                )
+            _enforce_equal_dof_values(u, rep_dof, constrained)
+            if do_profile:
+                var t_constraints_end = Int(time.perf_counter_ns())
+                var constraints_end_us = (t_constraints_end - t0) // 1000
+                _append_event(
+                    events,
+                    events_need_comma,
+                    "C",
+                    frame_constraints,
+                    constraints_end_us,
+                )
+        _copy_vector_simd4(u_step_base, u)
+        var force_basic_q_base = force_basic_q.copy()
 
         var t = Float64(step + 1) * dt
         if pattern_type == "UniformExcitation":
-            _copy_vector_simd4(F_ext_step, F_total)
+            _copy_vector_simd4(F_ext_step, F_const)
+            active_element_load_state = build_active_element_load_state(
+                const_element_loads,
+                pattern_element_loads,
+                0.0,
+                typed_elements,
+                elem_id_to_index,
+                ndm,
+                ndf,
+            )
             if do_profile:
                 var t_ts_start = Int(time.perf_counter_ns())
                 var ts_start_us = (t_ts_start - t0) // 1000
@@ -757,9 +845,29 @@ fn run_transient_nonlinear(
                         frame_time_series_eval,
                         ts_end_us,
                     )
-                _copy_scaled_vector_simd4(F_ext_step, F_total, factor)
+                _copy_vector_simd4(
+                    F_ext_step, build_active_nodal_load(F_const, F_pattern, factor)
+                )
+                active_element_load_state = build_active_element_load_state(
+                    const_element_loads,
+                    pattern_element_loads,
+                    factor,
+                    typed_elements,
+                    elem_id_to_index,
+                    ndm,
+                    ndf,
+                )
             else:
-                _copy_vector_simd4(F_ext_step, F_total)
+                _copy_vector_simd4(F_ext_step, build_active_nodal_load(F_const, F_pattern, 1.0))
+                active_element_load_state = build_active_element_load_state(
+                    const_element_loads,
+                    pattern_element_loads,
+                    1.0,
+                    typed_elements,
+                    elem_id_to_index,
+                    ndm,
+                    ndf,
+                )
         _gather_from_free_simd4(free, F_ext_step, P_ext_f)
 
         var converged = False
@@ -772,10 +880,8 @@ fn run_transient_nonlinear(
             if attempt == 1 and not has_fallback:
                 break
             if attempt == 1:
-                for i in range(free_count):
-                    u[free[i]] = u_n[i]
-                if has_transformation_mpc:
-                    _enforce_equal_dof_values(u, rep_dof, constrained)
+                _copy_vector_simd4(u, u_step_base)
+                force_basic_q = force_basic_q_base.copy()
                 attempt_algorithm_mode = fallback_algorithm_mode
                 attempt_test_mode = fallback_test_mode
                 attempt_max_iters = fallback_max_iters
@@ -787,6 +893,7 @@ fn run_transient_nonlinear(
             var k_eff_initialized = False
             var k_eff_factored = False
             for _ in range(attempt_max_iters):
+                uniaxial_revert_trial_all(uniaxial_states)
                 var iter_closed = False
                 if do_profile:
                     var t_iter_start = Int(time.perf_counter_ns())
@@ -811,6 +918,10 @@ fn run_transient_nonlinear(
                 assemble_global_stiffness_and_internal(
                     typed_nodes,
                     typed_elements,
+                    active_element_load_state.element_loads,
+                    active_element_load_state.elem_load_offsets,
+                    active_element_load_state.elem_load_pool,
+                    1.0,
                     typed_sections_by_id,
                     typed_materials_by_id,
                     id_to_index,
@@ -830,6 +941,9 @@ fn run_transient_nonlinear(
                     fiber_section_defs,
                     fiber_section_cells,
                     fiber_section_index_by_id,
+                    fiber_section3d_defs,
+                    fiber_section3d_cells,
+                    fiber_section3d_index_by_id,
                     elem_dof_offsets,
                     elem_dof_pool,
                     asm_dof_map6,
@@ -1159,6 +1273,10 @@ fn run_transient_nonlinear(
             assemble_global_stiffness_and_internal(
                 typed_nodes,
                 typed_elements,
+                active_element_load_state.element_loads,
+                active_element_load_state.elem_load_offsets,
+                active_element_load_state.elem_load_pool,
+                1.0,
                 typed_sections_by_id,
                 typed_materials_by_id,
                 id_to_index,
@@ -1178,6 +1296,9 @@ fn run_transient_nonlinear(
                 fiber_section_defs,
                 fiber_section_cells,
                 fiber_section_index_by_id,
+                fiber_section3d_defs,
+                fiber_section3d_cells,
+                fiber_section3d_index_by_id,
                 elem_dof_offsets,
                 elem_dof_pool,
                 asm_dof_map6,
@@ -1222,6 +1343,15 @@ fn run_transient_nonlinear(
                 for j in range(free_count):
                     K_comm_ff[i][j] = K[free[i]][free[j]]
         uniaxial_commit_all(uniaxial_states)
+        _sync_force_beam_column2d_committed_basic_states(
+            typed_nodes,
+            typed_elements,
+            ndf,
+            u,
+            force_basic_offsets,
+            force_basic_counts,
+            force_basic_q,
+        )
 
         _update_post_step_newmark_simd4(
             free, u, u_n, v_n, a_n, a0, a2, a3, gamma, dt, v, a
@@ -1260,6 +1390,10 @@ fn run_transient_nonlinear(
             F_int_reaction = assemble_internal_forces_typed(
                 typed_nodes,
                 typed_elements,
+                active_element_load_state.element_loads,
+                active_element_load_state.elem_load_offsets,
+                active_element_load_state.elem_load_pool,
+                1.0,
                 typed_sections_by_id,
                 typed_materials_by_id,
                 id_to_index,
@@ -1279,6 +1413,9 @@ fn run_transient_nonlinear(
                 fiber_section_defs,
                 fiber_section_cells,
                 fiber_section_index_by_id,
+                fiber_section3d_defs,
+                fiber_section3d_cells,
+                fiber_section3d_index_by_id,
             )
         if record_any_element_force:
             for i in range(elem_count):
@@ -1311,15 +1448,22 @@ fn run_transient_nonlinear(
                     if not elem_force_cached[elem_index]:
                         var elem = typed_elements[elem_index]
                         elem_force_values[elem_index] = _element_force_global_for_recorder(
-                            elem_index,
-                            elem,
-                            ndf,
-                            u,
-                            typed_nodes,
-                            typed_sections_by_id,
+                        elem_index,
+                        elem,
+                        ndf,
+                        u,
+                        active_element_load_state.element_loads,
+                        active_element_load_state.elem_load_offsets,
+                        active_element_load_state.elem_load_pool,
+                        1.0,
+                        typed_nodes,
+                        typed_sections_by_id,
                             fiber_section_defs,
                             fiber_section_cells,
                             fiber_section_index_by_id,
+                            fiber_section3d_defs,
+                            fiber_section3d_cells,
+                            fiber_section3d_index_by_id,
                             uniaxial_defs,
                             uniaxial_state_defs,
                             uniaxial_states,
@@ -1385,11 +1529,18 @@ fn run_transient_nonlinear(
                             elem,
                             ndf,
                             u,
+                            active_element_load_state.element_loads,
+                            active_element_load_state.elem_load_offsets,
+                            active_element_load_state.elem_load_pool,
+                            1.0,
                             typed_nodes,
                             typed_sections_by_id,
                             fiber_section_defs,
                             fiber_section_cells,
                             fiber_section_index_by_id,
+                            fiber_section3d_defs,
+                            fiber_section3d_cells,
+                            fiber_section3d_index_by_id,
                             uniaxial_defs,
                             uniaxial_state_defs,
                             uniaxial_states,
@@ -1429,11 +1580,18 @@ fn run_transient_nonlinear(
                             sec_no,
                             ndf,
                             u,
+                            active_element_load_state.element_loads,
+                            active_element_load_state.elem_load_offsets,
+                            active_element_load_state.elem_load_pool,
+                            1.0,
                             typed_nodes,
                             typed_sections_by_id,
                             fiber_section_defs,
                             fiber_section_cells,
                             fiber_section_index_by_id,
+                            fiber_section3d_defs,
+                            fiber_section3d_cells,
+                            fiber_section3d_index_by_id,
                             uniaxial_defs,
                             uniaxial_states,
                             elem_uniaxial_offsets,

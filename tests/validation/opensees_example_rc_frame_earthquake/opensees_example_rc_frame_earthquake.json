@@ -163,6 +163,13 @@
     "dt": 0.01,
     "constraints": "Plain",
     "algorithm": "Newton",
+    "test_type": "NormDispIncr",
+    "tol": 1.0e-12,
+    "max_iters": 10,
+    "fallback_algorithm": "ModifiedNewtonInitial",
+    "fallback_test_type": "NormDispIncr",
+    "fallback_tol": 1.0e-12,
+    "fallback_max_iters": 100,
     "integrator": {
       "type": "Newmark",
       "gamma": 0.5,

@@ -1,4 +1,5 @@
 from collections import List
+from solver.run_case.input_types import ElementLoadInput
 from materials import UniMaterialDef, UniMaterialState
 from python import Python
 
@@ -10,9 +11,17 @@ from solver.assembly import (
 from solver.banded import banded_gaussian_elimination, estimate_bandwidth_typed
 from solver.profile import _append_event
 from solver.run_case.input_types import ElementInput, MaterialInput, NodeInput, SectionInput
-from solver.run_case.helpers import _collapse_matrix_by_rep, _enforce_equal_dof_values
+from solver.run_case.helpers import (
+    _collapse_matrix_by_rep,
+    _collapse_vector_by_rep,
+    _enforce_equal_dof_values,
+)
+from solver.run_case.load_state import (
+    build_active_element_load_state,
+    build_active_nodal_load,
+)
 from solver.time_series import TimeSeriesInput, eval_time_series_input
-from sections import FiberCell, FiberSection2dDef
+from sections import FiberCell, FiberSection2dDef, FiberSection3dDef
 from tag_types import ElementTypeTag
 
 fn run_static_linear(
@@ -20,14 +29,18 @@ fn run_static_linear(
     typed_elements: List[ElementInput],
     elem_dof_offsets: List[Int],
     elem_dof_pool: List[Int],
+    const_element_loads: List[ElementLoadInput],
+    pattern_element_loads: List[ElementLoadInput],
     typed_sections_by_id: List[SectionInput],
     typed_materials_by_id: List[MaterialInput],
     id_to_index: List[Int],
+    elem_id_to_index: List[Int],
     node_count: Int,
     ndf: Int,
     ndm: Int,
     mut u: List[Float64],
-    mut F_total: List[Float64],
+    F_const: List[Float64],
+    F_pattern: List[Float64],
     uniaxial_defs: List[UniMaterialDef],
     uniaxial_state_defs: List[Int],
     mut uniaxial_states: List[UniMaterialState],
@@ -40,6 +53,9 @@ fn run_static_linear(
     fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
+    fiber_section3d_defs: List[FiberSection3dDef],
+    fiber_section3d_cells: List[FiberCell],
+    fiber_section3d_index_by_id: List[Int],
     use_banded_linear: Bool,
     free_index: List[Int],
     free: List[Int],
@@ -66,12 +82,21 @@ fn run_static_linear(
     var asm_u_elem6: List[Float64] = []
     var asm_free_map6: List[Int] = []
     var asm_f_dummy: List[Float64] = []
+    var load_scale = 1.0
     if ts_index >= 0:
-        var factor = eval_time_series_input(
+        load_scale = eval_time_series_input(
             time_series[ts_index], 1.0, time_series_values, time_series_times
         )
-        for i in range(total_dofs):
-            F_total[i] *= factor
+    var F_active = build_active_nodal_load(F_const, F_pattern, load_scale)
+    var active_element_load_state = build_active_element_load_state(
+        const_element_loads,
+        pattern_element_loads,
+        load_scale,
+        typed_elements,
+        elem_id_to_index,
+        ndm,
+        ndf,
+    )
     if do_profile:
         var t_asm_start = Int(time.perf_counter_ns())
         var asm_start_us = (t_asm_start - t0) // 1000
@@ -82,6 +107,8 @@ fn run_static_linear(
     var use_typed_banded = False
     var K_ff_banded: List[List[Float64]] = []
     var K: List[List[Float64]] = []
+    var F_int_dummy: List[Float64] = []
+    F_int_dummy.resize(total_dofs, 0.0)
     if use_banded_linear:
         bw = estimate_bandwidth_typed(typed_elements, free_index)
         if bw > free_count - 1:
@@ -97,9 +124,16 @@ fn run_static_linear(
                 use_typed_banded = False
                 break
         if use_typed_banded:
+            if len(active_element_load_state.element_loads) > 0:
+                use_typed_banded = False
+        if use_typed_banded:
             K_ff_banded = assemble_global_stiffness_banded_frame2d_typed(
                 typed_nodes,
                 typed_elements,
+                active_element_load_state.element_loads,
+                active_element_load_state.elem_load_offsets,
+                active_element_load_state.elem_load_pool,
+                1.0,
                 typed_sections_by_id,
                 u,
                 uniaxial_defs,
@@ -123,8 +157,6 @@ fn run_static_linear(
                 asm_f_dummy,
             )
     if not (use_banded_linear and use_typed_banded):
-        var F_int_dummy: List[Float64] = []
-        F_int_dummy.resize(total_dofs, 0.0)
         for _ in range(total_dofs):
             var row: List[Float64] = []
             row.resize(total_dofs, 0.0)
@@ -132,6 +164,10 @@ fn run_static_linear(
         assemble_global_stiffness_and_internal(
             typed_nodes,
             typed_elements,
+            active_element_load_state.element_loads,
+            active_element_load_state.elem_load_offsets,
+            active_element_load_state.elem_load_pool,
+            1.0,
             typed_sections_by_id,
             typed_materials_by_id,
             id_to_index,
@@ -151,6 +187,9 @@ fn run_static_linear(
             fiber_section_defs,
             fiber_section_cells,
             fiber_section_index_by_id,
+            fiber_section3d_defs,
+            fiber_section3d_cells,
+            fiber_section3d_index_by_id,
             elem_dof_offsets,
             elem_dof_pool,
             asm_dof_map6,
@@ -161,6 +200,7 @@ fn run_static_linear(
         )
         if has_transformation_mpc:
             K = _collapse_matrix_by_rep(K, rep_dof)
+            F_int_dummy = _collapse_vector_by_rep(F_int_dummy, rep_dof)
     if do_profile:
         var t_asm_end = Int(time.perf_counter_ns())
         var asm_end_us = (t_asm_end - t0) // 1000
@@ -183,12 +223,12 @@ fn run_static_linear(
             K_ff.append(row^)
         for i in range(free_count):
             var row_i = free[i]
-            F_f[i] = F_total[row_i]
+            F_f[i] = F_active[row_i] - F_int_dummy[row_i]
             for j in range(free_count):
                 K_ff[i][j] = K[row_i][free[j]]
     else:
         for i in range(free_count):
-            F_f[i] = F_total[free[i]]
+            F_f[i] = F_active[free[i]]
     if do_profile:
         var t_kff_end = Int(time.perf_counter_ns())
         var kff_end_us = (t_kff_end - t0) // 1000

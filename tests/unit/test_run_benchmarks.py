@@ -27,7 +27,17 @@ run_benchmarks = _load_run_benchmarks_module()
 def _write_case(path: Path, enabled=True, status="active") -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
-        json.dumps({"schema_version": "1.0", "enabled": enabled, "status": status})
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "enabled": enabled,
+                "status": status,
+                "model": {"ndm": 2, "ndf": 3},
+                "nodes": [],
+                "elements": [],
+                "recorders": [],
+            }
+        )
         + "\n",
         encoding="utf-8",
     )
@@ -49,7 +59,7 @@ def test_load_case_enabled_uses_enabled_flag_only(tmp_path: Path):
 def test_discover_default_cases_excludes_disabled_cases(monkeypatch, tmp_path: Path):
     validation_root = tmp_path / "validation"
     _write_case(
-        validation_root / "enabled_case" / "enabled_case.json",
+        validation_root / "elastic_enabled_case" / "elastic_enabled_case.json",
         enabled=True,
         status="active",
     )
@@ -68,7 +78,38 @@ def test_discover_default_cases_excludes_disabled_cases(monkeypatch, tmp_path: P
     case_names = [
         case.name for case in run_benchmarks.discover_default_cases(validation_root)
     ]
-    assert case_names == ["enabled_case"]
+    assert case_names == ["elastic_enabled_case"]
+
+
+def test_discover_default_cases_ignores_non_case_json(tmp_path: Path):
+    validation_root = tmp_path / "validation"
+    case_dir = validation_root / "elastic_real_case"
+    case_dir.mkdir(parents=True, exist_ok=True)
+    (case_dir / "elastic_real_case.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "enabled": True,
+                "model": {"ndm": 2, "ndf": 3},
+                "nodes": [],
+                "elements": [],
+                "recorders": [],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    artifact_dir = validation_root / "phase_times_us"
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    (artifact_dir / "phase_times_us.json").write_text(
+        json.dumps({"analysis_us": 123.0}) + "\n",
+        encoding="utf-8",
+    )
+
+    case_names = [
+        case.name for case in run_benchmarks.discover_default_cases(validation_root)
+    ]
+    assert case_names == ["elastic_real_case"]
 
 
 def test_discover_all_cases_includes_disabled_cases(tmp_path: Path):

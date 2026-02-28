@@ -2,6 +2,9 @@ from collections import List
 from math import atan2, hypot, sqrt
 from os import abort
 
+from solver.run_case.input_types import ElementLoadInput
+from tag_types import ElementLoadTypeTag
+
 from elements.utils import _zero_matrix
 
 
@@ -164,6 +167,59 @@ fn beam_uniform_load_global(
     w: Float64,
 ) -> List[Float64]:
     return beam_uniform_load_global_2d(x1, y1, x2, y2, w, 0.0)
+
+
+fn beam2d_element_load_global(
+    element_loads: List[ElementLoadInput],
+    elem_load_offsets: List[Int],
+    elem_load_pool: List[Int],
+    elem_index: Int,
+    load_scale: Float64,
+    x1: Float64,
+    y1: Float64,
+    x2: Float64,
+    y2: Float64,
+) -> List[Float64]:
+    var f_local: List[Float64] = []
+    f_local.resize(6, 0.0)
+    if load_scale == 0.0:
+        return _beam2d_transform_force_local_to_global(1.0, 0.0, f_local)
+
+    var dx = x2 - x1
+    var dy = y2 - y1
+    var L = hypot(dx, dy)
+    if L == 0.0:
+        abort("zero-length element")
+    var c = dx / L
+    var s = dy / L
+
+    for slot in range(elem_load_offsets[elem_index], elem_load_offsets[elem_index + 1]):
+        var load = element_loads[elem_load_pool[slot]]
+        if load.type_tag == ElementLoadTypeTag.BeamUniform:
+            var wx = load.wx * load_scale
+            var wy = load.wy * load_scale
+            f_local[0] += wx * L / 2.0
+            f_local[1] += wy * L / 2.0
+            f_local[2] += wy * L * L / 12.0
+            f_local[3] += wx * L / 2.0
+            f_local[4] += wy * L / 2.0
+            f_local[5] -= wy * L * L / 12.0
+        elif load.type_tag == ElementLoadTypeTag.BeamPoint:
+            var xi = load.x
+            if xi < 0.0 or xi > 1.0:
+                continue
+            var px = load.px * load_scale
+            var py = load.py * load_scale
+            var xi2 = xi * xi
+            var xi3 = xi2 * xi
+            f_local[0] += px * (1.0 - xi)
+            f_local[3] += px * xi
+            f_local[1] += py * (1.0 - 3.0 * xi2 + 2.0 * xi3)
+            f_local[2] += py * L * (xi - 2.0 * xi2 + xi3)
+            f_local[4] += py * (3.0 * xi2 - 2.0 * xi3)
+            f_local[5] += py * L * (-xi2 + xi3)
+
+    return _beam2d_transform_force_local_to_global(c, s, f_local)
 
 
 fn beam2d_pdelta_global_stiffness(

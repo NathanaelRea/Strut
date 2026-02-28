@@ -164,12 +164,13 @@ def test_disp_beam_column2d_rejects_unsupported_geom_transf():
             _run_strut_case(case_data, out_dir)
 
 
-def test_disp_beam_column2d_rejects_non_lobatto_integration():
+def test_disp_beam_column2d_legendre_variable_points_runs():
     case_data = _base_case("dispBeamColumn2d")
     case_data["elements"][0]["integration"] = "Legendre"
+    case_data["elements"][0]["num_int_pts"] = 7
     case_data["analysis"] = {
         "type": "static_nonlinear",
-        "steps": 1,
+        "steps": 2,
         "max_iters": 20,
         "tol": 1.0e-10,
         "integrator": {"type": "LoadControl"},
@@ -177,8 +178,91 @@ def test_disp_beam_column2d_rejects_non_lobatto_integration():
 
     with tempfile.TemporaryDirectory() as tmp:
         out_dir = Path(tmp)
-        with pytest.raises(subprocess.CalledProcessError):
-            _run_strut_case(case_data, out_dir)
+        _run_strut_case(case_data, out_dir)
+        rows = _read_rows(out_dir / "element_force_ele1.out")
+
+    assert len(rows) == 2
+    assert all(len(row) == 6 for row in rows)
+    assert all(math.isfinite(value) for row in rows for value in row)
+
+
+def test_disp_beam_column2d_fiber_pdelta_geom_changes_response():
+    base_case = {
+        "schema_version": "1.0",
+        "metadata": {"name": "disp_beam_column2d_pdelta_unit", "units": "SI"},
+        "model": {"ndm": 2, "ndf": 3},
+        "nodes": [
+            {"id": 1, "x": 0.0, "y": 0.0, "constraints": [1, 2, 3]},
+            {"id": 2, "x": 0.0, "y": 3.0},
+        ],
+        "materials": [{"id": 1, "type": "Elastic", "params": {"E": 30000000000.0}}],
+        "sections": [
+            {
+                "id": 1,
+                "type": "FiberSection2d",
+                "params": {
+                    "patches": [
+                        {
+                            "type": "rect",
+                            "material": 1,
+                            "num_subdiv_y": 8,
+                            "num_subdiv_z": 2,
+                            "y_i": -0.2,
+                            "z_i": -0.1,
+                            "y_j": 0.2,
+                            "z_j": 0.1,
+                        }
+                    ],
+                    "layers": [],
+                },
+            }
+        ],
+        "elements": [
+            {
+                "id": 1,
+                "type": "dispBeamColumn2d",
+                "nodes": [1, 2],
+                "section": 1,
+                "geomTransf": "Linear",
+                "integration": "Lobatto",
+                "num_int_pts": 5,
+            }
+        ],
+        "loads": [
+            {"node": 2, "dof": 1, "value": 1.0e5},
+            {"node": 2, "dof": 2, "value": -1.0e7},
+        ],
+        "analysis": {
+            "type": "static_nonlinear",
+            "steps": 3,
+            "max_iters": 30,
+            "tol": 1e-9,
+            "integrator": {"type": "LoadControl"},
+        },
+        "recorders": [
+            {"type": "element_force", "elements": [1], "output": "element_force"}
+        ],
+    }
+
+    linear_case = json.loads(json.dumps(base_case))
+    pdelta_case = json.loads(json.dumps(base_case))
+    pdelta_case["elements"][0]["geomTransf"] = "PDelta"
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        linear_out = tmp_path / "linear"
+        pdelta_out = tmp_path / "pdelta"
+        linear_out.mkdir()
+        pdelta_out.mkdir()
+        _run_strut_case(linear_case, linear_out)
+        _run_strut_case(pdelta_case, pdelta_out)
+        linear_rows = _read_rows(linear_out / "element_force_ele1.out")
+        pdelta_rows = _read_rows(pdelta_out / "element_force_ele1.out")
+
+    assert len(linear_rows) == 3
+    assert len(pdelta_rows) == 3
+    diff = sum(abs(a - b) for a, b in zip(linear_rows[-1], pdelta_rows[-1]))
+    assert diff > 1.0e-3
 
 
 def test_disp_beam_column_alias_rejected():

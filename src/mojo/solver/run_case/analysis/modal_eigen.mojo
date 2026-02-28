@@ -13,7 +13,7 @@ from solver.run_case.input_types import (
     RecorderInput,
     SectionInput,
 )
-from sections import FiberCell, FiberSection2dDef
+from sections import FiberCell, FiberSection2dDef, FiberSection3dDef
 
 from solver.run_case.helpers import (
     _append_output,
@@ -69,6 +69,9 @@ fn run_modal_eigen(
     fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
+    fiber_section3d_defs: List[FiberSection3dDef],
+    fiber_section3d_cells: List[FiberCell],
+    fiber_section3d_index_by_id: List[Int],
     M_total: List[Float64],
     constrained: List[Bool],
     free: List[Int],
@@ -103,6 +106,9 @@ fn run_modal_eigen(
         fiber_section_defs,
         fiber_section_cells,
         fiber_section_index_by_id,
+        fiber_section3d_defs,
+        fiber_section3d_cells,
+        fiber_section3d_index_by_id,
     )
     if has_transformation_mpc:
         K = _collapse_matrix_by_rep(K, rep_dof)

@@ -9,6 +9,11 @@ This document describes the parity and benchmark harness used to compare Strut (
 - Consistent, machine-readable outputs for comparison.
 - Repeatable benchmarks with stored results.
 
+Phase-0 parity contract artifacts:
+
+- Beam-column parity contract: `docs/beam_column_parity_contract.md`
+- Validation case matrix: `tests/validation/PHASE0_CASE_MATRIX.md`
+
 ## Canonical Model Format
 
 The canonical model is JSON, versioned via `schema_version`.
@@ -25,7 +30,8 @@ Minimum required fields (v1.0):
 - `materials`: list of `{ id, type, params }` (`Elastic`, `ElasticIsotropic`, `Steel01`, `Steel02`, `Concrete01`, `Concrete02`)
 - `sections`: list of `{ id, type, params }`
   - Elastic: `ElasticSection2d`, `ElasticSection3d`, `ElasticMembranePlateSection`
-  - Fiber (infrastructure): `FiberSection2d`
+  - Fiber (infrastructure): `FiberSection2d`, `FiberSection3d`
+    - `FiberSection3d` beam-column runtime use requires positive `params.G` and `params.J` for torsion stiffness.
     - `params.patches`: list of patches:
       - `rect`: `{ type: "rect", material, num_subdiv_y, num_subdiv_z, y_i, z_i, y_j, z_j }`
       - `quadr`: `{ type: "quadr", material, num_subdiv_y, num_subdiv_z, y_i, z_i, y_j, z_j, y_k, z_k, y_l, z_l }`
@@ -44,7 +50,9 @@ Minimum required fields (v1.0):
   - `Plain`: `{ type: "Plain", tag, time_series }`
   - `UniformExcitation`: `{ type: "UniformExcitation", tag, direction, accel }`
 - `loads`: list of `{ node, dof, value }` (`dof` must be in `1..ndf`)
-- `element_loads`: list of `{ element, type, wy | w, wx? }` (optional, `type: "beamUniform"` only)
+- `element_loads`: optional list of element loads.
+  2D: `beamUniform { element, type, wy | w, wx? }`, `beamPoint { element, type, py, x, px? }`
+  3D: `beamUniform { element, type, wy, wz, wx? }`, `beamPoint { element, type, py, pz, x, px? }`
   - `wy` (or legacy alias `w`): local y-direction uniform load intensity.
   - `wx` (optional): local x-direction uniform load intensity.
 - `rayleigh`: `{ alphaM?, betaK?, betaKInit?, betaKComm? }` (optional; top-level)
@@ -55,7 +63,11 @@ Minimum required fields (v1.0):
   - `static_nonlinear` integrator options:
     - Load control: `{ type: "LoadControl" }` (default)
     - Displacement control: `{ type: "DisplacementControl", node, dof, du? | targets?, cutback?, max_cutbacks?, min_du? }`
-    - `algorithm`: `"Newton"` (default) or `"ModifiedNewton"`
+    - `algorithm`: `"Newton"` (default), `"ModifiedNewton"`, or `"ModifiedNewtonInitial"`
+    - `test_type`: `"MaxDispIncr"` (default), `"NormDispIncr"`, `"NormUnbalance"`, or `"EnergyIncr"`
+    - optional fallback controls:
+      - `fallback_algorithm: "Newton" | "ModifiedNewton" | "ModifiedNewtonInitial"`
+      - `fallback_test_type`, `fallback_tol`, `fallback_rel_tol`, `fallback_max_iters`
   - `transient_linear` requires `dt > 0` and supports `integrator: { type: "Newmark", gamma?, beta? }`
   - `transient_nonlinear` requires `dt > 0` and supports:
     - `integrator: { type: "Newmark", gamma?, beta? }`
@@ -71,12 +83,12 @@ Minimum required fields (v1.0):
 - `masses`: list of `{ node, dof, value }` (optional; nodal lumped masses for dynamics)
 - `recorders`: list of
   - `{ type: "node_displacement", nodes, dofs, output }` (`dofs` in `1..ndf`)
-  - `{ type: "element_force", elements, output }` (`truss`, `elasticBeamColumn2d`, `forceBeamColumn2d`, `dispBeamColumn2d`)
+  - `{ type: "element_force", elements, output }` (`truss`, `elasticBeamColumn2d`, `elasticBeamColumn3d`, `forceBeamColumn2d`, `forceBeamColumn3d`, `dispBeamColumn2d`, `dispBeamColumn3d`)
   - `{ type: "node_reaction", nodes, dofs, output }` (`dofs` in `1..ndf`)
   - `{ type: "drift", i_node, j_node, dof, perp_dirn, output }`
-  - `{ type: "envelope_element_force", elements, output }` (`truss`, `elasticBeamColumn2d`, `forceBeamColumn2d`, `dispBeamColumn2d`)
-  - `{ type: "section_force", elements, section | sections, output }` (`forceBeamColumn2d`, `dispBeamColumn2d`)
-  - `{ type: "section_deformation", elements, section | sections, output }` (`forceBeamColumn2d`, `dispBeamColumn2d`)
+  - `{ type: "envelope_element_force", elements, output }` (`truss`, `elasticBeamColumn2d`, `elasticBeamColumn3d`, `forceBeamColumn2d`, `forceBeamColumn3d`, `dispBeamColumn2d`, `dispBeamColumn3d`)
+  - `{ type: "section_force", elements, section | sections, output }` (`forceBeamColumn2d`, `forceBeamColumn3d`, `dispBeamColumn2d`, `dispBeamColumn3d`)
+  - `{ type: "section_deformation", elements, section | sections, output }` (`forceBeamColumn2d`, `forceBeamColumn3d`, `dispBeamColumn2d`, `dispBeamColumn3d`)
   - `{ type: "modal_eigen", modes, nodes, dofs, output }`
 - `parity_mode`: `"step"` (default) or `"max_abs"` for transient comparisons (optional; top-level)
   - `step`: strict step-by-step time-history comparison.
@@ -85,17 +97,25 @@ Minimum required fields (v1.0):
 
 Current limitation: `forceBeamColumn2d`/`dispBeamColumn2d` support is currently limited to:
 - `geomTransf: Linear | PDelta`
-- `integration: Lobatto`
-- `num_int_pts: 3 | 5`
+- `integration: Lobatto | Legendre | Radau`
+- `num_int_pts`: scheme-valid (`Lobatto >= 2`, `Legendre >= 1`, `Radau >= 1`)
 - `analysis.type: static_linear | static_nonlinear | transient_nonlinear | staged`
+
+Current limitation: `forceBeamColumn3d`/`dispBeamColumn3d` support is currently limited to:
+- `section: ElasticSection3d | FiberSection3d`
+- `geomTransf: Linear | PDelta | Corotational`
+- `integration: Lobatto | Legendre | Radau`
+- `num_int_pts`: scheme-valid (`Lobatto >= 2`, `Legendre >= 1`, `Radau >= 1`)
+- `FiberSection3d` runtime use requires positive `G` and `J` in section params.
+- 3D section recorders are available for `section_force` (`N`, `Mz`, `My`, `T`) and `section_deformation` (`eps0`, `kappa_z`, `kappa_y`, `twist`), matching OpenSees recorder ordering.
 
 ## Harness Workflow
 
 1. `scripts/json_to_tcl.py` converts a JSON model to a deterministic Tcl script.
 2. `scripts/run_case.py` runs OpenSees (Wine) to produce reference outputs.
-3. `scripts/run_mojo_case.py` runs the current Strut implementation and writes outputs.
-4. `scripts/compare_case.py` compares displacement outputs with tolerances.
-5. `run_tests.py` provides a unified test runner for unit, schema, and parity checks.
+3. `scripts/run_strut_case.py` runs the current Strut implementation and writes outputs.
+4. `scripts/compare_case.py` compares recorder outputs with recorder-specific tolerances.
+5. `uv run run_tests.py` builds the solver, then runs unit, schema, and parity checks.
 6. `scripts/run_and_plot_case.py <case.json>` runs a case and generates overlay plots for all comparable `.out` files/components.
 
 ## Reproduction Commands
@@ -117,8 +137,9 @@ Node displacement outputs are written as space-separated values with one row per
 
 For OpenSees, the Tcl recorder writes a space-separated vector per line. The comparator reads the last line for static cases and all lines for transient cases.
 
-Element force outputs are written as space-separated values with one row per analysis step. For `elasticBeamColumn2d`, `forceBeamColumn2d`, and `dispBeamColumn2d`,
-the vector contains 6 global end forces (3 at node 1, 3 at node 2) in the OpenSees "force" recorder ordering.
+Element force outputs are written as space-separated values with one row per analysis step.
+For `elasticBeamColumn2d`, `forceBeamColumn2d`, and `dispBeamColumn2d`, the vector contains 6 global end forces (3 at node 1, 3 at node 2) in the OpenSees "force" recorder ordering.
+For `elasticBeamColumn3d`, `forceBeamColumn3d`, and `dispBeamColumn3d`, the vector contains 12 global end forces (6 at node 1, 6 at node 2).
 
 Node reaction outputs are written as space-separated values with one row per analysis step. Each row contains requested reaction DOFs at the requested node.
 
@@ -133,20 +154,29 @@ Modal eigen outputs are written as:
 - `<output>_eigenvalues.out`: one eigenvalue per line (ascending mode order).
 - `<output>_mode<k>_node<id>.out`: one line with requested DOF components of mode `k` at node `id`.
 
-## Tolerances (Phase 1)
+## Tolerances (Phase 0 contract)
 
-- Absolute tolerance: `1e-9`
-- Relative tolerance: `1e-6`
+Default recorder tolerances in `scripts/compare_case.py`:
+
+- `node_displacement`: `atol=1e-9`, `rtol=1e-6`
+- `node_reaction`: `atol=1e-9`, `rtol=1e-6`
+- `drift`: `atol=1e-9`, `rtol=1e-6`
+- `element_force`: `atol=1e-8`, `rtol=1e-5`
+- `envelope_element_force`: `atol=1e-8`, `rtol=1e-5`
+- `section_force`: `atol=1e-8`, `rtol=1e-5`
+- `section_deformation`: `atol=1e-9`, `rtol=1e-6`
+- `modal_eigen`: `atol=1e-8`, `rtol=1e-5`
+
+Per-case overrides:
+
+- Global override: `parity_tolerance: { atol, rtol }`
+- Recorder-specific override: `parity_tolerance_by_recorder: { "<recorder_type>": { atol, rtol } }`
 
 ## Notes
 
-- Phase 1 targets 2D linear `elasticBeamColumn` with static linear analysis.
-- The current phase-1 solver is implemented in Python for harness validation. Replace with Mojo and wire `strut.mojo` into the harness once the Mojo implementation is ready.
-- Expand schema and harness only after parity is stable.
 - For static analyses with time series, Strut uses normalized pseudoTime `t = (step + 1) / steps` (static_linear uses `t = 1.0`).
 - Validation parity tests run only cases with `"enabled": true` by default (`STRUT_RUN_ALL_CASES=1` includes disabled cases). `STRUT_FORCE_CASE=1` forces a disabled case in `scripts/run_case.py`.
 - Recorder entries may set `"parity": false` to generate outputs but exclude that recorder from parity checks.
 - Benchmarks include `"enabled": true` cases and also disabled cases tagged with `"status": "benchmark"`.
-- `scripts/run_mojo_case.py` runs the Python solver by default and only uses Mojo when `STRUT_MOJO_SOLVER=1` and `mojo` is on `PATH`.
 - OpenSees reference outputs are cached by JSON content hash in `tests/validation/<case>/reference/.ref_hash`. Set `STRUT_REFRESH_REFERENCE=1` to regenerate.
 - Benchmarks use `scripts/run_benchmarks.py`. The latest run is written to `benchmark/results/` (`benchmark/results-profile/` when `--profile`), and summary snapshots are archived in `benchmark/archive/` (both ignored by git). Runs with `--profile` default to `--no-archive`.

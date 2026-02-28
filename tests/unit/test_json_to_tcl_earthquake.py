@@ -113,6 +113,38 @@ def test_json_to_tcl_emits_transient_nonlinear_fallback_loop():
     assert "analyze 2 0.1\n" not in text
 
 
+def test_json_to_tcl_emits_static_nonlinear_displacement_control_fallback_loop():
+    case = _base_uniform_case()
+    case["pattern"] = {"type": "Plain", "tag": 1, "time_series": 2}
+    case["loads"] = [{"node": 2, "dof": 1, "value": 1.0}]
+    case["analysis"] = {
+        "type": "static_nonlinear",
+        "steps": 2,
+        "algorithm": "Newton",
+        "test_type": "NormDispIncr",
+        "tol": 1.0e-8,
+        "max_iters": 10,
+        "fallback_algorithm": "ModifiedNewtonInitial",
+        "fallback_test_type": "NormDispIncr",
+        "fallback_tol": 1.0e-9,
+        "fallback_max_iters": 25,
+        "integrator": {"type": "DisplacementControl", "node": 2, "dof": 1, "du": 0.1},
+    }
+
+    text = _run_json_to_tcl(case)
+
+    assert "test NormDispIncr 1e-08 10\n" in text
+    assert "algorithm Newton\n" in text
+    assert "set strut_dc_targets {0.1 0.2}\n" in text
+    assert "set strut_dc_cutback 0.5\n" in text
+    assert "set strut_dc_max_cutbacks 8\n" in text
+    assert "integrator DisplacementControl 2 1 $strut_dc_try_du\n" in text
+    assert "set strut_dc_ok [analyze 1]\n" in text
+    assert "test NormDispIncr 1e-09 25\n" in text
+    assert "algorithm ModifiedNewton -initial\n" in text
+    assert "\nset strut_dc_ok [analyze 2]\n" not in text
+
+
 def test_json_to_tcl_emits_energy_incr_and_advanced_fallback_algorithms():
     case = _base_uniform_case()
     case["analysis"]["algorithm"] = "NewtonLineSearch"
@@ -172,6 +204,52 @@ def test_json_to_tcl_emits_staged_analysis_with_load_const_and_pattern_override(
     assert text.count("analysis Transient\n") == 1
 
 
+def test_json_to_tcl_emits_staged_plain_element_beam_point_load():
+    case = {
+        "schema_version": "1.0",
+        "metadata": {"name": "staged_beam_point_tcl_unit", "units": "SI"},
+        "model": {"ndm": 2, "ndf": 3},
+        "nodes": [
+            {"id": 1, "x": 0.0, "y": 0.0, "constraints": [1, 2, 3]},
+            {"id": 2, "x": 4.0, "y": 0.0},
+        ],
+        "materials": [{"id": 1, "type": "Elastic", "params": {"E": 2.0e11}}],
+        "sections": [
+            {
+                "id": 1,
+                "type": "ElasticSection2d",
+                "params": {"E": 2.0e11, "A": 0.02, "I": 8.0e-5},
+            }
+        ],
+        "elements": [
+            {
+                "id": 1,
+                "type": "elasticBeamColumn2d",
+                "nodes": [1, 2],
+                "section": 1,
+                "geomTransf": "Linear",
+            }
+        ],
+        "time_series": [{"type": "Linear", "tag": 1, "factor": 1.0}],
+        "analysis": {
+            "type": "staged",
+            "constraints": "Plain",
+            "stages": [
+                {
+                    "pattern": {"type": "Plain", "tag": 1, "time_series": 1},
+                    "element_loads": [
+                        {"element": 1, "type": "beamPoint", "py": -3.0, "x": 0.25}
+                    ],
+                    "analysis": {"type": "static_linear", "steps": 1},
+                }
+            ],
+        },
+    }
+
+    text = _run_json_to_tcl(case)
+    assert "eleLoad -ele 1 -type -beamPoint -3.0 0.25\n" in text
+
+
 def test_json_to_tcl_staged_transient_fallback_does_not_emit_extra_analyze():
     case = _base_uniform_case()
     case["time_series"] = [
@@ -212,6 +290,41 @@ def test_json_to_tcl_staged_transient_fallback_does_not_emit_extra_analyze():
     assert "set strut_tr_ok [analyze 1 0.1]\n" in text
     assert "\nanalyze 2\n" not in text
     assert "\nanalyze 2 0.1\n" not in text
+
+
+def test_json_to_tcl_staged_static_fallback_does_not_emit_extra_analyze():
+    case = _base_uniform_case()
+    case["pattern"] = {"type": "Plain", "tag": 1, "time_series": 2}
+    case["loads"] = [{"node": 2, "dof": 1, "value": 1.0}]
+    case["analysis"] = {
+        "type": "staged",
+        "constraints": "Plain",
+        "stages": [
+            {
+                "analysis": {
+                    "type": "static_nonlinear",
+                    "steps": 2,
+                    "algorithm": "Newton",
+                    "test_type": "NormDispIncr",
+                    "tol": 1.0e-8,
+                    "max_iters": 8,
+                    "fallback_algorithm": "ModifiedNewtonInitial",
+                    "fallback_test_type": "NormDispIncr",
+                    "fallback_tol": 1.0e-8,
+                    "fallback_max_iters": 20,
+                    "integrator": {"type": "LoadControl"},
+                }
+            }
+        ],
+    }
+
+    text = _run_json_to_tcl(case)
+
+    assert "test NormDispIncr 1e-08 8\n" in text
+    assert "set strut_nl_ok 0\n" in text
+    assert "set strut_nl_ok [analyze 1]\n" in text
+    assert "algorithm ModifiedNewton -initial\n" in text
+    assert "\nset strut_nl_ok [analyze 2]\n" not in text
 
 
 def test_json_to_tcl_rejects_uniform_excitation_with_nodal_loads():

@@ -1,7 +1,10 @@
 {
   "schema_version": "1.0",
   "enabled": true,
-  "status": "wip",
+  "status": "ready",
+  "parity_tolerance_by_recorder": {
+    "node_displacement": { "rtol": 2.0e-6, "atol": 1.0e-6 }
+  },
   "metadata": {
     "name": "disp_beam_column2d_fiber_cantilever",
     "units": "SI"

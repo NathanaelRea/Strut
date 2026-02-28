@@ -6,7 +6,15 @@ import pytest
 
 def _case_paths():
     base = Path(__file__).resolve().parent
-    return sorted(base.glob("*/**/*.json"))
+    paths = []
+    for path in sorted(base.glob("*/*.json")):
+        data = json.loads(path.read_text())
+        if not isinstance(data, dict):
+            continue
+        if "model" not in data or "nodes" not in data:
+            continue
+        paths.append(path)
+    return paths
 
 
 @pytest.mark.parametrize("case_path", _case_paths())

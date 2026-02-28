@@ -153,3 +153,90 @@ def test_json_to_tcl_emits_legacy_beam_uniform_w_alias():
 
     text = _run_json_to_tcl(case)
     assert "eleLoad -ele 1 -type -beamUniform -2.0\n" in text
+
+
+def test_json_to_tcl_emits_beam_point_2d_with_optional_px():
+    case = {
+        "schema_version": "1.0",
+        "metadata": {"name": "beam_point_tcl_unit", "units": "SI"},
+        "model": {"ndm": 2, "ndf": 3},
+        "nodes": [
+            {"id": 1, "x": 0.0, "y": 0.0, "constraints": [1, 2, 3]},
+            {"id": 2, "x": 4.0, "y": 0.0},
+        ],
+        "materials": [{"id": 1, "type": "Elastic", "params": {"E": 2.0e11}}],
+        "sections": [
+            {
+                "id": 1,
+                "type": "ElasticSection2d",
+                "params": {"E": 2.0e11, "A": 0.02, "I": 8.0e-5},
+            }
+        ],
+        "elements": [
+            {
+                "id": 1,
+                "type": "elasticBeamColumn2d",
+                "nodes": [1, 2],
+                "section": 1,
+                "geomTransf": "Linear",
+            }
+        ],
+        "pattern": {"type": "Plain", "tag": 1, "time_series": 1},
+        "time_series": [{"type": "Linear", "tag": 1, "factor": 1.0}],
+        "element_loads": [
+            {"element": 1, "type": "beamPoint", "py": -3.0, "x": 0.4, "px": 1.25}
+        ],
+        "analysis": {"type": "static_linear", "steps": 1},
+        "recorders": [{"type": "element_force", "elements": [1], "output": "force"}],
+    }
+
+    text = _run_json_to_tcl(case)
+    assert "eleLoad -ele 1 -type -beamPoint -3.0 0.4 1.25\n" in text
+
+
+def test_json_to_tcl_emits_3d_beam_uniform_and_point():
+    case = {
+        "schema_version": "1.0",
+        "metadata": {"name": "beam_loads_3d_tcl_unit", "units": "SI"},
+        "model": {"ndm": 3, "ndf": 6},
+        "nodes": [
+            {"id": 1, "x": 0.0, "y": 0.0, "z": 0.0, "constraints": [1, 2, 3, 4, 5, 6]},
+            {"id": 2, "x": 0.0, "y": 0.0, "z": 4.0},
+        ],
+        "materials": [],
+        "sections": [
+            {
+                "id": 1,
+                "type": "ElasticSection3d",
+                "params": {
+                    "E": 2.0e11,
+                    "A": 0.02,
+                    "Iy": 8.0e-5,
+                    "Iz": 6.0e-5,
+                    "G": 8.0e10,
+                    "J": 1.0e-4,
+                },
+            }
+        ],
+        "elements": [
+            {
+                "id": 1,
+                "type": "elasticBeamColumn3d",
+                "nodes": [1, 2],
+                "section": 1,
+                "geomTransf": "Linear",
+            }
+        ],
+        "pattern": {"type": "Plain", "tag": 1, "time_series": 1},
+        "time_series": [{"type": "Linear", "tag": 1, "factor": 1.0}],
+        "element_loads": [
+            {"element": 1, "type": "beamUniform", "wy": -2.0, "wz": 1.5, "wx": 0.25},
+            {"element": 1, "type": "beamPoint", "py": -3.0, "pz": 4.0, "x": 0.35, "px": 0.5},
+        ],
+        "analysis": {"type": "static_linear", "steps": 1},
+        "recorders": [{"type": "element_force", "elements": [1], "output": "force"}],
+    }
+
+    text = _run_json_to_tcl(case)
+    assert "eleLoad -ele 1 -type -beamUniform -2.0 1.5 0.25\n" in text
+    assert "eleLoad -ele 1 -type -beamPoint -3.0 4.0 0.35 0.5\n" in text

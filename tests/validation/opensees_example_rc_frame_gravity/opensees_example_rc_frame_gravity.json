@@ -1,14 +1,14 @@
 {
   "schema_version": "1.0",
-  "enabled": false,
-  "status": "todo",
+  "enabled": true,
+  "status": "ready",
   "metadata": {
     "name": "opensees_example_rc_frame_gravity",
     "units": "kips-in"
   },
   "source_doc": "docs/agent-reference/OpenSeesDocs/reinforced_concrete_frame_gravity_analysis.html",
   "source_example": "docs/agent-reference/OpenSeesExamplesBasic/reinforced_concrete_frame_gravity_analysis/RCFrameGravity.tcl",
-  "notes": "Disabled parity case: RC gravity example requires forceBeamColumn settings beyond current v1 limits (PDelta + 5 integration points).",
+  "notes": "Enabled parity case covering RC gravity analysis with forceBeamColumn2d PDelta geometry and 5-point Lobatto integration.",
   "model": {
     "ndm": 2,
     "ndf": 3

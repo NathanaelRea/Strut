@@ -56,6 +56,9 @@ BENCHMARK_SUITES: Dict[str, List[str]] = {
         "elastic_frame_two_bay",
         "elastic_frame_two_story",
         "elastic_frame_18bay_17story",
+        "elastic_frame_3d_portal",
+        "force_beam_column3d_portal_benchmark",
+        "disp_beam_column3d_portal_benchmark",
         "force_beam_column2d_fiber_cantilever",
         "force_beam_column2d_fiber_frame_18bay_17story",
         "opensees_example_2d_elastic_cantileaver_column",
@@ -228,6 +231,33 @@ def _load_case_flags(path: Path) -> Tuple[bool, bool]:
     return disabled, runnable
 
 
+def _is_case_json(path: Path) -> bool:
+    if path.suffix != ".json":
+        return False
+    if path.parent.name != path.stem:
+        return False
+    try:
+        data = json.loads(path.read_text())
+    except Exception:
+        return False
+    if not isinstance(data, dict):
+        return False
+    required = ("model", "nodes", "elements", "recorders")
+    return all(key in data for key in required)
+
+
+def _include_in_default_benchmarks(path: Path) -> bool:
+    data = json.loads(path.read_text())
+    if not bool(data.get("enabled", True)):
+        return False
+    status = str(data.get("status", "")).strip().lower()
+    if status == "benchmark":
+        return True
+    # Keep the default path focused on the lightweight elastic benchmark set.
+    stem_tokens = [token for token in path.stem.lower().split("_") if token]
+    return "elastic" in stem_tokens
+
+
 def load_case_enabled(path: Path) -> bool:
     _, runnable = _load_case_flags(path)
     return runnable
@@ -298,7 +328,7 @@ def resolve_case_from_name(validation_root: Path, name: str) -> Optional[CaseSpe
 def resolve_case_from_path(path: Path) -> Optional[CaseSpec]:
     if not path.exists():
         return None
-    if path.suffix != ".json":
+    if not _is_case_json(path):
         return None
     return CaseSpec(name=path.stem, json_path=path)
 
@@ -329,7 +359,9 @@ def expand_case_patterns(
 def discover_default_cases(validation_root: Path) -> List[CaseSpec]:
     cases = []
     for match in validation_root.glob("*/*.json"):
-        if not load_case_enabled(match) and os.getenv("STRUT_RUN_ALL_CASES") != "1":
+        if not _is_case_json(match):
+            continue
+        if not _include_in_default_benchmarks(match):
             continue
         cases.append(CaseSpec(name=match.stem, json_path=match))
     return sorted(cases, key=lambda c: c.name)
@@ -339,6 +371,7 @@ def discover_all_cases(validation_root: Path) -> List[CaseSpec]:
     cases = [
         CaseSpec(name=match.stem, json_path=match)
         for match in validation_root.glob("*/*.json")
+        if _is_case_json(match)
     ]
     return sorted(cases, key=lambda c: c.name)
 
@@ -631,18 +664,14 @@ def ensure_strut_solver(repo_root: Path, verbose: bool, profile: bool) -> Path:
     solver_path = repo_root / "build" / "strut" / "strut"
     solver_path.parent.mkdir(parents=True, exist_ok=True)
     log("Building Mojo solver...")
-    build_cmd = [
-        "uv",
-        "run",
-        "mojo",
-        "build",
-        str(repo_root / "src" / "mojo" / "strut.mojo"),
-    ]
+    build_cmd = [str(repo_root / "scripts" / "build_mojo_solver.sh")]
+    build_env = None
     if profile:
-        build_cmd += ["-D", "STRUT_PROFILE=1"]
-    build_cmd += ["-o", str(solver_path)]
+        build_env = os.environ.copy()
+        build_env["STRUT_PROFILE"] = "1"
     run(
         build_cmd,
+        env=build_env,
         verbose=verbose,
     )
     return solver_path
@@ -1139,7 +1168,7 @@ def main() -> None:
                 else:
                     case_specs.extend(expand_case_patterns(validation_root, [part]))
     else:
-        case_specs = discover_all_cases(validation_root)
+        case_specs = discover_default_cases(validation_root)
 
     if generated_cases:
         case_specs.extend(generated_cases)

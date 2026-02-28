@@ -355,3 +355,44 @@ def test_staged_analysis_gravity_load_const_then_uniform_excitation_smoke():
     assert len(force_rows) == 5
     assert all(math.isfinite(row[0]) for row in disp_rows)
     assert all(math.isfinite(v) for row in force_rows for v in row)
+
+
+def test_staged_displacement_control_load_const_freezes_actual_load_factor():
+    case_data = _base_truss_dynamic_case(
+        {"id": 1, "type": "Elastic", "params": {"E": 100.0}}
+    )
+    case_data["time_series"] = [{"type": "Linear", "tag": 1, "factor": 1.0}]
+    case_data["pattern"] = {"type": "Plain", "tag": 1, "time_series": 1}
+    case_data["loads"] = [{"node": 2, "dof": 1, "value": 1.0}]
+    case_data["analysis"] = {
+        "type": "staged",
+        "constraints": "Plain",
+        "stages": [
+            {
+                "analysis": {
+                    "type": "static_nonlinear",
+                    "steps": 1,
+                    "algorithm": "Newton",
+                    "test_type": "NormDispIncr",
+                    "tol": 1.0e-12,
+                    "max_iters": 10,
+                    "integrator": {
+                        "type": "DisplacementControl",
+                        "node": 2,
+                        "dof": 1,
+                        "du": 0.2,
+                    },
+                },
+                "load_const": {"time": 0.0},
+            },
+            {"analysis": {"type": "static_linear", "steps": 1}},
+        ],
+    }
+
+    with tempfile.TemporaryDirectory() as tmp:
+        out_dir = Path(tmp)
+        _run_strut_case(case_data, out_dir)
+        disp_rows = _read_rows(out_dir / "node_disp_node2.out")
+
+    assert len(disp_rows) == 1
+    assert disp_rows[0][0] == pytest.approx(0.2, abs=1.0e-9)

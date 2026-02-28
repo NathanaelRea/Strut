@@ -1,16 +1,16 @@
 {
   "schema_version": "1.0",
-  "enabled": false,
-  "status": "todo",
+  "enabled": true,
+  "status": "ready",
   "metadata": {
     "name": "opensees_example_ex2c_canti2d_inelastic_fiber",
     "units": "kips-in-sec"
   },
   "source_doc": "docs/agent-reference/OpenSeesExamplesAdvanced/Ex2cCanti2DInelasticFiber/Ex2c.Canti2D.InelasticFiberSection.EQ.tcl",
   "source_example": "docs/agent-reference/OpenSeesExamplesAdvanced/Ex2cCanti2DInelasticFiber/Ex2c.Canti2D.InelasticFiberSection.EQ.tcl",
-  "notes": "Adapted staged migration of OpenSees Ex2c with nonlinearBeamColumn mapped to forceBeamColumn2d, section recorders mapped to section_force/section_deformation, and a single configured fallback algorithm path.",
+  "notes": "Adapted staged migration of OpenSees Ex2c using forceBeamColumn2d, section recorders mapped to section_force/section_deformation, and a single configured fallback algorithm path.",
   "migration": {
-    "open_sees_element": "nonlinearBeamColumn",
+    "open_sees_element": "forceBeamColumn",
     "strut_element": "forceBeamColumn2d",
     "open_sees_dynamic_fallbacks": [
       "Newton -initial",
@@ -29,6 +29,10 @@
   "parity_tolerance": {
     "rtol": 0.2,
     "atol": 5e-4
+  },
+  "parity_tolerance_by_recorder": {
+    "element_force": { "rtol": 0.2, "atol": 1e-3 },
+    "section_force": { "rtol": 0.2, "atol": 1e-3 }
   },
   "benchmark_size": "large",
   "model": {
@@ -115,7 +119,7 @@
   "elements": [
     {
       "id": 1,
-      "type": "nonlinearBeamColumn",
+      "type": "forceBeamColumn2d",
       "nodes": [1, 2],
       "section": 1,
       "geomTransf": "Linear",

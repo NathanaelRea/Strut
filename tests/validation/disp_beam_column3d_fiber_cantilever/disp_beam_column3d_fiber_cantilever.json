@@ -1,0 +1,109 @@
+{
+  "schema_version": "1.0",
+  "enabled": true,
+  "status": "parity",
+  "benchmark_size": "small",
+  "metadata": {
+    "name": "disp_beam_column3d_fiber_cantilever",
+    "units": "SI"
+  },
+  "notes": "3D dispBeamColumn fiber-section parity case exercising section recorders with torsional stiffness under static linear loading.",
+  "model": {
+    "ndm": 3,
+    "ndf": 6
+  },
+  "nodes": [
+    {
+      "id": 1,
+      "x": 0.0,
+      "y": 0.0,
+      "z": 0.0,
+      "constraints": [1, 2, 3, 4, 5, 6]
+    },
+    {
+      "id": 2,
+      "x": 0.0,
+      "y": 0.0,
+      "z": 3.0
+    }
+  ],
+  "materials": [
+    {
+      "id": 1,
+      "type": "Elastic",
+      "params": {
+        "E": 30000000000.0
+      }
+    }
+  ],
+  "sections": [
+    {
+      "id": 1,
+      "type": "FiberSection3d",
+      "params": {
+        "G": 12000000000.0,
+        "J": 0.0002,
+        "patches": [
+          {
+            "type": "rect",
+            "material": 1,
+            "num_subdiv_y": 4,
+            "num_subdiv_z": 4,
+            "y_i": -0.2,
+            "z_i": -0.1,
+            "y_j": 0.2,
+            "z_j": 0.1
+          }
+        ],
+        "layers": []
+      }
+    }
+  ],
+  "elements": [
+    {
+      "id": 1,
+      "type": "dispBeamColumn3d",
+      "nodes": [1, 2],
+      "section": 1,
+      "geomTransf": "Linear",
+      "integration": "Lobatto",
+      "num_int_pts": 5
+    }
+  ],
+  "loads": [
+    {
+      "node": 2,
+      "dof": 1,
+      "value": 50000.0
+    }
+  ],
+  "analysis": {
+    "type": "static_linear",
+    "steps": 1
+  },
+  "recorders": [
+    {
+      "type": "node_displacement",
+      "nodes": [2],
+      "dofs": [1, 2, 3, 4, 5, 6],
+      "output": "node_disp"
+    },
+    {
+      "type": "element_force",
+      "elements": [1],
+      "output": "element_force"
+    },
+    {
+      "type": "section_force",
+      "elements": [1],
+      "sections": [1, 5],
+      "output": "sec_force"
+    },
+    {
+      "type": "section_deformation",
+      "elements": [1],
+      "sections": [1, 5],
+      "output": "sec_defo"
+    }
+  ]
+}

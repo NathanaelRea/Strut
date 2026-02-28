@@ -54,6 +54,25 @@ def _choose_vecxz(n1, n2):
     return (1.0, 0.0, 0.0)
 
 
+_BEAM_INTEGRATION_MIN_POINTS = {
+    "Lobatto": 2,
+    "Legendre": 1,
+    "Radau": 1,
+}
+
+
+def _validate_beam_integration(elem_type, integration, num_int_pts):
+    if integration not in _BEAM_INTEGRATION_MIN_POINTS:
+        raise ValueError(
+            f"{elem_type} supports integration Lobatto, Legendre, or Radau"
+        )
+    min_points = _BEAM_INTEGRATION_MIN_POINTS[integration]
+    if num_int_pts < min_points:
+        raise ValueError(
+            f"{elem_type} {integration} integration requires num_int_pts >= {min_points}"
+        )
+
+
 def _normalize_time_series(ts):
     if ts is None:
         return []
@@ -166,6 +185,62 @@ def _emit_time_series(f, ts, case_dir: Path, case_data: dict):
         raise ValueError(f"unsupported time_series type: {ts_type}")
 
 
+def _emit_element_load(f, elem_load, ndm):
+    elem_id = _require_field(elem_load, "element")
+    load_type = _require_field(elem_load, "type")
+
+    if load_type == "beamUniform":
+        if ndm == 2:
+            wy = float(elem_load.get("wy", elem_load.get("w", 0.0)))
+            if "wx" in elem_load:
+                wx = float(elem_load["wx"])
+                f.write(f"  eleLoad -ele {elem_id} -type -beamUniform {wy} {wx}\n")
+            else:
+                f.write(f"  eleLoad -ele {elem_id} -type -beamUniform {wy}\n")
+            return
+        if ndm == 3:
+            if "wy" not in elem_load or "wz" not in elem_load:
+                raise ValueError("3D beamUniform requires wy and wz")
+            wy = float(elem_load["wy"])
+            wz = float(elem_load["wz"])
+            if "wx" in elem_load:
+                wx = float(elem_load["wx"])
+                f.write(f"  eleLoad -ele {elem_id} -type -beamUniform {wy} {wz} {wx}\n")
+            else:
+                f.write(f"  eleLoad -ele {elem_id} -type -beamUniform {wy} {wz}\n")
+            return
+        raise ValueError("beamUniform only supports ndm=2 or ndm=3")
+
+    if load_type == "beamPoint":
+        x = float(_require_field(elem_load, "x"))
+        if x < 0.0 or x > 1.0:
+            raise ValueError("beamPoint x must be in [0, 1]")
+        if ndm == 2:
+            if "py" not in elem_load:
+                raise ValueError("2D beamPoint requires py")
+            py = float(elem_load["py"])
+            if "px" in elem_load:
+                px = float(elem_load["px"])
+                f.write(f"  eleLoad -ele {elem_id} -type -beamPoint {py} {x} {px}\n")
+            else:
+                f.write(f"  eleLoad -ele {elem_id} -type -beamPoint {py} {x}\n")
+            return
+        if ndm == 3:
+            if "py" not in elem_load or "pz" not in elem_load:
+                raise ValueError("3D beamPoint requires py and pz")
+            py = float(elem_load["py"])
+            pz = float(elem_load["pz"])
+            if "px" in elem_load:
+                px = float(elem_load["px"])
+                f.write(f"  eleLoad -ele {elem_id} -type -beamPoint {py} {pz} {x} {px}\n")
+            else:
+                f.write(f"  eleLoad -ele {elem_id} -type -beamPoint {py} {pz} {x}\n")
+            return
+        raise ValueError("beamPoint only supports ndm=2 or ndm=3")
+
+    raise ValueError(f"unsupported element load type: {load_type}")
+
+
 def _algorithm_cmd(algorithm_name, cfg, prefix=""):
     if algorithm_name == "ModifiedNewtonInitial":
         return "ModifiedNewton -initial"
@@ -176,6 +251,105 @@ def _algorithm_cmd(algorithm_name, cfg, prefix=""):
         eta = float(cfg.get(f"{prefix}line_search_eta", 0.8))
         return f"NewtonLineSearch {eta}"
     return algorithm_name
+
+
+def _validate_static_nonlinear_algorithm(algorithm_name, label):
+    if algorithm_name not in ("Newton", "ModifiedNewton", "ModifiedNewtonInitial"):
+        raise ValueError(f"unsupported {label} algorithm: {algorithm_name}")
+
+
+def _validate_static_nonlinear_test_type(test_type, label):
+    if test_type not in ("MaxDispIncr", "NormDispIncr", "NormUnbalance", "EnergyIncr"):
+        raise ValueError(
+            f"{label} test_type must be MaxDispIncr, NormDispIncr, NormUnbalance, or EnergyIncr"
+        )
+
+
+def _validate_displacement_control_cutback(integrator, label):
+    cutback = float(integrator.get("cutback", 0.5))
+    max_cutbacks = int(integrator.get("max_cutbacks", 8))
+    min_du = float(integrator.get("min_du", 1.0e-10))
+    if not (0.0 < cutback < 1.0):
+        raise ValueError(f"{label} cutback must be in (0, 1)")
+    if max_cutbacks < 0:
+        raise ValueError(f"{label} max_cutbacks must be >= 0")
+    if min_du <= 0.0:
+        raise ValueError(f"{label} min_du must be > 0")
+    return cutback, max_cutbacks, min_du
+
+
+def _tcl_static_nonlinear_test_type(test_type):
+    # OpenSees Tcl exposes NormDispIncr but not MaxDispIncr for static analysis.
+    if test_type == "MaxDispIncr":
+        return "NormDispIncr"
+    return test_type
+
+
+def _static_nonlinear_displacement_control_post_lines(
+    node,
+    dof,
+    targets,
+    cutback,
+    max_cutbacks,
+    min_du,
+    primary_test_type,
+    primary_tol,
+    primary_max_iters,
+    primary_algorithm,
+    fallback_test_type,
+    fallback_tol,
+    fallback_max_iters,
+    fallback_algorithm_cmd,
+):
+    lines = [
+        "set strut_dc_targets {" + " ".join(str(float(val)) for val in targets) + "}",
+        f"set strut_dc_cutback {cutback}",
+        f"set strut_dc_max_cutbacks {max_cutbacks}",
+        f"set strut_dc_min_du {min_du}",
+        "foreach strut_dc_targ $strut_dc_targets {",
+        "  while {1} {",
+        f"    set strut_dc_curr [nodeDisp {int(node)} {int(dof)}]",
+        "    set strut_dc_remaining [expr {$strut_dc_targ - $strut_dc_curr}]",
+        "    if {[expr abs($strut_dc_remaining)] <= $strut_dc_min_du} {",
+        "      break",
+        "    }",
+        "    set strut_dc_try_du $strut_dc_remaining",
+        "    set strut_dc_ok 1",
+        "    for {set strut_dc_cut 0} {$strut_dc_cut <= $strut_dc_max_cutbacks} {incr strut_dc_cut} {",
+        f"      integrator DisplacementControl {int(node)} {int(dof)} $strut_dc_try_du",
+        "      set strut_dc_ok [analyze 1]",
+    ]
+    if fallback_algorithm_cmd is not None:
+        lines.extend(
+            [
+                "      if {$strut_dc_ok != 0} {",
+                f"        test {fallback_test_type} {fallback_tol} {fallback_max_iters}",
+                f"        algorithm {fallback_algorithm_cmd}",
+                f"        integrator DisplacementControl {int(node)} {int(dof)} $strut_dc_try_du",
+                "        set strut_dc_ok [analyze 1]",
+                f"        test {primary_test_type} {primary_tol} {primary_max_iters}",
+                f"        algorithm {primary_algorithm}",
+                "      }",
+            ]
+        )
+    lines.extend(
+        [
+            "      if {$strut_dc_ok == 0} {",
+            "        break",
+            "      }",
+            "      set strut_dc_try_du [expr {$strut_dc_try_du * $strut_dc_cutback}]",
+            "      if {[expr abs($strut_dc_try_du)] <= $strut_dc_min_du} {",
+            "        break",
+            "      }",
+            "    }",
+            "    if {$strut_dc_ok != 0} {",
+            "      error \"analysis failed\"",
+            "    }",
+            "  }",
+            "}",
+        ]
+    )
+    return lines
 
 
 def _emit_recorders(f, recorders, node_by_id, ndf):
@@ -415,7 +589,7 @@ def main():
             else:
                 raise ValueError(f"unsupported material type: {mat['type']}")
 
-        # Sections (elastic, membrane/plate, or FiberSection2d subset)
+        # Sections (elastic, membrane/plate, or FiberSection2d/FiberSection3d subset)
         for sec in sections.values():
             params = sec["params"]
             if sec["type"] == "ElasticSection2d":
@@ -439,28 +613,36 @@ def main():
                 f.write(
                     f"section ElasticMembranePlateSection {sec['id']} {E} {nu} {h} {rho}\n"
                 )
-            elif sec["type"] == "FiberSection2d":
+            elif sec["type"] in ("FiberSection2d", "FiberSection3d"):
+                sec_type = sec["type"]
                 patches = params.get("patches", [])
                 layers = params.get("layers", [])
                 if not patches and not layers:
-                    raise ValueError("FiberSection2d requires at least one patch or layer")
-                f.write(f"section Fiber {sec['id']} {{\n")
+                    raise ValueError(f"{sec_type} requires at least one patch or layer")
+                if sec_type == "FiberSection3d":
+                    G = params.get("G", 0.0)
+                    J = params.get("J", 0.0)
+                    if G <= 0.0 or J <= 0.0:
+                        raise ValueError("FiberSection3d requires positive G and J")
+                    f.write(f"section Fiber {sec['id']} -GJ {G * J} {{\n")
+                else:
+                    f.write(f"section Fiber {sec['id']} {{\n")
                 for patch in patches:
                     patch_type = patch.get("type")
                     if patch_type == "quad":
                         patch_type = "quadr"
                     mat = patch["material"]
                     if mat not in materials:
-                        raise ValueError(f"FiberSection2d patch material {mat} not found")
+                        raise ValueError(f"{sec_type} patch material {mat} not found")
                     if materials[mat]["type"] == "ElasticIsotropic":
                         raise ValueError(
-                            "FiberSection2d patch requires uniaxial material (not ElasticIsotropic)"
+                            f"{sec_type} patch requires uniaxial material (not ElasticIsotropic)"
                         )
                     ny = patch["num_subdiv_y"]
                     nz = patch["num_subdiv_z"]
                     if ny <= 0 or nz <= 0:
                         raise ValueError(
-                            "FiberSection2d patch requires num_subdiv_y and num_subdiv_z > 0"
+                            f"{sec_type} patch requires num_subdiv_y and num_subdiv_z > 0"
                         )
                     if patch_type == "rect":
                         yi = patch["y_i"]
@@ -486,20 +668,20 @@ def main():
                         )
                     else:
                         raise ValueError(
-                            f"unsupported FiberSection2d patch type: {patch_type}"
+                            f"unsupported {sec_type} patch type: {patch_type}"
                         )
                 for layer in layers:
                     layer_type = layer.get("type")
                     if layer_type != "straight":
                         raise ValueError(
-                            f"unsupported FiberSection2d layer type: {layer_type}"
+                            f"unsupported {sec_type} layer type: {layer_type}"
                         )
                     mat = layer["material"]
                     if mat not in materials:
-                        raise ValueError(f"FiberSection2d layer material {mat} not found")
+                        raise ValueError(f"{sec_type} layer material {mat} not found")
                     if materials[mat]["type"] == "ElasticIsotropic":
                         raise ValueError(
-                            "FiberSection2d layer requires uniaxial material (not ElasticIsotropic)"
+                            f"{sec_type} layer requires uniaxial material (not ElasticIsotropic)"
                         )
                     num_bars = layer["num_bars"]
                     bar_area = layer["bar_area"]
@@ -509,11 +691,11 @@ def main():
                     z_end = layer["z_end"]
                     if num_bars <= 0:
                         raise ValueError(
-                            "FiberSection2d layer straight requires num_bars > 0"
+                            f"{sec_type} layer straight requires num_bars > 0"
                         )
                     if bar_area <= 0:
                         raise ValueError(
-                            "FiberSection2d layer straight requires bar_area > 0"
+                            f"{sec_type} layer straight requires bar_area > 0"
                         )
                     f.write(
                         "  layer straight "
@@ -533,11 +715,16 @@ def main():
                 "elasticBeamColumn3d",
                 "forceBeamColumn2d",
                 "dispBeamColumn2d",
-                "nonlinearBeamColumn",
+                "forceBeamColumn3d",
+                "dispBeamColumn3d",
             ):
                 continue
             name = elem.get("geomTransf", "Linear")
-            if elem["type"] == "elasticBeamColumn3d":
+            if elem["type"] in (
+                "elasticBeamColumn3d",
+                "forceBeamColumn3d",
+                "dispBeamColumn3d",
+            ):
                 n1_id, n2_id = elem["nodes"]
                 vecxz = _choose_vecxz(node_by_id[n1_id], node_by_id[n2_id])
                 key = (name, vecxz)
@@ -552,29 +739,41 @@ def main():
                     f.write(f"geomTransf {name} {next_tag} {vx} {vy} {vz}\n")
                 next_tag += 1
 
-        # Beam integrations (forceBeamColumn2d/dispBeamColumn2d: Lobatto only)
+        # Beam integrations (force/disp beam-column)
         integration_tags = {}
         next_int_tag = 1
         for elem in elements:
             elem_type = elem["type"]
-            if elem_type == "nonlinearBeamColumn":
-                elem_type = "forceBeamColumn2d"
-            if elem_type not in ("forceBeamColumn2d", "dispBeamColumn2d"):
+            if elem_type not in (
+                "forceBeamColumn2d",
+                "dispBeamColumn2d",
+                "forceBeamColumn3d",
+                "dispBeamColumn3d",
+            ):
                 continue
             sec = sections[elem["section"]]
-            if sec["type"] not in ("FiberSection2d", "ElasticSection2d"):
-                raise ValueError(
-                    f"{elem_type} requires FiberSection2d or ElasticSection2d"
-                )
+            is_3d = elem_type in ("forceBeamColumn3d", "dispBeamColumn3d")
+            if is_3d:
+                if sec["type"] not in ("ElasticSection3d", "FiberSection3d"):
+                    raise ValueError(f"{elem_type} requires ElasticSection3d or FiberSection3d")
+                if sec["type"] == "FiberSection3d":
+                    if sec["params"].get("G", 0.0) <= 0.0 or sec["params"].get("J", 0.0) <= 0.0:
+                        raise ValueError(
+                            f"{elem_type} with FiberSection3d requires positive G and J"
+                        )
+            elif sec["type"] not in ("FiberSection2d", "ElasticSection2d"):
+                raise ValueError(f"{elem_type} requires FiberSection2d or ElasticSection2d")
             geom = elem.get("geomTransf", "Linear")
-            if geom not in ("Linear", "PDelta"):
+            if is_3d:
+                if geom not in ("Linear", "PDelta", "Corotational"):
+                    raise ValueError(
+                        f"{elem_type} supports geomTransf Linear, PDelta, or Corotational"
+                    )
+            elif geom not in ("Linear", "PDelta"):
                 raise ValueError(f"{elem_type} supports geomTransf Linear or PDelta")
             integration = elem.get("integration", "Lobatto")
-            if integration != "Lobatto":
-                raise ValueError(f"{elem_type} supports Lobatto integration only")
             num_int_pts = int(elem.get("num_int_pts", 3))
-            if num_int_pts not in (3, 5):
-                raise ValueError(f"{elem_type} supports num_int_pts=3 or 5")
+            _validate_beam_integration(elem_type, integration, num_int_pts)
             key = (integration, elem["section"], num_int_pts)
             if key in integration_tags:
                 continue
@@ -604,25 +803,39 @@ def main():
                 f.write(
                     f"element elasticBeamColumn {elem['id']} {n1} {n2} {A} {E} {I} {transf_tag}\n"
                 )
-            elif elem["type"] in ("forceBeamColumn2d", "dispBeamColumn2d", "nonlinearBeamColumn"):
+            elif elem["type"] in (
+                "forceBeamColumn2d",
+                "dispBeamColumn2d",
+                "forceBeamColumn3d",
+                "dispBeamColumn3d",
+            ):
                 elem_type = elem["type"]
-                if elem_type == "nonlinearBeamColumn":
-                    elem_type = "forceBeamColumn2d"
                 sec = sections[elem["section"]]
-                if sec["type"] not in ("FiberSection2d", "ElasticSection2d"):
-                    raise ValueError(
-                        f"{elem_type} requires FiberSection2d or ElasticSection2d"
-                    )
+                is_3d = elem_type in ("forceBeamColumn3d", "dispBeamColumn3d")
+                if is_3d:
+                    if sec["type"] not in ("ElasticSection3d", "FiberSection3d"):
+                        raise ValueError(f"{elem_type} requires ElasticSection3d or FiberSection3d")
+                    if sec["type"] == "FiberSection3d":
+                        if sec["params"].get("G", 0.0) <= 0.0 or sec["params"].get("J", 0.0) <= 0.0:
+                            raise ValueError(
+                                f"{elem_type} with FiberSection3d requires positive G and J"
+                            )
+                elif sec["type"] not in ("FiberSection2d", "ElasticSection2d"):
+                    raise ValueError(f"{elem_type} requires FiberSection2d or ElasticSection2d")
                 integration = elem.get("integration", "Lobatto")
                 num_int_pts = int(elem.get("num_int_pts", 3))
                 key = (integration, elem["section"], num_int_pts)
                 if key not in integration_tags:
                     raise ValueError(f"{elem_type} integration definition missing")
                 n1, n2 = elem["nodes"]
-                transf_tag = transf_tags[(elem.get("geomTransf", "Linear"), None)]
+                if is_3d:
+                    vecxz = _choose_vecxz(node_by_id[n1], node_by_id[n2])
+                    transf_tag = transf_tags[(elem.get("geomTransf", "Linear"), vecxz)]
+                else:
+                    transf_tag = transf_tags[(elem.get("geomTransf", "Linear"), None)]
                 int_tag = integration_tags[key]
                 element_cmd = "forceBeamColumn"
-                if elem_type == "dispBeamColumn2d":
+                if elem_type in ("dispBeamColumn2d", "dispBeamColumn3d"):
                     element_cmd = "dispBeamColumn"
                 f.write(
                     f"element {element_cmd} {elem['id']} {n1} {n2} {transf_tag} {int_tag}\n"
@@ -689,9 +902,11 @@ def main():
         loads = data.get("loads", [])
         element_loads = data.get("element_loads", [])
         pattern = data.get("pattern")
+        analysis = data.get("analysis", {"type": "static_linear", "steps": 1})
+        analysis_type = analysis.get("type", "static_linear")
         ts_tags = set()
+        ts_list = _normalize_time_series(data.get("time_series"))
         if loads or element_loads or pattern is not None:
-            ts_list = _normalize_time_series(data.get("time_series"))
             if ts_list:
                 for ts in ts_list:
                     _emit_time_series(f, ts, case_dir, data)
@@ -736,15 +951,7 @@ def main():
                     for node_id, vec in load_map.items():
                         f.write(f"  load {node_id} {' '.join(str(v) for v in vec)}\n")
                 for elem_load in element_loads:
-                    if elem_load["type"] != "beamUniform":
-                        raise ValueError(f"unsupported element load type: {elem_load['type']}")
-                    elem_id = elem_load["element"]
-                    wy = elem_load.get("wy", elem_load.get("w", 0.0))
-                    if "wx" in elem_load:
-                        wx = elem_load["wx"]
-                        f.write(f"  eleLoad -ele {elem_id} -type -beamUniform {wy} {wx}\n")
-                    else:
-                        f.write(f"  eleLoad -ele {elem_id} -type -beamUniform {wy}\n")
+                    _emit_element_load(f, elem_load, ndm)
                 f.write("}\n")
             elif pattern_type == "UniformExcitation":
                 if loads or element_loads:
@@ -769,6 +976,10 @@ def main():
                 )
             else:
                 raise ValueError(f"unsupported pattern type: {pattern_type}")
+        elif analysis_type == "staged" and ts_list:
+            for ts in ts_list:
+                _emit_time_series(f, ts, case_dir, data)
+            ts_tags = {ts["tag"] for ts in ts_list}
 
         rayleigh = data.get("rayleigh")
         if rayleigh is not None:
@@ -779,8 +990,6 @@ def main():
             f.write(f"rayleigh {alpha_m} {beta_k} {beta_k_init} {beta_k_comm}\n")
 
         # Analysis setup
-        analysis = data.get("analysis", {"type": "static_linear", "steps": 1})
-        analysis_type = analysis.get("type", "static_linear")
         steps = analysis.get("steps", 1)
         constraints_handler = analysis.get("constraints", "Plain")
         dt = None
@@ -841,19 +1050,7 @@ def main():
                             for node_id, vec in load_map.items():
                                 f.write(f"  load {node_id} {' '.join(str(v) for v in vec)}\n")
                         for elem_load in stage_element_loads:
-                            if elem_load["type"] != "beamUniform":
-                                raise ValueError(
-                                    f"unsupported element load type: {elem_load['type']}"
-                                )
-                            elem_id = elem_load["element"]
-                            wy = elem_load.get("wy", elem_load.get("w", 0.0))
-                            if "wx" in elem_load:
-                                wx = elem_load["wx"]
-                                f.write(
-                                    f"  eleLoad -ele {elem_id} -type -beamUniform {wy} {wx}\n"
-                                )
-                            else:
-                                f.write(f"  eleLoad -ele {elem_id} -type -beamUniform {wy}\n")
+                            _emit_element_load(f, elem_load, ndm)
                         f.write("}\n")
                     elif stage_pattern_type == "UniformExcitation":
                         if stage_loads or stage_element_loads:
@@ -925,22 +1122,75 @@ def main():
                     tol = stage_analysis.get("tol", 1.0e-10)
                     max_iters = stage_analysis.get("max_iters", 20)
                     algorithm = stage_analysis.get("algorithm", "Newton")
-                    if algorithm not in ("Newton", "ModifiedNewton"):
-                        raise ValueError(
-                            f"unsupported static_nonlinear algorithm: {algorithm}"
+                    _validate_static_nonlinear_algorithm(
+                        algorithm, "static_nonlinear"
+                    )
+                    test_type = stage_analysis.get("test_type", "MaxDispIncr")
+                    _validate_static_nonlinear_test_type(
+                        test_type, "static_nonlinear"
+                    )
+                    primary_algorithm = _algorithm_cmd(algorithm, stage_analysis)
+                    fallback_algorithm = stage_analysis.get("fallback_algorithm")
+                    fallback_test_type = test_type
+                    fallback_tol = tol
+                    fallback_max_iters = max_iters
+                    fallback_algorithm_cmd = None
+                    tcl_test_type = _tcl_static_nonlinear_test_type(test_type)
+                    tcl_fallback_test_type = tcl_test_type
+                    if fallback_algorithm is not None:
+                        _validate_static_nonlinear_algorithm(
+                            fallback_algorithm, "static_nonlinear fallback"
                         )
-                    f.write(f"test NormUnbalance {tol} {max_iters}\n")
-                    f.write(f"algorithm {algorithm}\n")
+                        fallback_test_type = stage_analysis.get(
+                            "fallback_test_type", test_type
+                        )
+                        _validate_static_nonlinear_test_type(
+                            fallback_test_type, "static_nonlinear fallback"
+                        )
+                        fallback_tol = stage_analysis.get("fallback_tol", tol)
+                        fallback_max_iters = stage_analysis.get(
+                            "fallback_max_iters", max_iters
+                        )
+                        tcl_fallback_test_type = _tcl_static_nonlinear_test_type(
+                            fallback_test_type
+                        )
+                        fallback_algorithm_cmd = _algorithm_cmd(
+                            fallback_algorithm,
+                            stage_analysis,
+                            prefix="fallback_",
+                        )
+                    f.write(f"test {tcl_test_type} {tol} {max_iters}\n")
+                    f.write(f"algorithm {primary_algorithm}\n")
                     integrator = stage_analysis.get("integrator", {"type": "LoadControl"})
                     integrator_type = integrator.get("type", "LoadControl")
                     if integrator_type == "LoadControl":
                         f.write(f"integrator LoadControl {1.0/stage_steps}\n")
                         f.write("analysis Static\n")
+                        if fallback_algorithm_cmd is not None:
+                            stage_static_nl_post_lines = [
+                                "set strut_nl_ok 0",
+                                f"for {{set strut_nl_step 0}} {{$strut_nl_step < {stage_steps} && $strut_nl_ok == 0}} {{incr strut_nl_step}} {{",
+                                "  set strut_nl_ok [analyze 1]",
+                                "  if {$strut_nl_ok != 0} {",
+                                f"    test {fallback_test_type} {fallback_tol} {fallback_max_iters}",
+                                f"    algorithm {fallback_algorithm_cmd}",
+                                "    set strut_nl_ok [analyze 1]",
+                                f"    test {test_type} {tol} {max_iters}",
+                                f"    algorithm {primary_algorithm}",
+                                "  }",
+                                "}",
+                                "if {$strut_nl_ok != 0} {",
+                                "  error \"analysis failed\"",
+                                "}",
+                            ]
                     elif integrator_type == "DisplacementControl":
                         node = integrator.get("node")
                         dof = integrator.get("dof")
                         if node is None or dof is None:
                             raise ValueError("DisplacementControl requires node and dof")
+                        cutback, max_cutbacks, min_du = _validate_displacement_control_cutback(
+                            integrator, "DisplacementControl"
+                        )
                         f.write("analysis Static\n")
                         targets = integrator.get("targets")
                         if targets is not None:
@@ -948,40 +1198,51 @@ def main():
                                 raise ValueError(
                                     "DisplacementControl targets must be a non-empty list"
                                 )
-                            stage_static_nl_post_lines = [
-                                "set strut_dc_prev 0.0",
-                                "set strut_dc_targets {"
-                                + " ".join(str(float(val)) for val in targets)
-                                + "}",
-                                "foreach strut_dc_targ $strut_dc_targets {",
-                                "  set strut_dc_du [expr $strut_dc_targ - $strut_dc_prev]",
-                                "  if {[expr abs($strut_dc_du)] < 1.0e-16} {",
-                                "    set strut_dc_prev $strut_dc_targ",
-                                "    continue",
-                                "  }",
-                                f"  integrator DisplacementControl {int(node)} {int(dof)} $strut_dc_du",
-                                "  set strut_dc_ok [analyze 1]",
-                                "  if {$strut_dc_ok != 0} {",
-                                "    error \"analysis failed\"",
-                                "  }",
-                                "  set strut_dc_prev $strut_dc_targ",
-                                "}",
-                            ]
+                            stage_static_nl_post_lines = (
+                                _static_nonlinear_displacement_control_post_lines(
+                                    node,
+                                    dof,
+                                    targets,
+                                    cutback,
+                                    max_cutbacks,
+                                    min_du,
+                                    tcl_test_type,
+                                    tol,
+                                    max_iters,
+                                    primary_algorithm,
+                                    tcl_fallback_test_type,
+                                    fallback_tol,
+                                    fallback_max_iters,
+                                    fallback_algorithm_cmd,
+                                )
+                            )
                         else:
                             du = integrator.get("du")
                             if du is None or float(du) == 0.0:
                                 raise ValueError(
                                     "DisplacementControl requires non-zero du when targets are omitted"
                                 )
-                            f.write(
-                                f"integrator DisplacementControl {int(node)} {int(dof)} {float(du)}\n"
-                            )
-                            stage_static_nl_post_lines = [
-                                f"set strut_nl_ok [analyze {stage_steps}]",
-                                "if {$strut_nl_ok != 0} {",
-                                "  error \"analysis failed\"",
-                                "}",
+                            step_targets = [
+                                float(du) * float(i + 1) for i in range(stage_steps)
                             ]
+                            stage_static_nl_post_lines = (
+                                _static_nonlinear_displacement_control_post_lines(
+                                    node,
+                                    dof,
+                                    step_targets,
+                                    cutback,
+                                    max_cutbacks,
+                                    min_du,
+                                    tcl_test_type,
+                                    tol,
+                                    max_iters,
+                                    primary_algorithm,
+                                    tcl_fallback_test_type,
+                                    fallback_tol,
+                                    fallback_max_iters,
+                                    fallback_algorithm_cmd,
+                                )
+                            )
                     else:
                         raise ValueError(
                             f"unsupported static_nonlinear integrator: {integrator_type}"
@@ -1104,14 +1365,14 @@ def main():
                     f.write(f"set strut_modal_lambda [eigen {num_modes}]\n")
                 elif stage_type == "static_nonlinear":
                     integrator = stage_analysis.get("integrator", {"type": "LoadControl"})
-                    if integrator.get("type", "LoadControl") == "LoadControl":
+                    if stage_static_nl_post_lines is not None:
+                        for line in stage_static_nl_post_lines:
+                            f.write(line + "\n")
+                    elif integrator.get("type", "LoadControl") == "LoadControl":
                         f.write(f"set strut_nl_ok [analyze {stage_steps}]\n")
                         f.write("if {$strut_nl_ok != 0} {\n")
                         f.write("  error \"analysis failed\"\n")
                         f.write("}\n")
-                    elif stage_static_nl_post_lines is not None:
-                        for line in stage_static_nl_post_lines:
-                            f.write(line + "\n")
                 elif stage_type == "transient_nonlinear":
                     # The staged transient_nonlinear branch above either emitted a single
                     # `analyze` or a per-step fallback loop.
@@ -1148,55 +1409,109 @@ def main():
             tol = analysis.get("tol", 1.0e-10)
             max_iters = analysis.get("max_iters", 20)
             algorithm = analysis.get("algorithm", "Newton")
-            if algorithm not in ("Newton", "ModifiedNewton"):
-                raise ValueError(
-                    f"unsupported static_nonlinear algorithm: {algorithm}"
+            _validate_static_nonlinear_algorithm(algorithm, "static_nonlinear")
+            test_type = analysis.get("test_type", "MaxDispIncr")
+            _validate_static_nonlinear_test_type(test_type, "static_nonlinear")
+            primary_algorithm = _algorithm_cmd(algorithm, analysis)
+            fallback_algorithm = analysis.get("fallback_algorithm")
+            fallback_test_type = test_type
+            fallback_tol = tol
+            fallback_max_iters = max_iters
+            fallback_algorithm_cmd = None
+            tcl_test_type = _tcl_static_nonlinear_test_type(test_type)
+            tcl_fallback_test_type = tcl_test_type
+            if fallback_algorithm is not None:
+                _validate_static_nonlinear_algorithm(
+                    fallback_algorithm, "static_nonlinear fallback"
                 )
-            f.write(f"test NormUnbalance {tol} {max_iters}\n")
-            f.write(f"algorithm {algorithm}\n")
+                fallback_test_type = analysis.get("fallback_test_type", test_type)
+                _validate_static_nonlinear_test_type(
+                    fallback_test_type, "static_nonlinear fallback"
+                )
+                fallback_tol = analysis.get("fallback_tol", tol)
+                fallback_max_iters = analysis.get("fallback_max_iters", max_iters)
+                tcl_fallback_test_type = _tcl_static_nonlinear_test_type(
+                    fallback_test_type
+                )
+                fallback_algorithm_cmd = _algorithm_cmd(
+                    fallback_algorithm,
+                    analysis,
+                    prefix="fallback_",
+                )
+            f.write(f"test {tcl_test_type} {tol} {max_iters}\n")
+            f.write(f"algorithm {primary_algorithm}\n")
             integrator = analysis.get("integrator", {"type": "LoadControl"})
             integrator_type = integrator.get("type", "LoadControl")
             if integrator_type == "LoadControl":
                 f.write(f"integrator LoadControl {1.0/steps}\n")
                 f.write("analysis Static\n")
+                if fallback_algorithm_cmd is not None:
+                    static_nl_post_lines = [
+                        "set strut_nl_ok 0",
+                        f"for {{set strut_nl_step 0}} {{$strut_nl_step < {int(steps)} && $strut_nl_ok == 0}} {{incr strut_nl_step}} {{",
+                        "  set strut_nl_ok [analyze 1]",
+                        "  if {$strut_nl_ok != 0} {",
+                        f"    test {fallback_test_type} {fallback_tol} {fallback_max_iters}",
+                        f"    algorithm {fallback_algorithm_cmd}",
+                        "    set strut_nl_ok [analyze 1]",
+                        f"    test {test_type} {tol} {max_iters}",
+                        f"    algorithm {primary_algorithm}",
+                        "  }",
+                        "}",
+                        "if {$strut_nl_ok != 0} {",
+                        "  error \"analysis failed\"",
+                        "}",
+                    ]
             elif integrator_type == "DisplacementControl":
                 node = integrator.get("node")
                 dof = integrator.get("dof")
                 if node is None or dof is None:
                     raise ValueError("DisplacementControl requires node and dof")
+                cutback, max_cutbacks, min_du = _validate_displacement_control_cutback(
+                    integrator, "DisplacementControl"
+                )
                 f.write("analysis Static\n")
                 targets = integrator.get("targets")
                 if targets is not None:
                     if not isinstance(targets, list) or len(targets) == 0:
                         raise ValueError("DisplacementControl targets must be a non-empty list")
-                    static_nl_post_lines = [
-                        "set strut_dc_prev 0.0",
-                        "set strut_dc_targets {" + " ".join(str(float(val)) for val in targets) + "}",
-                        "foreach strut_dc_targ $strut_dc_targets {",
-                        "  set strut_dc_du [expr $strut_dc_targ - $strut_dc_prev]",
-                        "  if {[expr abs($strut_dc_du)] < 1.0e-16} {",
-                        "    set strut_dc_prev $strut_dc_targ",
-                        "    continue",
-                        "  }",
-                        f"  integrator DisplacementControl {int(node)} {int(dof)} $strut_dc_du",
-                        "  set strut_dc_ok [analyze 1]",
-                        "  if {$strut_dc_ok != 0} {",
-                        "    error \"analysis failed\"",
-                        "  }",
-                        "  set strut_dc_prev $strut_dc_targ",
-                        "}",
-                    ]
+                    static_nl_post_lines = _static_nonlinear_displacement_control_post_lines(
+                        node,
+                        dof,
+                        targets,
+                        cutback,
+                        max_cutbacks,
+                        min_du,
+                        tcl_test_type,
+                        tol,
+                        max_iters,
+                        primary_algorithm,
+                        tcl_fallback_test_type,
+                        fallback_tol,
+                        fallback_max_iters,
+                        fallback_algorithm_cmd,
+                    )
                 else:
                     du = integrator.get("du")
                     if du is None or float(du) == 0.0:
                         raise ValueError("DisplacementControl requires non-zero du when targets are omitted")
-                    f.write(f"integrator DisplacementControl {int(node)} {int(dof)} {float(du)}\n")
-                    static_nl_post_lines = [
-                        f"set strut_dc_ok [analyze {steps}]",
-                        "if {$strut_dc_ok != 0} {",
-                        "  error \"analysis failed\"",
-                        "}",
-                    ]
+                    step_targets = [float(du) * float(i + 1) for i in range(steps)]
+                    static_nl_post_lines = _static_nonlinear_displacement_control_post_lines(
+                        node,
+                        dof,
+                        step_targets,
+                        cutback,
+                        max_cutbacks,
+                        min_du,
+                        tcl_test_type,
+                        tol,
+                        max_iters,
+                        primary_algorithm,
+                        tcl_fallback_test_type,
+                        fallback_tol,
+                        fallback_max_iters,
+                        fallback_algorithm_cmd,
+                    )
             else:
                 raise ValueError(f"unsupported static_nonlinear integrator: {integrator_type}")
         elif analysis_type == "transient_linear":
@@ -1349,14 +1664,14 @@ def main():
                         f.write("close $strut_modal_file\n")
         elif analysis_type == "static_nonlinear":
             integrator = analysis.get("integrator", {"type": "LoadControl"})
-            if integrator.get("type", "LoadControl") == "LoadControl":
+            if static_nl_post_lines is not None:
+                for line in static_nl_post_lines:
+                    f.write(line + "\n")
+            elif integrator.get("type", "LoadControl") == "LoadControl":
                 f.write(f"set strut_nl_ok [analyze {steps}]\n")
                 f.write("if {$strut_nl_ok != 0} {\n")
                 f.write("  error \"analysis failed\"\n")
                 f.write("}\n")
-            elif static_nl_post_lines is not None:
-                for line in static_nl_post_lines:
-                    f.write(line + "\n")
         else:
             f.write(f"analyze {steps}\n")
 

@@ -96,37 +96,6 @@ def collect_recent_cases(
     return names, engines, errors
 
 
-def _finite_positive(values: List[float]) -> List[float]:
-    return [
-        float(v)
-        for v in values
-        if isinstance(v, (int, float)) and math.isfinite(float(v)) and float(v) > 0.0
-    ]
-
-
-def _recent_should_use_log_scale(
-    engines: Dict[str, List[float]],
-    mode: str,
-    ratio_threshold: float,
-) -> bool:
-    if mode == "off":
-        return False
-    if mode == "on":
-        return True
-    if mode != "auto":
-        return False
-    positive: List[float] = []
-    for values in engines.values():
-        positive.extend(_finite_positive(values))
-    if len(positive) < 2:
-        return False
-    lo = min(positive)
-    hi = max(positive)
-    if lo <= 0.0:
-        return False
-    return (hi / lo) >= ratio_threshold
-
-
 def _count_constrained_dofs(node: dict, ndf: int) -> int:
     constraints = node.get("constraints")
     if not constraints:
@@ -548,6 +517,7 @@ def plot_archive_trend(
 
     ax.set_ylabel(f"Mean median analysis time ({unit_label})")
     ax.set_title(title)
+    ax.set_yscale("log")
     ax.grid(axis="y", linestyle=":", alpha=0.5)
     ax.legend()
     if min_timestamp is not None:
@@ -602,21 +572,6 @@ def main() -> None:
         type=int,
         default=300,
         help="Free-DOF threshold to split medium benchmarks (default: 300).",
-    )
-    parser.add_argument(
-        "--recent-log-scale",
-        choices=("off", "auto", "on"),
-        default="auto",
-        help="Use log-scale y-axis on recent case bar charts (default: auto).",
-    )
-    parser.add_argument(
-        "--recent-log-ratio-threshold",
-        type=float,
-        default=100.0,
-        help=(
-            "Enable recent log scale in auto mode when max/min positive timing ratio "
-            "reaches this threshold (default: 100)."
-        ),
     )
     parser.add_argument(
         "--open",
@@ -691,31 +646,6 @@ def main() -> None:
     medium_names, medium_engines, medium_errors, medium_spans = _prepare(medium_indices)
     large_names, large_engines, large_errors, large_spans = _prepare(large_indices)
 
-    if args.recent_log_scale == "auto":
-        small_log = False
-        medium_log = _recent_should_use_log_scale(
-            medium_engines,
-            "auto",
-            args.recent_log_ratio_threshold,
-        )
-        large_log = False
-    else:
-        small_log = _recent_should_use_log_scale(
-            small_engines,
-            args.recent_log_scale,
-            args.recent_log_ratio_threshold,
-        )
-        medium_log = _recent_should_use_log_scale(
-            medium_engines,
-            args.recent_log_scale,
-            args.recent_log_ratio_threshold,
-        )
-        large_log = _recent_should_use_log_scale(
-            large_engines,
-            args.recent_log_scale,
-            args.recent_log_ratio_threshold,
-        )
-
     with PdfPages(output_path) as pdf:
         if archive_dir.exists():
             archive_min_ts = archive_min_timestamp(archive_dir)
@@ -755,26 +685,23 @@ def main() -> None:
                 small_errors,
                 small_spans,
                 group_gap=args.group_gap,
-                title="Recent benchmark (small cases)",
-                y_scale="log" if small_log else "linear",
+                title="Recent benchmark (small cases) [log y]",
+                y_scale="log",
             )
             pdf.savefig(fig)
             plt.close(fig)
 
         if medium_names:
-            medium_title = "Recent benchmark (medium cases)"
-            if medium_log:
-                medium_title += " [log y]"
             fig = plot_recent_bar(
                 medium_names,
                 medium_engines,
                 medium_errors,
                 medium_spans,
                 group_gap=args.group_gap,
-                title=medium_title,
+                title="Recent benchmark (medium cases) [log y]",
                 unit_label="ms",
                 scale=1.0 / 1e3,
-                y_scale="log" if medium_log else "linear",
+                y_scale="log",
             )
             pdf.savefig(fig)
             plt.close(fig)
@@ -786,8 +713,8 @@ def main() -> None:
                 large_errors,
                 large_spans,
                 group_gap=args.group_gap,
-                title="Recent benchmark (large cases)",
-                y_scale="log" if large_log else "linear",
+                title="Recent benchmark (large cases) [log y]",
+                y_scale="log",
             )
             pdf.savefig(fig)
             plt.close(fig)

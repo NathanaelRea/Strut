@@ -6,7 +6,7 @@ Tools for comparing OpenSees (Wine) and Strut (Mojo) runtime performance.
 
 Use `scripts/run_benchmarks.py` to run the default elastic cases or a custom
 case list from `tests/validation/`. The Mojo solver is precompiled before
-timing (cached at `build/mojo/strut`).
+timing (cached at `build/strut/strut`).
 
 Examples:
 
@@ -22,12 +22,14 @@ uv run scripts/run_benchmarks.py --benchmark-suite opt_fast_v1 --engine strut --
 uv run scripts/run_benchmarks.py --benchmark-suite opt_full_v1 --engine both --profile benchmark/speedscope --no-archive
 uv run scripts/run_benchmarks.py --list-benchmark-suites
 uv run scripts/run_benchmarks.py --engine strut --cases opensees_example_rc_frame_earthquake --profile benchmark/speedscope --no-archive
+uv run scripts/run_benchmarks.py --engine strut --cases force_beam_column3d_portal_benchmark,nonlinear_beam_column3d_portal_benchmark,disp_beam_column3d_portal_benchmark --no-archive
+uv run scripts/compare_benchmarks.py benchmark/results-profile/summary.json /tmp/phase7results_after/summary.json --max-regression-pct 5 --min-regression-us 50 --require-improvement opensees_example_rc_frame_earthquake=10
 ```
 
 Optimization loop suites:
 
 - `opt_fast_v1`: short feedback loop for iterative profiling work.
-- `opt_full_v1`: broader end-to-end suite for milestone checks.
+- `opt_full_v1`: broader end-to-end suite for milestone checks, including the 3D beam-column portal benchmarks.
 
 Upcoming element benchmarks (disabled until element support lands):
 
@@ -50,6 +52,8 @@ uv run scripts/run_benchmarks.py --cases elastic_truss_basic,elastic_four_node_q
 - `--profile <DIR>` works in both per-case and batch runs and writes per-case files as `<case>.speedscope.json` into `DIR`.
 - Compute-only outputs are written to `benchmark/results/opensees_compute/` and `benchmark/results/strut_compute/` (or the `results-profile` equivalents when profiling).
 - `metadata.json` records machine/build/run metadata for reproducible baseline/perf comparisons.
+- `uv run scripts/compare_benchmarks.py` compares two `summary.json` files and can fail on regressions or unmet improvement targets.
+- Use `--min-regression-us` to ignore tiny absolute timing swings on very small cases.
 - `phase_summary.csv` records per-case phase timing columns (parse/model-build/assembly/solve/output).
 - `phase_rollup.csv` records phase-level aggregates (mean/median/min/max).
 - `benchmark/archive/` contains timestamped summary snapshots.
@@ -70,6 +74,8 @@ The plot helper requires matplotlib:
 ```bash
 uv run scripts/plot_benchmarks.py --output benchmark/results/plots.pdf
 ```
+
+Benchmark PDFs use a log-scale y-axis for both recent-case and archive charts.
 
 Group and order cases in the bar chart (default is prefix grouping, disable with `--group-by none`):
 

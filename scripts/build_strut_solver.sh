@@ -2,9 +2,4 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-out_dir="${repo_root}/build/strut"
-out_bin="${out_dir}/strut"
-
-mkdir -p "${out_dir}"
-uv run mojo build "${repo_root}/src/mojo/strut.mojo" -o "${out_bin}"
-echo "Built ${out_bin}"
+"${repo_root}/scripts/build_mojo_solver.sh"

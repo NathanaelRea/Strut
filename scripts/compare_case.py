@@ -8,6 +8,17 @@ from pathlib import Path
 ABS_TOL = 1e-8
 REL_TOL = 1e-5
 
+DEFAULT_RECORDER_TOLERANCES = {
+    "node_displacement": {"atol": 1e-9, "rtol": 1e-5},
+    "node_reaction": {"atol": 1e-9, "rtol": 1e-5},
+    "drift": {"atol": 1e-9, "rtol": 1e-5},
+    "element_force": {"atol": 1e-8, "rtol": 1e-5},
+    "envelope_element_force": {"atol": 1e-8, "rtol": 1e-5},
+    "section_force": {"atol": 1e-8, "rtol": 1e-5},
+    "section_deformation": {"atol": 1e-9, "rtol": 1e-6},
+    "modal_eigen": {"atol": 1e-8, "rtol": 1e-5},
+}
+
 
 def _isclose(a, b, rtol=REL_TOL, atol=ABS_TOL):
     return abs(a - b) <= (atol + rtol * abs(b))
@@ -110,6 +121,49 @@ def _compare_transient_rows(
             break
 
 
+def _resolve_recorder_tolerance(
+    rec_type: str,
+    global_rtol: float,
+    global_atol: float,
+    has_global_override: bool,
+    per_recorder_overrides: dict,
+):
+    default_entry = DEFAULT_RECORDER_TOLERANCES.get(rec_type, {})
+    rtol = float(default_entry.get("rtol", REL_TOL))
+    atol = float(default_entry.get("atol", ABS_TOL))
+
+    if has_global_override:
+        # Case-level parity_tolerance is a global override for all recorders unless a
+        # recorder-specific override is provided.
+        rtol = float(global_rtol)
+        atol = float(global_atol)
+
+    override = per_recorder_overrides.get(rec_type, {})
+    if isinstance(override, dict):
+        if "rtol" in override:
+            rtol = float(override["rtol"])
+        if "atol" in override:
+            atol = float(override["atol"])
+    return rtol, atol
+
+
+def _analysis_is_transient(analysis: dict) -> bool:
+    analysis_type = str(analysis.get("type", "static_linear"))
+    if analysis_type.startswith("transient"):
+        return True
+    if analysis_type != "staged":
+        return False
+    for stage in analysis.get("stages", []):
+        if not isinstance(stage, dict):
+            continue
+        stage_analysis = stage.get("analysis", {})
+        if not isinstance(stage_analysis, dict):
+            continue
+        if str(stage_analysis.get("type", "")).startswith("transient"):
+            return True
+    return False
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--case", required=True)
@@ -126,14 +180,19 @@ def main():
     tol = data.get("parity_tolerance", {})
     rtol = tol.get("rtol", REL_TOL)
     atol = tol.get("atol", ABS_TOL)
+    has_global_tol_override = isinstance(tol, dict) and (
+        "rtol" in tol or "atol" in tol
+    )
+    tol_by_recorder = data.get("parity_tolerance_by_recorder", {})
+    if not isinstance(tol_by_recorder, dict):
+        tol_by_recorder = {}
     parity_mode = str(data.get("parity_mode", "step")).strip().lower()
     if parity_mode not in ("step", "max_abs"):
         raise ValueError(
             f"unsupported parity_mode: {parity_mode} (expected step|max_abs)"
         )
     analysis = data.get("analysis", {})
-    analysis_type = analysis.get("type", "static_linear")
-    is_transient = str(analysis_type).startswith("transient")
+    is_transient = _analysis_is_transient(analysis)
 
     ref_dir = case_root / "reference"
     strut_dir = case_root / "strut"
@@ -143,6 +202,9 @@ def main():
         if rec.get("parity", True) is False:
             continue
         rec_type = rec["type"]
+        rec_rtol, rec_atol = _resolve_recorder_tolerance(
+            rec_type, rtol, atol, has_global_tol_override, tol_by_recorder
+        )
         if rec_type == "node_displacement":
             output = rec.get("output", "node_disp")
             for node_id in rec["nodes"]:
@@ -162,15 +224,15 @@ def main():
                         strut_vals,
                         f"node {node_id}",
                         failures,
-                        rtol,
-                        atol,
+                        rec_rtol,
+                        rec_atol,
                         parity_mode,
                     )
                 else:
                     ref_vals = _load_last_values(ref_file)
                     strut_vals = _load_last_values(strut_file)
                     ok, errors = _compare_mode_shape_vectors(
-                        ref_vals, strut_vals, rtol=rtol, atol=atol
+                        ref_vals, strut_vals, rtol=rec_rtol, atol=rec_atol
                     )
                     if not ok:
                         failures.append(f"node {node_id} mismatch")
@@ -194,15 +256,15 @@ def main():
                         strut_vals,
                         f"element {elem_id}",
                         failures,
-                        rtol,
-                        atol,
+                        rec_rtol,
+                        rec_atol,
                         parity_mode,
                     )
                 else:
                     ref_vals = _load_last_values(ref_file)
                     strut_vals = _load_last_values(strut_file)
                     ok, errors = _compare_vectors(
-                        ref_vals, strut_vals, rtol=rtol, atol=atol
+                        ref_vals, strut_vals, rtol=rec_rtol, atol=rec_atol
                     )
                     if not ok:
                         failures.append(f"element {elem_id} mismatch")
@@ -226,15 +288,15 @@ def main():
                         strut_vals,
                         f"reaction node {node_id}",
                         failures,
-                        rtol,
-                        atol,
+                        rec_rtol,
+                        rec_atol,
                         parity_mode,
                     )
                 else:
                     ref_vals = _load_last_values(ref_file)
                     strut_vals = _load_last_values(strut_file)
                     ok, errors = _compare_vectors(
-                        ref_vals, strut_vals, rtol=rtol, atol=atol
+                        ref_vals, strut_vals, rtol=rec_rtol, atol=rec_atol
                     )
                     if not ok:
                         failures.append(f"reaction node {node_id} mismatch")
@@ -259,15 +321,15 @@ def main():
                     strut_vals,
                     f"drift i{i_node}-j{j_node}",
                     failures,
-                    rtol,
-                    atol,
+                    rec_rtol,
+                    rec_atol,
                     parity_mode,
                 )
             else:
                 ref_vals = _load_last_values(ref_file)
                 strut_vals = _load_last_values(strut_file)
                 ok, errors = _compare_vectors(
-                    ref_vals, strut_vals, rtol=rtol, atol=atol
+                    ref_vals, strut_vals, rtol=rec_rtol, atol=rec_atol
                 )
                 if not ok:
                     failures.append(f"drift i{i_node}-j{j_node} mismatch")
@@ -293,7 +355,9 @@ def main():
                 for row_idx, (rvec, gvec) in enumerate(
                     zip(ref_vals, strut_vals), start=1
                 ):
-                    ok, errors = _compare_vectors(rvec, gvec, rtol=rtol, atol=atol)
+                    ok, errors = _compare_vectors(
+                        rvec, gvec, rtol=rec_rtol, atol=rec_atol
+                    )
                     if not ok:
                         failures.append(
                             f"envelope element {elem_id} mismatch at row {row_idx}"
@@ -331,15 +395,15 @@ def main():
                             strut_vals,
                             f"{rec_type} element {elem_id} section {sec_no}",
                             failures,
-                            rtol,
-                            atol,
+                            rec_rtol,
+                            rec_atol,
                             parity_mode,
                         )
                     else:
                         ref_vals = _load_last_values(ref_file)
                         strut_vals = _load_last_values(strut_file)
                         ok, errors = _compare_vectors(
-                            ref_vals, strut_vals, rtol=rtol, atol=atol
+                            ref_vals, strut_vals, rtol=rec_rtol, atol=rec_atol
                         )
                         if not ok:
                             failures.append(
@@ -364,7 +428,9 @@ def main():
             strut_rows = _load_all_values(eig_strut)
             ref_vals = [row[0] for row in ref_rows]
             strut_vals = [row[0] for row in strut_rows]
-            ok, errors = _compare_vectors(ref_vals, strut_vals, rtol=rtol, atol=atol)
+            ok, errors = _compare_vectors(
+                ref_vals, strut_vals, rtol=rec_rtol, atol=rec_atol
+            )
             if not ok:
                 failures.append("modal eigenvalue mismatch")
                 failures.extend([f"  {err}" for err in errors])
@@ -383,7 +449,7 @@ def main():
                     ref_vals = _load_last_values(ref_file)
                     strut_vals = _load_last_values(strut_file)
                     ok, errors = _compare_mode_shape_vectors(
-                        ref_vals, strut_vals, rtol=rtol, atol=atol
+                        ref_vals, strut_vals, rtol=rec_rtol, atol=rec_atol
                     )
                     if not ok:
                         failures.append(

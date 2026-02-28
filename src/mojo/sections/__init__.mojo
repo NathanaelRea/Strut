@@ -10,3 +10,14 @@ from sections.fiber2d import (
     fiber_section2d_revert_trial_all,
     fiber_section2d_set_trial,
 )
+from sections.fiber3d import (
+    FiberSection3dDef,
+    FiberSection3dResponse,
+    append_fiber_section3d_from_json,
+    fiber_section3d_commit,
+    fiber_section3d_commit_all,
+    fiber_section3d_init_states,
+    fiber_section3d_revert_trial,
+    fiber_section3d_revert_trial_all,
+    fiber_section3d_set_trial,
+)

@@ -3,22 +3,35 @@ from math import sqrt
 from os import abort
 
 from elements import (
+    beam2d_element_load_global,
     beam2d_corotational_global_internal_force,
+    beam2d_section_load_response,
+    beam_column3d_fiber_global_tangent_and_internal,
+    beam_column3d_fiber_section_response,
+    beam_integration_validate_or_abort,
+    beam_integration_xi_weight,
     beam2d_pdelta_global_stiffness,
+    beam3d_section_load_response,
+    beam3d_global_tangent_and_internal,
     beam_global_stiffness,
     beam_uniform_load_global_2d,
     disp_beam_column2d_global_tangent_and_internal,
+    disp_beam_column3d_global_tangent_and_internal,
     force_beam_column2d_global_tangent_and_internal,
+    force_beam_column3d_fiber_global_tangent_and_internal,
+    force_beam_column3d_fiber_section_response,
+    force_beam_column3d_global_tangent_and_internal,
 )
 from materials import UniMaterialDef, UniMaterialState, uniaxial_set_trial_strain
 from solver.dof import node_dof_index, require_dof_in_range
 from solver.run_case.input_types import (
+    ElementLoadInput,
     ElementInput,
     NodeInput,
     RecorderInput,
     SectionInput,
 )
-from sections import FiberCell, FiberSection2dDef
+from sections import FiberCell, FiberSection2dDef, FiberSection3dDef
 from tag_types import ElementTypeTag
 
 
@@ -29,11 +42,16 @@ fn _beam_uniform_load_for_element_global(
 
 
 fn _beam2d_element_force_global(
+    elem_index: Int,
     elem: ElementInput,
     nodes: List[NodeInput],
     sections_by_id: List[SectionInput],
     ndf: Int,
     u: List[Float64],
+    element_loads: List[ElementLoadInput],
+    elem_load_offsets: List[Int],
+    elem_load_pool: List[Int],
+    load_scale: Float64,
 ) raises -> List[Float64]:
     if ndf != 3:
         abort("elasticBeamColumn2d requires ndf=3")
@@ -117,12 +135,232 @@ fn _beam2d_element_force_global(
                 sum += k_global[i][j] * u_elem[j]
             f_elem[i] = sum
 
-    if elem.uniform_load_wy != 0.0 or elem.uniform_load_wx != 0.0:
-        var f_load = _beam_uniform_load_for_element_global(
-            node1, node2, elem.uniform_load_wy, elem.uniform_load_wx
+    var f_load = beam2d_element_load_global(
+        element_loads,
+        elem_load_offsets,
+        elem_load_pool,
+        elem_index,
+        load_scale,
+        node1.x,
+        node1.y,
+        node2.x,
+        node2.y,
+    )
+    for i in range(6):
+        f_elem[i] -= f_load[i]
+    return f_elem^
+
+
+fn _beam_column3d_element_force_global(
+    elem_index: Int,
+    elem: ElementInput,
+    nodes: List[NodeInput],
+    sections_by_id: List[SectionInput],
+    ndf: Int,
+    u: List[Float64],
+    fiber_section3d_defs: List[FiberSection3dDef],
+    fiber_section3d_cells: List[FiberCell],
+    fiber_section3d_index_by_id: List[Int],
+    uniaxial_defs: List[UniMaterialDef],
+    mut uniaxial_states: List[UniMaterialState],
+    elem_uniaxial_offsets: List[Int],
+    elem_uniaxial_counts: List[Int],
+    elem_uniaxial_state_ids: List[Int],
+    force_basic_offsets: List[Int],
+    force_basic_counts: List[Int],
+    mut force_basic_q: List[Float64],
+    element_loads: List[ElementLoadInput],
+    elem_load_offsets: List[Int],
+    elem_load_pool: List[Int],
+    load_scale: Float64,
+) raises -> List[Float64]:
+    var beam_col_type = elem.type
+    if ndf != 6:
+        abort(beam_col_type + " requires ndf=6")
+    var geom = elem.geom_transf
+    if geom != "Linear" and geom != "PDelta" and geom != "Corotational":
+        abort(beam_col_type + " supports geomTransf Linear, PDelta, or Corotational")
+    if (
+        elem.type_tag == ElementTypeTag.ForceBeamColumn3d
+        or elem.type_tag == ElementTypeTag.DispBeamColumn3d
+    ):
+        beam_integration_validate_or_abort(
+            beam_col_type, elem.integration, elem.num_int_pts
         )
-        for i in range(6):
-            f_elem[i] -= f_load[i]
+
+    var i1 = elem.node_index_1
+    var i2 = elem.node_index_2
+    var node1 = nodes[i1]
+    var node2 = nodes[i2]
+
+    var sec_id = elem.section
+    if sec_id >= len(sections_by_id):
+        abort("section not found")
+    var sec = sections_by_id[sec_id]
+    if sec.id < 0:
+        abort("section not found")
+
+    var dof_map = [
+        node_dof_index(i1, 1, ndf),
+        node_dof_index(i1, 2, ndf),
+        node_dof_index(i1, 3, ndf),
+        node_dof_index(i1, 4, ndf),
+        node_dof_index(i1, 5, ndf),
+        node_dof_index(i1, 6, ndf),
+        node_dof_index(i2, 1, ndf),
+        node_dof_index(i2, 2, ndf),
+        node_dof_index(i2, 3, ndf),
+        node_dof_index(i2, 4, ndf),
+        node_dof_index(i2, 5, ndf),
+        node_dof_index(i2, 6, ndf),
+    ]
+    var u_elem: List[Float64] = []
+    u_elem.resize(12, 0.0)
+    for i in range(12):
+        u_elem[i] = u[dof_map[i]]
+
+    var k_global: List[List[Float64]] = []
+    var f_elem: List[Float64] = []
+    if sec.type == "ElasticSection3d":
+        if elem.type_tag == ElementTypeTag.ForceBeamColumn3d:
+            force_beam_column3d_global_tangent_and_internal(
+                elem_index,
+                node1.x,
+                node1.y,
+                node1.z,
+                node2.x,
+                node2.y,
+                node2.z,
+                u_elem,
+                geom,
+                element_loads,
+                elem_load_offsets,
+                elem_load_pool,
+                load_scale,
+                sec.E,
+                sec.A,
+                sec.Iy,
+                sec.Iz,
+                sec.G,
+                sec.J,
+                k_global,
+                f_elem,
+            )
+        elif elem.type_tag == ElementTypeTag.DispBeamColumn3d:
+            disp_beam_column3d_global_tangent_and_internal(
+                elem_index,
+                node1.x,
+                node1.y,
+                node1.z,
+                node2.x,
+                node2.y,
+                node2.z,
+                u_elem,
+                geom,
+                element_loads,
+                elem_load_offsets,
+                elem_load_pool,
+                load_scale,
+                sec.E,
+                sec.A,
+                sec.Iy,
+                sec.Iz,
+                sec.G,
+                sec.J,
+                k_global,
+                f_elem,
+            )
+        else:
+            force_beam_column3d_global_tangent_and_internal(
+                elem_index,
+                node1.x,
+                node1.y,
+                node1.z,
+                node2.x,
+                node2.y,
+                node2.z,
+                u_elem,
+                geom,
+                element_loads,
+                elem_load_offsets,
+                elem_load_pool,
+                load_scale,
+                sec.E,
+                sec.A,
+                sec.Iy,
+                sec.Iz,
+                sec.G,
+                sec.J,
+                k_global,
+                f_elem,
+            )
+    elif sec.type == "FiberSection3d":
+        var sec_index = fiber_section3d_index_by_id[sec_id]
+        if sec_index < 0 or sec_index >= len(fiber_section3d_defs):
+            abort(beam_col_type + " fiber section not found")
+        if elem.type_tag == ElementTypeTag.ForceBeamColumn3d:
+            force_beam_column3d_fiber_global_tangent_and_internal(
+                elem_index,
+                node1.x,
+                node1.y,
+                node1.z,
+                node2.x,
+                node2.y,
+                node2.z,
+                u_elem,
+                geom,
+                element_loads,
+                elem_load_offsets,
+                elem_load_pool,
+                load_scale,
+                fiber_section3d_defs[sec_index],
+                fiber_section3d_cells,
+                uniaxial_defs,
+                uniaxial_states,
+                elem_uniaxial_state_ids,
+                elem_uniaxial_offsets[elem_index],
+                elem_uniaxial_counts[elem_index],
+                elem.integration,
+                elem.num_int_pts,
+                sec.G,
+                sec.J,
+                force_basic_q,
+                force_basic_offsets[elem_index],
+                force_basic_counts[elem_index],
+                k_global,
+                f_elem,
+            )
+        else:
+            beam_column3d_fiber_global_tangent_and_internal(
+                elem_index,
+                node1.x,
+                node1.y,
+                node1.z,
+                node2.x,
+                node2.y,
+                node2.z,
+                u_elem,
+                geom,
+                element_loads,
+                elem_load_offsets,
+                elem_load_pool,
+                load_scale,
+                fiber_section3d_defs[sec_index],
+                fiber_section3d_cells,
+                uniaxial_defs,
+                uniaxial_states,
+                elem_uniaxial_state_ids,
+                elem_uniaxial_offsets[elem_index],
+                elem_uniaxial_counts[elem_index],
+                elem.integration,
+                elem.num_int_pts,
+                sec.G,
+                sec.J,
+                k_global,
+                f_elem,
+            )
+    else:
+        abort(beam_col_type + " requires ElasticSection3d or FiberSection3d")
     return f_elem^
 
 
@@ -225,6 +463,57 @@ fn _force_beam_column2d_element_force_global(
     force_basic_counts: List[Int],
     mut force_basic_q: List[Float64],
 ) raises -> List[Float64]:
+    var empty_element_loads: List[ElementLoadInput] = []
+    var empty_elem_load_offsets: List[Int] = []
+    var empty_elem_load_pool: List[Int] = []
+    return _force_beam_column2d_element_force_global(
+        elem_index,
+        elem,
+        nodes,
+        sections_by_id,
+        ndf,
+        u,
+        fiber_section_defs,
+        fiber_section_cells,
+        fiber_section_index_by_id,
+        uniaxial_defs,
+        uniaxial_states,
+        elem_uniaxial_offsets,
+        elem_uniaxial_counts,
+        elem_uniaxial_state_ids,
+        force_basic_offsets,
+        force_basic_counts,
+        force_basic_q,
+        empty_element_loads,
+        empty_elem_load_offsets,
+        empty_elem_load_pool,
+        0.0,
+    )
+
+
+fn _force_beam_column2d_element_force_global(
+    elem_index: Int,
+    elem: ElementInput,
+    nodes: List[NodeInput],
+    sections_by_id: List[SectionInput],
+    ndf: Int,
+    u: List[Float64],
+    fiber_section_defs: List[FiberSection2dDef],
+    fiber_section_cells: List[FiberCell],
+    fiber_section_index_by_id: List[Int],
+    uniaxial_defs: List[UniMaterialDef],
+    mut uniaxial_states: List[UniMaterialState],
+    elem_uniaxial_offsets: List[Int],
+    elem_uniaxial_counts: List[Int],
+    elem_uniaxial_state_ids: List[Int],
+    force_basic_offsets: List[Int],
+    force_basic_counts: List[Int],
+    mut force_basic_q: List[Float64],
+    element_loads: List[ElementLoadInput],
+    elem_load_offsets: List[Int],
+    elem_load_pool: List[Int],
+    load_scale: Float64,
+) raises -> List[Float64]:
     var beam_col_type = elem.type
     if ndf != 3:
         abort(beam_col_type + " requires ndf=3")
@@ -232,11 +521,8 @@ fn _force_beam_column2d_element_force_global(
     if geom != "Linear" and geom != "PDelta":
         abort(beam_col_type + " supports geomTransf Linear or PDelta")
     var integration = elem.integration
-    if integration != "Lobatto":
-        abort(beam_col_type + " supports Lobatto integration only")
     var num_int_pts = elem.num_int_pts
-    if num_int_pts != 3 and num_int_pts != 5:
-        abort(beam_col_type + " supports num_int_pts=3 or 5")
+    beam_integration_validate_or_abort(beam_col_type, integration, num_int_pts)
 
     var i1 = elem.node_index_1
     var i2 = elem.node_index_2
@@ -309,11 +595,16 @@ fn _force_beam_column2d_element_force_global(
     var k_dummy: List[List[Float64]] = []
     var f_global: List[Float64] = []
     force_beam_column2d_global_tangent_and_internal(
+        elem_index,
         node1.x,
         node1.y,
         node2.x,
         node2.y,
         u_elem,
+        element_loads,
+        elem_load_offsets,
+        elem_load_pool,
+        load_scale,
         sec_def,
         fiber_section_cells,
         uniaxial_defs,
@@ -321,6 +612,8 @@ fn _force_beam_column2d_element_force_global(
         elem_uniaxial_state_ids,
         elem_offset,
         elem_state_count,
+        geom,
+        integration,
         num_int_pts,
         force_basic_q,
         force_basic_offsets[elem_index],
@@ -328,12 +621,6 @@ fn _force_beam_column2d_element_force_global(
         k_dummy,
         f_global,
     )
-    if elem.uniform_load_wy != 0.0 or elem.uniform_load_wx != 0.0:
-        var f_load = _beam_uniform_load_for_element_global(
-            node1, node2, elem.uniform_load_wy, elem.uniform_load_wx
-        )
-        for a in range(6):
-            f_global[a] -= f_load[a]
     return f_global^
 
 
@@ -353,6 +640,51 @@ fn _disp_beam_column2d_element_force_global(
     elem_uniaxial_counts: List[Int],
     elem_uniaxial_state_ids: List[Int],
 ) raises -> List[Float64]:
+    var empty_element_loads: List[ElementLoadInput] = []
+    var empty_elem_load_offsets: List[Int] = []
+    var empty_elem_load_pool: List[Int] = []
+    return _disp_beam_column2d_element_force_global(
+        elem_index,
+        elem,
+        nodes,
+        sections_by_id,
+        ndf,
+        u,
+        fiber_section_defs,
+        fiber_section_cells,
+        fiber_section_index_by_id,
+        uniaxial_defs,
+        uniaxial_states,
+        elem_uniaxial_offsets,
+        elem_uniaxial_counts,
+        elem_uniaxial_state_ids,
+        empty_element_loads,
+        empty_elem_load_offsets,
+        empty_elem_load_pool,
+        0.0,
+    )
+
+
+fn _disp_beam_column2d_element_force_global(
+    elem_index: Int,
+    elem: ElementInput,
+    nodes: List[NodeInput],
+    sections_by_id: List[SectionInput],
+    ndf: Int,
+    u: List[Float64],
+    fiber_section_defs: List[FiberSection2dDef],
+    fiber_section_cells: List[FiberCell],
+    fiber_section_index_by_id: List[Int],
+    uniaxial_defs: List[UniMaterialDef],
+    mut uniaxial_states: List[UniMaterialState],
+    elem_uniaxial_offsets: List[Int],
+    elem_uniaxial_counts: List[Int],
+    elem_uniaxial_state_ids: List[Int],
+    element_loads: List[ElementLoadInput],
+    elem_load_offsets: List[Int],
+    elem_load_pool: List[Int],
+    load_scale: Float64,
+) raises -> List[Float64]:
     var beam_col_type = elem.type
     if ndf != 3:
         abort(beam_col_type + " requires ndf=3")
@@ -360,11 +692,8 @@ fn _disp_beam_column2d_element_force_global(
     if geom != "Linear" and geom != "PDelta":
         abort(beam_col_type + " supports geomTransf Linear or PDelta")
     var integration = elem.integration
-    if integration != "Lobatto":
-        abort(beam_col_type + " supports Lobatto integration only")
     var num_int_pts = elem.num_int_pts
-    if num_int_pts != 3 and num_int_pts != 5:
-        abort(beam_col_type + " supports num_int_pts=3 or 5")
+    beam_integration_validate_or_abort(beam_col_type, integration, num_int_pts)
 
     var i1 = elem.node_index_1
     var i2 = elem.node_index_2
@@ -437,11 +766,16 @@ fn _disp_beam_column2d_element_force_global(
     var k_dummy: List[List[Float64]] = []
     var f_global: List[Float64] = []
     disp_beam_column2d_global_tangent_and_internal(
+        elem_index,
         node1.x,
         node1.y,
         node2.x,
         node2.y,
         u_elem,
+        element_loads,
+        elem_load_offsets,
+        elem_load_pool,
+        load_scale,
         sec_def,
         fiber_section_cells,
         uniaxial_defs,
@@ -449,40 +783,71 @@ fn _disp_beam_column2d_element_force_global(
         elem_uniaxial_state_ids,
         elem_offset,
         elem_state_count,
+        geom,
+        integration,
         num_int_pts,
         k_dummy,
         f_global,
     )
-    if elem.uniform_load_wy != 0.0 or elem.uniform_load_wx != 0.0:
-        var f_load = _beam_uniform_load_for_element_global(
-            node1, node2, elem.uniform_load_wy, elem.uniform_load_wx
-        )
-        for a in range(6):
-            f_global[a] -= f_load[a]
     return f_global^
 
 
-fn _lobatto_xi_for_section(num_int_pts: Int, ip: Int) -> Float64:
-    if num_int_pts == 3:
-        if ip == 0:
-            return 0.0
-        if ip == 1:
-            return 0.5
-        if ip == 2:
-            return 1.0
-    elif num_int_pts == 5:
-        if ip == 0:
-            return 0.0
-        if ip == 1:
-            return 0.1726731646460114
-        if ip == 2:
-            return 0.5
-        if ip == 3:
-            return 0.8273268353539886
-        if ip == 4:
-            return 1.0
-    abort("beam section recorder supports Lobatto num_int_pts=3 or 5")
-    return 0.0
+fn _beam_integration_xi_for_section(integration: String, num_int_pts: Int, ip: Int) -> Float64:
+    return beam_integration_xi_weight(integration, num_int_pts, ip)[0]
+
+
+fn _sync_force_beam_column2d_committed_basic_states(
+    typed_nodes: List[NodeInput],
+    typed_elements: List[ElementInput],
+    ndf: Int,
+    u: List[Float64],
+    force_basic_offsets: List[Int],
+    force_basic_counts: List[Int],
+    mut force_basic_q: List[Float64],
+):
+    if ndf != 3:
+        return
+    for e in range(len(typed_elements)):
+        var elem = typed_elements[e]
+        if elem.type_tag != ElementTypeTag.ForceBeamColumn2d:
+            continue
+        var num_int_pts = elem.num_int_pts
+        var required_count = 3 + 2 * num_int_pts + 3
+        if force_basic_counts[e] < required_count:
+            continue
+        var i1 = elem.node_index_1
+        var i2 = elem.node_index_2
+        var node1 = typed_nodes[i1]
+        var node2 = typed_nodes[i2]
+        var dx = node2.x - node1.x
+        var dy = node2.y - node1.y
+        var L = sqrt(dx * dx + dy * dy)
+        if L == 0.0:
+            abort("zero-length element")
+        var c = dx / L
+        var s = dy / L
+        var dof_map = [
+            node_dof_index(i1, 1, ndf),
+            node_dof_index(i1, 2, ndf),
+            node_dof_index(i1, 3, ndf),
+            node_dof_index(i2, 1, ndf),
+            node_dof_index(i2, 2, ndf),
+            node_dof_index(i2, 3, ndf),
+        ]
+        var u_local: List[Float64] = []
+        u_local.resize(6, 0.0)
+        u_local[0] = c * u[dof_map[0]] + s * u[dof_map[1]]
+        u_local[1] = -s * u[dof_map[0]] + c * u[dof_map[1]]
+        u_local[2] = u[dof_map[2]]
+        u_local[3] = c * u[dof_map[3]] + s * u[dof_map[4]]
+        u_local[4] = -s * u[dof_map[3]] + c * u[dof_map[4]]
+        u_local[5] = u[dof_map[5]]
+
+        var chord_rotation = (u_local[4] - u_local[1]) / L
+        var basic_state_offset = force_basic_offsets[e] + 3 + 2 * num_int_pts
+        force_basic_q[basic_state_offset] = u_local[3] - u_local[0]
+        force_basic_q[basic_state_offset + 1] = u_local[2] - chord_rotation
+        force_basic_q[basic_state_offset + 2] = u_local[5] - chord_rotation
 
 
 fn _fiber_section_force_from_offset(
@@ -528,6 +893,10 @@ fn _force_beam_column2d_section_response(
     elem: ElementInput,
     section_no: Int,
     u: List[Float64],
+    element_loads: List[ElementLoadInput],
+    elem_load_offsets: List[Int],
+    elem_load_pool: List[Int],
+    load_scale: Float64,
     nodes: List[NodeInput],
     sections_by_id: List[SectionInput],
     fiber_section_defs: List[FiberSection2dDef],
@@ -547,7 +916,16 @@ fn _force_beam_column2d_section_response(
     if section_no < 1 or section_no > num_int_pts:
         abort("section recorder section index out of range")
     var ip = section_no - 1
-    var xi = _lobatto_xi_for_section(num_int_pts, ip)
+    var xi = _beam_integration_xi_for_section(elem.integration, num_int_pts, ip)
+    var i1 = elem.node_index_1
+    var i2 = elem.node_index_2
+    var node1 = nodes[i1]
+    var node2 = nodes[i2]
+    var dx = node2.x - node1.x
+    var dy = node2.y - node1.y
+    var L = sqrt(dx * dx + dy * dy)
+    if L == 0.0:
+        abort("zero-length element")
 
     # Refresh basic force/predictor state at the current displacement.
     _ = _force_beam_column2d_element_force_global(
@@ -568,6 +946,10 @@ fn _force_beam_column2d_section_response(
         force_basic_offsets,
         force_basic_counts,
         force_basic_q,
+        element_loads,
+        elem_load_offsets,
+        elem_load_pool,
+        load_scale,
     )
 
     var q_offset = force_basic_offsets[elem_index]
@@ -577,8 +959,17 @@ fn _force_beam_column2d_section_response(
     var q0 = force_basic_q[q_offset]
     var q1 = force_basic_q[q_offset + 1]
     var q2 = force_basic_q[q_offset + 2]
-    var axial_force = q0
-    var moment_z = (xi - 1.0) * q1 + xi * q2
+    var load_response = beam2d_section_load_response(
+        element_loads,
+        elem_load_offsets,
+        elem_load_pool,
+        elem_index,
+        load_scale,
+        xi * L,
+        L,
+    )
+    var axial_force = q0 + load_response[0]
+    var moment_z = (xi - 1.0) * q1 + xi * q2 + load_response[1]
 
     var sec = sections_by_id[elem.section]
     var eps0 = 0.0
@@ -604,6 +995,10 @@ fn _disp_beam_column2d_section_response(
     section_no: Int,
     ndf: Int,
     u: List[Float64],
+    element_loads: List[ElementLoadInput],
+    elem_load_offsets: List[Int],
+    elem_load_pool: List[Int],
+    load_scale: Float64,
     nodes: List[NodeInput],
     sections_by_id: List[SectionInput],
     fiber_section_defs: List[FiberSection2dDef],
@@ -622,7 +1017,7 @@ fn _disp_beam_column2d_section_response(
     if section_no < 1 or section_no > num_int_pts:
         abort("section recorder section index out of range")
     var ip = section_no - 1
-    var xi = _lobatto_xi_for_section(num_int_pts, ip)
+    var xi = _beam_integration_xi_for_section(elem.integration, num_int_pts, ip)
 
     var i1 = elem.node_index_1
     var i2 = elem.node_index_2
@@ -663,11 +1058,20 @@ fn _disp_beam_column2d_section_response(
     if want_deformation:
         return [eps0, kappa]
 
+    var load_response = beam2d_section_load_response(
+        element_loads,
+        elem_load_offsets,
+        elem_load_pool,
+        elem_index,
+        load_scale,
+        xi * L,
+        L,
+    )
     var sec = sections_by_id[elem.section]
     if sec.type == "ElasticSection2d":
         if sec.E <= 0.0 or sec.A <= 0.0 or sec.I <= 0.0:
             abort("section recorder ElasticSection2d requires positive E/A/I")
-        return [sec.E * sec.A * eps0, sec.E * sec.I * kappa]
+        return [sec.E * sec.A * eps0 + load_response[0], sec.E * sec.I * kappa + load_response[1]]
 
     var sec_id = elem.section
     if sec_id >= len(fiber_section_index_by_id):
@@ -679,7 +1083,7 @@ fn _disp_beam_column2d_section_response(
     var elem_offset = elem_uniaxial_offsets[elem_index]
     var fibers_per_section = sec_def.fiber_count
     var ip_offset = elem_offset + ip * fibers_per_section
-    return _fiber_section_force_from_offset(
+    var section_force = _fiber_section_force_from_offset(
         sec_def,
         fiber_section_cells,
         uniaxial_defs,
@@ -690,19 +1094,285 @@ fn _disp_beam_column2d_section_response(
         eps0,
         kappa,
     )
+    section_force[0] += load_response[0]
+    section_force[1] += load_response[1]
+    return section_force^
 
 
+fn _beam_column3d_section_response(
+    elem_index: Int,
+    elem: ElementInput,
+    section_no: Int,
+    ndf: Int,
+    u: List[Float64],
+    element_loads: List[ElementLoadInput],
+    elem_load_offsets: List[Int],
+    elem_load_pool: List[Int],
+    load_scale: Float64,
+    nodes: List[NodeInput],
+    sections_by_id: List[SectionInput],
+    fiber_section3d_defs: List[FiberSection3dDef],
+    fiber_section3d_cells: List[FiberCell],
+    fiber_section3d_index_by_id: List[Int],
+    uniaxial_defs: List[UniMaterialDef],
+    mut uniaxial_states: List[UniMaterialState],
+    elem_uniaxial_offsets: List[Int],
+    elem_uniaxial_counts: List[Int],
+    elem_uniaxial_state_ids: List[Int],
+    force_basic_offsets: List[Int],
+    force_basic_counts: List[Int],
+    mut force_basic_q: List[Float64],
+    want_deformation: Bool,
+) raises -> List[Float64]:
+    var beam_col_type = elem.type
+    if ndf != 6:
+        abort(beam_col_type + " section recorder requires ndf=6")
+    var num_int_pts = elem.num_int_pts
+    beam_integration_validate_or_abort(beam_col_type, elem.integration, num_int_pts)
+
+    var i1 = elem.node_index_1
+    var i2 = elem.node_index_2
+    var node1 = nodes[i1]
+    var node2 = nodes[i2]
+    var dof_map = [
+        node_dof_index(i1, 1, ndf),
+        node_dof_index(i1, 2, ndf),
+        node_dof_index(i1, 3, ndf),
+        node_dof_index(i1, 4, ndf),
+        node_dof_index(i1, 5, ndf),
+        node_dof_index(i1, 6, ndf),
+        node_dof_index(i2, 1, ndf),
+        node_dof_index(i2, 2, ndf),
+        node_dof_index(i2, 3, ndf),
+        node_dof_index(i2, 4, ndf),
+        node_dof_index(i2, 5, ndf),
+        node_dof_index(i2, 6, ndf),
+    ]
+    var u_elem: List[Float64] = []
+    u_elem.resize(12, 0.0)
+    for i in range(12):
+        u_elem[i] = u[dof_map[i]]
+
+    var sec = sections_by_id[elem.section]
+    if sec.type == "FiberSection3d":
+        var sec_index = fiber_section3d_index_by_id[elem.section]
+        if sec_index < 0 or sec_index >= len(fiber_section3d_defs):
+            abort(beam_col_type + " fiber section not found")
+        if elem.type_tag == ElementTypeTag.ForceBeamColumn3d:
+            _ = _beam_column3d_element_force_global(
+                elem_index,
+                elem,
+                nodes,
+                sections_by_id,
+                ndf,
+                u,
+                fiber_section3d_defs,
+                fiber_section3d_cells,
+                fiber_section3d_index_by_id,
+                uniaxial_defs,
+                uniaxial_states,
+                elem_uniaxial_offsets,
+                elem_uniaxial_counts,
+                elem_uniaxial_state_ids,
+                force_basic_offsets,
+                force_basic_counts,
+                force_basic_q,
+                element_loads,
+                elem_load_offsets,
+                elem_load_pool,
+                load_scale,
+            )
+            var xi = _beam_integration_xi_for_section(
+                elem.integration, num_int_pts, section_no - 1
+            )
+            var q_offset = force_basic_offsets[elem_index]
+            var q0 = force_basic_q[q_offset]
+            var q1 = force_basic_q[q_offset + 1]
+            var q2 = force_basic_q[q_offset + 2]
+            var q3 = force_basic_q[q_offset + 3]
+            var q4 = force_basic_q[q_offset + 4]
+            var eps0_offset = q_offset + 5
+            var ky_offset = eps0_offset + num_int_pts
+            var kz_offset = ky_offset + num_int_pts
+            var dx = node2.x - node1.x
+            var dy = node2.y - node1.y
+            var dz = node2.z - node1.z
+            var L = sqrt(dx * dx + dy * dy + dz * dz)
+            if L == 0.0:
+                abort("zero-length element")
+            var rot_i = (dx * u_elem[3] + dy * u_elem[4] + dz * u_elem[5]) / L
+            var rot_j = (dx * u_elem[9] + dy * u_elem[10] + dz * u_elem[11]) / L
+            var twist = (rot_j - rot_i) / L
+            if want_deformation:
+                return [
+                    force_basic_q[eps0_offset + section_no - 1],
+                    force_basic_q[kz_offset + section_no - 1],
+                    force_basic_q[ky_offset + section_no - 1],
+                    twist,
+                ]
+            var load_response = beam3d_section_load_response(
+                element_loads,
+                elem_load_offsets,
+                elem_load_pool,
+                elem_index,
+                load_scale,
+                xi * L,
+                L,
+            )
+            return [
+                q0 + load_response[0],
+                (xi - 1.0) * q1 + xi * q2 + load_response[2],
+                (xi - 1.0) * q3 + xi * q4 + load_response[1],
+                sec.G * sec.J * twist,
+            ]
+        var values = beam_column3d_fiber_section_response(
+            node1.x,
+            node1.y,
+            node1.z,
+            node2.x,
+            node2.y,
+            node2.z,
+            u_elem,
+            elem.geom_transf,
+            fiber_section3d_defs[sec_index],
+            fiber_section3d_cells,
+            uniaxial_defs,
+            uniaxial_states,
+            elem_uniaxial_state_ids,
+            elem_uniaxial_offsets[elem_index],
+            elem_uniaxial_counts[elem_index],
+            elem.integration,
+            elem.num_int_pts,
+            sec.G,
+            sec.J,
+            section_no,
+            want_deformation,
+        )
+        if want_deformation:
+            return values^
+        var load_response = beam3d_section_load_response(
+            element_loads,
+            elem_load_offsets,
+            elem_load_pool,
+            elem_index,
+            load_scale,
+            _beam_integration_xi_for_section(
+                elem.integration, num_int_pts, section_no - 1
+            ) * sqrt(
+                (node2.x - node1.x) * (node2.x - node1.x)
+                + (node2.y - node1.y) * (node2.y - node1.y)
+                + (node2.z - node1.z) * (node2.z - node1.z)
+            ),
+            sqrt(
+                (node2.x - node1.x) * (node2.x - node1.x)
+                + (node2.y - node1.y) * (node2.y - node1.y)
+                + (node2.z - node1.z) * (node2.z - node1.z)
+            ),
+        )
+        values[0] += load_response[0]
+        values[1] += load_response[2]
+        values[2] -= load_response[1]
+        return values^
+
+    if sec.type != "ElasticSection3d":
+        abort(beam_col_type + " requires ElasticSection3d or FiberSection3d")
+    var xi = _beam_integration_xi_for_section(elem.integration, num_int_pts, section_no - 1)
+    var dx = node2.x - node1.x
+    var dy = node2.y - node1.y
+    var dz = node2.z - node1.z
+    var L = sqrt(dx * dx + dy * dy + dz * dz)
+    if L == 0.0:
+        abort("zero-length element")
+
+    var rx = dx / L
+    var ry = dy / L
+    var rz = dz / L
+    var vx = 1.0
+    var vy = 0.0
+    var vz = 0.0
+    if abs(rx * vx + ry * vy + rz * vz) >= 0.9:
+        vx = 0.0
+        vy = 1.0
+        vz = 0.0
+        if abs(rx * vx + ry * vy + rz * vz) >= 0.9:
+            vx = 0.0
+            vy = 0.0
+            vz = 1.0
+    var sx = vy * rz - vz * ry
+    var sy = vz * rx - vx * rz
+    var sz = vx * ry - vy * rx
+    var s_norm = sqrt(sx * sx + sy * sy + sz * sz)
+    sx /= s_norm
+    sy /= s_norm
+    sz /= s_norm
+    var tx = ry * sz - rz * sy
+    var ty = rz * sx - rx * sz
+    var tz = rx * sy - ry * sx
+
+    var u_local: List[Float64] = []
+    u_local.resize(12, 0.0)
+    u_local[0] = rx * u_elem[0] + ry * u_elem[1] + rz * u_elem[2]
+    u_local[1] = sx * u_elem[0] + sy * u_elem[1] + sz * u_elem[2]
+    u_local[2] = tx * u_elem[0] + ty * u_elem[1] + tz * u_elem[2]
+    u_local[3] = rx * u_elem[3] + ry * u_elem[4] + rz * u_elem[5]
+    u_local[4] = sx * u_elem[3] + sy * u_elem[4] + sz * u_elem[5]
+    u_local[5] = tx * u_elem[3] + ty * u_elem[4] + tz * u_elem[5]
+    u_local[6] = rx * u_elem[6] + ry * u_elem[7] + rz * u_elem[8]
+    u_local[7] = sx * u_elem[6] + sy * u_elem[7] + sz * u_elem[8]
+    u_local[8] = tx * u_elem[6] + ty * u_elem[7] + tz * u_elem[8]
+    u_local[9] = rx * u_elem[9] + ry * u_elem[10] + rz * u_elem[11]
+    u_local[10] = sx * u_elem[9] + sy * u_elem[10] + sz * u_elem[11]
+    u_local[11] = tx * u_elem[9] + ty * u_elem[10] + tz * u_elem[11]
+
+    var eps0 = (-1.0 / L) * u_local[0] + (1.0 / L) * u_local[6]
+    var kappa_y = (
+        ((-6.0 + 12.0 * xi) / (L * L)) * u_local[2]
+        + ((4.0 - 6.0 * xi) / L) * u_local[4]
+        + ((6.0 - 12.0 * xi) / (L * L)) * u_local[8]
+        + ((2.0 - 6.0 * xi) / L) * u_local[10]
+    )
+    var kappa_z = (
+        ((-6.0 + 12.0 * xi) / (L * L)) * u_local[1]
+        + ((-4.0 + 6.0 * xi) / L) * u_local[5]
+        + ((6.0 - 12.0 * xi) / (L * L)) * u_local[7]
+        + ((-2.0 + 6.0 * xi) / L) * u_local[11]
+    )
+    var twist = (u_local[9] - u_local[3]) / L
+    if want_deformation:
+        return [eps0, kappa_z, -kappa_y, twist]
+    var load_response = beam3d_section_load_response(
+        element_loads,
+        elem_load_offsets,
+        elem_load_pool,
+        elem_index,
+        load_scale,
+        xi * L,
+        L,
+    )
+    return [
+        sec.E * sec.A * eps0 + load_response[0],
+        sec.E * sec.Iz * kappa_z + load_response[2],
+        -(sec.E * sec.Iy * kappa_y + load_response[1]),
+        sec.G * sec.J * twist,
+    ]
 fn _section_response_for_recorder(
     elem_index: Int,
     elem: ElementInput,
     section_no: Int,
     ndf: Int,
     u: List[Float64],
+    element_loads: List[ElementLoadInput],
+    elem_load_offsets: List[Int],
+    elem_load_pool: List[Int],
+    load_scale: Float64,
     nodes: List[NodeInput],
     sections_by_id: List[SectionInput],
     fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
+    fiber_section3d_defs: List[FiberSection3dDef],
+    fiber_section3d_cells: List[FiberCell],
+    fiber_section3d_index_by_id: List[Int],
     uniaxial_defs: List[UniMaterialDef],
     mut uniaxial_states: List[UniMaterialState],
     elem_uniaxial_offsets: List[Int],
@@ -719,6 +1389,10 @@ fn _section_response_for_recorder(
             elem,
             section_no,
             u,
+            element_loads,
+            elem_load_offsets,
+            elem_load_pool,
+            load_scale,
             nodes,
             sections_by_id,
             fiber_section_defs,
@@ -741,6 +1415,10 @@ fn _section_response_for_recorder(
             section_no,
             ndf,
             u,
+            element_loads,
+            elem_load_offsets,
+            elem_load_pool,
+            load_scale,
             nodes,
             sections_by_id,
             fiber_section_defs,
@@ -753,7 +1431,38 @@ fn _section_response_for_recorder(
             elem_uniaxial_state_ids,
             want_deformation,
         )
-    abort("section recorder supports forceBeamColumn2d or dispBeamColumn2d only")
+    if (
+        elem.type_tag == ElementTypeTag.ForceBeamColumn3d
+        or elem.type_tag == ElementTypeTag.DispBeamColumn3d
+    ):
+        return _beam_column3d_section_response(
+            elem_index,
+            elem,
+            section_no,
+            ndf,
+            u,
+            element_loads,
+            elem_load_offsets,
+            elem_load_pool,
+            load_scale,
+            nodes,
+            sections_by_id,
+            fiber_section3d_defs,
+            fiber_section3d_cells,
+            fiber_section3d_index_by_id,
+            uniaxial_defs,
+            uniaxial_states,
+            elem_uniaxial_offsets,
+            elem_uniaxial_counts,
+            elem_uniaxial_state_ids,
+            force_basic_offsets,
+            force_basic_counts,
+            force_basic_q,
+            want_deformation,
+        )
+    abort(
+        "section recorder supports forceBeamColumn2d/3d or dispBeamColumn2d/3d only"
+    )
     return []
 
 
@@ -800,6 +1509,68 @@ fn _element_force_global_for_recorder(
     fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
+    fiber_section3d_defs: List[FiberSection3dDef],
+    fiber_section3d_cells: List[FiberCell],
+    fiber_section3d_index_by_id: List[Int],
+    uniaxial_defs: List[UniMaterialDef],
+    uniaxial_state_defs: List[Int],
+    mut uniaxial_states: List[UniMaterialState],
+    elem_uniaxial_offsets: List[Int],
+    elem_uniaxial_counts: List[Int],
+    elem_uniaxial_state_ids: List[Int],
+    force_basic_offsets: List[Int],
+    force_basic_counts: List[Int],
+    mut force_basic_q: List[Float64],
+) raises -> List[Float64]:
+    var empty_element_loads: List[ElementLoadInput] = []
+    var empty_elem_load_offsets: List[Int] = []
+    var empty_elem_load_pool: List[Int] = []
+    return _element_force_global_for_recorder(
+        elem_index,
+        elem,
+        ndf,
+        u,
+        empty_element_loads,
+        empty_elem_load_offsets,
+        empty_elem_load_pool,
+        0.0,
+        nodes,
+        sections_by_id,
+        fiber_section_defs,
+        fiber_section_cells,
+        fiber_section_index_by_id,
+        fiber_section3d_defs,
+        fiber_section3d_cells,
+        fiber_section3d_index_by_id,
+        uniaxial_defs,
+        uniaxial_state_defs,
+        uniaxial_states,
+        elem_uniaxial_offsets,
+        elem_uniaxial_counts,
+        elem_uniaxial_state_ids,
+        force_basic_offsets,
+        force_basic_counts,
+        force_basic_q,
+    )
+
+
+fn _element_force_global_for_recorder(
+    elem_index: Int,
+    elem: ElementInput,
+    ndf: Int,
+    u: List[Float64],
+    element_loads: List[ElementLoadInput],
+    elem_load_offsets: List[Int],
+    elem_load_pool: List[Int],
+    load_scale: Float64,
+    nodes: List[NodeInput],
+    sections_by_id: List[SectionInput],
+    fiber_section_defs: List[FiberSection2dDef],
+    fiber_section_cells: List[FiberCell],
+    fiber_section_index_by_id: List[Int],
+    fiber_section3d_defs: List[FiberSection3dDef],
+    fiber_section3d_cells: List[FiberCell],
+    fiber_section3d_index_by_id: List[Int],
     uniaxial_defs: List[UniMaterialDef],
     uniaxial_state_defs: List[Int],
     mut uniaxial_states: List[UniMaterialState],
@@ -812,11 +1583,44 @@ fn _element_force_global_for_recorder(
 ) raises -> List[Float64]:
     if elem.type_tag == ElementTypeTag.ElasticBeamColumn2d:
         return _beam2d_element_force_global(
+            elem_index,
             elem,
             nodes,
             sections_by_id,
             ndf,
             u,
+            element_loads,
+            elem_load_offsets,
+            elem_load_pool,
+            load_scale,
+        )
+    if (
+        elem.type_tag == ElementTypeTag.ElasticBeamColumn3d
+        or elem.type_tag == ElementTypeTag.ForceBeamColumn3d
+        or elem.type_tag == ElementTypeTag.DispBeamColumn3d
+    ):
+        return _beam_column3d_element_force_global(
+            elem_index,
+            elem,
+            nodes,
+            sections_by_id,
+            ndf,
+            u,
+            fiber_section3d_defs,
+            fiber_section3d_cells,
+            fiber_section3d_index_by_id,
+            uniaxial_defs,
+            uniaxial_states,
+            elem_uniaxial_offsets,
+            elem_uniaxial_counts,
+            elem_uniaxial_state_ids,
+            force_basic_offsets,
+            force_basic_counts,
+            force_basic_q,
+            element_loads,
+            elem_load_offsets,
+            elem_load_pool,
+            load_scale,
         )
     if elem.type_tag == ElementTypeTag.ForceBeamColumn2d:
         return _force_beam_column2d_element_force_global(
@@ -837,6 +1641,10 @@ fn _element_force_global_for_recorder(
             force_basic_offsets,
             force_basic_counts,
             force_basic_q,
+            element_loads,
+            elem_load_offsets,
+            elem_load_pool,
+            load_scale,
         )
     if elem.type_tag == ElementTypeTag.DispBeamColumn2d:
         return _disp_beam_column2d_element_force_global(
@@ -854,6 +1662,10 @@ fn _element_force_global_for_recorder(
             elem_uniaxial_offsets,
             elem_uniaxial_counts,
             elem_uniaxial_state_ids,
+            element_loads,
+            elem_load_offsets,
+            elem_load_pool,
+            load_scale,
         )
     if elem.type_tag == ElementTypeTag.Truss:
         return _truss_element_force_global(
@@ -871,7 +1683,7 @@ fn _element_force_global_for_recorder(
         )
     abort(
         "element_force recorder supports truss, "
-        "elasticBeamColumn2d, forceBeamColumn2d, or dispBeamColumn2d only"
+        "elasticBeamColumn2d/3d, forceBeamColumn2d/3d, or dispBeamColumn2d/3d only"
     )
     return []
 

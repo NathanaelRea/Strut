@@ -3,7 +3,7 @@ from os import abort
 from python import Python, PythonObject
 
 from strut_io import py_len
-from tag_types import ElementTypeTag, GeomTransfTag, RecorderTypeTag
+from tag_types import ElementLoadTypeTag, ElementTypeTag, GeomTransfTag, RecorderTypeTag
 
 
 struct ModelInput(Movable, ImplicitlyCopyable):
@@ -209,6 +209,8 @@ struct ElementInput(Movable, ImplicitlyCopyable):
     var geom_transf: String
     var integration: String
     var num_int_pts: Int
+    var rho: Float64
+    var use_cmass: Bool
     var uniform_load_wy: Float64
     var uniform_load_wx: Float64
     var dof_count: Int
@@ -273,6 +275,8 @@ struct ElementInput(Movable, ImplicitlyCopyable):
         self.geom_transf = "Linear"
         self.integration = "Lobatto"
         self.num_int_pts = 3
+        self.rho = 0.0
+        self.use_cmass = False
         self.uniform_load_wy = 0.0
         self.uniform_load_wx = 0.0
         self.dof_count = 0
@@ -305,14 +309,38 @@ struct ElementInput(Movable, ImplicitlyCopyable):
 struct ElementLoadInput(Movable, ImplicitlyCopyable):
     var element: Int
     var type: String
+    var type_tag: Int
     var wy: Float64
+    var wz: Float64
     var wx: Float64
+    var py: Float64
+    var pz: Float64
+    var px: Float64
+    var x: Float64
 
-    fn __init__(out self, element: Int, type: String, wy: Float64, wx: Float64):
+    fn __init__(
+        out self,
+        element: Int,
+        type: String,
+        type_tag: Int,
+        wy: Float64,
+        wz: Float64,
+        wx: Float64,
+        py: Float64,
+        pz: Float64,
+        px: Float64,
+        x: Float64,
+    ):
         self.element = element
         self.type = type
+        self.type_tag = type_tag
         self.wy = wy
+        self.wz = wz
         self.wx = wx
+        self.py = py
+        self.pz = pz
+        self.px = px
+        self.x = x
 
 
 struct NodalLoadInput(Movable, ImplicitlyCopyable):
@@ -562,12 +590,14 @@ fn element_type_tag(type_name: String) -> Int:
         return ElementTypeTag.ElasticBeamColumn2d
     if type_name == "forceBeamColumn2d":
         return ElementTypeTag.ForceBeamColumn2d
-    if type_name == "nonlinearBeamColumn":
-        return ElementTypeTag.ForceBeamColumn2d
     if type_name == "dispBeamColumn2d":
         return ElementTypeTag.DispBeamColumn2d
     if type_name == "elasticBeamColumn3d":
         return ElementTypeTag.ElasticBeamColumn3d
+    if type_name == "forceBeamColumn3d":
+        return ElementTypeTag.ForceBeamColumn3d
+    if type_name == "dispBeamColumn3d":
+        return ElementTypeTag.DispBeamColumn3d
     if type_name == "truss":
         return ElementTypeTag.Truss
     if type_name == "zeroLength" or type_name == "twoNodeLink":
@@ -609,6 +639,14 @@ fn recorder_type_tag(type_name: String) -> Int:
     if type_name == "section_deformation":
         return RecorderTypeTag.SectionDeformation
     return RecorderTypeTag.Unknown
+
+
+fn element_load_type_tag(type_name: String) -> Int:
+    if type_name == "beamUniform":
+        return ElementLoadTypeTag.BeamUniform
+    if type_name == "beamPoint":
+        return ElementLoadTypeTag.BeamPoint
+    return ElementLoadTypeTag.Unknown
 
 
 fn parse_analysis_input_from_raw(
@@ -870,6 +908,8 @@ fn parse_case_input(data: PythonObject) raises -> CaseInput:
         parsed.geom_transf = String(elem.get("geomTransf", "Linear"))
         parsed.integration = String(elem.get("integration", "Lobatto"))
         parsed.num_int_pts = Int(elem.get("num_int_pts", 3))
+        parsed.rho = Float64(elem.get("rho", elem.get("mass", 0.0)))
+        parsed.use_cmass = Bool(elem.get("cMass", False))
         parsed.type_tag = element_type_tag(parsed.type)
         parsed.geom_tag = geom_transf_tag(parsed.geom_transf)
         case_input.elements.append(parsed^)
@@ -877,10 +917,28 @@ fn parse_case_input(data: PythonObject) raises -> CaseInput:
     var element_loads_raw = data.get("element_loads", [])
     for i in range(py_len(element_loads_raw)):
         var load = element_loads_raw[i]
+        var load_type = String(load.get("type", ""))
+        var load_type_tag = element_load_type_tag(load_type)
         var wy = Float64(load.get("wy", load.get("w", 0.0)))
-        var wx = Float64(load.get("wx", 0.0))
+        var wz = Float64(load.get("wz", 0.0))
+        var wx = Float64(load.get("wx", load.get("wa", load.get("axial", 0.0))))
+        var py = Float64(load.get("py", load.get("P", load.get("Ptrans", 0.0))))
+        var pz = Float64(load.get("pz", 0.0))
+        var px = Float64(load.get("px", load.get("N", load.get("Paxial", 0.0))))
+        var x = Float64(load.get("x", load.get("xL", load.get("aOverL", 0.0))))
         case_input.element_loads.append(
-            ElementLoadInput(Int(load["element"]), String(load["type"]), wy, wx)
+            ElementLoadInput(
+                Int(load["element"]),
+                load_type,
+                load_type_tag,
+                wy,
+                wz,
+                wx,
+                py,
+                pz,
+                px,
+                x,
+            )
         )
 
     var loads_raw = data.get("loads", [])

@@ -1,5 +1,4 @@
 from collections import List
-from elements import beam_uniform_load_global_2d
 from os import abort
 from python import Python, PythonObject
 
@@ -21,8 +20,10 @@ from solver.run_case.analysis.transient_linear import run_transient_linear
 from solver.run_case.analysis.transient_nonlinear import run_transient_nonlinear
 from solver.run_case.analysis.modal_eigen import run_modal_eigen
 from solver.run_case.input_types import (
+    ElementLoadInput,
     ElementInput,
     NodeInput,
+    element_load_type_tag,
     parse_analysis_input_from_raw,
 )
 from solver.run_case.helpers import (
@@ -32,8 +33,12 @@ from solver.run_case.helpers import (
     _format_values_line,
     _has_recorder_type,
     _section_response_for_recorder,
-    _scaled_forces,
     _update_envelope,
+)
+from solver.run_case.load_state import (
+    append_scaled_element_loads,
+    build_active_element_load_state,
+    build_active_nodal_load,
 )
 from solver.run_case.loader import load_case_state
 from solver.time_series import (
@@ -58,68 +63,11 @@ fn _write_output_chunk_files(
         file_obj.close()
 
 
-fn _build_stage_force_vector(
-    loads_raw: PythonObject,
-    element_loads_raw: PythonObject,
-    typed_nodes: List[NodeInput],
-    mut typed_elements: List[ElementInput],
-    elem_id_to_index: List[Int],
-    id_to_index: List[Int],
-    ndf: Int,
-    total_dofs: Int,
+fn _build_stage_nodal_force_vector(
+    loads_raw: PythonObject, id_to_index: List[Int], ndf: Int, total_dofs: Int
 ) raises -> List[Float64]:
     var F_stage: List[Float64] = []
     F_stage.resize(total_dofs, 0.0)
-
-    for e in range(len(typed_elements)):
-        var elem = typed_elements[e]
-        elem.uniform_load_wy = 0.0
-        elem.uniform_load_wx = 0.0
-        typed_elements[e] = elem
-
-    for i in range(py_len(element_loads_raw)):
-        var load = element_loads_raw[i]
-        var load_type = String(load.get("type", ""))
-        if load_type != "beamUniform":
-            abort("unsupported element load type: " + load_type)
-        var elem_id = Int(load["element"])
-        if elem_id >= len(elem_id_to_index) or elem_id_to_index[elem_id] < 0:
-            abort("element load refers to unknown element")
-        var elem_index = elem_id_to_index[elem_id]
-        var elem = typed_elements[elem_index]
-        if (
-            elem.type_tag != ElementTypeTag.ElasticBeamColumn2d
-            and elem.type_tag != ElementTypeTag.ForceBeamColumn2d
-            and elem.type_tag != ElementTypeTag.DispBeamColumn2d
-        ):
-            abort(
-                "beamUniform requires elasticBeamColumn2d, forceBeamColumn2d, "
-                "or dispBeamColumn2d"
-            )
-        if ndf != 3:
-            abort("beamUniform requires ndf=3")
-        var n1 = typed_nodes[elem.node_index_1]
-        var n2 = typed_nodes[elem.node_index_2]
-        var wy = Float64(load.get("wy", load.get("w", 0.0)))
-        var wx = Float64(load.get("wx", 0.0))
-        var f_global = beam_uniform_load_global_2d(
-            n1.x,
-            n1.y,
-            n2.x,
-            n2.y,
-            wy,
-            wx,
-        )
-        F_stage[node_dof_index(elem.node_index_1, 1, ndf)] += f_global[0]
-        F_stage[node_dof_index(elem.node_index_1, 2, ndf)] += f_global[1]
-        F_stage[node_dof_index(elem.node_index_1, 3, ndf)] += f_global[2]
-        F_stage[node_dof_index(elem.node_index_2, 1, ndf)] += f_global[3]
-        F_stage[node_dof_index(elem.node_index_2, 2, ndf)] += f_global[4]
-        F_stage[node_dof_index(elem.node_index_2, 3, ndf)] += f_global[5]
-        elem.uniform_load_wy += wy
-        elem.uniform_load_wx += wx
-        typed_elements[elem_index] = elem
-
     for i in range(py_len(loads_raw)):
         var load = loads_raw[i]
         var node_id = Int(load["node"])
@@ -130,6 +78,30 @@ fn _build_stage_force_vector(
         var idx = node_dof_index(id_to_index[node_id], dof, ndf)
         F_stage[idx] += Float64(load["value"])
     return F_stage^
+
+
+fn _parse_stage_element_loads(
+    element_loads_raw: PythonObject
+) raises -> List[ElementLoadInput]:
+    var parsed: List[ElementLoadInput] = []
+    for i in range(py_len(element_loads_raw)):
+        var load = element_loads_raw[i]
+        var load_type = String(load.get("type", ""))
+        parsed.append(
+            ElementLoadInput(
+                Int(load["element"]),
+                load_type,
+                element_load_type_tag(load_type),
+                Float64(load.get("wy", load.get("w", 0.0))),
+                Float64(load.get("wz", 0.0)),
+                Float64(load.get("wx", load.get("wa", load.get("axial", 0.0)))),
+                Float64(load.get("py", load.get("P", load.get("Ptrans", 0.0)))),
+                Float64(load.get("pz", 0.0)),
+                Float64(load.get("px", load.get("N", load.get("Paxial", 0.0)))),
+                Float64(load.get("x", load.get("xL", load.get("aOverL", 0.0)))),
+            )
+        )
+    return parsed^
 
 
 fn _append_stage_time_series(
@@ -273,7 +245,11 @@ def run_case(
     var fiber_section_defs = state.fiber_section_defs.copy()
     var fiber_section_cells = state.fiber_section_cells.copy()
     var fiber_section_index_by_id = state.fiber_section_index_by_id.copy()
+    var fiber_section3d_defs = state.fiber_section3d_defs.copy()
+    var fiber_section3d_cells = state.fiber_section3d_cells.copy()
+    var fiber_section3d_index_by_id = state.fiber_section3d_index_by_id.copy()
     var elem_id_to_index = state.elem_id_to_index.copy()
+    var pattern_element_loads = state.element_loads.copy()
     var elem_dof_offsets = state.elem_dof_offsets.copy()
     var elem_dof_pool = state.elem_dof_pool.copy()
     var elem_uniaxial_offsets = state.elem_uniaxial_offsets.copy()
@@ -282,7 +258,7 @@ def run_case(
     var force_basic_offsets = state.force_basic_offsets.copy()
     var force_basic_counts = state.force_basic_counts.copy()
     var force_basic_q = state.force_basic_q.copy()
-    var F_total = state.F_total.copy()
+    var F_pattern = state.F_total.copy()
     var constrained = state.constrained.copy()
     var free = state.free.copy()
     var free_index = state.free_index.copy()
@@ -291,6 +267,9 @@ def run_case(
     var analysis_integrator_targets_pool = (
         state.analysis_integrator_targets_pool.copy()
     )
+    var F_const: List[Float64] = []
+    F_const.resize(total_dofs, 0.0)
+    var const_element_loads: List[ElementLoadInput] = []
 
     var u: List[Float64] = []
     u.resize(total_dofs, 0.0)
@@ -319,14 +298,18 @@ def run_case(
             typed_elements,
             elem_dof_offsets,
             elem_dof_pool,
+            const_element_loads,
+            pattern_element_loads,
             typed_sections_by_id,
             typed_materials_by_id,
             id_to_index,
+            elem_id_to_index,
             node_count,
             ndf,
             ndm,
             u,
-            F_total,
+            F_const,
+            F_pattern,
             uniaxial_defs,
             uniaxial_state_defs,
             uniaxial_states,
@@ -339,6 +322,9 @@ def run_case(
             fiber_section_defs,
             fiber_section_cells,
             fiber_section_index_by_id,
+            fiber_section3d_defs,
+            fiber_section3d_cells,
+            fiber_section3d_index_by_id,
             use_banded_linear,
             free_index,
             free,
@@ -374,6 +360,8 @@ def run_case(
                 typed_elements,
                 elem_dof_offsets,
                 elem_dof_pool,
+                const_element_loads,
+                pattern_element_loads,
                 typed_sections_by_id,
                 typed_materials_by_id,
                 id_to_index,
@@ -393,8 +381,12 @@ def run_case(
                 fiber_section_defs,
                 fiber_section_cells,
                 fiber_section_index_by_id,
+                fiber_section3d_defs,
+                fiber_section3d_cells,
+                fiber_section3d_index_by_id,
                 total_dofs,
-                F_total,
+                F_const,
+                F_pattern,
                 use_banded_nonlinear,
                 free,
                 free_index,
@@ -420,7 +412,7 @@ def run_case(
                 constrained,
             )
         elif integrator_type == "DisplacementControl":
-            run_static_nonlinear_displacement_control(
+            _ = run_static_nonlinear_displacement_control(
                 analysis,
                 steps,
                 ts_index,
@@ -430,6 +422,8 @@ def run_case(
                 typed_elements,
                 elem_dof_offsets,
                 elem_dof_pool,
+                const_element_loads,
+                pattern_element_loads,
                 typed_sections_by_id,
                 typed_materials_by_id,
                 id_to_index,
@@ -449,8 +443,12 @@ def run_case(
                 fiber_section_defs,
                 fiber_section_cells,
                 fiber_section_index_by_id,
+                fiber_section3d_defs,
+                fiber_section3d_cells,
+                fiber_section3d_index_by_id,
                 total_dofs,
-                F_total,
+                F_const,
+                F_pattern,
                 constrained,
                 free,
                 recorders,
@@ -492,6 +490,8 @@ def run_case(
             rayleigh_beta_k_comm,
             typed_nodes,
             typed_elements,
+            const_element_loads,
+            pattern_element_loads,
             typed_sections_by_id,
             typed_materials_by_id,
             id_to_index,
@@ -509,7 +509,8 @@ def run_case(
             force_basic_offsets,
             force_basic_counts,
             force_basic_q,
-            F_total,
+            F_const,
+            F_pattern,
             M_total,
             free,
             recorders,
@@ -521,6 +522,9 @@ def run_case(
             fiber_section_defs,
             fiber_section_cells,
             fiber_section_index_by_id,
+            fiber_section3d_defs,
+            fiber_section3d_cells,
+            fiber_section3d_index_by_id,
             transient_output_files,
             transient_output_buffers,
             has_transformation_mpc,
@@ -557,6 +561,8 @@ def run_case(
             typed_elements,
             elem_dof_offsets,
             elem_dof_pool,
+            const_element_loads,
+            pattern_element_loads,
             typed_sections_by_id,
             typed_materials_by_id,
             id_to_index,
@@ -574,7 +580,8 @@ def run_case(
             force_basic_offsets,
             force_basic_counts,
             force_basic_q,
-            F_total,
+            F_const,
+            F_pattern,
             M_total,
             free,
             recorders,
@@ -586,6 +593,9 @@ def run_case(
             fiber_section_defs,
             fiber_section_cells,
             fiber_section_index_by_id,
+            fiber_section3d_defs,
+            fiber_section3d_cells,
+            fiber_section3d_index_by_id,
             transient_output_files,
             transient_output_buffers,
             has_transformation_mpc,
@@ -626,8 +636,8 @@ def run_case(
         var stage_rayleigh_beta_k = rayleigh_beta_k
         var stage_rayleigh_beta_k_init = rayleigh_beta_k_init
         var stage_rayleigh_beta_k_comm = rayleigh_beta_k_comm
-        var stage_F_base = F_total.copy()
-        var stage_F = F_total.copy()
+        var stage_F = F_pattern.copy()
+        var stage_element_loads = pattern_element_loads.copy()
 
         for stage_idx in range(py_len(stages)):
             var stage = stages[stage_idx]
@@ -689,17 +699,10 @@ def run_case(
                             stage_element_loads_raw = top_level_element_loads
                         else:
                             stage_element_loads_raw = empty_list
-                    stage_F_base = _build_stage_force_vector(
-                        stage_loads_raw,
-                        stage_element_loads_raw,
-                        typed_nodes,
-                        typed_elements,
-                        elem_id_to_index,
-                        id_to_index,
-                        ndf,
-                        total_dofs,
+                    stage_F = _build_stage_nodal_force_vector(
+                        stage_loads_raw, id_to_index, ndf, total_dofs
                     )
-                    stage_F = stage_F_base.copy()
+                    stage_element_loads = _parse_stage_element_loads(stage_element_loads_raw)
                     stage_pattern_type = "Plain"
                     stage_uniform_excitation_direction = 0
                     stage_uniform_accel_ts_index = -1
@@ -726,6 +729,8 @@ def run_case(
                     )
                     if stage_uniform_accel_ts_index < 0:
                         abort("UniformExcitation accel time_series tag not found")
+                    stage_F.resize(total_dofs, 0.0)
+                    stage_element_loads = []
                     stage_pattern_type = "UniformExcitation"
                     stage_ts_index = -1
                 else:
@@ -740,6 +745,7 @@ def run_case(
                 stage_rayleigh_beta_k_init = Float64(stage_rayleigh.get("betaKInit", 0.0))
                 stage_rayleigh_beta_k_comm = Float64(stage_rayleigh.get("betaKComm", 0.0))
 
+            var stage_final_pattern_scale = 0.0
             if stage_type == "static_linear":
                 if stage_pattern_type != "Plain":
                     abort("staged static_linear only supports Plain pattern")
@@ -748,13 +754,17 @@ def run_case(
                     typed_elements,
                     elem_dof_offsets,
                     elem_dof_pool,
+                    const_element_loads,
+                    stage_element_loads,
                     typed_sections_by_id,
                     typed_materials_by_id,
                     id_to_index,
+                    elem_id_to_index,
                     node_count,
                     ndf,
                     ndm,
                     u,
+                    F_const,
                     stage_F,
                     uniaxial_defs,
                     uniaxial_state_defs,
@@ -768,6 +778,9 @@ def run_case(
                     fiber_section_defs,
                     fiber_section_cells,
                     fiber_section_index_by_id,
+                    fiber_section3d_defs,
+                    fiber_section3d_cells,
+                    fiber_section3d_index_by_id,
                     use_banded_linear,
                     free_index,
                     free,
@@ -787,6 +800,14 @@ def run_case(
                     rep_dof,
                     constrained,
                 )
+                stage_final_pattern_scale = 1.0
+                if stage_ts_index >= 0:
+                    stage_final_pattern_scale = eval_time_series_input(
+                        time_series[stage_ts_index],
+                        1.0,
+                        time_series_values,
+                        time_series_times,
+                    )
             elif stage_type == "static_nonlinear":
                 var stage_integrator_type = stage_analysis.integrator_type
                 if stage_integrator_type == "":
@@ -803,6 +824,8 @@ def run_case(
                         typed_elements,
                         elem_dof_offsets,
                         elem_dof_pool,
+                        const_element_loads,
+                        stage_element_loads,
                         typed_sections_by_id,
                         typed_materials_by_id,
                         id_to_index,
@@ -822,7 +845,11 @@ def run_case(
                         fiber_section_defs,
                         fiber_section_cells,
                         fiber_section_index_by_id,
+                        fiber_section3d_defs,
+                        fiber_section3d_cells,
+                        fiber_section3d_index_by_id,
                         total_dofs,
+                        F_const,
                         stage_F,
                         use_banded_nonlinear,
                         free,
@@ -848,9 +875,17 @@ def run_case(
                         rep_dof,
                         constrained,
                     )
+                    stage_final_pattern_scale = 1.0
+                    if stage_ts_index >= 0:
+                        stage_final_pattern_scale = eval_time_series_input(
+                            time_series[stage_ts_index],
+                            1.0,
+                            time_series_values,
+                            time_series_times,
+                        )
                 elif stage_integrator_type == "DisplacementControl":
                     var stage_disp_steps = stage_analysis.steps
-                    run_static_nonlinear_displacement_control(
+                    stage_final_pattern_scale = run_static_nonlinear_displacement_control(
                         stage_analysis,
                         stage_disp_steps,
                         stage_ts_index,
@@ -860,6 +895,8 @@ def run_case(
                         typed_elements,
                         elem_dof_offsets,
                         elem_dof_pool,
+                        const_element_loads,
+                        stage_element_loads,
                         typed_sections_by_id,
                         typed_materials_by_id,
                         id_to_index,
@@ -879,7 +916,11 @@ def run_case(
                         fiber_section_defs,
                         fiber_section_cells,
                         fiber_section_index_by_id,
+                        fiber_section3d_defs,
+                        fiber_section3d_cells,
+                        fiber_section3d_index_by_id,
                         total_dofs,
+                        F_const,
                         stage_F,
                         constrained,
                         free,
@@ -925,6 +966,8 @@ def run_case(
                     stage_rayleigh_beta_k_comm,
                     typed_nodes,
                     typed_elements,
+                    const_element_loads,
+                    stage_element_loads,
                     typed_sections_by_id,
                     typed_materials_by_id,
                     id_to_index,
@@ -942,6 +985,7 @@ def run_case(
                     force_basic_offsets,
                     force_basic_counts,
                     force_basic_q,
+                    F_const,
                     stage_F,
                     M_total,
                     free,
@@ -954,6 +998,9 @@ def run_case(
                     fiber_section_defs,
                     fiber_section_cells,
                     fiber_section_index_by_id,
+                    fiber_section3d_defs,
+                    fiber_section3d_cells,
+                    fiber_section3d_index_by_id,
                     transient_output_files,
                     transient_output_buffers,
                     has_transformation_mpc,
@@ -971,6 +1018,15 @@ def run_case(
                     frame_factorize,
                     frame_transient_step,
                 )
+                if stage_pattern_type == "Plain":
+                    stage_final_pattern_scale = 1.0
+                    if stage_ts_index >= 0:
+                        stage_final_pattern_scale = eval_time_series_input(
+                            time_series[stage_ts_index],
+                            Float64(stage_analysis.steps) * stage_analysis.dt,
+                            time_series_values,
+                            time_series_times,
+                        )
             elif stage_type == "transient_nonlinear":
                 run_transient_nonlinear(
                     stage_analysis,
@@ -990,6 +1046,8 @@ def run_case(
                     typed_elements,
                     elem_dof_offsets,
                     elem_dof_pool,
+                    const_element_loads,
+                    stage_element_loads,
                     typed_sections_by_id,
                     typed_materials_by_id,
                     id_to_index,
@@ -1007,6 +1065,7 @@ def run_case(
                     force_basic_offsets,
                     force_basic_counts,
                     force_basic_q,
+                    F_const,
                     stage_F,
                     M_total,
                     free,
@@ -1019,6 +1078,9 @@ def run_case(
                     fiber_section_defs,
                     fiber_section_cells,
                     fiber_section_index_by_id,
+                    fiber_section3d_defs,
+                    fiber_section3d_cells,
+                    fiber_section3d_index_by_id,
                     transient_output_files,
                     transient_output_buffers,
                     has_transformation_mpc,
@@ -1038,6 +1100,15 @@ def run_case(
                     frame_factorize,
                     frame_transient_step,
                 )
+                if stage_pattern_type == "Plain":
+                    stage_final_pattern_scale = 1.0
+                    if stage_ts_index >= 0:
+                        stage_final_pattern_scale = eval_time_series_input(
+                            time_series[stage_ts_index],
+                            Float64(stage_analysis.steps) * stage_analysis.dt,
+                            time_series_values,
+                            time_series_times,
+                        )
             elif stage_type == "modal_eigen":
                 if stage_analysis.num_modes < 1:
                     abort("modal_eigen requires num_modes >= 1")
@@ -1065,6 +1136,9 @@ def run_case(
                     fiber_section_defs,
                     fiber_section_cells,
                     fiber_section_index_by_id,
+                    fiber_section3d_defs,
+                    fiber_section3d_cells,
+                    fiber_section3d_index_by_id,
                     M_total,
                     constrained,
                     free,
@@ -1091,9 +1165,17 @@ def run_case(
                 ):
                     apply_load_const = False
                 if apply_load_const:
-                    if stage_pattern_type == "UniformExcitation":
-                        stage_F_base = stage_F.copy()
-                    stage_F = stage_F_base.copy()
+                    if stage_pattern_type == "Plain":
+                        F_const = build_active_nodal_load(
+                            F_const, stage_F, stage_final_pattern_scale
+                        )
+                        append_scaled_element_loads(
+                            const_element_loads,
+                            stage_element_loads,
+                            stage_final_pattern_scale,
+                        )
+                    stage_F.resize(total_dofs, 0.0)
+                    stage_element_loads = []
                     stage_pattern_type = "Plain"
                     stage_ts_index = -1
                     stage_uniform_excitation_direction = 0
@@ -1123,6 +1205,9 @@ def run_case(
             fiber_section_defs,
             fiber_section_cells,
             fiber_section_index_by_id,
+            fiber_section3d_defs,
+            fiber_section3d_cells,
+            fiber_section3d_index_by_id,
             M_total,
             constrained,
             free,
@@ -1166,12 +1251,31 @@ def run_case(
         if has_transformation_mpc:
             _enforce_equal_dof_values(u, rep_dof, constrained)
         var has_reaction_recorder = _has_recorder_type(recorders, RecorderTypeTag.NodeReaction)
+        var final_load_scale = 1.0
+        if analysis_type == "static_linear" and ts_index >= 0:
+            final_load_scale = eval_time_series_input(
+                time_series[ts_index], 1.0, time_series_values, time_series_times
+            )
+        var final_F = build_active_nodal_load(F_const, F_pattern, final_load_scale)
+        var final_element_load_state = build_active_element_load_state(
+            const_element_loads,
+            pattern_element_loads,
+            final_load_scale,
+            typed_elements,
+            elem_id_to_index,
+            ndm,
+            ndf,
+        )
         var F_int_reaction: List[Float64] = []
         var F_ext_reaction: List[Float64] = []
         if has_reaction_recorder:
             F_int_reaction = assemble_internal_forces_typed(
                 typed_nodes,
                 typed_elements,
+                final_element_load_state.element_loads,
+                final_element_load_state.elem_load_offsets,
+                final_element_load_state.elem_load_pool,
+                1.0,
                 typed_sections_by_id,
                 typed_materials_by_id,
                 id_to_index,
@@ -1191,8 +1295,11 @@ def run_case(
                 fiber_section_defs,
                 fiber_section_cells,
                 fiber_section_index_by_id,
+                fiber_section3d_defs,
+                fiber_section3d_cells,
+                fiber_section3d_index_by_id,
             )
-            F_ext_reaction = _scaled_forces(F_total, 1.0)
+            F_ext_reaction = final_F.copy()
         var envelope_files: List[String] = []
         var envelope_min: List[List[Float64]] = []
         var envelope_max: List[List[Float64]] = []
@@ -1227,11 +1334,18 @@ def run_case(
                         elem,
                         ndf,
                         u,
+                        final_element_load_state.element_loads,
+                        final_element_load_state.elem_load_offsets,
+                        final_element_load_state.elem_load_pool,
+                        1.0,
                         typed_nodes,
                         typed_sections_by_id,
                         fiber_section_defs,
                         fiber_section_cells,
                         fiber_section_index_by_id,
+                        fiber_section3d_defs,
+                        fiber_section3d_cells,
+                        fiber_section3d_index_by_id,
                         uniaxial_defs,
                         uniaxial_state_defs,
                         uniaxial_states,
@@ -1286,11 +1400,18 @@ def run_case(
                         elem,
                         ndf,
                         u,
+                        final_element_load_state.element_loads,
+                        final_element_load_state.elem_load_offsets,
+                        final_element_load_state.elem_load_pool,
+                        1.0,
                         typed_nodes,
                         typed_sections_by_id,
                         fiber_section_defs,
                         fiber_section_cells,
                         fiber_section_index_by_id,
+                        fiber_section3d_defs,
+                        fiber_section3d_cells,
+                        fiber_section3d_index_by_id,
                         uniaxial_defs,
                         uniaxial_state_defs,
                         uniaxial_states,
@@ -1329,11 +1450,18 @@ def run_case(
                             sec_no,
                             ndf,
                             u,
+                            final_element_load_state.element_loads,
+                            final_element_load_state.elem_load_offsets,
+                            final_element_load_state.elem_load_pool,
+                            1.0,
                             typed_nodes,
                             typed_sections_by_id,
                             fiber_section_defs,
                             fiber_section_cells,
                             fiber_section_index_by_id,
+                            fiber_section3d_defs,
+                            fiber_section3d_cells,
+                            fiber_section3d_index_by_id,
                             uniaxial_defs,
                             uniaxial_states,
                             elem_uniaxial_offsets,

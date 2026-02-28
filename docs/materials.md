@@ -49,18 +49,22 @@ Newton/Modified Newton updates.
   - Support gap activation thresholds and plastic return mapping using the same
     state framework.
 - **Fiber Sections**
-  - Implemented infrastructure (`FiberSection2d`, `patch rect`, `layer straight`):
+  - Implemented infrastructure (`FiberSection2d` and `FiberSection3d`, `patch rect`, `layer straight`):
     - Fiber discretization stores per-fiber `(y, z, area, material)`.
     - Section owns one uniaxial state per fiber.
-    - Aggregation (about section centroid `y_bar`) follows:
+    - Aggregation (about section centroid `y_bar`,`z_bar`) follows:
       - `eps_f = eps0 - (y - y_bar) * kappa`
       - `N = sum(sig_f * A_f)`
       - `Mz = sum(-sig_f * A_f * (y - y_bar))`
       - `k11 = sum(Et_f * A_f)`
       - `k12 = sum(-Et_f * A_f * (y - y_bar))`
       - `k22 = sum(Et_f * A_f * (y - y_bar)^2)`
+    - 3D section path uses:
+      - `eps_f = eps0 + (z - z_bar) * kappa_y - (y - y_bar) * kappa_z`
+      - `My = sum(sig_f * A_f * (z - z_bar))`
+      - `Mz = sum(-sig_f * A_f * (y - y_bar))`
   - This section workflow is exposed by `src/mojo/section_path.mojo` and
-    `scripts/run_mojo_section_path.py` for unit validation.
+    `scripts/run_strut_section_path.py` for unit validation.
 
 ## Compatibility Notes
 

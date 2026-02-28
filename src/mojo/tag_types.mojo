@@ -3,12 +3,20 @@ struct ElementTypeTag:
     alias ElasticBeamColumn2d = 1
     alias ForceBeamColumn2d = 2
     alias DispBeamColumn2d = 3
-    alias ElasticBeamColumn3d = 4
-    alias Truss = 5
-    alias Link = 6
-    alias FourNodeQuad = 7
-    alias Shell = 8
-    alias ZeroLengthSection = 9
+    alias ElasticBeamColumn3d = 5
+    alias Truss = 6
+    alias Link = 7
+    alias FourNodeQuad = 8
+    alias Shell = 9
+    alias ZeroLengthSection = 10
+    alias ForceBeamColumn3d = 11
+    alias DispBeamColumn3d = 12
+
+
+struct ElementLoadTypeTag:
+    alias Unknown = 0
+    alias BeamUniform = 1
+    alias BeamPoint = 2
 
 
 struct GeomTransfTag:

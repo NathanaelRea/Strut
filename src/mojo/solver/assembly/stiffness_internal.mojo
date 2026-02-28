@@ -3,13 +3,20 @@ from math import hypot, sqrt
 from os import abort
 
 from elements import (
+    beam2d_element_load_global,
     beam_global_stiffness,
     beam2d_corotational_global_stiffness,
     beam2d_corotational_global_tangent_and_internal,
     beam2d_pdelta_global_stiffness,
+    beam_column3d_fiber_global_tangent_and_internal,
+    beam3d_corotational_global_tangent_and_internal,
     beam3d_global_stiffness,
+    beam3d_pdelta_global_stiffness,
     disp_beam_column2d_global_tangent_and_internal,
+    disp_beam_column3d_global_tangent_and_internal,
     force_beam_column2d_global_tangent_and_internal,
+    force_beam_column3d_fiber_global_tangent_and_internal,
+    force_beam_column3d_global_tangent_and_internal,
     link_global_stiffness,
     quad4_plane_stress_stiffness,
     shell4_mindlin_stiffness,
@@ -24,8 +31,14 @@ from materials import (
 )
 from solver.banded import banded_add, banded_matrix
 from solver.dof import node_dof_index
-from solver.run_case.input_types import ElementInput, MaterialInput, NodeInput, SectionInput
-from sections import FiberCell, FiberSection2dDef
+from solver.run_case.input_types import (
+    ElementInput,
+    ElementLoadInput,
+    MaterialInput,
+    NodeInput,
+    SectionInput,
+)
+from sections import FiberCell, FiberSection2dDef, FiberSection3dDef
 from tag_types import ElementTypeTag, LinkDirectionTag
 
 
@@ -231,6 +244,59 @@ fn assemble_global_stiffness_banded_frame2d_typed(
     free_index: List[Int],
     free_count: Int,
     bw: Int,
+) raises -> List[List[Float64]]:
+    var empty_element_loads: List[ElementLoadInput] = []
+    var empty_elem_load_offsets: List[Int] = []
+    var empty_elem_load_pool: List[Int] = []
+    return assemble_global_stiffness_banded_frame2d_typed(
+        nodes,
+        elements,
+        empty_element_loads,
+        empty_elem_load_offsets,
+        empty_elem_load_pool,
+        0.0,
+        sections_by_id,
+        u,
+        uniaxial_defs,
+        uniaxial_states,
+        elem_uniaxial_offsets,
+        elem_uniaxial_counts,
+        elem_uniaxial_state_ids,
+        force_basic_offsets,
+        force_basic_counts,
+        force_basic_q,
+        fiber_section_defs,
+        fiber_section_cells,
+        fiber_section_index_by_id,
+        free_index,
+        free_count,
+        bw,
+    )
+
+
+fn assemble_global_stiffness_banded_frame2d_typed(
+    nodes: List[NodeInput],
+    elements: List[ElementInput],
+    element_loads: List[ElementLoadInput],
+    elem_load_offsets: List[Int],
+    elem_load_pool: List[Int],
+    load_scale: Float64,
+    sections_by_id: List[SectionInput],
+    u: List[Float64],
+    uniaxial_defs: List[UniMaterialDef],
+    mut uniaxial_states: List[UniMaterialState],
+    elem_uniaxial_offsets: List[Int],
+    elem_uniaxial_counts: List[Int],
+    elem_uniaxial_state_ids: List[Int],
+    force_basic_offsets: List[Int],
+    force_basic_counts: List[Int],
+    mut force_basic_q: List[Float64],
+    fiber_section_defs: List[FiberSection2dDef],
+    fiber_section_cells: List[FiberCell],
+    fiber_section_index_by_id: List[Int],
+    free_index: List[Int],
+    free_count: Int,
+    bw: Int,
     elem_dof_offsets: List[Int],
     elem_dof_pool: List[Int],
     mut free_map: List[Int],
@@ -376,7 +442,9 @@ fn assemble_global_stiffness_banded_frame2d_typed(
                         u_elem,
                     )
                 else:
-                    abort("forceBeamColumn2d/dispBeamColumn2d supports geomTransf Linear or PDelta")
+                    abort(
+                        "forceBeamColumn2d/dispBeamColumn2d supports geomTransf Linear or PDelta"
+                    )
             else:
                 var sec_index = fiber_section_index_by_id[elem.section]
                 var sec_def = fiber_section_defs[sec_index]
@@ -384,11 +452,16 @@ fn assemble_global_stiffness_banded_frame2d_typed(
                 var elem_state_count = elem_uniaxial_counts[e]
                 if elem_type == ElementTypeTag.ForceBeamColumn2d:
                     force_beam_column2d_global_tangent_and_internal(
+                        e,
                         node1.x,
                         node1.y,
                         node2.x,
                         node2.y,
                         u_elem,
+                        element_loads,
+                        elem_load_offsets,
+                        elem_load_pool,
+                        load_scale,
                         sec_def,
                         fiber_section_cells,
                         uniaxial_defs,
@@ -396,6 +469,8 @@ fn assemble_global_stiffness_banded_frame2d_typed(
                         elem_uniaxial_state_ids,
                         elem_offset,
                         elem_state_count,
+                        elem.geom_transf,
+                        elem.integration,
                         elem.num_int_pts,
                         force_basic_q,
                         force_basic_offsets[e],
@@ -405,11 +480,16 @@ fn assemble_global_stiffness_banded_frame2d_typed(
                     )
                 else:
                     disp_beam_column2d_global_tangent_and_internal(
+                        e,
                         node1.x,
                         node1.y,
                         node2.x,
                         node2.y,
                         u_elem,
+                        element_loads,
+                        elem_load_offsets,
+                        elem_load_pool,
+                        load_scale,
                         sec_def,
                         fiber_section_cells,
                         uniaxial_defs,
@@ -417,6 +497,8 @@ fn assemble_global_stiffness_banded_frame2d_typed(
                         elem_uniaxial_state_ids,
                         elem_offset,
                         elem_state_count,
+                        elem.geom_transf,
+                        elem.integration,
                         elem.num_int_pts,
                         k_global,
                         f_dummy,
@@ -452,6 +534,69 @@ fn assemble_global_stiffness_banded_frame2d_typed(
     free_index: List[Int],
     free_count: Int,
     bw: Int,
+    elem_dof_offsets: List[Int],
+    elem_dof_pool: List[Int],
+    mut free_map: List[Int],
+    mut u_elem: List[Float64],
+    mut f_dummy: List[Float64],
+) raises -> List[List[Float64]]:
+    var empty_element_loads: List[ElementLoadInput] = []
+    var empty_elem_load_offsets: List[Int] = []
+    var empty_elem_load_pool: List[Int] = []
+    return assemble_global_stiffness_banded_frame2d_typed(
+        nodes,
+        elements,
+        empty_element_loads,
+        empty_elem_load_offsets,
+        empty_elem_load_pool,
+        0.0,
+        sections_by_id,
+        u,
+        uniaxial_defs,
+        uniaxial_states,
+        elem_uniaxial_offsets,
+        elem_uniaxial_counts,
+        elem_uniaxial_state_ids,
+        force_basic_offsets,
+        force_basic_counts,
+        force_basic_q,
+        fiber_section_defs,
+        fiber_section_cells,
+        fiber_section_index_by_id,
+        free_index,
+        free_count,
+        bw,
+        elem_dof_offsets,
+        elem_dof_pool,
+        free_map,
+        u_elem,
+        f_dummy,
+    )
+
+
+fn assemble_global_stiffness_banded_frame2d_typed(
+    nodes: List[NodeInput],
+    elements: List[ElementInput],
+    element_loads: List[ElementLoadInput],
+    elem_load_offsets: List[Int],
+    elem_load_pool: List[Int],
+    load_scale: Float64,
+    sections_by_id: List[SectionInput],
+    u: List[Float64],
+    uniaxial_defs: List[UniMaterialDef],
+    mut uniaxial_states: List[UniMaterialState],
+    elem_uniaxial_offsets: List[Int],
+    elem_uniaxial_counts: List[Int],
+    elem_uniaxial_state_ids: List[Int],
+    force_basic_offsets: List[Int],
+    force_basic_counts: List[Int],
+    mut force_basic_q: List[Float64],
+    fiber_section_defs: List[FiberSection2dDef],
+    fiber_section_cells: List[FiberCell],
+    fiber_section_index_by_id: List[Int],
+    free_index: List[Int],
+    free_count: Int,
+    bw: Int,
 ) raises -> List[List[Float64]]:
     var elem_dof_offsets: List[Int] = []
     var elem_dof_pool: List[Int] = []
@@ -462,6 +607,10 @@ fn assemble_global_stiffness_banded_frame2d_typed(
     return assemble_global_stiffness_banded_frame2d_typed(
         nodes,
         elements,
+        element_loads,
+        elem_load_offsets,
+        elem_load_pool,
+        load_scale,
         sections_by_id,
         u,
         uniaxial_defs,
@@ -508,18 +657,20 @@ fn assemble_global_stiffness_typed(
     fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
+    fiber_section3d_defs: List[FiberSection3dDef],
+    fiber_section3d_cells: List[FiberCell],
+    fiber_section3d_index_by_id: List[Int],
 ) raises -> List[List[Float64]]:
-    var total_dofs = node_count * ndf
-    var K: List[List[Float64]] = []
-    for _ in range(total_dofs):
-        var row: List[Float64] = []
-        row.resize(total_dofs, 0.0)
-        K.append(row^)
-    var F_int: List[Float64] = []
-    F_int.resize(total_dofs, 0.0)
-    assemble_global_stiffness_and_internal(
+    var empty_element_loads: List[ElementLoadInput] = []
+    var empty_elem_load_offsets: List[Int] = []
+    var empty_elem_load_pool: List[Int] = []
+    return assemble_global_stiffness_typed(
         nodes,
         elements,
+        empty_element_loads,
+        empty_elem_load_offsets,
+        empty_elem_load_pool,
+        0.0,
         sections_by_id,
         materials_by_id,
         id_to_index,
@@ -539,6 +690,79 @@ fn assemble_global_stiffness_typed(
         fiber_section_defs,
         fiber_section_cells,
         fiber_section_index_by_id,
+        fiber_section3d_defs,
+        fiber_section3d_cells,
+        fiber_section3d_index_by_id,
+    )
+
+
+fn assemble_global_stiffness_typed(
+    nodes: List[NodeInput],
+    elements: List[ElementInput],
+    element_loads: List[ElementLoadInput],
+    elem_load_offsets: List[Int],
+    elem_load_pool: List[Int],
+    load_scale: Float64,
+    sections_by_id: List[SectionInput],
+    materials_by_id: List[MaterialInput],
+    id_to_index: List[Int],
+    node_count: Int,
+    ndf: Int,
+    ndm: Int,
+    u: List[Float64],
+    uniaxial_defs: List[UniMaterialDef],
+    uniaxial_state_defs: List[Int],
+    mut uniaxial_states: List[UniMaterialState],
+    elem_uniaxial_offsets: List[Int],
+    elem_uniaxial_counts: List[Int],
+    elem_uniaxial_state_ids: List[Int],
+    force_basic_offsets: List[Int],
+    force_basic_counts: List[Int],
+    mut force_basic_q: List[Float64],
+    fiber_section_defs: List[FiberSection2dDef],
+    fiber_section_cells: List[FiberCell],
+    fiber_section_index_by_id: List[Int],
+    fiber_section3d_defs: List[FiberSection3dDef],
+    fiber_section3d_cells: List[FiberCell],
+    fiber_section3d_index_by_id: List[Int],
+) raises -> List[List[Float64]]:
+    var total_dofs = node_count * ndf
+    var K: List[List[Float64]] = []
+    for _ in range(total_dofs):
+        var row: List[Float64] = []
+        row.resize(total_dofs, 0.0)
+        K.append(row^)
+    var F_int: List[Float64] = []
+    F_int.resize(total_dofs, 0.0)
+    assemble_global_stiffness_and_internal(
+        nodes,
+        elements,
+        element_loads,
+        elem_load_offsets,
+        elem_load_pool,
+        load_scale,
+        sections_by_id,
+        materials_by_id,
+        id_to_index,
+        node_count,
+        ndf,
+        ndm,
+        u,
+        uniaxial_defs,
+        uniaxial_state_defs,
+        uniaxial_states,
+        elem_uniaxial_offsets,
+        elem_uniaxial_counts,
+        elem_uniaxial_state_ids,
+        force_basic_offsets,
+        force_basic_counts,
+        force_basic_q,
+        fiber_section_defs,
+        fiber_section_cells,
+        fiber_section_index_by_id,
+        fiber_section3d_defs,
+        fiber_section3d_cells,
+        fiber_section3d_index_by_id,
         K,
         F_int,
     )
@@ -567,18 +791,20 @@ fn assemble_internal_forces_typed(
     fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
+    fiber_section3d_defs: List[FiberSection3dDef],
+    fiber_section3d_cells: List[FiberCell],
+    fiber_section3d_index_by_id: List[Int],
 ) raises -> List[Float64]:
-    var total_dofs = node_count * ndf
-    var K_dummy: List[List[Float64]] = []
-    for _ in range(total_dofs):
-        var row: List[Float64] = []
-        row.resize(total_dofs, 0.0)
-        K_dummy.append(row^)
-    var F_int: List[Float64] = []
-    F_int.resize(total_dofs, 0.0)
-    assemble_global_stiffness_and_internal(
+    var empty_element_loads: List[ElementLoadInput] = []
+    var empty_elem_load_offsets: List[Int] = []
+    var empty_elem_load_pool: List[Int] = []
+    return assemble_internal_forces_typed(
         nodes,
         elements,
+        empty_element_loads,
+        empty_elem_load_offsets,
+        empty_elem_load_pool,
+        0.0,
         sections_by_id,
         materials_by_id,
         id_to_index,
@@ -598,6 +824,79 @@ fn assemble_internal_forces_typed(
         fiber_section_defs,
         fiber_section_cells,
         fiber_section_index_by_id,
+        fiber_section3d_defs,
+        fiber_section3d_cells,
+        fiber_section3d_index_by_id,
+    )
+
+
+fn assemble_internal_forces_typed(
+    nodes: List[NodeInput],
+    elements: List[ElementInput],
+    element_loads: List[ElementLoadInput],
+    elem_load_offsets: List[Int],
+    elem_load_pool: List[Int],
+    load_scale: Float64,
+    sections_by_id: List[SectionInput],
+    materials_by_id: List[MaterialInput],
+    id_to_index: List[Int],
+    node_count: Int,
+    ndf: Int,
+    ndm: Int,
+    u: List[Float64],
+    uniaxial_defs: List[UniMaterialDef],
+    uniaxial_state_defs: List[Int],
+    mut uniaxial_states: List[UniMaterialState],
+    elem_uniaxial_offsets: List[Int],
+    elem_uniaxial_counts: List[Int],
+    elem_uniaxial_state_ids: List[Int],
+    force_basic_offsets: List[Int],
+    force_basic_counts: List[Int],
+    mut force_basic_q: List[Float64],
+    fiber_section_defs: List[FiberSection2dDef],
+    fiber_section_cells: List[FiberCell],
+    fiber_section_index_by_id: List[Int],
+    fiber_section3d_defs: List[FiberSection3dDef],
+    fiber_section3d_cells: List[FiberCell],
+    fiber_section3d_index_by_id: List[Int],
+) raises -> List[Float64]:
+    var total_dofs = node_count * ndf
+    var K_dummy: List[List[Float64]] = []
+    for _ in range(total_dofs):
+        var row: List[Float64] = []
+        row.resize(total_dofs, 0.0)
+        K_dummy.append(row^)
+    var F_int: List[Float64] = []
+    F_int.resize(total_dofs, 0.0)
+    assemble_global_stiffness_and_internal(
+        nodes,
+        elements,
+        element_loads,
+        elem_load_offsets,
+        elem_load_pool,
+        load_scale,
+        sections_by_id,
+        materials_by_id,
+        id_to_index,
+        node_count,
+        ndf,
+        ndm,
+        u,
+        uniaxial_defs,
+        uniaxial_state_defs,
+        uniaxial_states,
+        elem_uniaxial_offsets,
+        elem_uniaxial_counts,
+        elem_uniaxial_state_ids,
+        force_basic_offsets,
+        force_basic_counts,
+        force_basic_q,
+        fiber_section_defs,
+        fiber_section_cells,
+        fiber_section_index_by_id,
+        fiber_section3d_defs,
+        fiber_section3d_cells,
+        fiber_section3d_index_by_id,
         K_dummy,
         F_int,
     )
@@ -626,18 +925,22 @@ fn assemble_global_stiffness_and_internal(
     fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
+    fiber_section3d_defs: List[FiberSection3dDef],
+    fiber_section3d_cells: List[FiberCell],
+    fiber_section3d_index_by_id: List[Int],
     mut K: List[List[Float64]],
     mut F_int: List[Float64],
 ) raises:
-    var elem_dof_offsets: List[Int] = []
-    var elem_dof_pool: List[Int] = []
-    _build_elem_dof_soa(elements, elem_dof_offsets, elem_dof_pool)
-    var dof_map6: List[Int] = []
-    var dof_map12: List[Int] = []
-    var u_elem6: List[Float64] = []
+    var empty_element_loads: List[ElementLoadInput] = []
+    var empty_elem_load_offsets: List[Int] = []
+    var empty_elem_load_pool: List[Int] = []
     assemble_global_stiffness_and_internal(
         nodes,
         elements,
+        empty_element_loads,
+        empty_elem_load_offsets,
+        empty_elem_load_pool,
+        0.0,
         sections_by_id,
         materials_by_id,
         id_to_index,
@@ -657,6 +960,81 @@ fn assemble_global_stiffness_and_internal(
         fiber_section_defs,
         fiber_section_cells,
         fiber_section_index_by_id,
+        fiber_section3d_defs,
+        fiber_section3d_cells,
+        fiber_section3d_index_by_id,
+        K,
+        F_int,
+    )
+
+
+fn assemble_global_stiffness_and_internal(
+    nodes: List[NodeInput],
+    elements: List[ElementInput],
+    element_loads: List[ElementLoadInput],
+    elem_load_offsets: List[Int],
+    elem_load_pool: List[Int],
+    load_scale: Float64,
+    sections_by_id: List[SectionInput],
+    materials_by_id: List[MaterialInput],
+    id_to_index: List[Int],
+    node_count: Int,
+    ndf: Int,
+    ndm: Int,
+    u: List[Float64],
+    uniaxial_defs: List[UniMaterialDef],
+    uniaxial_state_defs: List[Int],
+    mut uniaxial_states: List[UniMaterialState],
+    elem_uniaxial_offsets: List[Int],
+    elem_uniaxial_counts: List[Int],
+    elem_uniaxial_state_ids: List[Int],
+    force_basic_offsets: List[Int],
+    force_basic_counts: List[Int],
+    mut force_basic_q: List[Float64],
+    fiber_section_defs: List[FiberSection2dDef],
+    fiber_section_cells: List[FiberCell],
+    fiber_section_index_by_id: List[Int],
+    fiber_section3d_defs: List[FiberSection3dDef],
+    fiber_section3d_cells: List[FiberCell],
+    fiber_section3d_index_by_id: List[Int],
+    mut K: List[List[Float64]],
+    mut F_int: List[Float64],
+) raises:
+    var elem_dof_offsets: List[Int] = []
+    var elem_dof_pool: List[Int] = []
+    _build_elem_dof_soa(elements, elem_dof_offsets, elem_dof_pool)
+    var dof_map6: List[Int] = []
+    var dof_map12: List[Int] = []
+    var u_elem6: List[Float64] = []
+    assemble_global_stiffness_and_internal(
+        nodes,
+        elements,
+        element_loads,
+        elem_load_offsets,
+        elem_load_pool,
+        load_scale,
+        sections_by_id,
+        materials_by_id,
+        id_to_index,
+        node_count,
+        ndf,
+        ndm,
+        u,
+        uniaxial_defs,
+        uniaxial_state_defs,
+        uniaxial_states,
+        elem_uniaxial_offsets,
+        elem_uniaxial_counts,
+        elem_uniaxial_state_ids,
+        force_basic_offsets,
+        force_basic_counts,
+        force_basic_q,
+        fiber_section_defs,
+        fiber_section_cells,
+        fiber_section_index_by_id,
+        fiber_section3d_defs,
+        fiber_section3d_cells,
+        fiber_section3d_index_by_id,
         elem_dof_offsets,
         elem_dof_pool,
         dof_map6,
@@ -689,6 +1067,88 @@ fn assemble_global_stiffness_and_internal(
     fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
+    fiber_section3d_defs: List[FiberSection3dDef],
+    fiber_section3d_cells: List[FiberCell],
+    fiber_section3d_index_by_id: List[Int],
+    elem_dof_offsets: List[Int],
+    elem_dof_pool: List[Int],
+    mut dof_map6: List[Int],
+    mut dof_map12: List[Int],
+    mut u_elem6: List[Float64],
+    mut K: List[List[Float64]],
+    mut F_int: List[Float64],
+) raises:
+    var empty_element_loads: List[ElementLoadInput] = []
+    var empty_elem_load_offsets: List[Int] = []
+    var empty_elem_load_pool: List[Int] = []
+    assemble_global_stiffness_and_internal(
+        nodes,
+        elements,
+        empty_element_loads,
+        empty_elem_load_offsets,
+        empty_elem_load_pool,
+        0.0,
+        sections_by_id,
+        materials_by_id,
+        id_to_index,
+        node_count,
+        ndf,
+        ndm,
+        u,
+        uniaxial_defs,
+        uniaxial_state_defs,
+        uniaxial_states,
+        elem_uniaxial_offsets,
+        elem_uniaxial_counts,
+        elem_uniaxial_state_ids,
+        force_basic_offsets,
+        force_basic_counts,
+        force_basic_q,
+        fiber_section_defs,
+        fiber_section_cells,
+        fiber_section_index_by_id,
+        fiber_section3d_defs,
+        fiber_section3d_cells,
+        fiber_section3d_index_by_id,
+        elem_dof_offsets,
+        elem_dof_pool,
+        dof_map6,
+        dof_map12,
+        u_elem6,
+        K,
+        F_int,
+    )
+
+
+fn assemble_global_stiffness_and_internal(
+    nodes: List[NodeInput],
+    elements: List[ElementInput],
+    element_loads: List[ElementLoadInput],
+    elem_load_offsets: List[Int],
+    elem_load_pool: List[Int],
+    load_scale: Float64,
+    sections_by_id: List[SectionInput],
+    materials_by_id: List[MaterialInput],
+    id_to_index: List[Int],
+    node_count: Int,
+    ndf: Int,
+    ndm: Int,
+    u: List[Float64],
+    uniaxial_defs: List[UniMaterialDef],
+    uniaxial_state_defs: List[Int],
+    mut uniaxial_states: List[UniMaterialState],
+    elem_uniaxial_offsets: List[Int],
+    elem_uniaxial_counts: List[Int],
+    elem_uniaxial_state_ids: List[Int],
+    force_basic_offsets: List[Int],
+    force_basic_counts: List[Int],
+    mut force_basic_q: List[Float64],
+    fiber_section_defs: List[FiberSection2dDef],
+    fiber_section_cells: List[FiberCell],
+    fiber_section_index_by_id: List[Int],
+    fiber_section3d_defs: List[FiberSection3dDef],
+    fiber_section3d_cells: List[FiberCell],
+    fiber_section3d_index_by_id: List[Int],
     elem_dof_offsets: List[Int],
     elem_dof_pool: List[Int],
     mut dof_map6: List[Int],
@@ -711,6 +1171,12 @@ fn assemble_global_stiffness_and_internal(
         dof_map12.resize(12, 0)
     if len(u_elem6) != 6:
         u_elem6.resize(6, 0.0)
+    var k_elem6: List[List[Float64]] = []
+    var f_elem6: List[Float64] = []
+    var u_elem12: List[Float64] = []
+    u_elem12.resize(12, 0.0)
+    var k_elem12: List[List[Float64]] = []
+    var f_elem12: List[Float64] = []
 
     for e in range(elem_count):
         var elem = elements[e]
@@ -732,6 +1198,17 @@ fn assemble_global_stiffness_and_internal(
             var geom = elem.geom_transf
             var k_global: List[List[Float64]] = []
             var f_elem: List[Float64] = []
+            var f_load_global = beam2d_element_load_global(
+                element_loads,
+                elem_load_offsets,
+                elem_load_pool,
+                e,
+                load_scale,
+                node1.x,
+                node1.y,
+                node2.x,
+                node2.y,
+            )
             if geom == "Linear":
                 k_global = beam_global_stiffness(
                     E,
@@ -777,13 +1254,13 @@ fn assemble_global_stiffness_and_internal(
                 for a in range(6):
                     var Aidx = dof_map6[a]
                     _scatter_add_row_unrolled4(K, Aidx, k_global[a], dof_map6, 6)
-                    F_int[Aidx] += f_elem[a]
+                    F_int[Aidx] += f_elem[a] - f_load_global[a]
             else:
                 for a in range(6):
                     var Aidx = dof_map6[a]
                     F_int[Aidx] += _scatter_add_and_dot_row_simd4(
                         K, Aidx, k_global[a], dof_map6, u, 6
-                    )
+                    ) - f_load_global[a]
         elif (
             elem_type == ElementTypeTag.ForceBeamColumn2d
             or elem_type == ElementTypeTag.DispBeamColumn2d
@@ -823,7 +1300,9 @@ fn assemble_global_stiffness_and_internal(
                         u_elem6,
                     )
                 else:
-                    abort("forceBeamColumn2d/dispBeamColumn2d supports geomTransf Linear or PDelta")
+                    abort(
+                        "forceBeamColumn2d/dispBeamColumn2d supports geomTransf Linear or PDelta"
+                    )
                 f_global.resize(6, 0.0)
                 for a in range(6):
                     var sum = 0.0
@@ -837,11 +1316,16 @@ fn assemble_global_stiffness_and_internal(
                 var elem_state_count = elem_uniaxial_counts[e]
                 if elem_type == ElementTypeTag.ForceBeamColumn2d:
                     force_beam_column2d_global_tangent_and_internal(
+                        e,
                         node1.x,
                         node1.y,
                         node2.x,
                         node2.y,
                         u_elem6,
+                        element_loads,
+                        elem_load_offsets,
+                        elem_load_pool,
+                        load_scale,
                         sec_def,
                         fiber_section_cells,
                         uniaxial_defs,
@@ -849,20 +1333,27 @@ fn assemble_global_stiffness_and_internal(
                         elem_uniaxial_state_ids,
                         elem_offset,
                         elem_state_count,
+                        elem.geom_transf,
+                        elem.integration,
                         elem.num_int_pts,
                         force_basic_q,
                         force_basic_offsets[e],
                         force_basic_counts[e],
-                        k_global,
-                        f_global,
+                        k_elem6,
+                        f_elem6,
                     )
                 else:
                     disp_beam_column2d_global_tangent_and_internal(
+                        e,
                         node1.x,
                         node1.y,
                         node2.x,
                         node2.y,
                         u_elem6,
+                        element_loads,
+                        elem_load_offsets,
+                        elem_load_pool,
+                        load_scale,
                         sec_def,
                         fiber_section_cells,
                         uniaxial_defs,
@@ -870,50 +1361,196 @@ fn assemble_global_stiffness_and_internal(
                         elem_uniaxial_state_ids,
                         elem_offset,
                         elem_state_count,
+                        elem.geom_transf,
+                        elem.integration,
                         elem.num_int_pts,
-                        k_global,
-                        f_global,
+                        k_elem6,
+                        f_elem6,
                     )
+                for a in range(6):
+                    var Aidx = dof_map6[a]
+                    _scatter_add_row_unrolled4(K, Aidx, k_elem6[a], dof_map6, 6)
+                    F_int[Aidx] += f_elem6[a]
+                continue
             for a in range(6):
                 var Aidx = dof_map6[a]
                 _scatter_add_row_unrolled4(K, Aidx, k_global[a], dof_map6, 6)
                 F_int[Aidx] += f_global[a]
-        elif elem_type == ElementTypeTag.ElasticBeamColumn3d:
+        elif (
+            elem_type == ElementTypeTag.ElasticBeamColumn3d
+            or elem_type == ElementTypeTag.ForceBeamColumn3d
+            or elem_type == ElementTypeTag.DispBeamColumn3d
+        ):
             var i1 = elem.node_index_1
             var i2 = elem.node_index_2
             var node1 = nodes[i1]
             var node2 = nodes[i2]
 
             var sec = sections_by_id[elem.section]
-            var E = sec.E
-            var A = sec.A
-            var Iz = sec.Iz
-            var Iy = sec.Iy
-            var G = sec.G
-            var J = sec.J
-
-            var k_global = beam3d_global_stiffness(
-                E,
-                A,
-                Iy,
-                Iz,
-                G,
-                J,
-                node1.x,
-                node1.y,
-                node1.z,
-                node2.x,
-                node2.y,
-                node2.z,
-            )
             var dof_offset = elem_dof_offsets[e]
             for i in range(12):
                 dof_map12[i] = elem_dof_pool[dof_offset + i]
+            for i in range(12):
+                u_elem12[i] = u[dof_map12[i]]
+            if elem_type == ElementTypeTag.ElasticBeamColumn3d:
+                if sec.type != "ElasticSection3d":
+                    abort("elasticBeamColumn3d requires ElasticSection3d")
+                var E = sec.E
+                var A = sec.A
+                var Iz = sec.Iz
+                var Iy = sec.Iy
+                var G = sec.G
+                var J = sec.J
+                force_beam_column3d_global_tangent_and_internal(
+                    e,
+                    node1.x,
+                    node1.y,
+                    node1.z,
+                    node2.x,
+                    node2.y,
+                    node2.z,
+                    u_elem12,
+                    elem.geom_transf,
+                    element_loads,
+                    elem_load_offsets,
+                    elem_load_pool,
+                    load_scale,
+                    E,
+                    A,
+                    Iy,
+                    Iz,
+                    G,
+                    J,
+                    k_elem12,
+                    f_elem12,
+                )
+            else:
+                if sec.type == "ElasticSection3d":
+                    var E = sec.E
+                    var A = sec.A
+                    var Iz = sec.Iz
+                    var Iy = sec.Iy
+                    var G = sec.G
+                    var J = sec.J
+                    if elem_type == ElementTypeTag.ForceBeamColumn3d:
+                        force_beam_column3d_global_tangent_and_internal(
+                            e,
+                            node1.x,
+                            node1.y,
+                            node1.z,
+                            node2.x,
+                            node2.y,
+                            node2.z,
+                            u_elem12,
+                            elem.geom_transf,
+                            element_loads,
+                            elem_load_offsets,
+                            elem_load_pool,
+                            load_scale,
+                            E,
+                            A,
+                            Iy,
+                            Iz,
+                            G,
+                            J,
+                            k_elem12,
+                            f_elem12,
+                        )
+                    else:
+                        disp_beam_column3d_global_tangent_and_internal(
+                            e,
+                            node1.x,
+                            node1.y,
+                            node1.z,
+                            node2.x,
+                            node2.y,
+                            node2.z,
+                            u_elem12,
+                            elem.geom_transf,
+                            element_loads,
+                            elem_load_offsets,
+                            elem_load_pool,
+                            load_scale,
+                            E,
+                            A,
+                            Iy,
+                            Iz,
+                            G,
+                            J,
+                            k_elem12,
+                            f_elem12,
+                        )
+                elif sec.type == "FiberSection3d":
+                    var sec_index = fiber_section3d_index_by_id[elem.section]
+                    if sec_index < 0 or sec_index >= len(fiber_section3d_defs):
+                        abort(elem.type + " fiber section not found")
+                    if elem_type == ElementTypeTag.ForceBeamColumn3d:
+                        force_beam_column3d_fiber_global_tangent_and_internal(
+                            e,
+                            node1.x,
+                            node1.y,
+                            node1.z,
+                            node2.x,
+                            node2.y,
+                            node2.z,
+                            u_elem12,
+                            elem.geom_transf,
+                            element_loads,
+                            elem_load_offsets,
+                            elem_load_pool,
+                            load_scale,
+                            fiber_section3d_defs[sec_index],
+                            fiber_section3d_cells,
+                            uniaxial_defs,
+                            uniaxial_states,
+                            elem_uniaxial_state_ids,
+                            elem_uniaxial_offsets[e],
+                            elem_uniaxial_counts[e],
+                            elem.integration,
+                            elem.num_int_pts,
+                            sec.G,
+                            sec.J,
+                            force_basic_q,
+                            force_basic_offsets[e],
+                            force_basic_counts[e],
+                            k_elem12,
+                            f_elem12,
+                        )
+                    else:
+                        beam_column3d_fiber_global_tangent_and_internal(
+                            e,
+                            node1.x,
+                            node1.y,
+                            node1.z,
+                            node2.x,
+                            node2.y,
+                            node2.z,
+                            u_elem12,
+                            elem.geom_transf,
+                            element_loads,
+                            elem_load_offsets,
+                            elem_load_pool,
+                            load_scale,
+                            fiber_section3d_defs[sec_index],
+                            fiber_section3d_cells,
+                            uniaxial_defs,
+                            uniaxial_states,
+                            elem_uniaxial_state_ids,
+                            elem_uniaxial_offsets[e],
+                            elem_uniaxial_counts[e],
+                            elem.integration,
+                            elem.num_int_pts,
+                            sec.G,
+                            sec.J,
+                            k_elem12,
+                            f_elem12,
+                        )
+                else:
+                    abort(elem.type + " requires ElasticSection3d or FiberSection3d")
             for a in range(12):
                 var Aidx = dof_map12[a]
-                F_int[Aidx] += _scatter_add_and_dot_row_simd4(
-                    K, Aidx, k_global[a], dof_map12, u, 12
-                )
+                _scatter_add_row_unrolled4(K, Aidx, k_elem12[a], dof_map12, 12)
+                F_int[Aidx] += f_elem12[a]
         elif elem_type == ElementTypeTag.Truss:
             var i1 = elem.node_index_1
             var i2 = elem.node_index_2

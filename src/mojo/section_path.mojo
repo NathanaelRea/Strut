@@ -7,10 +7,15 @@ from materials import UniMaterialDef, UniMaterialState
 from sections import (
     FiberCell,
     FiberSection2dDef,
+    FiberSection3dDef,
     append_fiber_section2d_from_json,
+    append_fiber_section3d_from_json,
     fiber_section2d_commit,
     fiber_section2d_init_states,
     fiber_section2d_set_trial,
+    fiber_section3d_commit,
+    fiber_section3d_init_states,
+    fiber_section3d_set_trial,
 )
 from strut_io import py_len
 from tag_types import UniMaterialTypeTag
@@ -184,69 +189,154 @@ def run_section_path():
         uniaxial_def_by_id[mid] = len(uniaxial_defs)
         uniaxial_defs.append(mat_def)
 
-    var defs: List[FiberSection2dDef] = []
-    var fibers: List[FiberCell] = []
-    append_fiber_section2d_from_json(section, uniaxial_def_by_id, defs, fibers)
-    if len(defs) != 1:
-        abort("section_path expects exactly one FiberSection2d")
+    var sec_type = String(section["type"])
+    var out = String("")
+    if sec_type == "FiberSection2d":
+        var defs: List[FiberSection2dDef] = []
+        var fibers: List[FiberCell] = []
+        append_fiber_section2d_from_json(section, uniaxial_def_by_id, defs, fibers)
+        if len(defs) != 1:
+            abort("section_path expects exactly one FiberSection2d")
 
-    var uniaxial_states: List[UniMaterialState] = []
-    var uniaxial_state_defs: List[Int] = []
-    var section_uniaxial_offsets: List[Int] = []
-    var section_uniaxial_counts: List[Int] = []
-    var section_uniaxial_state_ids: List[Int] = []
-    _ = fiber_section2d_init_states(
-        defs,
-        fibers,
-        uniaxial_defs,
-        uniaxial_states,
-        uniaxial_state_defs,
-        section_uniaxial_offsets,
-        section_uniaxial_counts,
-        section_uniaxial_state_ids,
-    )
-
-    var out = String("eps0,kappa,N,Mz,k11,k12,k22\n")
-    for i in range(py_len(deformation_path)):
-        var step = deformation_path[i]
-        var eps0 = Float64(step["eps0"])
-        var kappa = Float64(step["kappa"])
-        var resp = fiber_section2d_set_trial(
-            0,
+        var uniaxial_states: List[UniMaterialState] = []
+        var uniaxial_state_defs: List[Int] = []
+        var section_uniaxial_offsets: List[Int] = []
+        var section_uniaxial_counts: List[Int] = []
+        var section_uniaxial_state_ids: List[Int] = []
+        _ = fiber_section2d_init_states(
             defs,
             fibers,
             uniaxial_defs,
+            uniaxial_states,
+            uniaxial_state_defs,
             section_uniaxial_offsets,
             section_uniaxial_counts,
             section_uniaxial_state_ids,
-            uniaxial_states,
-            eps0,
-            kappa,
         )
-        out = (
-            out
-            + String(eps0)
-            + ","
-            + String(kappa)
-            + ","
-            + String(resp.axial_force)
-            + ","
-            + String(resp.moment_z)
-            + ","
-            + String(resp.k11)
-            + ","
-            + String(resp.k12)
-            + ","
-            + String(resp.k22)
-            + "\n"
+
+        out = String("eps0,kappa,N,Mz,k11,k12,k22\n")
+        for i in range(py_len(deformation_path)):
+            var step = deformation_path[i]
+            var eps0 = Float64(step["eps0"])
+            var kappa = Float64(step["kappa"])
+            var resp = fiber_section2d_set_trial(
+                0,
+                defs,
+                fibers,
+                uniaxial_defs,
+                section_uniaxial_offsets,
+                section_uniaxial_counts,
+                section_uniaxial_state_ids,
+                uniaxial_states,
+                eps0,
+                kappa,
+            )
+            out = (
+                out
+                + String(eps0)
+                + ","
+                + String(kappa)
+                + ","
+                + String(resp.axial_force)
+                + ","
+                + String(resp.moment_z)
+                + ","
+                + String(resp.k11)
+                + ","
+                + String(resp.k12)
+                + ","
+                + String(resp.k22)
+                + "\n"
+            )
+            fiber_section2d_commit(
+                0,
+                section_uniaxial_offsets,
+                section_uniaxial_counts,
+                section_uniaxial_state_ids,
+                uniaxial_states,
+            )
+    elif sec_type == "FiberSection3d":
+        var defs3d: List[FiberSection3dDef] = []
+        var fibers3d: List[FiberCell] = []
+        append_fiber_section3d_from_json(
+            section, uniaxial_def_by_id, defs3d, fibers3d
         )
-        fiber_section2d_commit(
-            0,
-            section_uniaxial_offsets,
-            section_uniaxial_counts,
-            section_uniaxial_state_ids,
-            uniaxial_states,
+        if len(defs3d) != 1:
+            abort("section_path expects exactly one FiberSection3d")
+
+        var uniaxial_states3d: List[UniMaterialState] = []
+        var uniaxial_state_defs3d: List[Int] = []
+        var section_uniaxial_offsets3d: List[Int] = []
+        var section_uniaxial_counts3d: List[Int] = []
+        var section_uniaxial_state_ids3d: List[Int] = []
+        _ = fiber_section3d_init_states(
+            defs3d,
+            fibers3d,
+            uniaxial_defs,
+            uniaxial_states3d,
+            uniaxial_state_defs3d,
+            section_uniaxial_offsets3d,
+            section_uniaxial_counts3d,
+            section_uniaxial_state_ids3d,
         )
+
+        out = String("eps0,ky,kz,N,My,Mz,k11,k12,k13,k22,k23,k33\n")
+        for i in range(py_len(deformation_path)):
+            var step = deformation_path[i]
+            var eps0 = Float64(step["eps0"])
+            var ky = Float64(step.get("kappa_y", step.get("ky", 0.0)))
+            var kz = Float64(
+                step.get("kappa_z", step.get("kz", step.get("kappa", 0.0)))
+            )
+            var resp = fiber_section3d_set_trial(
+                0,
+                defs3d,
+                fibers3d,
+                uniaxial_defs,
+                section_uniaxial_offsets3d,
+                section_uniaxial_counts3d,
+                section_uniaxial_state_ids3d,
+                uniaxial_states3d,
+                eps0,
+                ky,
+                kz,
+            )
+            out = (
+                out
+                + String(eps0)
+                + ","
+                + String(ky)
+                + ","
+                + String(kz)
+                + ","
+                + String(resp.axial_force)
+                + ","
+                + String(resp.moment_y)
+                + ","
+                + String(resp.moment_z)
+                + ","
+                + String(resp.k11)
+                + ","
+                + String(resp.k12)
+                + ","
+                + String(resp.k13)
+                + ","
+                + String(resp.k22)
+                + ","
+                + String(resp.k23)
+                + ","
+                + String(resp.k33)
+                + "\n"
+            )
+            fiber_section3d_commit(
+                0,
+                section_uniaxial_offsets3d,
+                section_uniaxial_counts3d,
+                section_uniaxial_state_ids3d,
+                uniaxial_states3d,
+            )
+    else:
+        abort("section_path requires FiberSection2d or FiberSection3d")
 
     var pathlib = Python.import_module("pathlib")
     pathlib.Path(output_path).write_text(out)

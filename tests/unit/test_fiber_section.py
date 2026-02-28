@@ -292,3 +292,173 @@ def test_fiber_section_quadr_patch_elastic_aggregation():
     assert math.isclose(got["k11"], expected["k11"], rel_tol=1e-10, abs_tol=1e-10)
     assert math.isclose(got["k12"], expected["k12"], rel_tol=1e-10, abs_tol=1e-10)
     assert math.isclose(got["k22"], expected["k22"], rel_tol=1e-10, abs_tol=1e-10)
+
+
+def _expected_elastic_response_3d(case_data, eps0, ky, kz):
+    e_by_mat = {
+        m["id"]: m["params"]["E"]
+        for m in case_data["materials"]
+        if m["type"] == "Elastic"
+    }
+    fibers = _discretize_fibers(case_data["section"]["params"])
+    a_sum = sum(area for y, z, area, mat in fibers)
+    y_bar = sum(area * y for y, z, area, mat in fibers) / a_sum
+    z_bar = sum(area * z for y, z, area, mat in fibers) / a_sum
+    n = 0.0
+    my = 0.0
+    mz = 0.0
+    k11 = 0.0
+    k12 = 0.0
+    k13 = 0.0
+    k22 = 0.0
+    k23 = 0.0
+    k33 = 0.0
+    for y, z, area, mat in fibers:
+        e = e_by_mat[mat]
+        y_rel = y - y_bar
+        z_rel = z - z_bar
+        strain = eps0 + z_rel * ky - y_rel * kz
+        stress = e * strain
+        fs = stress * area
+        ks = e * area
+        n += fs
+        my += fs * z_rel
+        mz += -fs * y_rel
+        k11 += ks
+        k12 += ks * z_rel
+        k13 += -ks * y_rel
+        k22 += ks * z_rel * z_rel
+        k23 += -ks * z_rel * y_rel
+        k33 += ks * y_rel * y_rel
+    return {
+        "N": n,
+        "My": my,
+        "Mz": mz,
+        "k11": k11,
+        "k12": k12,
+        "k13": k13,
+        "k22": k22,
+        "k23": k23,
+        "k33": k33,
+    }
+
+
+def test_fiber_section3d_rect_patch_elastic_aggregation():
+    case_data = {
+        "materials": [{"id": 1, "type": "Elastic", "params": {"E": 2.8e10}}],
+        "section": {
+            "id": 1,
+            "type": "FiberSection3d",
+            "params": {
+                "patches": [
+                    {
+                        "type": "rect",
+                        "material": 1,
+                        "num_subdiv_y": 6,
+                        "num_subdiv_z": 5,
+                        "y_i": -0.3,
+                        "z_i": -0.2,
+                        "y_j": 0.3,
+                        "z_j": 0.2,
+                    }
+                ],
+                "layers": [],
+            },
+        },
+        "deformation_path": [{"eps0": 1.2e-4, "kappa_y": -7.5e-4, "kappa_z": 2.5e-3}],
+    }
+    rows = _run_section_path(case_data)
+    assert len(rows) == 1
+    got = rows[0]
+    expected = _expected_elastic_response_3d(
+        case_data, eps0=1.2e-4, ky=-7.5e-4, kz=2.5e-3
+    )
+    assert math.isclose(got["N"], expected["N"], rel_tol=1e-10, abs_tol=1e-10)
+    assert math.isclose(got["My"], expected["My"], rel_tol=1e-10, abs_tol=1e-10)
+    assert math.isclose(got["Mz"], expected["Mz"], rel_tol=1e-10, abs_tol=1e-10)
+    assert math.isclose(got["k11"], expected["k11"], rel_tol=1e-10, abs_tol=1e-10)
+    assert math.isclose(got["k12"], expected["k12"], rel_tol=1e-8, abs_tol=1e-6)
+    assert math.isclose(got["k13"], expected["k13"], rel_tol=1e-8, abs_tol=1e-6)
+    assert math.isclose(got["k22"], expected["k22"], rel_tol=1e-10, abs_tol=1e-10)
+    assert math.isclose(got["k23"], expected["k23"], rel_tol=1e-8, abs_tol=1e-6)
+    assert math.isclose(got["k33"], expected["k33"], rel_tol=1e-10, abs_tol=1e-10)
+
+
+def _single_step_section_path(case_data, eps0, ky, kz):
+    run_case = json.loads(json.dumps(case_data))
+    run_case["deformation_path"] = [{"eps0": eps0, "kappa_y": ky, "kappa_z": kz}]
+    rows = _run_section_path(run_case)
+    assert len(rows) == 1
+    return rows[0]
+
+
+def test_fiber_section3d_tangent_matches_finite_difference():
+    case_data = {
+        "materials": [
+            {"id": 1, "type": "Elastic", "params": {"E": 3.0e10}},
+            {"id": 2, "type": "Elastic", "params": {"E": 2.2e11}},
+        ],
+        "section": {
+            "id": 7,
+            "type": "FiberSection3d",
+            "params": {
+                "patches": [
+                    {
+                        "type": "quadr",
+                        "material": 1,
+                        "num_subdiv_y": 4,
+                        "num_subdiv_z": 3,
+                        "y_i": -0.35,
+                        "z_i": -0.2,
+                        "y_j": -0.3,
+                        "z_j": 0.22,
+                        "y_k": 0.28,
+                        "z_k": 0.18,
+                        "y_l": 0.33,
+                        "z_l": -0.25,
+                    }
+                ],
+                "layers": [
+                    {
+                        "type": "straight",
+                        "material": 2,
+                        "num_bars": 3,
+                        "bar_area": 0.0004,
+                        "y_start": -0.25,
+                        "z_start": 0.16,
+                        "y_end": 0.1,
+                        "z_end": 0.2,
+                    }
+                ],
+            },
+        },
+        "deformation_path": [],
+    }
+    eps0 = 8.0e-5
+    ky = -1.2e-3
+    kz = 1.7e-3
+    d = 1.0e-7
+    base = _single_step_section_path(case_data, eps0, ky, kz)
+    plus_eps = _single_step_section_path(case_data, eps0 + d, ky, kz)
+    plus_ky = _single_step_section_path(case_data, eps0, ky + d, kz)
+    plus_kz = _single_step_section_path(case_data, eps0, ky, kz + d)
+
+    d_n_deps = (plus_eps["N"] - base["N"]) / d
+    d_n_dky = (plus_ky["N"] - base["N"]) / d
+    d_n_dkz = (plus_kz["N"] - base["N"]) / d
+    d_my_deps = (plus_eps["My"] - base["My"]) / d
+    d_my_dky = (plus_ky["My"] - base["My"]) / d
+    d_my_dkz = (plus_kz["My"] - base["My"]) / d
+    d_mz_deps = (plus_eps["Mz"] - base["Mz"]) / d
+    d_mz_dky = (plus_ky["Mz"] - base["Mz"]) / d
+    d_mz_dkz = (plus_kz["Mz"] - base["Mz"]) / d
+
+    assert math.isclose(base["k11"], d_n_deps, rel_tol=1e-5, abs_tol=1e-2)
+    assert math.isclose(base["k12"], d_n_dky, rel_tol=1e-5, abs_tol=1e-2)
+    assert math.isclose(base["k13"], d_n_dkz, rel_tol=1e-5, abs_tol=1e-2)
+    assert math.isclose(base["k12"], d_my_deps, rel_tol=1e-5, abs_tol=1e-2)
+    assert math.isclose(base["k22"], d_my_dky, rel_tol=1e-5, abs_tol=1e-2)
+    assert math.isclose(base["k23"], d_my_dkz, rel_tol=1e-5, abs_tol=1e-2)
+    assert math.isclose(base["k13"], d_mz_deps, rel_tol=1e-5, abs_tol=1e-2)
+    assert math.isclose(base["k23"], d_mz_dky, rel_tol=1e-5, abs_tol=1e-2)
+    assert math.isclose(base["k33"], d_mz_dkz, rel_tol=1e-5, abs_tol=1e-2)

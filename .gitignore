@@ -31,5 +31,7 @@ tests/validation/**/*.txt
 tests/validation/**/*.AT2
 tests/validation/**/*.g3
 
+tests/validation/**/phase_times_us.json
+
 # Temporary files
 ignore/
