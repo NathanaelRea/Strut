@@ -1,0 +1,94 @@
+{
+  "schema_version": "1.0",
+  "enabled": true,
+  "status": "active",
+  "metadata": {
+    "name": "elastic_two_node_link_2d_shear_dist",
+    "units": "SI"
+  },
+  "notes": "2D twoNodeLink with shearDist coupling in the ndf=3 path.",
+  "model": {
+    "ndm": 2,
+    "ndf": 3
+  },
+  "nodes": [
+    {
+      "id": 1,
+      "x": 0.0,
+      "y": 0.0,
+      "constraints": [1, 2, 3]
+    },
+    {
+      "id": 2,
+      "x": 2.0,
+      "y": 0.0,
+      "constraints": [1]
+    }
+  ],
+  "materials": [
+    {
+      "id": 1,
+      "type": "Elastic",
+      "params": {
+        "E": 800.0
+      }
+    },
+    {
+      "id": 2,
+      "type": "Elastic",
+      "params": {
+        "E": 200.0
+      }
+    }
+  ],
+  "sections": [],
+  "elements": [
+    {
+      "id": 1,
+      "type": "twoNodeLink",
+      "nodes": [1, 2],
+      "materials": [1, 2],
+      "dirs": [2, 3],
+      "shearDist": [0.25]
+    }
+  ],
+  "loads": [
+    {
+      "node": 2,
+      "dof": 2,
+      "value": 1.0
+    }
+  ],
+  "analysis": {
+    "type": "static_linear",
+    "steps": 1
+  },
+  "recorders": [
+    {
+      "type": "node_displacement",
+      "nodes": [2],
+      "dofs": [2, 3],
+      "output": "node_disp"
+    },
+    {
+      "type": "element_force",
+      "elements": [1],
+      "output": "element_force"
+    },
+    {
+      "type": "element_local_force",
+      "elements": [1],
+      "output": "element_local_force"
+    },
+    {
+      "type": "element_basic_force",
+      "elements": [1],
+      "output": "element_basic_force"
+    },
+    {
+      "type": "element_deformation",
+      "elements": [1],
+      "output": "element_deformation"
+    }
+  ]
+}

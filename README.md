@@ -72,9 +72,9 @@ Legend: `✅` implemented in Strut, `❌` available in OpenSees but not implemen
 | tetrahedron                 |     | ❌  | ❌   |
 | triangle                    | ❌  |     | ❌   |
 | truss                       | ✅  | ✅  | ✅   |
-| twoNodeLink                 | ✅  | ❌  | ❌   |
+| twoNodeLink                 | ✅  | ✅  | ✅   |
 | updatedLagrangianBeamColumn | ❌  |     | ❌   |
-| zeroLength                  | ✅  | ❌  | ❌   |
+| zeroLength                  | ✅  | ✅  | ✅   |
 
 ### Uniaxial Materials (`uniaxialMaterial`)
 

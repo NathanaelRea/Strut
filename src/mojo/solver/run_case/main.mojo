@@ -28,7 +28,10 @@ from solver.run_case.input_types import (
 )
 from solver.run_case.helpers import (
     _drift_value,
+    _element_basic_force_for_recorder,
     _element_force_global_for_recorder,
+    _element_local_force_for_recorder,
+    _element_deformation_for_recorder,
     _enforce_equal_dof_values,
     _format_values_line,
     _has_recorder_type,
@@ -221,6 +224,7 @@ def run_case(
     var time_series = state.time_series.copy()
     var time_series_values = state.time_series_values.copy()
     var time_series_times = state.time_series_times.copy()
+    var dampings = state.dampings.copy()
     var ts_index = state.ts_index
     var pattern_type = state.pattern_type
     var uniform_excitation_direction = state.uniform_excitation_direction
@@ -264,6 +268,7 @@ def run_case(
     var free_index = state.free_index.copy()
     var rep_dof = state.rep_dof.copy()
     var M_total = state.M_total.copy()
+    var M_rayleigh_total = state.M_rayleigh_total.copy()
     var analysis_integrator_targets_pool = (
         state.analysis_integrator_targets_pool.copy()
     )
@@ -481,6 +486,7 @@ def run_case(
             time_series,
             time_series_values,
             time_series_times,
+            dampings,
             pattern_type,
             uniform_excitation_direction,
             uniform_accel_ts_index,
@@ -490,6 +496,8 @@ def run_case(
             rayleigh_beta_k_comm,
             typed_nodes,
             typed_elements,
+            elem_dof_offsets,
+            elem_dof_pool,
             const_element_loads,
             pattern_element_loads,
             typed_sections_by_id,
@@ -512,6 +520,7 @@ def run_case(
             F_const,
             F_pattern,
             M_total,
+            M_rayleigh_total,
             free,
             recorders,
             recorder_nodes_pool,
@@ -550,6 +559,7 @@ def run_case(
             time_series,
             time_series_values,
             time_series_times,
+            dampings,
             pattern_type,
             uniform_excitation_direction,
             uniform_accel_ts_index,
@@ -583,6 +593,7 @@ def run_case(
             F_const,
             F_pattern,
             M_total,
+            M_rayleigh_total,
             free,
             recorders,
             recorder_nodes_pool,
@@ -957,6 +968,7 @@ def run_case(
                     time_series,
                     time_series_values,
                     time_series_times,
+                    dampings,
                     stage_pattern_type,
                     stage_uniform_excitation_direction,
                     stage_uniform_accel_ts_index,
@@ -966,6 +978,8 @@ def run_case(
                     stage_rayleigh_beta_k_comm,
                     typed_nodes,
                     typed_elements,
+                    elem_dof_offsets,
+                    elem_dof_pool,
                     const_element_loads,
                     stage_element_loads,
                     typed_sections_by_id,
@@ -988,6 +1002,7 @@ def run_case(
                     F_const,
                     stage_F,
                     M_total,
+                    M_rayleigh_total,
                     free,
                     recorders,
                     recorder_nodes_pool,
@@ -1035,6 +1050,7 @@ def run_case(
                     time_series,
                     time_series_values,
                     time_series_times,
+                    dampings,
                     stage_pattern_type,
                     stage_uniform_excitation_direction,
                     stage_uniform_accel_ts_index,
@@ -1068,6 +1084,7 @@ def run_case(
                     F_const,
                     stage_F,
                     M_total,
+                    M_rayleigh_total,
                     free,
                     recorders,
                     recorder_nodes_pool,
@@ -1360,6 +1377,69 @@ def run_case(
                     var filename = rec.output + "_ele" + String(elem_id) + ".out"
                     var file_path = out_dir.joinpath(filename)
                     file_path.write_text(PythonObject(line))
+            elif rec.type_tag == RecorderTypeTag.ElementLocalForce:
+                for eidx in range(rec.element_count):
+                    var elem_id = recorder_elements_pool[rec.element_offset + eidx]
+                    if elem_id >= len(elem_id_to_index) or elem_id_to_index[elem_id] < 0:
+                        abort("recorder element not found")
+                    var elem_index = elem_id_to_index[elem_id]
+                    var elem = typed_elements[elem_index]
+                    var values = _element_local_force_for_recorder(
+                        elem_index,
+                        elem,
+                        ndf,
+                        u,
+                        typed_nodes,
+                        uniaxial_defs,
+                        uniaxial_state_defs,
+                        uniaxial_states,
+                        elem_uniaxial_offsets,
+                        elem_uniaxial_counts,
+                        elem_uniaxial_state_ids,
+                    )
+                    var filename = rec.output + "_ele" + String(elem_id) + ".out"
+                    var file_path = out_dir.joinpath(filename)
+                    file_path.write_text(PythonObject(_format_values_line(values)))
+            elif rec.type_tag == RecorderTypeTag.ElementBasicForce:
+                for eidx in range(rec.element_count):
+                    var elem_id = recorder_elements_pool[rec.element_offset + eidx]
+                    if elem_id >= len(elem_id_to_index) or elem_id_to_index[elem_id] < 0:
+                        abort("recorder element not found")
+                    var elem_index = elem_id_to_index[elem_id]
+                    var elem = typed_elements[elem_index]
+                    var values = _element_basic_force_for_recorder(
+                        elem_index,
+                        elem,
+                        ndf,
+                        u,
+                        typed_nodes,
+                        uniaxial_defs,
+                        uniaxial_state_defs,
+                        uniaxial_states,
+                        elem_uniaxial_offsets,
+                        elem_uniaxial_counts,
+                        elem_uniaxial_state_ids,
+                    )
+                    var filename = rec.output + "_ele" + String(elem_id) + ".out"
+                    var file_path = out_dir.joinpath(filename)
+                    file_path.write_text(PythonObject(_format_values_line(values)))
+            elif rec.type_tag == RecorderTypeTag.ElementDeformation:
+                for eidx in range(rec.element_count):
+                    var elem_id = recorder_elements_pool[rec.element_offset + eidx]
+                    if elem_id >= len(elem_id_to_index) or elem_id_to_index[elem_id] < 0:
+                        abort("recorder element not found")
+                    var elem_index = elem_id_to_index[elem_id]
+                    var elem = typed_elements[elem_index]
+                    var values = _element_deformation_for_recorder(
+                        elem_index,
+                        elem,
+                        ndf,
+                        u,
+                        typed_nodes,
+                    )
+                    var filename = rec.output + "_ele" + String(elem_id) + ".out"
+                    var file_path = out_dir.joinpath(filename)
+                    file_path.write_text(PythonObject(_format_values_line(values)))
             elif rec.type_tag == RecorderTypeTag.NodeReaction:
                 for nidx in range(rec.node_count):
                     var node_id = recorder_nodes_pool[rec.node_offset + nidx]

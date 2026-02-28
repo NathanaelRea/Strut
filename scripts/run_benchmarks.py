@@ -16,6 +16,12 @@ from typing import Dict, Iterable, List, Optional, Tuple
 
 ABS_TOL = 1e-8
 REL_TOL = 1e-5
+ELEMENT_RESPONSE_RECORDER_TYPES = (
+    "element_force",
+    "element_local_force",
+    "element_basic_force",
+    "element_deformation",
+)
 
 
 @dataclass(frozen=True)
@@ -2366,6 +2372,73 @@ def main() -> None:
                                 f"{case_name}: drift i{i_node}-j{j_node} mismatch"
                             )
                             parity_failures.extend([f"  {err}" for err in errors])
+                elif rec_type in ELEMENT_RESPONSE_RECORDER_TYPES:
+                    output = rec.get("output", rec_type)
+                    for elem_id in rec.get("elements", []):
+                        ref_file = (
+                            results_root
+                            / "opensees"
+                            / case_name
+                            / f"{output}_ele{elem_id}.out"
+                        )
+                        strut_file = (
+                            results_root
+                            / "strut"
+                            / case_name
+                            / f"{output}_ele{elem_id}.out"
+                        )
+                        if not ref_file.exists():
+                            parity_failures.append(
+                                f"{case_name}: missing OpenSees output: {ref_file}"
+                            )
+                            continue
+                        if not strut_file.exists():
+                            parity_failures.append(
+                                f"{case_name}: missing Mojo output: {strut_file}"
+                            )
+                            continue
+                        try:
+                            if is_transient:
+                                ref_vals = _load_all_values(ref_file)
+                                strut_vals = _load_all_values(strut_file)
+                            else:
+                                ref_vals, strut_vals = _load_last_comparable_values(
+                                    ref_file,
+                                    strut_file,
+                                    use_last_common_row=use_last_common_row,
+                                )
+                        except ValueError as exc:
+                            parity_failures.append(f"{case_name}: {exc}")
+                            continue
+                        if is_transient:
+                            if len(ref_vals) != len(strut_vals):
+                                parity_failures.append(
+                                    f"{case_name}: {rec_type} element {elem_id} step count mismatch: {len(ref_vals)} != {len(strut_vals)}"
+                                )
+                                continue
+                            for step, (rvec, gvec) in enumerate(
+                                zip(ref_vals, strut_vals), start=1
+                            ):
+                                ok, errors = _compare_vectors(
+                                    rvec, gvec, rtol=rtol, atol=atol
+                                )
+                                if not ok:
+                                    parity_failures.append(
+                                        f"{case_name}: {rec_type} element {elem_id} mismatch at step {step}"
+                                    )
+                                    parity_failures.extend(
+                                        [f"  {err}" for err in errors]
+                                    )
+                                    break
+                        else:
+                            ok, errors = _compare_vectors(
+                                ref_vals, strut_vals, rtol=rtol, atol=atol
+                            )
+                            if not ok:
+                                parity_failures.append(
+                                    f"{case_name}: {rec_type} element {elem_id} mismatch"
+                                )
+                                parity_failures.extend([f"  {err}" for err in errors])
                 elif rec_type == "envelope_element_force":
                     output = rec.get("output", "envelope_element_force")
                     for elem_id in rec.get("elements", []):

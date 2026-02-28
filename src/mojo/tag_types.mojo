@@ -5,7 +5,8 @@ struct ElementTypeTag:
     alias DispBeamColumn2d = 3
     alias ElasticBeamColumn3d = 5
     alias Truss = 6
-    alias Link = 7
+    alias ZeroLength = 7
+    alias TwoNodeLink = 13
     alias FourNodeQuad = 8
     alias Shell = 9
     alias ZeroLengthSection = 10
@@ -36,6 +37,9 @@ struct RecorderTypeTag:
     alias ModalEigen = 6
     alias SectionForce = 7
     alias SectionDeformation = 8
+    alias ElementLocalForce = 9
+    alias ElementBasicForce = 10
+    alias ElementDeformation = 11
 
 
 struct TimeSeriesTypeTag:
@@ -64,3 +68,7 @@ struct NonlinearAlgorithmMode:
 struct LinkDirectionTag:
     alias UX = 1
     alias UY = 2
+    alias UZ = 3
+    alias RX = 4
+    alias RY = 5
+    alias RZ = 6

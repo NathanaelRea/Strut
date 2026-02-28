@@ -1,0 +1,105 @@
+{
+  "schema_version": "1.0",
+  "enabled": true,
+  "status": "active",
+  "metadata": {
+    "name": "elastic_zero_length_damp_mats_transient",
+    "units": "SI"
+  },
+  "notes": "Transient zeroLength case that exercises element-local dampMats damping.",
+  "model": {
+    "ndm": 2,
+    "ndf": 2
+  },
+  "time_series": [
+    {
+      "type": "Path",
+      "tag": 1,
+      "dt": 0.02,
+      "values": [0.0, 1.0, 1.0, 0.5, 0.0, 0.0, 0.0, 0.0]
+    }
+  ],
+  "pattern": {
+    "type": "Plain",
+    "tag": 1,
+    "time_series": 1
+  },
+  "nodes": [
+    {
+      "id": 1,
+      "x": 0.0,
+      "y": 0.0,
+      "constraints": [1, 2]
+    },
+    {
+      "id": 2,
+      "x": 0.0,
+      "y": 0.0,
+      "constraints": [2]
+    }
+  ],
+  "materials": [
+    {
+      "id": 1,
+      "type": "Elastic",
+      "params": {
+        "E": 100.0
+      }
+    },
+    {
+      "id": 2,
+      "type": "Elastic",
+      "params": {
+        "E": 25.0
+      }
+    }
+  ],
+  "sections": [],
+  "elements": [
+    {
+      "id": 1,
+      "type": "zeroLength",
+      "nodes": [1, 2],
+      "materials": [1],
+      "dirs": [1],
+      "dampMats": [2]
+    }
+  ],
+  "loads": [
+    {
+      "node": 2,
+      "dof": 1,
+      "value": 1.0
+    }
+  ],
+  "masses": [
+    {
+      "node": 2,
+      "dof": 1,
+      "value": 1.0
+    }
+  ],
+  "analysis": {
+    "type": "transient_linear",
+    "steps": 8,
+    "dt": 0.02,
+    "integrator": {
+      "type": "Newmark",
+      "gamma": 0.5,
+      "beta": 0.25
+    }
+  },
+  "recorders": [
+    {
+      "type": "node_displacement",
+      "nodes": [2],
+      "dofs": [1],
+      "output": "node_disp"
+    },
+    {
+      "type": "element_force",
+      "elements": [1],
+      "output": "element_force"
+    }
+  ]
+}

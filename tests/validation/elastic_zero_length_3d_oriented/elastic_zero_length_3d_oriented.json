@@ -1,0 +1,77 @@
+{
+  "schema_version": "1.0",
+  "enabled": true,
+  "status": "active",
+  "metadata": {
+    "name": "elastic_zero_length_3d_oriented",
+    "units": "SI"
+  },
+  "notes": "3D zeroLength with explicit local orientation.",
+  "model": {
+    "ndm": 3,
+    "ndf": 3
+  },
+  "nodes": [
+    {
+      "id": 1,
+      "x": 0.0,
+      "y": 0.0,
+      "z": 0.0,
+      "constraints": [1, 2, 3]
+    },
+    {
+      "id": 2,
+      "x": 0.0,
+      "y": 0.0,
+      "z": 0.0,
+      "constraints": [1, 2]
+    }
+  ],
+  "materials": [
+    {
+      "id": 1,
+      "type": "Elastic",
+      "params": {
+        "E": 1000.0
+      }
+    }
+  ],
+  "sections": [],
+  "elements": [
+    {
+      "id": 1,
+      "type": "zeroLength",
+      "nodes": [1, 2],
+      "materials": [1],
+      "dirs": [2],
+      "orient": {
+        "x": [0.0, 1.0, 0.0],
+        "y": [0.0, 0.0, 1.0]
+      }
+    }
+  ],
+  "loads": [
+    {
+      "node": 2,
+      "dof": 3,
+      "value": 1.0
+    }
+  ],
+  "analysis": {
+    "type": "static_linear",
+    "steps": 1
+  },
+  "recorders": [
+    {
+      "type": "node_displacement",
+      "nodes": [2],
+      "dofs": [1, 2, 3],
+      "output": "node_disp"
+    },
+    {
+      "type": "element_force",
+      "elements": [1],
+      "output": "element_force"
+    }
+  ]
+}

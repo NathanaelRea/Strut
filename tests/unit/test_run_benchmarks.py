@@ -314,6 +314,15 @@ def test_compare_mode_shape_vectors_tolerates_sign_flip():
     assert errors == []
 
 
+def test_element_response_recorder_types_include_link_and_zero_length_outputs():
+    assert run_benchmarks.ELEMENT_RESPONSE_RECORDER_TYPES == (
+        "element_force",
+        "element_local_force",
+        "element_basic_force",
+        "element_deformation",
+    )
+
+
 def test_summarize_parity_failures_compacts_paths_and_groups_by_case():
     failures = [
         "beam_case: missing OpenSees output: /tmp/results/opensees/beam_case/node_disp_node1.out",

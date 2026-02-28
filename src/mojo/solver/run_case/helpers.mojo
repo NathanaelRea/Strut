@@ -21,6 +21,7 @@ from elements import (
     force_beam_column3d_fiber_global_tangent_and_internal,
     force_beam_column3d_fiber_section_response,
     force_beam_column3d_global_tangent_and_internal,
+    link_orientation_matrix,
 )
 from materials import UniMaterialDef, UniMaterialState, uniaxial_set_trial_strain
 from solver.dof import node_dof_index, require_dof_in_range
@@ -33,6 +34,277 @@ from solver.run_case.input_types import (
 )
 from sections import FiberCell, FiberSection2dDef, FiberSection3dDef
 from tag_types import ElementTypeTag
+
+
+fn _elem_dir(elem: ElementInput, idx: Int) -> Int:
+    if idx == 0:
+        return elem.dir_1
+    if idx == 1:
+        return elem.dir_2
+    if idx == 2:
+        return elem.dir_3
+    if idx == 3:
+        return elem.dir_4
+    if idx == 4:
+        return elem.dir_5
+    return elem.dir_6
+
+
+fn _elem_dof(elem: ElementInput, idx: Int) -> Int:
+    if idx == 0:
+        return elem.dof_1
+    if idx == 1:
+        return elem.dof_2
+    if idx == 2:
+        return elem.dof_3
+    if idx == 3:
+        return elem.dof_4
+    if idx == 4:
+        return elem.dof_5
+    if idx == 5:
+        return elem.dof_6
+    if idx == 6:
+        return elem.dof_7
+    if idx == 7:
+        return elem.dof_8
+    if idx == 8:
+        return elem.dof_9
+    if idx == 9:
+        return elem.dof_10
+    if idx == 10:
+        return elem.dof_11
+    if idx == 11:
+        return elem.dof_12
+    if idx == 12:
+        return elem.dof_13
+    if idx == 13:
+        return elem.dof_14
+    if idx == 14:
+        return elem.dof_15
+    if idx == 15:
+        return elem.dof_16
+    if idx == 16:
+        return elem.dof_17
+    if idx == 17:
+        return elem.dof_18
+    if idx == 18:
+        return elem.dof_19
+    if idx == 19:
+        return elem.dof_20
+    if idx == 20:
+        return elem.dof_21
+    if idx == 21:
+        return elem.dof_22
+    if idx == 22:
+        return elem.dof_23
+    return elem.dof_24
+
+
+fn _elem_dof_map(elem: ElementInput) -> List[Int]:
+    var dof_map: List[Int] = []
+    dof_map.resize(elem.dof_count, -1)
+    for i in range(elem.dof_count):
+        dof_map[i] = _elem_dof(elem, i)
+    return dof_map^
+
+
+fn _gather_element_u(dof_map: List[Int], u: List[Float64]) -> List[Float64]:
+    var out: List[Float64] = []
+    out.resize(len(dof_map), 0.0)
+    for i in range(len(dof_map)):
+        out[i] = u[dof_map[i]]
+    return out^
+
+
+fn _zero_length_row(
+    dir: Int, ndm: Int, ndf: Int, trans: List[List[Float64]]
+) -> List[Float64]:
+    var row: List[Float64] = []
+    row.resize(2 * ndf, 0.0)
+    if ndm == 2 and ndf == 2:
+        var axis = dir - 1
+        row[0] = -trans[axis][0]
+        row[1] = -trans[axis][1]
+        row[2] = trans[axis][0]
+        row[3] = trans[axis][1]
+        return row^
+    if ndm == 2 and ndf == 3:
+        if dir == 1 or dir == 2:
+            var axis = dir - 1
+            row[0] = -trans[axis][0]
+            row[1] = -trans[axis][1]
+            row[3] = trans[axis][0]
+            row[4] = trans[axis][1]
+        else:
+            row[2] = -trans[2][2]
+            row[5] = trans[2][2]
+        return row^
+    if ndm == 3 and ndf == 3:
+        var axis = dir - 1
+        row[0] = -trans[axis][0]
+        row[1] = -trans[axis][1]
+        row[2] = -trans[axis][2]
+        row[3] = trans[axis][0]
+        row[4] = trans[axis][1]
+        row[5] = trans[axis][2]
+        return row^
+    if dir <= 3:
+        var axis = dir - 1
+        row[0] = -trans[axis][0]
+        row[1] = -trans[axis][1]
+        row[2] = -trans[axis][2]
+        row[6] = trans[axis][0]
+        row[7] = trans[axis][1]
+        row[8] = trans[axis][2]
+    else:
+        var axis = dir - 4
+        row[3] = -trans[axis][0]
+        row[4] = -trans[axis][1]
+        row[5] = -trans[axis][2]
+        row[9] = trans[axis][0]
+        row[10] = trans[axis][1]
+        row[11] = trans[axis][2]
+    return row^
+
+
+fn _two_node_link_tgl(
+    ndm: Int, ndf: Int, trans: List[List[Float64]]
+) -> List[List[Float64]]:
+    var num_dof = 2 * ndf
+    var tgl: List[List[Float64]] = []
+    for _ in range(num_dof):
+        var row: List[Float64] = []
+        row.resize(num_dof, 0.0)
+        tgl.append(row^)
+    if ndm == 2 and ndf == 2:
+        tgl[0][0] = trans[0][0]
+        tgl[0][1] = trans[0][1]
+        tgl[1][0] = trans[1][0]
+        tgl[1][1] = trans[1][1]
+        tgl[2][2] = trans[0][0]
+        tgl[2][3] = trans[0][1]
+        tgl[3][2] = trans[1][0]
+        tgl[3][3] = trans[1][1]
+        return tgl^
+    if ndm == 2 and ndf == 3:
+        tgl[0][0] = trans[0][0]
+        tgl[0][1] = trans[0][1]
+        tgl[1][0] = trans[1][0]
+        tgl[1][1] = trans[1][1]
+        tgl[2][2] = trans[2][2]
+        tgl[3][3] = trans[0][0]
+        tgl[3][4] = trans[0][1]
+        tgl[4][3] = trans[1][0]
+        tgl[4][4] = trans[1][1]
+        tgl[5][5] = trans[2][2]
+        return tgl^
+    if ndm == 3 and ndf == 3:
+        for i in range(3):
+            for j in range(3):
+                tgl[i][j] = trans[i][j]
+                tgl[i + 3][j + 3] = trans[i][j]
+        return tgl^
+    for i in range(3):
+        for j in range(3):
+            tgl[i][j] = trans[i][j]
+            tgl[i + 3][j + 3] = trans[i][j]
+            tgl[i + 6][j + 6] = trans[i][j]
+            tgl[i + 9][j + 9] = trans[i][j]
+    return tgl^
+
+
+fn _two_node_link_tlb(ndm: Int, ndf: Int, elem: ElementInput, length: Float64) -> List[List[Float64]]:
+    var tlb: List[List[Float64]] = []
+    for _ in range(elem.dir_count):
+        var row: List[Float64] = []
+        row.resize(elem.dof_count, 0.0)
+        tlb.append(row^)
+    var half = elem.dof_count // 2
+    for i in range(elem.dir_count):
+        var dir_id = _elem_dir(elem, i) - 1
+        tlb[i][dir_id] = -1.0
+        tlb[i][dir_id + half] = 1.0
+        if ndm == 2 and ndf == 3 and dir_id == 1:
+            tlb[i][2] = -elem.shear_dist_1 * length
+            tlb[i][5] = -(1.0 - elem.shear_dist_1) * length
+        elif ndm == 3 and ndf == 6 and dir_id == 1:
+            tlb[i][5] = -elem.shear_dist_1 * length
+            tlb[i][11] = -(1.0 - elem.shear_dist_1) * length
+        elif ndm == 3 and ndf == 6 and dir_id == 2:
+            tlb[i][4] = elem.shear_dist_2 * length
+            tlb[i][10] = (1.0 - elem.shear_dist_2) * length
+    return tlb^
+
+
+fn _two_node_link_add_pdelta_forces(
+    ndm: Int,
+    ndf: Int,
+    elem: ElementInput,
+    length: Float64,
+    ul: List[Float64],
+    q_basic: List[Float64],
+    mut p_local: List[Float64],
+):
+    if not elem.has_pdelta or length == 0.0:
+        return
+    var axial = 0.0
+    var delta_y = 0.0
+    var delta_z = 0.0
+    var half = elem.dof_count // 2
+    for i in range(elem.dir_count):
+        var dir_id = _elem_dir(elem, i)
+        if dir_id == 1:
+            axial = q_basic[i]
+        elif dir_id == 2:
+            delta_y = ul[1 + half] - ul[1]
+        elif dir_id == 3 and ndm == 3:
+            delta_z = ul[2 + half] - ul[2]
+    if axial == 0.0:
+        return
+    for i in range(elem.dir_count):
+        var dir_id = _elem_dir(elem, i)
+        if elem.dof_count == 4 and dir_id == 2:
+            var vp = axial * delta_y / length
+            vp *= 1.0 - elem.pdelta_3 - elem.pdelta_4
+            p_local[1] -= vp
+            p_local[3] += vp
+        elif ndm == 2 and ndf == 3 and dir_id == 2:
+            var vp = axial * delta_y / length
+            vp *= 1.0 - elem.pdelta_3 - elem.pdelta_4
+            p_local[1] -= vp
+            p_local[4] += vp
+        elif ndm == 2 and ndf == 3 and dir_id == 3:
+            var mp = axial * delta_y
+            p_local[2] += elem.pdelta_3 * mp
+            p_local[5] += elem.pdelta_4 * mp
+        elif ndm == 3 and ndf == 3 and dir_id == 2:
+            var vp = axial * delta_y / length
+            vp *= 1.0 - elem.pdelta_3 - elem.pdelta_4
+            p_local[1] -= vp
+            p_local[4] += vp
+        elif ndm == 3 and ndf == 3 and dir_id == 3:
+            var vp = axial * delta_z / length
+            vp *= 1.0 - elem.pdelta_1 - elem.pdelta_2
+            p_local[2] -= vp
+            p_local[5] += vp
+        elif elem.dof_count == 12 and dir_id == 2:
+            var vp = axial * delta_y / length
+            vp *= 1.0 - elem.pdelta_3 - elem.pdelta_4
+            p_local[1] -= vp
+            p_local[7] += vp
+        elif elem.dof_count == 12 and dir_id == 3:
+            var vp = axial * delta_z / length
+            vp *= 1.0 - elem.pdelta_1 - elem.pdelta_2
+            p_local[2] -= vp
+            p_local[8] += vp
+        elif elem.dof_count == 12 and dir_id == 5:
+            var mp = axial * delta_z
+            p_local[4] -= elem.pdelta_1 * mp
+            p_local[10] -= elem.pdelta_2 * mp
+        elif elem.dof_count == 12 and dir_id == 6:
+            var mp = axial * delta_y
+            p_local[5] += elem.pdelta_3 * mp
+            p_local[11] += elem.pdelta_4 * mp
 
 
 fn _beam_uniform_load_for_element_global(
@@ -442,6 +714,429 @@ fn _truss_element_force_global(
     uniaxial_states[state_index] = state
     var N = state.sig_t * A
     return [-N * l, -N * m, -N * n, N * l, N * m, N * n]
+
+
+fn _zero_length_element_force_global(
+    elem_index: Int,
+    elem: ElementInput,
+    nodes: List[NodeInput],
+    ndf: Int,
+    ndm: Int,
+    u: List[Float64],
+    uniaxial_defs: List[UniMaterialDef],
+    uniaxial_state_defs: List[Int],
+    mut uniaxial_states: List[UniMaterialState],
+    elem_uniaxial_offsets: List[Int],
+    elem_uniaxial_counts: List[Int],
+    elem_uniaxial_state_ids: List[Int],
+) raises -> List[Float64]:
+    var node1 = nodes[elem.node_index_1]
+    var node2 = nodes[elem.node_index_2]
+    var trans = link_orientation_matrix(
+        ndm,
+        node1.x,
+        node1.y,
+        node1.z,
+        node2.x,
+        node2.y,
+        node2.z,
+        elem.has_orient_x,
+        elem.orient_x_1,
+        elem.orient_x_2,
+        elem.orient_x_3,
+        elem.has_orient_y,
+        elem.orient_y_1,
+        elem.orient_y_2,
+        elem.orient_y_3,
+        False,
+    )
+    var dof_map = _elem_dof_map(elem)
+    var ug = _gather_element_u(dof_map, u)
+    var f_elem: List[Float64] = []
+    f_elem.resize(elem.dof_count, 0.0)
+    var offset = elem_uniaxial_offsets[elem_index]
+    var count = elem_uniaxial_counts[elem_index]
+    for m in range(count):
+        var row = _zero_length_row(_elem_dir(elem, m), ndm, ndf, trans)
+        var strain = 0.0
+        for i in range(elem.dof_count):
+            strain += row[i] * ug[i]
+        var state_index = elem_uniaxial_state_ids[offset + m]
+        var def_index = uniaxial_state_defs[state_index]
+        var mat_def = uniaxial_defs[def_index]
+        var state = uniaxial_states[state_index]
+        uniaxial_set_trial_strain(mat_def, state, strain)
+        uniaxial_states[state_index] = state
+        for i in range(elem.dof_count):
+            f_elem[i] += row[i] * state.sig_t
+    return f_elem^
+
+
+fn _zero_length_basic_force_for_recorder(
+    elem_index: Int,
+    elem: ElementInput,
+    nodes: List[NodeInput],
+    ndf: Int,
+    ndm: Int,
+    u: List[Float64],
+    uniaxial_defs: List[UniMaterialDef],
+    uniaxial_state_defs: List[Int],
+    mut uniaxial_states: List[UniMaterialState],
+    elem_uniaxial_offsets: List[Int],
+    elem_uniaxial_counts: List[Int],
+    elem_uniaxial_state_ids: List[Int],
+) raises -> List[Float64]:
+    var node1 = nodes[elem.node_index_1]
+    var node2 = nodes[elem.node_index_2]
+    var trans = link_orientation_matrix(
+        ndm,
+        node1.x,
+        node1.y,
+        node1.z,
+        node2.x,
+        node2.y,
+        node2.z,
+        elem.has_orient_x,
+        elem.orient_x_1,
+        elem.orient_x_2,
+        elem.orient_x_3,
+        elem.has_orient_y,
+        elem.orient_y_1,
+        elem.orient_y_2,
+        elem.orient_y_3,
+        False,
+    )
+    var dof_map = _elem_dof_map(elem)
+    var ug = _gather_element_u(dof_map, u)
+    var q_basic: List[Float64] = []
+    var count = elem_uniaxial_counts[elem_index]
+    q_basic.resize(count, 0.0)
+    var offset = elem_uniaxial_offsets[elem_index]
+    for m in range(count):
+        var row = _zero_length_row(_elem_dir(elem, m), ndm, ndf, trans)
+        var strain = 0.0
+        for i in range(elem.dof_count):
+            strain += row[i] * ug[i]
+        var state_index = elem_uniaxial_state_ids[offset + m]
+        var def_index = uniaxial_state_defs[state_index]
+        var mat_def = uniaxial_defs[def_index]
+        var state = uniaxial_states[state_index]
+        uniaxial_set_trial_strain(mat_def, state, strain)
+        uniaxial_states[state_index] = state
+        q_basic[m] = state.sig_t
+    return q_basic^
+
+
+fn _zero_length_deformation_for_recorder(
+    elem_index: Int,
+    elem: ElementInput,
+    nodes: List[NodeInput],
+    ndf: Int,
+    ndm: Int,
+    u: List[Float64],
+) raises -> List[Float64]:
+    var node1 = nodes[elem.node_index_1]
+    var node2 = nodes[elem.node_index_2]
+    var trans = link_orientation_matrix(
+        ndm,
+        node1.x,
+        node1.y,
+        node1.z,
+        node2.x,
+        node2.y,
+        node2.z,
+        elem.has_orient_x,
+        elem.orient_x_1,
+        elem.orient_x_2,
+        elem.orient_x_3,
+        elem.has_orient_y,
+        elem.orient_y_1,
+        elem.orient_y_2,
+        elem.orient_y_3,
+        False,
+    )
+    var dof_map = _elem_dof_map(elem)
+    var ug = _gather_element_u(dof_map, u)
+    var deformation: List[Float64] = []
+    deformation.resize(elem.dir_count, 0.0)
+    for m in range(elem.dir_count):
+        var row = _zero_length_row(_elem_dir(elem, m), ndm, ndf, trans)
+        for i in range(elem.dof_count):
+            deformation[m] += row[i] * ug[i]
+    return deformation^
+
+
+fn _two_node_link_element_force_global(
+    elem_index: Int,
+    elem: ElementInput,
+    nodes: List[NodeInput],
+    ndf: Int,
+    ndm: Int,
+    u: List[Float64],
+    uniaxial_defs: List[UniMaterialDef],
+    uniaxial_state_defs: List[Int],
+    mut uniaxial_states: List[UniMaterialState],
+    elem_uniaxial_offsets: List[Int],
+    elem_uniaxial_counts: List[Int],
+    elem_uniaxial_state_ids: List[Int],
+) raises -> List[Float64]:
+    var node1 = nodes[elem.node_index_1]
+    var node2 = nodes[elem.node_index_2]
+    var dx = node2.x - node1.x
+    var dy = node2.y - node1.y
+    var dz = node2.z - node1.z
+    var length: Float64
+    if ndm == 2:
+        length = sqrt(dx * dx + dy * dy)
+    else:
+        length = sqrt(dx * dx + dy * dy + dz * dz)
+    var trans = link_orientation_matrix(
+        ndm,
+        node1.x,
+        node1.y,
+        node1.z,
+        node2.x,
+        node2.y,
+        node2.z,
+        elem.has_orient_x,
+        elem.orient_x_1,
+        elem.orient_x_2,
+        elem.orient_x_3,
+        elem.has_orient_y,
+        elem.orient_y_1,
+        elem.orient_y_2,
+        elem.orient_y_3,
+        True,
+    )
+    var tgl = _two_node_link_tgl(ndm, ndf, trans)
+    var tlb = _two_node_link_tlb(ndm, ndf, elem, length)
+    var dof_map = _elem_dof_map(elem)
+    var ug = _gather_element_u(dof_map, u)
+    var ul: List[Float64] = []
+    ul.resize(elem.dof_count, 0.0)
+    for i in range(elem.dof_count):
+        for j in range(elem.dof_count):
+            ul[i] += tgl[i][j] * ug[j]
+    var q_basic: List[Float64] = []
+    q_basic.resize(elem.dir_count, 0.0)
+    var offset = elem_uniaxial_offsets[elem_index]
+    for m in range(elem.dir_count):
+        var ub = 0.0
+        for j in range(elem.dof_count):
+            ub += tlb[m][j] * ul[j]
+        var state_index = elem_uniaxial_state_ids[offset + m]
+        var def_index = uniaxial_state_defs[state_index]
+        var mat_def = uniaxial_defs[def_index]
+        var state = uniaxial_states[state_index]
+        uniaxial_set_trial_strain(mat_def, state, ub)
+        uniaxial_states[state_index] = state
+        q_basic[m] = state.sig_t
+    var p_local: List[Float64] = []
+    p_local.resize(elem.dof_count, 0.0)
+    for i in range(elem.dof_count):
+        for m in range(elem.dir_count):
+            p_local[i] += tlb[m][i] * q_basic[m]
+    _two_node_link_add_pdelta_forces(ndm, ndf, elem, length, ul, q_basic, p_local)
+    var p_global: List[Float64] = []
+    p_global.resize(elem.dof_count, 0.0)
+    for i in range(elem.dof_count):
+        for j in range(elem.dof_count):
+            p_global[i] += tgl[j][i] * p_local[j]
+    return p_global^
+
+
+fn _two_node_link_local_force_for_recorder(
+    elem_index: Int,
+    elem: ElementInput,
+    nodes: List[NodeInput],
+    ndf: Int,
+    ndm: Int,
+    u: List[Float64],
+    uniaxial_defs: List[UniMaterialDef],
+    uniaxial_state_defs: List[Int],
+    mut uniaxial_states: List[UniMaterialState],
+    elem_uniaxial_offsets: List[Int],
+    elem_uniaxial_counts: List[Int],
+    elem_uniaxial_state_ids: List[Int],
+) raises -> List[Float64]:
+    var node1 = nodes[elem.node_index_1]
+    var node2 = nodes[elem.node_index_2]
+    var dx = node2.x - node1.x
+    var dy = node2.y - node1.y
+    var dz = node2.z - node1.z
+    var length: Float64
+    if ndm == 2:
+        length = sqrt(dx * dx + dy * dy)
+    else:
+        length = sqrt(dx * dx + dy * dy + dz * dz)
+    var trans = link_orientation_matrix(
+        ndm,
+        node1.x,
+        node1.y,
+        node1.z,
+        node2.x,
+        node2.y,
+        node2.z,
+        elem.has_orient_x,
+        elem.orient_x_1,
+        elem.orient_x_2,
+        elem.orient_x_3,
+        elem.has_orient_y,
+        elem.orient_y_1,
+        elem.orient_y_2,
+        elem.orient_y_3,
+        True,
+    )
+    var tgl = _two_node_link_tgl(ndm, ndf, trans)
+    var tlb = _two_node_link_tlb(ndm, ndf, elem, length)
+    var dof_map = _elem_dof_map(elem)
+    var ug = _gather_element_u(dof_map, u)
+    var ul: List[Float64] = []
+    ul.resize(elem.dof_count, 0.0)
+    for i in range(elem.dof_count):
+        for j in range(elem.dof_count):
+            ul[i] += tgl[i][j] * ug[j]
+    var q_basic: List[Float64] = []
+    q_basic.resize(elem.dir_count, 0.0)
+    var offset = elem_uniaxial_offsets[elem_index]
+    for m in range(elem.dir_count):
+        var ub = 0.0
+        for j in range(elem.dof_count):
+            ub += tlb[m][j] * ul[j]
+        var state_index = elem_uniaxial_state_ids[offset + m]
+        var def_index = uniaxial_state_defs[state_index]
+        var mat_def = uniaxial_defs[def_index]
+        var state = uniaxial_states[state_index]
+        uniaxial_set_trial_strain(mat_def, state, ub)
+        uniaxial_states[state_index] = state
+        q_basic[m] = state.sig_t
+    var p_local: List[Float64] = []
+    p_local.resize(elem.dof_count, 0.0)
+    for i in range(elem.dof_count):
+        for m in range(elem.dir_count):
+            p_local[i] += tlb[m][i] * q_basic[m]
+    _two_node_link_add_pdelta_forces(ndm, ndf, elem, length, ul, q_basic, p_local)
+    return p_local^
+
+
+fn _two_node_link_basic_force_for_recorder(
+    elem_index: Int,
+    elem: ElementInput,
+    nodes: List[NodeInput],
+    ndf: Int,
+    ndm: Int,
+    u: List[Float64],
+    uniaxial_defs: List[UniMaterialDef],
+    uniaxial_state_defs: List[Int],
+    mut uniaxial_states: List[UniMaterialState],
+    elem_uniaxial_offsets: List[Int],
+    elem_uniaxial_counts: List[Int],
+    elem_uniaxial_state_ids: List[Int],
+) raises -> List[Float64]:
+    var node1 = nodes[elem.node_index_1]
+    var node2 = nodes[elem.node_index_2]
+    var dx = node2.x - node1.x
+    var dy = node2.y - node1.y
+    var dz = node2.z - node1.z
+    var length: Float64
+    if ndm == 2:
+        length = sqrt(dx * dx + dy * dy)
+    else:
+        length = sqrt(dx * dx + dy * dy + dz * dz)
+    var trans = link_orientation_matrix(
+        ndm,
+        node1.x,
+        node1.y,
+        node1.z,
+        node2.x,
+        node2.y,
+        node2.z,
+        elem.has_orient_x,
+        elem.orient_x_1,
+        elem.orient_x_2,
+        elem.orient_x_3,
+        elem.has_orient_y,
+        elem.orient_y_1,
+        elem.orient_y_2,
+        elem.orient_y_3,
+        True,
+    )
+    var tgl = _two_node_link_tgl(ndm, ndf, trans)
+    var tlb = _two_node_link_tlb(ndm, ndf, elem, length)
+    var dof_map = _elem_dof_map(elem)
+    var ug = _gather_element_u(dof_map, u)
+    var ul: List[Float64] = []
+    ul.resize(elem.dof_count, 0.0)
+    for i in range(elem.dof_count):
+        for j in range(elem.dof_count):
+            ul[i] += tgl[i][j] * ug[j]
+    var q_basic: List[Float64] = []
+    q_basic.resize(elem.dir_count, 0.0)
+    var offset = elem_uniaxial_offsets[elem_index]
+    for m in range(elem.dir_count):
+        var ub = 0.0
+        for j in range(elem.dof_count):
+            ub += tlb[m][j] * ul[j]
+        var state_index = elem_uniaxial_state_ids[offset + m]
+        var def_index = uniaxial_state_defs[state_index]
+        var mat_def = uniaxial_defs[def_index]
+        var state = uniaxial_states[state_index]
+        uniaxial_set_trial_strain(mat_def, state, ub)
+        uniaxial_states[state_index] = state
+        q_basic[m] = state.sig_t
+    return q_basic^
+
+
+fn _two_node_link_deformation_for_recorder(
+    elem: ElementInput,
+    nodes: List[NodeInput],
+    ndf: Int,
+    ndm: Int,
+    u: List[Float64],
+) raises -> List[Float64]:
+    var node1 = nodes[elem.node_index_1]
+    var node2 = nodes[elem.node_index_2]
+    var dx = node2.x - node1.x
+    var dy = node2.y - node1.y
+    var dz = node2.z - node1.z
+    var length: Float64
+    if ndm == 2:
+        length = sqrt(dx * dx + dy * dy)
+    else:
+        length = sqrt(dx * dx + dy * dy + dz * dz)
+    var trans = link_orientation_matrix(
+        ndm,
+        node1.x,
+        node1.y,
+        node1.z,
+        node2.x,
+        node2.y,
+        node2.z,
+        elem.has_orient_x,
+        elem.orient_x_1,
+        elem.orient_x_2,
+        elem.orient_x_3,
+        elem.has_orient_y,
+        elem.orient_y_1,
+        elem.orient_y_2,
+        elem.orient_y_3,
+        True,
+    )
+    var tgl = _two_node_link_tgl(ndm, ndf, trans)
+    var tlb = _two_node_link_tlb(ndm, ndf, elem, length)
+    var dof_map = _elem_dof_map(elem)
+    var ug = _gather_element_u(dof_map, u)
+    var ul: List[Float64] = []
+    ul.resize(elem.dof_count, 0.0)
+    for i in range(elem.dof_count):
+        for j in range(elem.dof_count):
+            ul[i] += tgl[i][j] * ug[j]
+    var ub: List[Float64] = []
+    ub.resize(elem.dir_count, 0.0)
+    for m in range(elem.dir_count):
+        for j in range(elem.dof_count):
+            ub[m] += tlb[m][j] * ul[j]
+    return ub^
 
 
 fn _force_beam_column2d_element_force_global(
@@ -1681,10 +2376,165 @@ fn _element_force_global_for_recorder(
             elem_uniaxial_counts,
             elem_uniaxial_state_ids,
         )
+    var elem_ndm = 2
+    if ndf >= 6 or nodes[elem.node_index_1].has_z or nodes[elem.node_index_2].has_z:
+        elem_ndm = 3
+    if elem.type_tag == ElementTypeTag.ZeroLength:
+        return _zero_length_element_force_global(
+            elem_index,
+            elem,
+            nodes,
+            ndf,
+            elem_ndm,
+            u,
+            uniaxial_defs,
+            uniaxial_state_defs,
+            uniaxial_states,
+            elem_uniaxial_offsets,
+            elem_uniaxial_counts,
+            elem_uniaxial_state_ids,
+        )
+    if elem.type_tag == ElementTypeTag.TwoNodeLink:
+        return _two_node_link_element_force_global(
+            elem_index,
+            elem,
+            nodes,
+            ndf,
+            elem_ndm,
+            u,
+            uniaxial_defs,
+            uniaxial_state_defs,
+            uniaxial_states,
+            elem_uniaxial_offsets,
+            elem_uniaxial_counts,
+            elem_uniaxial_state_ids,
+        )
     abort(
-        "element_force recorder supports truss, "
+        "element_force recorder supports truss, zeroLength, twoNodeLink, "
         "elasticBeamColumn2d/3d, forceBeamColumn2d/3d, or dispBeamColumn2d/3d only"
     )
+    return []
+
+
+fn _element_local_force_for_recorder(
+    elem_index: Int,
+    elem: ElementInput,
+    ndf: Int,
+    u: List[Float64],
+    nodes: List[NodeInput],
+    uniaxial_defs: List[UniMaterialDef],
+    uniaxial_state_defs: List[Int],
+    mut uniaxial_states: List[UniMaterialState],
+    elem_uniaxial_offsets: List[Int],
+    elem_uniaxial_counts: List[Int],
+    elem_uniaxial_state_ids: List[Int],
+) raises -> List[Float64]:
+    var elem_ndm = 2
+    if ndf >= 6 or nodes[elem.node_index_1].has_z or nodes[elem.node_index_2].has_z:
+        elem_ndm = 3
+    if elem.type_tag == ElementTypeTag.ZeroLength:
+        return _zero_length_basic_force_for_recorder(
+            elem_index,
+            elem,
+            nodes,
+            ndf,
+            elem_ndm,
+            u,
+            uniaxial_defs,
+            uniaxial_state_defs,
+            uniaxial_states,
+            elem_uniaxial_offsets,
+            elem_uniaxial_counts,
+            elem_uniaxial_state_ids,
+        )
+    if elem.type_tag == ElementTypeTag.TwoNodeLink:
+        return _two_node_link_local_force_for_recorder(
+            elem_index,
+            elem,
+            nodes,
+            ndf,
+            elem_ndm,
+            u,
+            uniaxial_defs,
+            uniaxial_state_defs,
+            uniaxial_states,
+            elem_uniaxial_offsets,
+            elem_uniaxial_counts,
+            elem_uniaxial_state_ids,
+        )
+    abort("element_local_force recorder supports zeroLength and twoNodeLink only")
+    return []
+
+
+fn _element_basic_force_for_recorder(
+    elem_index: Int,
+    elem: ElementInput,
+    ndf: Int,
+    u: List[Float64],
+    nodes: List[NodeInput],
+    uniaxial_defs: List[UniMaterialDef],
+    uniaxial_state_defs: List[Int],
+    mut uniaxial_states: List[UniMaterialState],
+    elem_uniaxial_offsets: List[Int],
+    elem_uniaxial_counts: List[Int],
+    elem_uniaxial_state_ids: List[Int],
+) raises -> List[Float64]:
+    var elem_ndm = 2
+    if ndf >= 6 or nodes[elem.node_index_1].has_z or nodes[elem.node_index_2].has_z:
+        elem_ndm = 3
+    if elem.type_tag == ElementTypeTag.ZeroLength:
+        return _zero_length_basic_force_for_recorder(
+            elem_index,
+            elem,
+            nodes,
+            ndf,
+            elem_ndm,
+            u,
+            uniaxial_defs,
+            uniaxial_state_defs,
+            uniaxial_states,
+            elem_uniaxial_offsets,
+            elem_uniaxial_counts,
+            elem_uniaxial_state_ids,
+        )
+    if elem.type_tag == ElementTypeTag.TwoNodeLink:
+        return _two_node_link_basic_force_for_recorder(
+            elem_index,
+            elem,
+            nodes,
+            ndf,
+            elem_ndm,
+            u,
+            uniaxial_defs,
+            uniaxial_state_defs,
+            uniaxial_states,
+            elem_uniaxial_offsets,
+            elem_uniaxial_counts,
+            elem_uniaxial_state_ids,
+        )
+    abort("element_basic_force recorder supports zeroLength and twoNodeLink only")
+    return []
+
+
+fn _element_deformation_for_recorder(
+    elem_index: Int,
+    elem: ElementInput,
+    ndf: Int,
+    u: List[Float64],
+    nodes: List[NodeInput],
+) raises -> List[Float64]:
+    var elem_ndm = 2
+    if ndf >= 6 or nodes[elem.node_index_1].has_z or nodes[elem.node_index_2].has_z:
+        elem_ndm = 3
+    if elem.type_tag == ElementTypeTag.ZeroLength:
+        return _zero_length_deformation_for_recorder(
+            elem_index, elem, nodes, ndf, elem_ndm, u
+        )
+    if elem.type_tag == ElementTypeTag.TwoNodeLink:
+        return _two_node_link_deformation_for_recorder(
+            elem, nodes, ndf, elem_ndm, u
+        )
+    abort("element_deformation recorder supports zeroLength and twoNodeLink only")
     return []
 
 

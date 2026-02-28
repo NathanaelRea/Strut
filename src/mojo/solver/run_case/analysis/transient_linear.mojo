@@ -1,15 +1,22 @@
 from collections import List
-from materials import UniMaterialDef, UniMaterialState
+from materials import UniMaterialDef, UniMaterialState, uniaxial_commit_all
 from os import abort
 from python import Python
 from sections import FiberCell, FiberSection2dDef, FiberSection3dDef
 
 from linalg import lu_factorize_into, lu_solve_into
-from solver.assembly import assemble_global_stiffness_typed, assemble_internal_forces_typed
+from solver.assembly import (
+    assemble_global_stiffness_typed,
+    assemble_internal_forces_typed,
+    assemble_link_stiffness_typed,
+    assemble_zero_length_damping_committed_typed,
+    assemble_zero_length_damping_typed,
+)
 from solver.dof import node_dof_index, require_dof_in_range
 from solver.profile import _append_event
 from solver.run_case.input_types import (
     AnalysisInput,
+    DampingInput,
     ElementLoadInput,
     ElementInput,
     MaterialInput,
@@ -26,7 +33,11 @@ from solver.time_series import TimeSeriesInput, eval_time_series_input
 from solver.run_case.helpers import (
     _append_output,
     _collapse_matrix_by_rep,
+    _collapse_vector_by_rep,
+    _element_basic_force_for_recorder,
+    _element_deformation_for_recorder,
     _element_force_global_for_recorder,
+    _element_local_force_for_recorder,
     _enforce_equal_dof_values,
     _flush_envelope_outputs,
     _format_values_line,
@@ -35,7 +46,7 @@ from solver.run_case.helpers import (
     _section_response_for_recorder,
     _update_envelope,
 )
-from tag_types import RecorderTypeTag
+from tag_types import ElementTypeTag, RecorderTypeTag
 
 
 @always_inline
@@ -69,6 +80,37 @@ fn _dot_row_simd4(row: List[Float64], vec: List[Float64], count: Int) -> Float64
         sum += row[i] * vec[i]
         i += 1
     return sum
+
+
+@always_inline
+fn _has_nonparticipating_link_for_rayleigh(elements: List[ElementInput]) -> Bool:
+    for e in range(len(elements)):
+        var elem = elements[e]
+        if (
+            elem.type_tag == ElementTypeTag.ZeroLength
+            or elem.type_tag == ElementTypeTag.TwoNodeLink
+        ) and not elem.do_rayleigh:
+            return True
+    return False
+
+
+fn _has_zero_length_damp_mats(elements: List[ElementInput]) -> Bool:
+    for i in range(len(elements)):
+        var elem = elements[i]
+        if (
+            elem.type_tag == ElementTypeTag.ZeroLength
+            and elem.damp_material_count > 0
+        ):
+            return True
+    return False
+
+
+fn _has_zero_length_dampers(elements: List[ElementInput]) -> Bool:
+    for i in range(len(elements)):
+        var elem = elements[i]
+        if elem.type_tag == ElementTypeTag.ZeroLength and elem.damping_tag >= 0:
+            return True
+    return False
 
 
 @always_inline
@@ -195,6 +237,7 @@ fn run_transient_linear(
     time_series: List[TimeSeriesInput],
     time_series_values: List[Float64],
     time_series_times: List[Float64],
+    dampings: List[DampingInput],
     pattern_type: String,
     uniform_excitation_direction: Int,
     uniform_accel_ts_index: Int,
@@ -204,6 +247,8 @@ fn run_transient_linear(
     rayleigh_beta_k_comm: Float64,
     typed_nodes: List[NodeInput],
     typed_elements: List[ElementInput],
+    elem_dof_offsets: List[Int],
+    elem_dof_pool: List[Int],
     const_element_loads: List[ElementLoadInput],
     pattern_element_loads: List[ElementLoadInput],
     typed_sections_by_id: List[SectionInput],
@@ -226,6 +271,7 @@ fn run_transient_linear(
     F_const: List[Float64],
     F_pattern: List[Float64],
     M_total: List[Float64],
+    M_rayleigh_total: List[Float64],
     free: List[Int],
     recorders: List[RecorderInput],
     recorder_nodes_pool: List[Int],
@@ -286,10 +332,13 @@ fn run_transient_linear(
     var free_count = len(free)
     var M_f: List[Float64] = []
     M_f.resize(free_count, 0.0)
+    var M_rayleigh_f: List[Float64] = []
+    M_rayleigh_f.resize(free_count, 0.0)
     var has_mass = False
     for i in range(free_count):
         var m = M_total[free[i]]
         M_f[i] = m
+        M_rayleigh_f[i] = M_rayleigh_total[free[i]]
         if m != 0.0:
             has_mass = True
     if not has_mass:
@@ -392,16 +441,148 @@ fn run_transient_linear(
     var a4 = gamma / beta - 1.0
     var a5 = dt * (gamma / (2.0 * beta) - 1.0)
     var beta_sum = rayleigh_beta_k + rayleigh_beta_k_init + rayleigh_beta_k_comm
+    var K_damping_ff: List[List[Float64]] = []
+    for _ in range(free_count):
+        var row_damp: List[Float64] = []
+        row_damp.resize(free_count, 0.0)
+        K_damping_ff.append(row_damp^)
+    var need_link_rayleigh_filter = (
+        beta_sum != 0.0 and _has_nonparticipating_link_for_rayleigh(typed_elements)
+    )
+    var has_zero_length_damp_mats = _has_zero_length_damp_mats(typed_elements)
+    var has_zero_length_dampers = _has_zero_length_dampers(typed_elements)
+    if need_link_rayleigh_filter:
+        var asm_dof_map6: List[Int] = []
+        var asm_dof_map12: List[Int] = []
+        var asm_u_elem6: List[Float64] = []
+        var K_link_all: List[List[Float64]] = []
+        var K_link_rayleigh: List[List[Float64]] = []
+        for _ in range(total_dofs):
+            var row_all: List[Float64] = []
+            row_all.resize(total_dofs, 0.0)
+            K_link_all.append(row_all^)
+            var row_rayleigh: List[Float64] = []
+            row_rayleigh.resize(total_dofs, 0.0)
+            K_link_rayleigh.append(row_rayleigh^)
+        assemble_link_stiffness_typed(
+            typed_nodes,
+            typed_elements,
+            typed_sections_by_id,
+            typed_materials_by_id,
+            id_to_index,
+            node_count,
+            ndf,
+            ndm,
+            u,
+            uniaxial_defs,
+            uniaxial_state_defs,
+            uniaxial_states,
+            elem_uniaxial_offsets,
+            elem_uniaxial_counts,
+            elem_uniaxial_state_ids,
+            force_basic_offsets,
+            force_basic_counts,
+            force_basic_q,
+            fiber_section_defs,
+            fiber_section_cells,
+            fiber_section_index_by_id,
+            fiber_section3d_defs,
+            fiber_section3d_cells,
+            fiber_section3d_index_by_id,
+            elem_dof_offsets,
+            elem_dof_pool,
+            asm_dof_map6,
+            asm_dof_map12,
+            asm_u_elem6,
+            False,
+            K_link_all,
+        )
+        assemble_link_stiffness_typed(
+            typed_nodes,
+            typed_elements,
+            typed_sections_by_id,
+            typed_materials_by_id,
+            id_to_index,
+            node_count,
+            ndf,
+            ndm,
+            u,
+            uniaxial_defs,
+            uniaxial_state_defs,
+            uniaxial_states,
+            elem_uniaxial_offsets,
+            elem_uniaxial_counts,
+            elem_uniaxial_state_ids,
+            force_basic_offsets,
+            force_basic_counts,
+            force_basic_q,
+            fiber_section_defs,
+            fiber_section_cells,
+            fiber_section_index_by_id,
+            fiber_section3d_defs,
+            fiber_section3d_cells,
+            fiber_section3d_index_by_id,
+            elem_dof_offsets,
+            elem_dof_pool,
+            asm_dof_map6,
+            asm_dof_map12,
+            asm_u_elem6,
+            True,
+            K_link_rayleigh,
+        )
+        if has_transformation_mpc:
+            K_link_all = _collapse_matrix_by_rep(K_link_all, rep_dof)
+            K_link_rayleigh = _collapse_matrix_by_rep(K_link_rayleigh, rep_dof)
+        for i in range(free_count):
+            for j in range(free_count):
+                K_damping_ff[i][j] = (
+                    K_ff[i][j]
+                    - K_link_all[free[i]][free[j]]
+                    + K_link_rayleigh[free[i]][free[j]]
+                )
+    else:
+        for i in range(free_count):
+            for j in range(free_count):
+                K_damping_ff[i][j] = K_ff[i][j]
+
     var C_ff: List[List[Float64]] = []
+    var C_zero_length_damp_ff: List[List[Float64]] = []
     for i in range(free_count):
         var row_c: List[Float64] = []
         row_c.resize(free_count, 0.0)
         C_ff.append(row_c^)
-        C_ff[i][i] = rayleigh_alpha_m * M_f[i]
+        var row_zero_length_damp: List[Float64] = []
+        row_zero_length_damp.resize(free_count, 0.0)
+        C_zero_length_damp_ff.append(row_zero_length_damp^)
+        C_ff[i][i] = rayleigh_alpha_m * M_rayleigh_f[i]
+    if has_zero_length_damp_mats:
+        var C_zero_length_global: List[List[Float64]] = []
+        for _ in range(total_dofs):
+            var row_global: List[Float64] = []
+            row_global.resize(total_dofs, 0.0)
+            C_zero_length_global.append(row_global^)
+        assemble_zero_length_damping_typed(
+            typed_nodes,
+            typed_elements,
+            typed_materials_by_id,
+            node_count,
+            ndf,
+            ndm,
+            C_zero_length_global,
+        )
+        if has_transformation_mpc:
+            C_zero_length_global = _collapse_matrix_by_rep(C_zero_length_global, rep_dof)
+        for i in range(free_count):
+            for j in range(free_count):
+                C_zero_length_damp_ff[i][j] = C_zero_length_global[free[i]][free[j]]
     if beta_sum != 0.0:
         for i in range(free_count):
             for j in range(free_count):
-                C_ff[i][j] += beta_sum * K_ff[i][j]
+                C_ff[i][j] += beta_sum * K_damping_ff[i][j]
+    if has_zero_length_damp_mats:
+        for i in range(free_count):
+            for j in range(free_count):
+                C_ff[i][j] += C_zero_length_damp_ff[i][j]
 
     var K_eff: List[List[Float64]] = []
     for _ in range(free_count):
@@ -417,19 +598,28 @@ fn run_transient_linear(
         var row_lu: List[Float64] = []
         row_lu.resize(free_count, 0.0)
         K_lu.append(row_lu^)
-        for j in range(free_count):
-            K_lu[i][j] = K_eff[i][j]
+        if not has_zero_length_dampers:
+            for j in range(free_count):
+                K_lu[i][j] = K_eff[i][j]
     var lu_pivots: List[Int] = []
     lu_pivots.resize(free_count, 0)
-    if do_profile:
-        var t_fac_start = Int(time.perf_counter_ns())
-        var fac_start_us = (t_fac_start - t0) // 1000
-        _append_event(events, events_need_comma, "O", frame_factorize, fac_start_us)
-    lu_factorize_into(K_lu, lu_pivots)
-    if do_profile:
-        var t_fac_end = Int(time.perf_counter_ns())
-        var fac_end_us = (t_fac_end - t0) // 1000
-        _append_event(events, events_need_comma, "C", frame_factorize, fac_end_us)
+    var K_zero_length_damp_ff: List[List[Float64]] = []
+    for _ in range(free_count):
+        var row_zero_length_damp: List[Float64] = []
+        row_zero_length_damp.resize(free_count, 0.0)
+        K_zero_length_damp_ff.append(row_zero_length_damp^)
+    var F_zero_length_damp_committed_f: List[Float64] = []
+    F_zero_length_damp_committed_f.resize(free_count, 0.0)
+    if not has_zero_length_dampers:
+        if do_profile:
+            var t_fac_start = Int(time.perf_counter_ns())
+            var fac_start_us = (t_fac_start - t0) // 1000
+            _append_event(events, events_need_comma, "O", frame_factorize, fac_start_us)
+        lu_factorize_into(K_lu, lu_pivots)
+        if do_profile:
+            var t_fac_end = Int(time.perf_counter_ns())
+            var fac_end_us = (t_fac_end - t0) // 1000
+            _append_event(events, events_need_comma, "C", frame_factorize, fac_end_us)
 
     var v: List[Float64] = []
     v.resize(total_dofs, 0.0)
@@ -593,8 +783,57 @@ fn run_transient_linear(
         _build_effective_rhs_newmark_simd4(
             free, u, v, a, F_ext_step, M_f, a0, a1, a2, a3, a4, a5, P_ext_f, C_term, P_eff
         )
+        if has_zero_length_dampers:
+            var K_zero_length_damp_global: List[List[Float64]] = []
+            var F_zero_length_damp_committed: List[Float64] = []
+            for _ in range(total_dofs):
+                var row_global: List[Float64] = []
+                row_global.resize(total_dofs, 0.0)
+                K_zero_length_damp_global.append(row_global^)
+            F_zero_length_damp_committed.resize(total_dofs, 0.0)
+            assemble_zero_length_damping_committed_typed(
+                typed_nodes,
+                typed_elements,
+                dampings,
+                time_series,
+                time_series_values,
+                time_series_times,
+                ndf,
+                ndm,
+                t,
+                dt,
+                uniaxial_states,
+                elem_uniaxial_offsets,
+                elem_uniaxial_counts,
+                elem_uniaxial_state_ids,
+                K_zero_length_damp_global,
+                F_zero_length_damp_committed,
+            )
+            if has_transformation_mpc:
+                K_zero_length_damp_global = _collapse_matrix_by_rep(
+                    K_zero_length_damp_global, rep_dof
+                )
+                F_zero_length_damp_committed = _collapse_vector_by_rep(
+                    F_zero_length_damp_committed, rep_dof
+                )
+            for i in range(free_count):
+                F_zero_length_damp_committed_f[i] = F_zero_length_damp_committed[free[i]]
+                for j in range(free_count):
+                    K_zero_length_damp_ff[i][j] = K_zero_length_damp_global[free[i]][free[j]]
+                    K_lu[i][j] = K_eff[i][j] + K_zero_length_damp_ff[i][j]
+            if do_profile:
+                var t_fac_start = Int(time.perf_counter_ns())
+                var fac_start_us = (t_fac_start - t0) // 1000
+                _append_event(events, events_need_comma, "O", frame_factorize, fac_start_us)
+            lu_factorize_into(K_lu, lu_pivots)
+            if do_profile:
+                var t_fac_end = Int(time.perf_counter_ns())
+                var fac_end_us = (t_fac_end - t0) // 1000
+                _append_event(events, events_need_comma, "C", frame_factorize, fac_end_us)
         for i in range(free_count):
             lu_rhs[i] = P_eff[i] + _dot_row_simd4(C_ff[i], C_term, free_count)
+            if has_zero_length_dampers:
+                lu_rhs[i] += F_zero_length_damp_committed_f[i]
         if do_profile:
             var t_solve_start = Int(time.perf_counter_ns())
             var solve_start_us = (t_solve_start - t0) // 1000
@@ -643,6 +882,37 @@ fn run_transient_linear(
             _append_event(events, events_need_comma, "O", frame_recorders, rec_start_us)
         if record_reactions:
             F_int_reaction = assemble_internal_forces_typed(
+                typed_nodes,
+                typed_elements,
+                active_element_load_state.element_loads,
+                active_element_load_state.elem_load_offsets,
+                active_element_load_state.elem_load_pool,
+                1.0,
+                typed_sections_by_id,
+                typed_materials_by_id,
+                id_to_index,
+                node_count,
+                ndf,
+                ndm,
+                u,
+                uniaxial_defs,
+                uniaxial_state_defs,
+                uniaxial_states,
+                elem_uniaxial_offsets,
+                elem_uniaxial_counts,
+                elem_uniaxial_state_ids,
+                force_basic_offsets,
+                force_basic_counts,
+                force_basic_q,
+                fiber_section_defs,
+                fiber_section_cells,
+                fiber_section_index_by_id,
+                fiber_section3d_defs,
+                fiber_section3d_cells,
+                fiber_section3d_index_by_id,
+            )
+        elif has_zero_length_dampers:
+            _ = assemble_internal_forces_typed(
                 typed_nodes,
                 typed_elements,
                 active_element_load_state.element_loads,
@@ -737,6 +1007,77 @@ fn run_transient_linear(
                     var filename = rec.output + "_ele" + String(elem_id) + ".out"
                     _append_output(
                         transient_output_files, transient_output_buffers, filename, line
+                    )
+            elif rec.type_tag == RecorderTypeTag.ElementLocalForce:
+                for eidx in range(rec.element_count):
+                    var elem_id = recorder_elements_pool[rec.element_offset + eidx]
+                    if elem_id >= len(elem_id_to_index) or elem_id_to_index[elem_id] < 0:
+                        abort("recorder element not found")
+                    var elem_index = elem_id_to_index[elem_id]
+                    var elem = typed_elements[elem_index]
+                    var values = _element_local_force_for_recorder(
+                        elem_index,
+                        elem,
+                        ndf,
+                        u,
+                        typed_nodes,
+                        uniaxial_defs,
+                        uniaxial_state_defs,
+                        uniaxial_states,
+                        elem_uniaxial_offsets,
+                        elem_uniaxial_counts,
+                        elem_uniaxial_state_ids,
+                    )
+                    var filename = rec.output + "_ele" + String(elem_id) + ".out"
+                    _append_output(
+                        transient_output_files,
+                        transient_output_buffers,
+                        filename,
+                        _format_values_line(values),
+                    )
+            elif rec.type_tag == RecorderTypeTag.ElementBasicForce:
+                for eidx in range(rec.element_count):
+                    var elem_id = recorder_elements_pool[rec.element_offset + eidx]
+                    if elem_id >= len(elem_id_to_index) or elem_id_to_index[elem_id] < 0:
+                        abort("recorder element not found")
+                    var elem_index = elem_id_to_index[elem_id]
+                    var elem = typed_elements[elem_index]
+                    var values = _element_basic_force_for_recorder(
+                        elem_index,
+                        elem,
+                        ndf,
+                        u,
+                        typed_nodes,
+                        uniaxial_defs,
+                        uniaxial_state_defs,
+                        uniaxial_states,
+                        elem_uniaxial_offsets,
+                        elem_uniaxial_counts,
+                        elem_uniaxial_state_ids,
+                    )
+                    var filename = rec.output + "_ele" + String(elem_id) + ".out"
+                    _append_output(
+                        transient_output_files,
+                        transient_output_buffers,
+                        filename,
+                        _format_values_line(values),
+                    )
+            elif rec.type_tag == RecorderTypeTag.ElementDeformation:
+                for eidx in range(rec.element_count):
+                    var elem_id = recorder_elements_pool[rec.element_offset + eidx]
+                    if elem_id >= len(elem_id_to_index) or elem_id_to_index[elem_id] < 0:
+                        abort("recorder element not found")
+                    var elem_index = elem_id_to_index[elem_id]
+                    var elem = typed_elements[elem_index]
+                    var values = _element_deformation_for_recorder(
+                        elem_index, elem, ndf, u, typed_nodes
+                    )
+                    var filename = rec.output + "_ele" + String(elem_id) + ".out"
+                    _append_output(
+                        transient_output_files,
+                        transient_output_buffers,
+                        filename,
+                        _format_values_line(values),
                     )
             elif rec.type_tag == RecorderTypeTag.NodeReaction:
                 if not record_reactions:
@@ -885,6 +1226,8 @@ fn run_transient_linear(
             _append_event(
                 events, events_need_comma, "C", frame_transient_step, rec_end_us
             )
+        if has_zero_length_dampers:
+            uniaxial_commit_all(uniaxial_states)
     _flush_envelope_outputs(
         envelope_files,
         envelope_min,

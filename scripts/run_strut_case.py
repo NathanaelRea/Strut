@@ -2,10 +2,12 @@
 import argparse
 import json
 import os
+import math
 import shutil
 import subprocess
 import tempfile
 from pathlib import Path
+import sys
 
 
 def run(cmd, env=None, verbose=False):
@@ -110,6 +112,47 @@ def _normalize_time_series_paths(
     return changed
 
 
+def _warn_zero_length_node_separation(case_data: dict) -> None:
+    model = case_data.get("model", {})
+    ndm = int(model.get("ndm", 0))
+    if ndm not in (2, 3):
+        return
+
+    node_by_id = {}
+    for node in case_data.get("nodes", []):
+        if not isinstance(node, dict) or "id" not in node:
+            continue
+        node_by_id[int(node["id"])] = node
+
+    for elem in case_data.get("elements", []):
+        if not isinstance(elem, dict) or elem.get("type") != "zeroLength":
+            continue
+        nodes = elem.get("nodes", [])
+        if not isinstance(nodes, list) or len(nodes) != 2:
+            continue
+        node_i = node_by_id.get(int(nodes[0]))
+        node_j = node_by_id.get(int(nodes[1]))
+        if node_i is None or node_j is None:
+            continue
+        x1 = float(node_i.get("x", 0.0))
+        y1 = float(node_i.get("y", 0.0))
+        z1 = float(node_i.get("z", 0.0))
+        x2 = float(node_j.get("x", 0.0))
+        y2 = float(node_j.get("y", 0.0))
+        z2 = float(node_j.get("z", 0.0))
+        dx = x1 - x2
+        dy = y1 - y2
+        dz = z1 - z2 if ndm == 3 else 0.0
+        length = math.sqrt(dx * dx + dy * dy + dz * dz)
+        v1 = math.sqrt(x1 * x1 + y1 * y1 + z1 * z1)
+        v2 = math.sqrt(x2 * x2 + y2 * y2 + z2 * z2)
+        if length > 1.0e-6 * max(v1, v2):
+            print(
+                f"WARNING ZeroLength::setDomain(): Element {elem['id']} has L= {length}, which is greater than the tolerance",
+                file=sys.stderr,
+            )
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", required=True)
@@ -155,6 +198,7 @@ def main():
 
     input_path = Path(args.input).resolve()
     case_data = json.loads(input_path.read_text(encoding="utf-8"))
+    _warn_zero_length_node_separation(case_data)
     normalized_input = input_path
     tmp_path = None
     if _normalize_time_series_paths(case_data, input_path, repo_root):

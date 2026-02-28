@@ -196,6 +196,14 @@ struct ElementInput(Movable, ImplicitlyCopyable):
     var material_4: Int
     var material_5: Int
     var material_6: Int
+    var damp_material_count: Int
+    var damp_material_1: Int
+    var damp_material_2: Int
+    var damp_material_3: Int
+    var damp_material_4: Int
+    var damp_material_5: Int
+    var damp_material_6: Int
+    var damping_tag: Int
     var dir_count: Int
     var dir_1: Int
     var dir_2: Int
@@ -211,6 +219,24 @@ struct ElementInput(Movable, ImplicitlyCopyable):
     var num_int_pts: Int
     var rho: Float64
     var use_cmass: Bool
+    var element_mass: Float64
+    var do_rayleigh: Bool
+    var has_orient_x: Bool
+    var orient_x_1: Float64
+    var orient_x_2: Float64
+    var orient_x_3: Float64
+    var has_orient_y: Bool
+    var orient_y_1: Float64
+    var orient_y_2: Float64
+    var orient_y_3: Float64
+    var has_pdelta: Bool
+    var pdelta_1: Float64
+    var pdelta_2: Float64
+    var pdelta_3: Float64
+    var pdelta_4: Float64
+    var has_shear_dist: Bool
+    var shear_dist_1: Float64
+    var shear_dist_2: Float64
     var uniform_load_wy: Float64
     var uniform_load_wx: Float64
     var dof_count: Int
@@ -262,6 +288,14 @@ struct ElementInput(Movable, ImplicitlyCopyable):
         self.material_4 = -1
         self.material_5 = -1
         self.material_6 = -1
+        self.damp_material_count = 0
+        self.damp_material_1 = -1
+        self.damp_material_2 = -1
+        self.damp_material_3 = -1
+        self.damp_material_4 = -1
+        self.damp_material_5 = -1
+        self.damp_material_6 = -1
+        self.damping_tag = -1
         self.dir_count = 0
         self.dir_1 = 0
         self.dir_2 = 0
@@ -277,6 +311,24 @@ struct ElementInput(Movable, ImplicitlyCopyable):
         self.num_int_pts = 3
         self.rho = 0.0
         self.use_cmass = False
+        self.element_mass = 0.0
+        self.do_rayleigh = False
+        self.has_orient_x = False
+        self.orient_x_1 = 0.0
+        self.orient_x_2 = 0.0
+        self.orient_x_3 = 0.0
+        self.has_orient_y = False
+        self.orient_y_1 = 0.0
+        self.orient_y_2 = 0.0
+        self.orient_y_3 = 0.0
+        self.has_pdelta = False
+        self.pdelta_1 = 0.0
+        self.pdelta_2 = 0.0
+        self.pdelta_3 = 0.0
+        self.pdelta_4 = 0.0
+        self.has_shear_dist = False
+        self.shear_dist_1 = 0.5
+        self.shear_dist_2 = 0.5
         self.uniform_load_wy = 0.0
         self.uniform_load_wx = 0.0
         self.dof_count = 0
@@ -503,6 +555,25 @@ struct RayleighInput(Movable, ImplicitlyCopyable):
         self.beta_k_comm = 0.0
 
 
+struct DampingInput(Movable, ImplicitlyCopyable):
+    var tag: Int
+    var type: String
+    var beta: Float64
+    var activate_time: Float64
+    var deactivate_time: Float64
+    var factor_ts_tag: Int
+    var factor_ts_index: Int
+
+    fn __init__(out self):
+        self.tag = -1
+        self.type = ""
+        self.beta = 0.0
+        self.activate_time = 0.0
+        self.deactivate_time = 1.0e20
+        self.factor_ts_tag = -1
+        self.factor_ts_index = -1
+
+
 struct RecorderInput(Movable, ImplicitlyCopyable):
     var type_tag: Int
     var output: String
@@ -553,6 +624,7 @@ struct CaseInput(Movable):
     var mp_constraints: List[MPConstraintInput]
     var pattern: PatternInput
     var rayleigh: RayleighInput
+    var dampings: PythonObject
     var time_series: PythonObject
     var analysis_integrator_targets_pool: List[Float64]
     var recorder_nodes_pool: List[Int]
@@ -575,6 +647,7 @@ struct CaseInput(Movable):
         self.mp_constraints = []
         self.pattern = PatternInput()
         self.rayleigh = RayleighInput()
+        self.dampings = None
         self.time_series = None
         self.analysis_integrator_targets_pool = []
         self.recorder_nodes_pool = []
@@ -600,8 +673,10 @@ fn element_type_tag(type_name: String) -> Int:
         return ElementTypeTag.DispBeamColumn3d
     if type_name == "truss":
         return ElementTypeTag.Truss
-    if type_name == "zeroLength" or type_name == "twoNodeLink":
-        return ElementTypeTag.Link
+    if type_name == "zeroLength":
+        return ElementTypeTag.ZeroLength
+    if type_name == "twoNodeLink":
+        return ElementTypeTag.TwoNodeLink
     if type_name == "zeroLengthSection":
         return ElementTypeTag.ZeroLengthSection
     if type_name == "fourNodeQuad" or type_name == "bbarQuad":
@@ -626,6 +701,12 @@ fn recorder_type_tag(type_name: String) -> Int:
         return RecorderTypeTag.NodeDisplacement
     if type_name == "element_force":
         return RecorderTypeTag.ElementForce
+    if type_name == "element_local_force":
+        return RecorderTypeTag.ElementLocalForce
+    if type_name == "element_basic_force":
+        return RecorderTypeTag.ElementBasicForce
+    if type_name == "element_deformation":
+        return RecorderTypeTag.ElementDeformation
     if type_name == "node_reaction":
         return RecorderTypeTag.NodeReaction
     if type_name == "drift":
@@ -882,6 +963,26 @@ fn parse_case_input(data: PythonObject) raises -> CaseInput:
                 parsed.material_5 = Int(mat_ids[4])
             if material_count > 5:
                 parsed.material_6 = Int(mat_ids[5])
+        if elem.__contains__("dampMats"):
+            var damp_mat_ids = elem["dampMats"]
+            var damp_material_count = py_len(damp_mat_ids)
+            if damp_material_count > 6:
+                damp_material_count = 6
+            parsed.damp_material_count = damp_material_count
+            if damp_material_count > 0:
+                parsed.damp_material_1 = Int(damp_mat_ids[0])
+            if damp_material_count > 1:
+                parsed.damp_material_2 = Int(damp_mat_ids[1])
+            if damp_material_count > 2:
+                parsed.damp_material_3 = Int(damp_mat_ids[2])
+            if damp_material_count > 3:
+                parsed.damp_material_4 = Int(damp_mat_ids[3])
+            if damp_material_count > 4:
+                parsed.damp_material_5 = Int(damp_mat_ids[4])
+            if damp_material_count > 5:
+                parsed.damp_material_6 = Int(damp_mat_ids[5])
+        if elem.__contains__("damp"):
+            parsed.damping_tag = Int(elem["damp"])
         if elem.__contains__("dirs"):
             var dirs = elem["dirs"]
             var dir_count = py_len(dirs)
@@ -908,8 +1009,50 @@ fn parse_case_input(data: PythonObject) raises -> CaseInput:
         parsed.geom_transf = String(elem.get("geomTransf", "Linear"))
         parsed.integration = String(elem.get("integration", "Lobatto"))
         parsed.num_int_pts = Int(elem.get("num_int_pts", 3))
-        parsed.rho = Float64(elem.get("rho", elem.get("mass", 0.0)))
+        parsed.rho = Float64(elem.get("rho", 0.0))
         parsed.use_cmass = Bool(elem.get("cMass", False))
+        parsed.element_mass = Float64(elem.get("mass", 0.0))
+        parsed.do_rayleigh = Bool(elem.get("doRayleigh", False))
+        if elem.__contains__("orient"):
+            var orient = elem["orient"]
+            if orient.__contains__("x"):
+                var x_vals = orient["x"]
+                if py_len(x_vals) > 0:
+                    parsed.orient_x_1 = Float64(x_vals[0])
+                if py_len(x_vals) > 1:
+                    parsed.orient_x_2 = Float64(x_vals[1])
+                if py_len(x_vals) > 2:
+                    parsed.orient_x_3 = Float64(x_vals[2])
+                parsed.has_orient_x = True
+            if orient.__contains__("y"):
+                var y_vals = orient["y"]
+                if py_len(y_vals) > 0:
+                    parsed.orient_y_1 = Float64(y_vals[0])
+                if py_len(y_vals) > 1:
+                    parsed.orient_y_2 = Float64(y_vals[1])
+                if py_len(y_vals) > 2:
+                    parsed.orient_y_3 = Float64(y_vals[2])
+                parsed.has_orient_y = True
+        if elem.__contains__("pDelta"):
+            var p_delta = elem["pDelta"]
+            var p_delta_count = py_len(p_delta)
+            if p_delta_count > 0:
+                parsed.pdelta_1 = Float64(p_delta[0])
+            if p_delta_count > 1:
+                parsed.pdelta_2 = Float64(p_delta[1])
+            if p_delta_count > 2:
+                parsed.pdelta_3 = Float64(p_delta[2])
+            if p_delta_count > 3:
+                parsed.pdelta_4 = Float64(p_delta[3])
+            parsed.has_pdelta = p_delta_count > 0
+        if elem.__contains__("shearDist"):
+            var shear_dist = elem["shearDist"]
+            var shear_dist_count = py_len(shear_dist)
+            if shear_dist_count > 0:
+                parsed.shear_dist_1 = Float64(shear_dist[0])
+            if shear_dist_count > 1:
+                parsed.shear_dist_2 = Float64(shear_dist[1])
+            parsed.has_shear_dist = shear_dist_count > 0
         parsed.type_tag = element_type_tag(parsed.type)
         parsed.geom_tag = geom_transf_tag(parsed.geom_transf)
         case_input.elements.append(parsed^)
@@ -1019,6 +1162,11 @@ fn parse_case_input(data: PythonObject) raises -> CaseInput:
     else:
         var builtins = Python.import_module("builtins")
         case_input.time_series = builtins.list()
+    if data.__contains__("dampings"):
+        case_input.dampings = data["dampings"]
+    else:
+        var builtins = Python.import_module("builtins")
+        case_input.dampings = builtins.list()
 
     var recorders_raw = data.get("recorders", [])
     for i in range(py_len(recorders_raw)):
@@ -1045,6 +1193,33 @@ fn parse_case_input(data: PythonObject) raises -> CaseInput:
             parsed.output = String(rec.get("output", "element_force"))
             if not rec.__contains__("elements"):
                 abort("element_force recorder requires elements")
+            var elements_raw = rec["elements"]
+            parsed.element_offset = len(case_input.recorder_elements_pool)
+            parsed.element_count = py_len(elements_raw)
+            for j in range(py_len(elements_raw)):
+                case_input.recorder_elements_pool.append(Int(elements_raw[j]))
+        elif parsed.type_tag == RecorderTypeTag.ElementLocalForce:
+            parsed.output = String(rec.get("output", "element_local_force"))
+            if not rec.__contains__("elements"):
+                abort("element_local_force recorder requires elements")
+            var elements_raw = rec["elements"]
+            parsed.element_offset = len(case_input.recorder_elements_pool)
+            parsed.element_count = py_len(elements_raw)
+            for j in range(py_len(elements_raw)):
+                case_input.recorder_elements_pool.append(Int(elements_raw[j]))
+        elif parsed.type_tag == RecorderTypeTag.ElementBasicForce:
+            parsed.output = String(rec.get("output", "element_basic_force"))
+            if not rec.__contains__("elements"):
+                abort("element_basic_force recorder requires elements")
+            var elements_raw = rec["elements"]
+            parsed.element_offset = len(case_input.recorder_elements_pool)
+            parsed.element_count = py_len(elements_raw)
+            for j in range(py_len(elements_raw)):
+                case_input.recorder_elements_pool.append(Int(elements_raw[j]))
+        elif parsed.type_tag == RecorderTypeTag.ElementDeformation:
+            parsed.output = String(rec.get("output", "element_deformation"))
+            if not rec.__contains__("elements"):
+                abort("element_deformation recorder requires elements")
             var elements_raw = rec["elements"]
             parsed.element_offset = len(case_input.recorder_elements_pool)
             parsed.element_count = py_len(elements_raw)

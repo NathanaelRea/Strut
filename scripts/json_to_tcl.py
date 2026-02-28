@@ -54,6 +54,41 @@ def _choose_vecxz(n1, n2):
     return (1.0, 0.0, 0.0)
 
 
+def _choose_ref_y_from_x(xvec):
+    ax, ay, az = xvec
+    candidates = ((0.0, 1.0, 0.0), (1.0, 0.0, 0.0), (0.0, 0.0, 1.0))
+    for vy in candidates:
+        dot = abs(ax * vy[0] + ay * vy[1] + az * vy[2])
+        if dot < 0.9:
+            return vy
+    return (0.0, 1.0, 0.0)
+
+
+def _format_link_orient(elem, ndm):
+    orient = elem.get("orient")
+    if not orient:
+        return ""
+    xvec = orient.get("x")
+    yvec = orient.get("y")
+    if xvec is None and yvec is None:
+        return ""
+    if ndm == 2:
+        if xvec is None:
+            raise ValueError("2D link orientation requires orient.x")
+        if len(xvec) != 3:
+            raise ValueError("2D link orient.x must have 3 values")
+        return f" -orient {_format_list(xvec)}"
+    if xvec is None:
+        raise ValueError("3D link orientation currently requires orient.x")
+    if len(xvec) != 3:
+        raise ValueError("3D link orient.x must have 3 values")
+    if yvec is None:
+        yvec = _choose_ref_y_from_x(xvec)
+    if len(yvec) != 3:
+        raise ValueError("3D link orient.y must have 3 values")
+    return f" -orient {_format_list(xvec)} {_format_list(yvec)}"
+
+
 _BEAM_INTEGRATION_MIN_POINTS = {
     "Lobatto": 2,
     "Legendre": 1,
@@ -183,6 +218,35 @@ def _emit_time_series(f, ts, case_dir: Path, case_data: dict):
         f.write(line + "\n")
     else:
         raise ValueError(f"unsupported time_series type: {ts_type}")
+
+
+def _normalize_dampings(dampings):
+    if dampings is None:
+        return []
+    if isinstance(dampings, dict):
+        return [dampings]
+    if isinstance(dampings, list):
+        return dampings
+    raise ValueError("dampings must be a list or object")
+
+
+def _emit_damping(f, damping):
+    damping_type = damping.get("type")
+    damping_tag = damping.get("id", damping.get("tag"))
+    if damping_type is None or damping_tag is None:
+        raise ValueError("damping requires type and id/tag")
+    if damping_type not in ("SecStif", "SecStiff"):
+        raise ValueError(f"unsupported damping type: {damping_type}")
+    if "beta" not in damping:
+        raise ValueError("SecStif damping requires beta")
+    line = f"damping SecStif {damping_tag} {damping['beta']}"
+    if "activateTime" in damping:
+        line += f" -activateTime {damping['activateTime']}"
+    if "deactivateTime" in damping:
+        line += f" -deactivateTime {damping['deactivateTime']}"
+    if "factor" in damping:
+        line += f" -factor {damping['factor']}"
+    f.write(line + "\n")
 
 
 def _emit_element_load(f, elem_load, ndm):
@@ -368,6 +432,21 @@ def _emit_recorders(f, recorders, node_by_id, ndf):
             for elem_id in rec["elements"]:
                 filename = f"{output}_ele{elem_id}.out"
                 f.write(f"recorder Element -file {filename} -ele {elem_id} force\n")
+        elif rec_type == "element_local_force":
+            output = rec.get("output", "element_local_force")
+            for elem_id in rec["elements"]:
+                filename = f"{output}_ele{elem_id}.out"
+                f.write(f"recorder Element -file {filename} -ele {elem_id} localForce\n")
+        elif rec_type == "element_basic_force":
+            output = rec.get("output", "element_basic_force")
+            for elem_id in rec["elements"]:
+                filename = f"{output}_ele{elem_id}.out"
+                f.write(f"recorder Element -file {filename} -ele {elem_id} basicForce\n")
+        elif rec_type == "element_deformation":
+            output = rec.get("output", "element_deformation")
+            for elem_id in rec["elements"]:
+                filename = f"{output}_ele{elem_id}.out"
+                f.write(f"recorder Element -file {filename} -ele {elem_id} deformation\n")
         elif rec_type == "node_reaction":
             dofs = rec["dofs"]
             output = rec.get("output", "reaction")
@@ -783,6 +862,15 @@ def main():
             )
             next_int_tag += 1
 
+        ts_tags = set()
+        ts_list = _normalize_time_series(data.get("time_series"))
+        for ts in ts_list:
+            _emit_time_series(f, ts, case_dir, data)
+        ts_tags = {ts["tag"] for ts in ts_list}
+
+        for damping in _normalize_dampings(data.get("dampings")):
+            _emit_damping(f, damping)
+
         # Elements (elasticBeamColumn2d, truss, zeroLength, zeroLengthSection, twoNodeLink, fourNodeQuad/bbarQuad, shell)
         for elem in elements:
             if elem["type"] == "elasticBeamColumn2d":
@@ -866,7 +954,16 @@ def main():
                 n1, n2 = elem["nodes"]
                 mats = " ".join(str(mid) for mid in elem["materials"])
                 dirs = " ".join(str(d) for d in elem["dirs"])
-                f.write(f"element zeroLength {elem['id']} {n1} {n2} -mat {mats} -dir {dirs}\n")
+                line = f"element zeroLength {elem['id']} {n1} {n2} -mat {mats} -dir {dirs}"
+                line += _format_link_orient(elem, ndm)
+                damp_mats = elem.get("dampMats")
+                if damp_mats:
+                    line += f" -dampMats {_format_list(damp_mats)}"
+                if "damp" in elem:
+                    line += f" -damp {elem['damp']}"
+                if elem.get("doRayleigh", False):
+                    line += " -doRayleigh 1"
+                f.write(line + "\n")
             elif elem["type"] == "zeroLengthSection":
                 n1, n2 = elem["nodes"]
                 sec_id = elem["section"]
@@ -882,7 +979,23 @@ def main():
                 n1, n2 = elem["nodes"]
                 mats = " ".join(str(mid) for mid in elem["materials"])
                 dirs = " ".join(str(d) for d in elem["dirs"])
-                f.write(f"element twoNodeLink {elem['id']} {n1} {n2} -mat {mats} -dir {dirs}\n")
+                line = f"element twoNodeLink {elem['id']} {n1} {n2} -mat {mats} -dir {dirs}"
+                line += _format_link_orient(elem, ndm)
+                p_delta = elem.get("pDelta")
+                if p_delta:
+                    p_delta_vals = p_delta
+                    if ndm == 2 and len(p_delta) >= 4:
+                        p_delta_vals = p_delta[2:4]
+                    line += f" -pDelta {_format_list(p_delta_vals)}"
+                shear_dist = elem.get("shearDist")
+                if shear_dist:
+                    line += f" -shearDist {_format_list(shear_dist)}"
+                if elem.get("doRayleigh", False):
+                    line += " -doRayleigh"
+                mass = float(elem.get("mass", 0.0))
+                if mass != 0.0:
+                    line += f" -mass {mass}"
+                f.write(line + "\n")
             elif elem["type"] == "fourNodeQuad" or elem["type"] == "bbarQuad":
                 n1, n2, n3, n4 = elem["nodes"]
                 t = elem["thickness"]
@@ -904,13 +1017,8 @@ def main():
         pattern = data.get("pattern")
         analysis = data.get("analysis", {"type": "static_linear", "steps": 1})
         analysis_type = analysis.get("type", "static_linear")
-        ts_tags = set()
-        ts_list = _normalize_time_series(data.get("time_series"))
         if loads or element_loads or pattern is not None:
             if ts_list:
-                for ts in ts_list:
-                    _emit_time_series(f, ts, case_dir, data)
-                ts_tags = {ts["tag"] for ts in ts_list}
                 if pattern is None:
                     if len(ts_list) == 1:
                         pattern = {"type": "Plain", "tag": 1, "time_series": ts_list[0]["tag"]}
@@ -976,11 +1084,6 @@ def main():
                 )
             else:
                 raise ValueError(f"unsupported pattern type: {pattern_type}")
-        elif analysis_type == "staged" and ts_list:
-            for ts in ts_list:
-                _emit_time_series(f, ts, case_dir, data)
-            ts_tags = {ts["tag"] for ts in ts_list}
-
         rayleigh = data.get("rayleigh")
         if rayleigh is not None:
             alpha_m = float(rayleigh.get("alphaM", 0.0))

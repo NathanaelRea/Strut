@@ -31,7 +31,10 @@ from solver.run_case.helpers import (
     _collapse_matrix_by_rep,
     _collapse_vector_by_rep,
     _drift_value,
+    _element_basic_force_for_recorder,
+    _element_deformation_for_recorder,
     _element_force_global_for_recorder,
+    _element_local_force_for_recorder,
     _enforce_equal_dof_values,
     _flush_envelope_outputs,
     _format_values_line,
@@ -747,6 +750,90 @@ fn run_static_nonlinear_load_control(
                     var filename = rec.output + "_ele" + String(elem_id) + ".out"
                     _append_output(
                         static_output_files, static_output_buffers, filename, line
+                    )
+            elif rec.type_tag == RecorderTypeTag.ElementLocalForce:
+                for eidx in range(rec.element_count):
+                    var elem_id = recorder_elements_pool[rec.element_offset + eidx]
+                    if (
+                        elem_id >= len(elem_id_to_index)
+                        or elem_id_to_index[elem_id] < 0
+                    ):
+                        abort("recorder element not found")
+                    var elem_index = elem_id_to_index[elem_id]
+                    var elem = typed_elements[elem_index]
+                    var values = _element_local_force_for_recorder(
+                        elem_index,
+                        elem,
+                        ndf,
+                        u,
+                        typed_nodes,
+                        uniaxial_defs,
+                        uniaxial_state_defs,
+                        uniaxial_states,
+                        elem_uniaxial_offsets,
+                        elem_uniaxial_counts,
+                        elem_uniaxial_state_ids,
+                    )
+                    var filename = rec.output + "_ele" + String(elem_id) + ".out"
+                    _append_output(
+                        static_output_files,
+                        static_output_buffers,
+                        filename,
+                        _format_values_line(values),
+                    )
+            elif rec.type_tag == RecorderTypeTag.ElementBasicForce:
+                for eidx in range(rec.element_count):
+                    var elem_id = recorder_elements_pool[rec.element_offset + eidx]
+                    if (
+                        elem_id >= len(elem_id_to_index)
+                        or elem_id_to_index[elem_id] < 0
+                    ):
+                        abort("recorder element not found")
+                    var elem_index = elem_id_to_index[elem_id]
+                    var elem = typed_elements[elem_index]
+                    var values = _element_basic_force_for_recorder(
+                        elem_index,
+                        elem,
+                        ndf,
+                        u,
+                        typed_nodes,
+                        uniaxial_defs,
+                        uniaxial_state_defs,
+                        uniaxial_states,
+                        elem_uniaxial_offsets,
+                        elem_uniaxial_counts,
+                        elem_uniaxial_state_ids,
+                    )
+                    var filename = rec.output + "_ele" + String(elem_id) + ".out"
+                    _append_output(
+                        static_output_files,
+                        static_output_buffers,
+                        filename,
+                        _format_values_line(values),
+                    )
+            elif rec.type_tag == RecorderTypeTag.ElementDeformation:
+                for eidx in range(rec.element_count):
+                    var elem_id = recorder_elements_pool[rec.element_offset + eidx]
+                    if (
+                        elem_id >= len(elem_id_to_index)
+                        or elem_id_to_index[elem_id] < 0
+                    ):
+                        abort("recorder element not found")
+                    var elem_index = elem_id_to_index[elem_id]
+                    var elem = typed_elements[elem_index]
+                    var values = _element_deformation_for_recorder(
+                        elem_index,
+                        elem,
+                        ndf,
+                        u,
+                        typed_nodes,
+                    )
+                    var filename = rec.output + "_ele" + String(elem_id) + ".out"
+                    _append_output(
+                        static_output_files,
+                        static_output_buffers,
+                        filename,
+                        _format_values_line(values),
                     )
             elif rec.type_tag == RecorderTypeTag.NodeReaction:
                 for nidx in range(rec.node_count):
@@ -1587,6 +1674,90 @@ fn run_static_nonlinear_displacement_control(
                     var filename = rec.output + "_ele" + String(elem_id) + ".out"
                     _append_output(
                         static_output_files, static_output_buffers, filename, line
+                    )
+            elif rec.type_tag == RecorderTypeTag.ElementLocalForce:
+                for eidx in range(rec.element_count):
+                    var elem_id = recorder_elements_pool[rec.element_offset + eidx]
+                    if (
+                        elem_id >= len(elem_id_to_index)
+                        or elem_id_to_index[elem_id] < 0
+                    ):
+                        abort("recorder element not found")
+                    var elem_index = elem_id_to_index[elem_id]
+                    var elem = typed_elements[elem_index]
+                    var values = _element_local_force_for_recorder(
+                        elem_index,
+                        elem,
+                        ndf,
+                        u,
+                        typed_nodes,
+                        uniaxial_defs,
+                        uniaxial_state_defs,
+                        uniaxial_states,
+                        elem_uniaxial_offsets,
+                        elem_uniaxial_counts,
+                        elem_uniaxial_state_ids,
+                    )
+                    var filename = rec.output + "_ele" + String(elem_id) + ".out"
+                    _append_output(
+                        static_output_files,
+                        static_output_buffers,
+                        filename,
+                        _format_values_line(values),
+                    )
+            elif rec.type_tag == RecorderTypeTag.ElementBasicForce:
+                for eidx in range(rec.element_count):
+                    var elem_id = recorder_elements_pool[rec.element_offset + eidx]
+                    if (
+                        elem_id >= len(elem_id_to_index)
+                        or elem_id_to_index[elem_id] < 0
+                    ):
+                        abort("recorder element not found")
+                    var elem_index = elem_id_to_index[elem_id]
+                    var elem = typed_elements[elem_index]
+                    var values = _element_basic_force_for_recorder(
+                        elem_index,
+                        elem,
+                        ndf,
+                        u,
+                        typed_nodes,
+                        uniaxial_defs,
+                        uniaxial_state_defs,
+                        uniaxial_states,
+                        elem_uniaxial_offsets,
+                        elem_uniaxial_counts,
+                        elem_uniaxial_state_ids,
+                    )
+                    var filename = rec.output + "_ele" + String(elem_id) + ".out"
+                    _append_output(
+                        static_output_files,
+                        static_output_buffers,
+                        filename,
+                        _format_values_line(values),
+                    )
+            elif rec.type_tag == RecorderTypeTag.ElementDeformation:
+                for eidx in range(rec.element_count):
+                    var elem_id = recorder_elements_pool[rec.element_offset + eidx]
+                    if (
+                        elem_id >= len(elem_id_to_index)
+                        or elem_id_to_index[elem_id] < 0
+                    ):
+                        abort("recorder element not found")
+                    var elem_index = elem_id_to_index[elem_id]
+                    var elem = typed_elements[elem_index]
+                    var values = _element_deformation_for_recorder(
+                        elem_index,
+                        elem,
+                        ndf,
+                        u,
+                        typed_nodes,
+                    )
+                    var filename = rec.output + "_ele" + String(elem_id) + ".out"
+                    _append_output(
+                        static_output_files,
+                        static_output_buffers,
+                        filename,
+                        _format_values_line(values),
                     )
             elif rec.type_tag == RecorderTypeTag.NodeReaction:
                 for nidx in range(rec.node_count):

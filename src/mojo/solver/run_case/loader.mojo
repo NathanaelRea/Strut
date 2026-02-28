@@ -1,14 +1,20 @@
 from collections import List
-from elements import beam_integration_validate_or_abort
+from elements import (
+    beam_integration_validate_or_abort,
+    link_element_dof_count,
+    two_node_link_internal_dir,
+    zero_length_internal_dir,
+)
 from math import sqrt
 from os import abort
-from python import PythonObject
+from python import Python, PythonObject
 
 from materials import UniMaterialDef, UniMaterialState, uni_mat_is_elastic
 from solver.dof import node_dof_index, require_dof_in_range
 from solver.reorder import build_node_adjacency_typed, rcm_order
 from solver.run_case.input_types import (
     AnalysisInput,
+    DampingInput,
     ElementLoadInput,
     ElementInput,
     MaterialInput,
@@ -94,10 +100,12 @@ struct RunCaseState(Movable):
     var active_index_by_dof: List[Int]
 
     var M_total: List[Float64]
+    var M_rayleigh_total: List[Float64]
     var analysis_integrator_targets_pool: List[Float64]
     var time_series: List[TimeSeriesInput]
     var time_series_values: List[Float64]
     var time_series_times: List[Float64]
+    var dampings: List[DampingInput]
     var ts_index: Int
     var pattern_type: String
     var uniform_excitation_direction: Int
@@ -160,10 +168,12 @@ struct RunCaseState(Movable):
         self.rep_dof = []
         self.active_index_by_dof = []
         self.M_total = []
+        self.M_rayleigh_total = []
         self.analysis_integrator_targets_pool = []
         self.time_series = []
         self.time_series_values = []
         self.time_series_times = []
+        self.dampings = []
         self.ts_index = -1
         self.pattern_type = "Plain"
         self.uniform_excitation_direction = 0
@@ -231,6 +241,21 @@ fn _set_elem_dof(mut elem: ElementInput, idx: Int, value: Int):
         elem.dof_24 = value
 
 
+fn _set_elem_dir(mut elem: ElementInput, idx: Int, value: Int):
+    if idx == 0:
+        elem.dir_1 = value
+    elif idx == 1:
+        elem.dir_2 = value
+    elif idx == 2:
+        elem.dir_3 = value
+    elif idx == 3:
+        elem.dir_4 = value
+    elif idx == 4:
+        elem.dir_5 = value
+    else:
+        elem.dir_6 = value
+
+
 fn _elem_material(elem: ElementInput, idx: Int) -> Int:
     if idx == 0:
         return elem.material_1
@@ -243,6 +268,39 @@ fn _elem_material(elem: ElementInput, idx: Int) -> Int:
     if idx == 4:
         return elem.material_5
     return elem.material_6
+
+
+fn _elem_damp_material(elem: ElementInput, idx: Int) -> Int:
+    if idx == 0:
+        return elem.damp_material_1
+    if idx == 1:
+        return elem.damp_material_2
+    if idx == 2:
+        return elem.damp_material_3
+    if idx == 3:
+        return elem.damp_material_4
+    if idx == 4:
+        return elem.damp_material_5
+    return elem.damp_material_6
+
+
+fn _normalize_dampings_raw(dampings_raw: PythonObject) raises -> PythonObject:
+    var builtins = Python.import_module("builtins")
+    if Bool(builtins.isinstance(dampings_raw, builtins.list)):
+        return dampings_raw
+    if Bool(builtins.isinstance(dampings_raw, builtins.dict)):
+        var dampings_list = builtins.list()
+        dampings_list.append(dampings_raw)
+        return dampings_list
+    abort("dampings must be list or object")
+    return builtins.list()
+
+
+fn _find_damping_input(dampings: List[DampingInput], tag: Int) -> Int:
+    for i in range(len(dampings)):
+        if dampings[i].tag == tag:
+            return i
+    return -1
 
 
 fn _elem_dof(elem: ElementInput, idx: Int) -> Int:
@@ -403,6 +461,17 @@ fn _accumulate_beam_element_lumped_mass(
     if ndf >= 6:
         m_total[node_dof_index(elem.node_index_1, 3, ndf)] += lump
         m_total[node_dof_index(elem.node_index_2, 3, ndf)] += lump
+
+
+fn _accumulate_two_node_link_lumped_mass(
+    elem: ElementInput, ndm: Int, ndf: Int, mut m_total: List[Float64]
+):
+    if elem.element_mass <= 0.0:
+        return
+    var lump = 0.5 * elem.element_mass
+    for d in range(ndm):
+        m_total[node_dof_index(elem.node_index_1, d + 1, ndf)] += lump
+        m_total[node_dof_index(elem.node_index_2, d + 1, ndf)] += lump
 
 
 fn _elem_dir(elem: ElementInput, idx: Int) -> Int:
@@ -901,22 +970,61 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
                 _set_elem_dof(elem, 3, node_dof_index(elem.node_index_2, 1, ndf))
                 _set_elem_dof(elem, 4, node_dof_index(elem.node_index_2, 2, ndf))
                 _set_elem_dof(elem, 5, node_dof_index(elem.node_index_2, 3, ndf))
-        elif elem.type_tag == ElementTypeTag.Link:
-            if ndf != 2:
-                abort("zeroLength/twoNodeLink requires ndf=2")
+        elif elem.type_tag == ElementTypeTag.ZeroLength:
             if elem.node_count != 2:
-                abort("zeroLength/twoNodeLink requires 2 nodes")
+                abort("zeroLength requires 2 nodes")
             if elem.material_count != elem.dir_count:
-                abort("zeroLength/twoNodeLink materials/dirs mismatch")
+                abort("zeroLength materials/dirs mismatch")
+            if (
+                elem.damp_material_count > 0
+                and elem.damp_material_count != elem.material_count
+            ):
+                abort("zeroLength dampMats/materials mismatch")
+            for m in range(elem.damp_material_count):
+                var damp_mat_id = _elem_damp_material(elem, m)
+                if damp_mat_id < 0 or damp_mat_id >= len(typed_materials_by_id):
+                    abort("zeroLength damp material not found")
+                var damp_mat = typed_materials_by_id[damp_mat_id]
+                if damp_mat.id < 0:
+                    abort("zeroLength damp material not found")
+                if damp_mat.type != "Elastic":
+                    abort("zeroLength dampMats currently require Elastic materials")
+            if elem.damping_tag >= 0:
+                if elem.damp_material_count > 0:
+                    abort("zeroLength does not support both damp and dampMats")
+            elem.dof_count = link_element_dof_count(ndm, ndf)
             for d in range(elem.dir_count):
-                var dir = _elem_dir(elem, d)
-                if dir != LinkDirectionTag.UX and dir != LinkDirectionTag.UY:
-                    abort("unsupported link dir")
-            elem.dof_count = 4
-            _set_elem_dof(elem, 0, node_dof_index(elem.node_index_1, 1, ndf))
-            _set_elem_dof(elem, 1, node_dof_index(elem.node_index_1, 2, ndf))
-            _set_elem_dof(elem, 2, node_dof_index(elem.node_index_2, 1, ndf))
-            _set_elem_dof(elem, 3, node_dof_index(elem.node_index_2, 2, ndf))
+                _set_elem_dir(
+                    elem,
+                    d,
+                    zero_length_internal_dir(_elem_dir(elem, d), ndm, ndf),
+                )
+            for d in range(ndf):
+                _set_elem_dof(elem, d, node_dof_index(elem.node_index_1, d + 1, ndf))
+                _set_elem_dof(
+                    elem, d + ndf, node_dof_index(elem.node_index_2, d + 1, ndf)
+                )
+        elif elem.type_tag == ElementTypeTag.TwoNodeLink:
+            if elem.node_count != 2:
+                abort("twoNodeLink requires 2 nodes")
+            if elem.material_count != elem.dir_count:
+                abort("twoNodeLink materials/dirs mismatch")
+            if elem.damp_material_count > 0:
+                abort("twoNodeLink does not support dampMats")
+            if elem.damping_tag >= 0:
+                abort("twoNodeLink does not support damp")
+            elem.dof_count = link_element_dof_count(ndm, ndf)
+            for d in range(elem.dir_count):
+                _set_elem_dir(
+                    elem,
+                    d,
+                    two_node_link_internal_dir(_elem_dir(elem, d), ndm, ndf),
+                )
+            for d in range(ndf):
+                _set_elem_dof(elem, d, node_dof_index(elem.node_index_1, d + 1, ndf))
+                _set_elem_dof(
+                    elem, d + ndf, node_dof_index(elem.node_index_2, d + 1, ndf)
+                )
         elif elem.type_tag == ElementTypeTag.ZeroLengthSection:
             if ndm != 2 or ndf != 3:
                 abort("zeroLengthSection requires ndm=2, ndf=3")
@@ -1031,13 +1139,28 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
             elem_uniaxial_state_ids.append(state_index)
             if not uni_mat_is_elastic(mat_def):
                 used_nonelastic_uniaxial = True
-        elif elem.type_tag == ElementTypeTag.Link:
+        elif elem.type_tag == ElementTypeTag.ZeroLength:
             elem_uniaxial_offsets[e] = len(elem_uniaxial_state_ids)
             elem_uniaxial_counts[e] = elem.material_count
             for m in range(elem.material_count):
                 var mat_id = _elem_material(elem, m)
                 if mat_id >= len(uniaxial_def_by_id) or uniaxial_def_by_id[mat_id] < 0:
-                    abort("zeroLength/twoNodeLink requires uniaxial material")
+                    abort("zeroLength requires uniaxial material")
+                var def_index = uniaxial_def_by_id[mat_id]
+                var mat_def = uniaxial_defs[def_index]
+                var state_index = len(uniaxial_states)
+                uniaxial_states.append(UniMaterialState(mat_def))
+                uniaxial_state_defs.append(def_index)
+                elem_uniaxial_state_ids.append(state_index)
+                if not uni_mat_is_elastic(mat_def):
+                    used_nonelastic_uniaxial = True
+        elif elem.type_tag == ElementTypeTag.TwoNodeLink:
+            elem_uniaxial_offsets[e] = len(elem_uniaxial_state_ids)
+            elem_uniaxial_counts[e] = elem.material_count
+            for m in range(elem.material_count):
+                var mat_id = _elem_material(elem, m)
+                if mat_id >= len(uniaxial_def_by_id) or uniaxial_def_by_id[mat_id] < 0:
+                    abort("twoNodeLink requires uniaxial material")
                 var def_index = uniaxial_def_by_id[mat_id]
                 var mat_def = uniaxial_defs[def_index]
                 var state_index = len(uniaxial_states)
@@ -1226,6 +1349,8 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
 
     var M_total: List[Float64] = []
     M_total.resize(total_dofs, 0.0)
+    var M_rayleigh_total: List[Float64] = []
+    M_rayleigh_total.resize(total_dofs, 0.0)
     for i in range(len(input.masses)):
         var mass = input.masses[i]
         var node_id = mass.node
@@ -1233,10 +1358,26 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
         require_dof_in_range(dof, ndf, "mass")
         var idx = node_dof_index(id_to_index[node_id], dof, ndf)
         M_total[idx] += mass.value
+        M_rayleigh_total[idx] += mass.value
     for e in range(elem_count):
         _accumulate_beam_element_lumped_mass(
             typed_elements[e], typed_elements[e].rho, input.nodes, ndf, M_total
         )
+        _accumulate_beam_element_lumped_mass(
+            typed_elements[e],
+            typed_elements[e].rho,
+            input.nodes,
+            ndf,
+            M_rayleigh_total,
+        )
+        if typed_elements[e].type_tag == ElementTypeTag.TwoNodeLink:
+            _accumulate_two_node_link_lumped_mass(
+                typed_elements[e], ndm, ndf, M_total
+            )
+            if typed_elements[e].do_rayleigh:
+                _accumulate_two_node_link_lumped_mass(
+                    typed_elements[e], ndm, ndf, M_rayleigh_total
+                )
 
     # Lump translational mass from fourNodeQuad/bbarQuad density when provided.
     for e in range(elem_count):
@@ -1540,6 +1681,43 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
     var time_series_values: List[Float64] = []
     var time_series_times: List[Float64] = []
     parse_time_series_inputs(data, time_series, time_series_values, time_series_times)
+    var dampings: List[DampingInput] = []
+    var dampings_raw = _normalize_dampings_raw(input.dampings)
+    for i in range(py_len(dampings_raw)):
+        var raw = dampings_raw[i]
+        var damping = DampingInput()
+        damping.tag = Int(raw.get("id", raw.get("tag", -1)))
+        if damping.tag < 0:
+            abort("damping requires id")
+        if _find_damping_input(dampings, damping.tag) >= 0:
+            abort("duplicate damping id")
+        damping.type = String(raw.get("type", ""))
+        if damping.type == "SecStiff":
+            damping.type = "SecStif"
+        if damping.type != "SecStif":
+            abort("unsupported damping type: " + damping.type)
+        damping.beta = Float64(raw.get("beta", 0.0))
+        if damping.beta <= 0.0:
+            abort("SecStif damping requires beta > 0")
+        damping.activate_time = Float64(
+            raw.get("activateTime", raw.get("activate_time", 0.0))
+        )
+        damping.deactivate_time = Float64(
+            raw.get("deactivateTime", raw.get("deactivate_time", 1.0e20))
+        )
+        damping.factor_ts_tag = Int(raw.get("factor", raw.get("factor_time_series", -1)))
+        if damping.factor_ts_tag >= 0:
+            damping.factor_ts_index = find_time_series_input(
+                time_series, damping.factor_ts_tag
+            )
+            if damping.factor_ts_index < 0:
+                abort("damping factor time_series tag not found")
+        dampings.append(damping^)
+    for i in range(len(typed_elements)):
+        var elem = typed_elements[i]
+        if elem.type_tag == ElementTypeTag.ZeroLength and elem.damping_tag >= 0:
+            if _find_damping_input(dampings, elem.damping_tag) < 0:
+                abort("zeroLength damping not found")
     var ts_index = -1
     var pattern_input = input.pattern
     var pattern_type = "Plain"
@@ -1646,12 +1824,14 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
     state.rep_dof = rep_dof^
     state.active_index_by_dof = active_index_by_dof^
     state.M_total = M_total^
+    state.M_rayleigh_total = M_rayleigh_total^
     state.analysis_integrator_targets_pool = (
         input.analysis_integrator_targets_pool.copy()
     )
     state.time_series = time_series^
     state.time_series_values = time_series_values^
     state.time_series_times = time_series_times^
+    state.dampings = dampings^
     state.ts_index = ts_index
     state.pattern_type = pattern_type
     state.uniform_excitation_direction = uniform_excitation_direction

@@ -64,6 +64,127 @@ def _base_truss_dynamic_case(material):
     }
 
 
+def _base_zero_length_dynamic_case(do_rayleigh: bool):
+    return {
+        "schema_version": "1.0",
+        "metadata": {"name": "zero_length_rayleigh_unit", "units": "SI"},
+        "model": {"ndm": 2, "ndf": 2},
+        "time_series": [
+            {
+                "type": "Path",
+                "tag": 11,
+                "dt": 0.02,
+                "values": [0.0, 1.0, 1.0, 0.5, 0.0, 0.0, 0.0, 0.0],
+            }
+        ],
+        "pattern": {"type": "Plain", "tag": 11, "time_series": 11},
+        "nodes": [
+            {"id": 1, "x": 0.0, "y": 0.0, "constraints": [1, 2]},
+            {"id": 2, "x": 0.0, "y": 0.0, "constraints": [2]},
+        ],
+        "materials": [{"id": 1, "type": "Elastic", "params": {"E": 100.0}}],
+        "sections": [],
+        "elements": [
+            {
+                "id": 1,
+                "type": "zeroLength",
+                "nodes": [1, 2],
+                "materials": [1],
+                "dirs": [1],
+                "doRayleigh": do_rayleigh,
+            }
+        ],
+        "loads": [{"node": 2, "dof": 1, "value": 1.0}],
+        "masses": [{"node": 2, "dof": 1, "value": 1.0}],
+        "analysis": {
+            "type": "transient_linear",
+            "steps": 8,
+            "dt": 0.02,
+            "integrator": {"type": "Newmark", "gamma": 0.5, "beta": 0.25},
+        },
+        "rayleigh": {"betaK": 0.25},
+        "recorders": [
+            {
+                "type": "node_displacement",
+                "nodes": [2],
+                "dofs": [1],
+                "output": "node_disp",
+            }
+        ],
+    }
+
+
+def _base_zero_length_damp_mats_dynamic_case(with_damp_mats: bool):
+    case = _base_zero_length_dynamic_case(False)
+    case["metadata"]["name"] = "zero_length_damp_mats_unit"
+    case["rayleigh"] = {}
+    if with_damp_mats:
+        case["materials"].append({"id": 2, "type": "Elastic", "params": {"E": 25.0}})
+        case["elements"][0]["dampMats"] = [2]
+    return case
+
+
+def _base_zero_length_damp_dynamic_case(with_damp: bool):
+    case = _base_zero_length_dynamic_case(False)
+    case["metadata"]["name"] = "zero_length_damp_unit"
+    case["rayleigh"] = {}
+    if with_damp:
+        case["dampings"] = [{"id": 3, "type": "SecStif", "beta": 0.25}]
+        case["elements"][0]["damp"] = 3
+    return case
+
+
+def _base_two_node_link_dynamic_case(do_rayleigh: bool):
+    return {
+        "schema_version": "1.0",
+        "metadata": {"name": "two_node_link_rayleigh_unit", "units": "SI"},
+        "model": {"ndm": 3, "ndf": 3},
+        "time_series": [
+            {
+                "type": "Path",
+                "tag": 12,
+                "dt": 0.02,
+                "values": [0.0, 1.0, 1.0, 0.5, 0.0, 0.0, 0.0, 0.0],
+            }
+        ],
+        "pattern": {"type": "Plain", "tag": 12, "time_series": 12},
+        "nodes": [
+            {"id": 1, "x": 0.0, "y": 0.0, "z": 0.0, "constraints": [1, 2, 3]},
+            {"id": 2, "x": 1.0, "y": 0.0, "z": 0.0, "constraints": [1, 3]},
+        ],
+        "materials": [{"id": 1, "type": "Elastic", "params": {"E": 100.0}}],
+        "sections": [],
+        "elements": [
+            {
+                "id": 1,
+                "type": "twoNodeLink",
+                "nodes": [1, 2],
+                "materials": [1],
+                "dirs": [1],
+                "orient": {"x": [0.0, 1.0, 0.0], "y": [0.0, 0.0, 1.0]},
+                "mass": 2.0,
+                "doRayleigh": do_rayleigh,
+            }
+        ],
+        "analysis": {
+            "type": "transient_linear",
+            "steps": 8,
+            "dt": 0.02,
+            "integrator": {"type": "Newmark", "gamma": 0.5, "beta": 0.25},
+        },
+        "rayleigh": {"alphaM": 1.5},
+        "loads": [{"node": 2, "dof": 2, "value": 1.0}],
+        "recorders": [
+            {
+                "type": "node_displacement",
+                "nodes": [2],
+                "dofs": [2],
+                "output": "node_disp",
+            }
+        ],
+    }
+
+
 def test_transient_linear_rayleigh_reduces_tail_response():
     base = _base_truss_dynamic_case(
         {"id": 1, "type": "Elastic", "params": {"E": 100.0}}
@@ -99,6 +220,153 @@ def test_transient_linear_rayleigh_reduces_tail_response():
     undamped_tail = sum(abs(row[0]) for row in undamped_rows[4:]) / 4.0
     damped_tail = sum(abs(row[0]) for row in damped_rows[4:]) / 4.0
     assert damped_tail < undamped_tail
+
+
+def test_zero_length_do_rayleigh_controls_stiffness_damping():
+    with tempfile.TemporaryDirectory() as tmp:
+        out_dir = Path(tmp)
+        without_rayleigh = _base_zero_length_dynamic_case(False)
+        _run_strut_case(without_rayleigh, out_dir / "without_rayleigh")
+        without_rows = _read_rows(out_dir / "without_rayleigh" / "node_disp_node2.out")
+
+        with_rayleigh = _base_zero_length_dynamic_case(True)
+        _run_strut_case(with_rayleigh, out_dir / "with_rayleigh")
+        with_rows = _read_rows(out_dir / "with_rayleigh" / "node_disp_node2.out")
+
+    without_tail = sum(abs(row[0]) for row in without_rows[4:]) / 4.0
+    with_tail = sum(abs(row[0]) for row in with_rows[4:]) / 4.0
+    assert with_tail < without_tail
+
+
+def test_two_node_link_do_rayleigh_controls_element_mass_damping():
+    with tempfile.TemporaryDirectory() as tmp:
+        out_dir = Path(tmp)
+        without_rayleigh = _base_two_node_link_dynamic_case(False)
+        _run_strut_case(without_rayleigh, out_dir / "without_rayleigh")
+        without_rows = _read_rows(out_dir / "without_rayleigh" / "node_disp_node2.out")
+
+        with_rayleigh = _base_two_node_link_dynamic_case(True)
+        _run_strut_case(with_rayleigh, out_dir / "with_rayleigh")
+        with_rows = _read_rows(out_dir / "with_rayleigh" / "node_disp_node2.out")
+
+    without_tail = sum(abs(row[0]) for row in without_rows[4:]) / 4.0
+    with_tail = sum(abs(row[0]) for row in with_rows[4:]) / 4.0
+    assert with_tail < without_tail
+
+
+def test_zero_length_damp_mats_add_element_damping():
+    with tempfile.TemporaryDirectory() as tmp:
+        out_dir = Path(tmp)
+        without_damp_mats = _base_zero_length_damp_mats_dynamic_case(False)
+        _run_strut_case(without_damp_mats, out_dir / "without_damp_mats")
+        without_rows = _read_rows(out_dir / "without_damp_mats" / "node_disp_node2.out")
+
+        with_damp_mats = _base_zero_length_damp_mats_dynamic_case(True)
+        _run_strut_case(with_damp_mats, out_dir / "with_damp_mats")
+        with_rows = _read_rows(out_dir / "with_damp_mats" / "node_disp_node2.out")
+
+    without_tail = sum(abs(row[0]) for row in without_rows[4:]) / 4.0
+    with_tail = sum(abs(row[0]) for row in with_rows[4:]) / 4.0
+    assert with_tail < without_tail
+
+
+def test_zero_length_damp_adds_element_damping():
+    with tempfile.TemporaryDirectory() as tmp:
+        out_dir = Path(tmp)
+        without_damp = _base_zero_length_damp_dynamic_case(False)
+        _run_strut_case(without_damp, out_dir / "without_damp")
+        without_rows = _read_rows(out_dir / "without_damp" / "node_disp_node2.out")
+
+        with_damp = _base_zero_length_damp_dynamic_case(True)
+        _run_strut_case(with_damp, out_dir / "with_damp")
+        with_rows = _read_rows(out_dir / "with_damp" / "node_disp_node2.out")
+
+    without_tail = sum(abs(row[0]) for row in without_rows[4:]) / 4.0
+    with_tail = sum(abs(row[0]) for row in with_rows[4:]) / 4.0
+    assert with_tail < without_tail
+
+
+def test_zero_length_damp_mats_require_matching_material_count():
+    case_data = _base_zero_length_damp_mats_dynamic_case(True)
+    case_data["elements"][0]["materials"] = [1, 2]
+    case_data["elements"][0]["dirs"] = [1, 2]
+    case_data["elements"][0]["dampMats"] = [2]
+    case_data["nodes"][1]["constraints"] = []
+    case_data["loads"] = [
+        {"node": 2, "dof": 1, "value": 1.0},
+        {"node": 2, "dof": 2, "value": 1.0},
+    ]
+    case_data["masses"] = [
+        {"node": 2, "dof": 1, "value": 1.0},
+        {"node": 2, "dof": 2, "value": 1.0},
+    ]
+    case_data["recorders"][0]["dofs"] = [1, 2]
+
+    with tempfile.TemporaryDirectory() as tmp:
+        out_dir = Path(tmp)
+        with pytest.raises(subprocess.CalledProcessError):
+            _run_strut_case(case_data, out_dir)
+
+
+def test_two_node_link_rejects_damp_mats():
+    case_data = _base_two_node_link_dynamic_case(False)
+    case_data["materials"].append({"id": 2, "type": "Elastic", "params": {"E": 25.0}})
+    case_data["elements"][0]["dampMats"] = [2]
+
+    with tempfile.TemporaryDirectory() as tmp:
+        out_dir = Path(tmp)
+        with pytest.raises(subprocess.CalledProcessError):
+            _run_strut_case(case_data, out_dir)
+
+
+def test_zero_length_damp_requires_known_damping():
+    case_data = _base_zero_length_damp_dynamic_case(True)
+    case_data["elements"][0]["damp"] = 99
+
+    with tempfile.TemporaryDirectory() as tmp:
+        out_dir = Path(tmp)
+        with pytest.raises(subprocess.CalledProcessError):
+            _run_strut_case(case_data, out_dir)
+
+
+def test_two_node_link_rejects_damp():
+    case_data = _base_two_node_link_dynamic_case(False)
+    case_data["dampings"] = [{"id": 3, "type": "SecStif", "beta": 0.25}]
+    case_data["elements"][0]["damp"] = 3
+
+    with tempfile.TemporaryDirectory() as tmp:
+        out_dir = Path(tmp)
+        with pytest.raises(subprocess.CalledProcessError):
+            _run_strut_case(case_data, out_dir)
+
+
+def test_run_strut_case_warns_for_noncoincident_zero_length(tmp_path: Path):
+    case_data = _base_zero_length_dynamic_case(False)
+    case_data["analysis"] = {"type": "static_linear", "steps": 1}
+    case_data["time_series"] = [{"type": "Linear", "tag": 1, "factor": 1.0}]
+    case_data["pattern"] = {"type": "Plain", "tag": 1, "time_series": 1}
+    case_data["loads"] = [{"node": 2, "dof": 1, "value": 1.0}]
+    case_data["nodes"][1]["x"] = 0.1
+    input_path = tmp_path / "input.json"
+    output_path = tmp_path / "out"
+    input_path.write_text(json.dumps(case_data), encoding="utf-8")
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(repo_root / "scripts" / "run_strut_case.py"),
+            "--input",
+            str(input_path),
+            "--output",
+            str(output_path),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert "WARNING ZeroLength::setDomain(): Element 1 has L=" in proc.stderr
 
 
 def test_transient_linear_uniform_excitation_direction_sign():

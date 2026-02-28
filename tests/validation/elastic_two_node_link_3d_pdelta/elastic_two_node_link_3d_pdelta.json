@@ -1,0 +1,127 @@
+{
+  "schema_version": "1.0",
+  "enabled": true,
+  "status": "active",
+  "metadata": {
+    "name": "elastic_two_node_link_3d_pdelta",
+    "units": "SI"
+  },
+  "notes": "3D twoNodeLink with axial, shear, rotational, and pDelta coupling in the ndf=6 path.",
+  "model": {
+    "ndm": 3,
+    "ndf": 6
+  },
+  "nodes": [
+    {
+      "id": 1,
+      "x": 0.0,
+      "y": 0.0,
+      "z": 0.0,
+      "constraints": [1, 2, 3, 4, 5, 6]
+    },
+    {
+      "id": 2,
+      "x": 3.0,
+      "y": 0.0,
+      "z": 0.0,
+      "constraints": [4]
+    }
+  ],
+  "materials": [
+    {
+      "id": 1,
+      "type": "Elastic",
+      "params": {
+        "E": 2000.0
+      }
+    },
+    {
+      "id": 2,
+      "type": "Elastic",
+      "params": {
+        "E": 600.0
+      }
+    },
+    {
+      "id": 3,
+      "type": "Elastic",
+      "params": {
+        "E": 500.0
+      }
+    },
+    {
+      "id": 4,
+      "type": "Elastic",
+      "params": {
+        "E": 250.0
+      }
+    },
+    {
+      "id": 5,
+      "type": "Elastic",
+      "params": {
+        "E": 300.0
+      }
+    }
+  ],
+  "sections": [],
+  "elements": [
+    {
+      "id": 1,
+      "type": "twoNodeLink",
+      "nodes": [1, 2],
+      "materials": [1, 2, 3, 4, 5],
+      "dirs": [1, 2, 3, 5, 6],
+      "pDelta": [0.1, 0.15, 0.2, 0.25]
+    }
+  ],
+  "loads": [
+    {
+      "node": 2,
+      "dof": 1,
+      "value": 5.0
+    },
+    {
+      "node": 2,
+      "dof": 2,
+      "value": 1.0
+    },
+    {
+      "node": 2,
+      "dof": 3,
+      "value": -0.5
+    }
+  ],
+  "analysis": {
+    "type": "static_linear",
+    "steps": 1
+  },
+  "recorders": [
+    {
+      "type": "node_displacement",
+      "nodes": [2],
+      "dofs": [1, 2, 3, 5, 6],
+      "output": "node_disp"
+    },
+    {
+      "type": "element_force",
+      "elements": [1],
+      "output": "element_force"
+    },
+    {
+      "type": "element_local_force",
+      "elements": [1],
+      "output": "element_local_force"
+    },
+    {
+      "type": "element_basic_force",
+      "elements": [1],
+      "output": "element_basic_force"
+    },
+    {
+      "type": "element_deformation",
+      "elements": [1],
+      "output": "element_deformation"
+    }
+  ]
+}

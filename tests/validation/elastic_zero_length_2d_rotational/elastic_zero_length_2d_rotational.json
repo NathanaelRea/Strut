@@ -1,0 +1,71 @@
+{
+  "schema_version": "1.0",
+  "enabled": true,
+  "status": "active",
+  "metadata": {
+    "name": "elastic_zero_length_2d_rotational",
+    "units": "SI"
+  },
+  "notes": "2D zeroLength with rotational spring about local z.",
+  "model": {
+    "ndm": 2,
+    "ndf": 3
+  },
+  "nodes": [
+    {
+      "id": 1,
+      "x": 0.0,
+      "y": 0.0,
+      "constraints": [1, 2, 3]
+    },
+    {
+      "id": 2,
+      "x": 0.0,
+      "y": 0.0,
+      "constraints": [1, 2]
+    }
+  ],
+  "materials": [
+    {
+      "id": 1,
+      "type": "Elastic",
+      "params": {
+        "E": 1000.0
+      }
+    }
+  ],
+  "sections": [],
+  "elements": [
+    {
+      "id": 1,
+      "type": "zeroLength",
+      "nodes": [1, 2],
+      "materials": [1],
+      "dirs": [6]
+    }
+  ],
+  "loads": [
+    {
+      "node": 2,
+      "dof": 3,
+      "value": 10.0
+    }
+  ],
+  "analysis": {
+    "type": "static_linear",
+    "steps": 1
+  },
+  "recorders": [
+    {
+      "type": "node_displacement",
+      "nodes": [2],
+      "dofs": [1, 2, 3],
+      "output": "node_disp"
+    },
+    {
+      "type": "element_force",
+      "elements": [1],
+      "output": "element_force"
+    }
+  ]
+}

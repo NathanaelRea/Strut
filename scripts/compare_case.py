@@ -13,6 +13,9 @@ DEFAULT_RECORDER_TOLERANCES = {
     "node_reaction": {"atol": 1e-9, "rtol": 1e-5},
     "drift": {"atol": 1e-9, "rtol": 1e-5},
     "element_force": {"atol": 1e-8, "rtol": 1e-5},
+    "element_local_force": {"atol": 1e-8, "rtol": 1e-5},
+    "element_basic_force": {"atol": 1e-8, "rtol": 1e-5},
+    "element_deformation": {"atol": 1e-8, "rtol": 1e-5},
     "envelope_element_force": {"atol": 1e-8, "rtol": 1e-5},
     "section_force": {"atol": 1e-8, "rtol": 1e-5},
     "section_deformation": {"atol": 1e-9, "rtol": 1e-6},
@@ -334,6 +337,44 @@ def main():
                 if not ok:
                     failures.append(f"drift i{i_node}-j{j_node} mismatch")
                     failures.extend([f"  {err}" for err in errors])
+        elif rec_type in (
+            "element_force",
+            "element_local_force",
+            "element_basic_force",
+            "element_deformation",
+        ):
+            default_output = rec_type
+            output = rec.get("output", default_output)
+            for elem_id in rec["elements"]:
+                ref_file = ref_dir / f"{output}_ele{elem_id}.out"
+                strut_file = strut_dir / f"{output}_ele{elem_id}.out"
+                if not ref_file.exists():
+                    failures.append(f"missing reference output: {ref_file}")
+                    continue
+                if not strut_file.exists():
+                    failures.append(f"missing strut output: {strut_file}")
+                    continue
+                if is_transient:
+                    ref_vals = _load_all_values(ref_file)
+                    strut_vals = _load_all_values(strut_file)
+                    _compare_transient_rows(
+                        ref_vals,
+                        strut_vals,
+                        f"{rec_type} element {elem_id}",
+                        failures,
+                        rec_rtol,
+                        rec_atol,
+                        parity_mode,
+                    )
+                else:
+                    ref_vals = _load_last_values(ref_file)
+                    strut_vals = _load_last_values(strut_file)
+                    ok, errors = _compare_vectors(
+                        ref_vals, strut_vals, rtol=rec_rtol, atol=rec_atol
+                    )
+                    if not ok:
+                        failures.append(f"{rec_type} element {elem_id} mismatch")
+                        failures.extend([f"  {err}" for err in errors])
         elif rec_type == "envelope_element_force":
             output = rec.get("output", "envelope_element_force")
             for elem_id in rec["elements"]:

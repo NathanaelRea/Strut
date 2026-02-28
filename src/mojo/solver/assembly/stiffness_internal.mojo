@@ -17,7 +17,7 @@ from elements import (
     force_beam_column2d_global_tangent_and_internal,
     force_beam_column3d_fiber_global_tangent_and_internal,
     force_beam_column3d_global_tangent_and_internal,
-    link_global_stiffness,
+    link_orientation_matrix,
     quad4_plane_stress_stiffness,
     shell4_mindlin_stiffness,
     truss_global_stiffness,
@@ -32,12 +32,14 @@ from materials import (
 from solver.banded import banded_add, banded_matrix
 from solver.dof import node_dof_index
 from solver.run_case.input_types import (
+    DampingInput,
     ElementInput,
     ElementLoadInput,
     MaterialInput,
     NodeInput,
     SectionInput,
 )
+from solver.time_series import TimeSeriesInput, eval_time_series_input
 from sections import FiberCell, FiberSection2dDef, FiberSection3dDef
 from tag_types import ElementTypeTag, LinkDirectionTag
 
@@ -51,6 +53,24 @@ fn _zero_matrix(mut mat: List[List[Float64]]):
     for i in range(len(mat)):
         for j in range(len(mat[i])):
             mat[i][j] = 0.0
+
+
+@always_inline
+fn _assembly_filter_accepts_element(elem: ElementInput, filter_mode: Int) -> Bool:
+    if filter_mode == 0:
+        return True
+
+    var is_link_like = (
+        elem.type_tag == ElementTypeTag.ZeroLength
+        or elem.type_tag == ElementTypeTag.TwoNodeLink
+    )
+    if filter_mode == 1:
+        return is_link_like
+    if filter_mode == 2:
+        return is_link_like and elem.do_rayleigh
+
+    abort("unsupported assembly filter mode")
+    return False
 
 
 @always_inline
@@ -139,6 +159,20 @@ fn _elem_material(elem: ElementInput, idx: Int) -> Int:
     return elem.material_6
 
 
+fn _elem_damp_material(elem: ElementInput, idx: Int) -> Int:
+    if idx == 0:
+        return elem.damp_material_1
+    if idx == 1:
+        return elem.damp_material_2
+    if idx == 2:
+        return elem.damp_material_3
+    if idx == 3:
+        return elem.damp_material_4
+    if idx == 4:
+        return elem.damp_material_5
+    return elem.damp_material_6
+
+
 fn _elem_dir(elem: ElementInput, idx: Int) -> Int:
     if idx == 0:
         return elem.dir_1
@@ -201,6 +235,742 @@ fn _elem_dof(elem: ElementInput, idx: Int) -> Int:
     if idx == 22:
         return elem.dof_23
     return elem.dof_24
+
+
+fn _elem_dof_map(elem: ElementInput) -> List[Int]:
+    var dof_map: List[Int] = []
+    dof_map.resize(elem.dof_count, -1)
+    for i in range(elem.dof_count):
+        dof_map[i] = _elem_dof(elem, i)
+    return dof_map^
+
+
+fn _gather_element_u(dof_map: List[Int], u: List[Float64]) -> List[Float64]:
+    var out: List[Float64] = []
+    out.resize(len(dof_map), 0.0)
+    for i in range(len(dof_map)):
+        out[i] = u[dof_map[i]]
+    return out^
+
+
+fn _zero_length_row(
+    dir: Int, ndm: Int, ndf: Int, trans: List[List[Float64]]
+) -> List[Float64]:
+    var row: List[Float64] = []
+    row.resize(2 * ndf, 0.0)
+    if ndm == 2 and ndf == 2:
+        var axis = dir - 1
+        row[0] = -trans[axis][0]
+        row[1] = -trans[axis][1]
+        row[2] = trans[axis][0]
+        row[3] = trans[axis][1]
+        return row^
+    if ndm == 2 and ndf == 3:
+        if dir == 1 or dir == 2:
+            var axis = dir - 1
+            row[0] = -trans[axis][0]
+            row[1] = -trans[axis][1]
+            row[3] = trans[axis][0]
+            row[4] = trans[axis][1]
+        else:
+            row[2] = -trans[2][2]
+            row[5] = trans[2][2]
+        return row^
+    if ndm == 3 and ndf == 3:
+        var axis = dir - 1
+        row[0] = -trans[axis][0]
+        row[1] = -trans[axis][1]
+        row[2] = -trans[axis][2]
+        row[3] = trans[axis][0]
+        row[4] = trans[axis][1]
+        row[5] = trans[axis][2]
+        return row^
+    if ndm == 3 and ndf == 6:
+        if dir <= 3:
+            var axis = dir - 1
+            row[0] = -trans[axis][0]
+            row[1] = -trans[axis][1]
+            row[2] = -trans[axis][2]
+            row[6] = trans[axis][0]
+            row[7] = trans[axis][1]
+            row[8] = trans[axis][2]
+        else:
+            var axis = dir - 4
+            row[3] = -trans[axis][0]
+            row[4] = -trans[axis][1]
+            row[5] = -trans[axis][2]
+            row[9] = trans[axis][0]
+            row[10] = trans[axis][1]
+            row[11] = trans[axis][2]
+        return row^
+    abort("unsupported zeroLength ndm/ndf combination")
+    return row^
+
+
+fn _two_node_link_tgl(
+    ndm: Int, ndf: Int, trans: List[List[Float64]]
+) -> List[List[Float64]]:
+    var num_dof = 2 * ndf
+    var tgl: List[List[Float64]] = []
+    for _ in range(num_dof):
+        var row: List[Float64] = []
+        row.resize(num_dof, 0.0)
+        tgl.append(row^)
+    if ndm == 2 and ndf == 2:
+        tgl[0][0] = trans[0][0]
+        tgl[0][1] = trans[0][1]
+        tgl[1][0] = trans[1][0]
+        tgl[1][1] = trans[1][1]
+        tgl[2][2] = trans[0][0]
+        tgl[2][3] = trans[0][1]
+        tgl[3][2] = trans[1][0]
+        tgl[3][3] = trans[1][1]
+        return tgl^
+    if ndm == 2 and ndf == 3:
+        tgl[0][0] = trans[0][0]
+        tgl[0][1] = trans[0][1]
+        tgl[1][0] = trans[1][0]
+        tgl[1][1] = trans[1][1]
+        tgl[2][2] = trans[2][2]
+        tgl[3][3] = trans[0][0]
+        tgl[3][4] = trans[0][1]
+        tgl[4][3] = trans[1][0]
+        tgl[4][4] = trans[1][1]
+        tgl[5][5] = trans[2][2]
+        return tgl^
+    if ndm == 3 and ndf == 3:
+        for i in range(3):
+            for j in range(3):
+                tgl[i][j] = trans[i][j]
+                tgl[i + 3][j + 3] = trans[i][j]
+        return tgl^
+    if ndm == 3 and ndf == 6:
+        for i in range(3):
+            for j in range(3):
+                tgl[i][j] = trans[i][j]
+                tgl[i + 3][j + 3] = trans[i][j]
+                tgl[i + 6][j + 6] = trans[i][j]
+                tgl[i + 9][j + 9] = trans[i][j]
+        return tgl^
+    abort("unsupported twoNodeLink ndm/ndf combination")
+    return tgl^
+
+
+fn _two_node_link_tlb(
+    ndm: Int, ndf: Int, elem: ElementInput, length: Float64
+) -> List[List[Float64]]:
+    var tlb: List[List[Float64]] = []
+    for _ in range(elem.dir_count):
+        var row: List[Float64] = []
+        row.resize(elem.dof_count, 0.0)
+        tlb.append(row^)
+    var half = elem.dof_count // 2
+    for i in range(elem.dir_count):
+        var dir_id = _elem_dir(elem, i) - 1
+        tlb[i][dir_id] = -1.0
+        tlb[i][dir_id + half] = 1.0
+        if ndm == 2 and ndf == 3 and dir_id == 1:
+            tlb[i][2] = -elem.shear_dist_1 * length
+            tlb[i][5] = -(1.0 - elem.shear_dist_1) * length
+        elif ndm == 3 and ndf == 6 and dir_id == 1:
+            tlb[i][5] = -elem.shear_dist_1 * length
+            tlb[i][11] = -(1.0 - elem.shear_dist_1) * length
+        elif ndm == 3 and ndf == 6 and dir_id == 2:
+            tlb[i][4] = elem.shear_dist_2 * length
+            tlb[i][10] = (1.0 - elem.shear_dist_2) * length
+    return tlb^
+
+
+fn _two_node_link_add_pdelta_forces(
+    ndm: Int,
+    ndf: Int,
+    elem: ElementInput,
+    length: Float64,
+    ul: List[Float64],
+    q_basic: List[Float64],
+    mut p_local: List[Float64],
+):
+    if not elem.has_pdelta or length == 0.0:
+        return
+    var axial = 0.0
+    var delta_y = 0.0
+    var delta_z = 0.0
+    var half = elem.dof_count // 2
+    for i in range(elem.dir_count):
+        var dir_id = _elem_dir(elem, i)
+        if dir_id == 1:
+            axial = q_basic[i]
+        elif dir_id == 2:
+            delta_y = ul[1 + half] - ul[1]
+        elif dir_id == 3 and ndm == 3:
+            delta_z = ul[2 + half] - ul[2]
+    if axial == 0.0:
+        return
+    for i in range(elem.dir_count):
+        var dir_id = _elem_dir(elem, i)
+        if elem.dof_count == 4 and dir_id == 2:
+            var vp = axial * delta_y / length
+            vp *= 1.0 - elem.pdelta_3 - elem.pdelta_4
+            p_local[1] -= vp
+            p_local[3] += vp
+        elif ndm == 2 and ndf == 3 and dir_id == 2:
+            var vp = axial * delta_y / length
+            vp *= 1.0 - elem.pdelta_3 - elem.pdelta_4
+            p_local[1] -= vp
+            p_local[4] += vp
+        elif ndm == 2 and ndf == 3 and dir_id == 3:
+            var mp = axial * delta_y
+            p_local[2] += elem.pdelta_3 * mp
+            p_local[5] += elem.pdelta_4 * mp
+        elif ndm == 3 and ndf == 3 and dir_id == 2:
+            var vp = axial * delta_y / length
+            vp *= 1.0 - elem.pdelta_3 - elem.pdelta_4
+            p_local[1] -= vp
+            p_local[4] += vp
+        elif ndm == 3 and ndf == 3 and dir_id == 3:
+            var vp = axial * delta_z / length
+            vp *= 1.0 - elem.pdelta_1 - elem.pdelta_2
+            p_local[2] -= vp
+            p_local[5] += vp
+        elif elem.dof_count == 12 and dir_id == 2:
+            var vp = axial * delta_y / length
+            vp *= 1.0 - elem.pdelta_3 - elem.pdelta_4
+            p_local[1] -= vp
+            p_local[7] += vp
+        elif elem.dof_count == 12 and dir_id == 3:
+            var vp = axial * delta_z / length
+            vp *= 1.0 - elem.pdelta_1 - elem.pdelta_2
+            p_local[2] -= vp
+            p_local[8] += vp
+        elif elem.dof_count == 12 and dir_id == 5:
+            var mp = axial * delta_z
+            p_local[4] -= elem.pdelta_1 * mp
+            p_local[10] -= elem.pdelta_2 * mp
+        elif elem.dof_count == 12 and dir_id == 6:
+            var mp = axial * delta_y
+            p_local[5] += elem.pdelta_3 * mp
+            p_local[11] += elem.pdelta_4 * mp
+
+
+fn _two_node_link_add_pdelta_stiff(
+    ndm: Int,
+    ndf: Int,
+    elem: ElementInput,
+    length: Float64,
+    q_basic: List[Float64],
+    mut k_local: List[List[Float64]],
+):
+    if not elem.has_pdelta or length == 0.0:
+        return
+    var axial = 0.0
+    for i in range(elem.dir_count):
+        if _elem_dir(elem, i) == 1:
+            axial = q_basic[i]
+    if axial == 0.0:
+        return
+    for i in range(elem.dir_count):
+        var dir_id = _elem_dir(elem, i)
+        if elem.dof_count == 4 and dir_id == 2:
+            var noverl = axial / length
+            noverl *= 1.0 - elem.pdelta_3 - elem.pdelta_4
+            k_local[1][1] += noverl
+            k_local[1][3] -= noverl
+            k_local[3][1] -= noverl
+            k_local[3][3] += noverl
+        elif ndm == 2 and ndf == 3 and dir_id == 2:
+            var noverl = axial / length
+            noverl *= 1.0 - elem.pdelta_3 - elem.pdelta_4
+            k_local[1][1] += noverl
+            k_local[1][4] -= noverl
+            k_local[4][1] -= noverl
+            k_local[4][4] += noverl
+        elif ndm == 2 and ndf == 3 and dir_id == 3:
+            k_local[2][1] -= elem.pdelta_3 * axial
+            k_local[2][4] += elem.pdelta_3 * axial
+            k_local[5][1] -= elem.pdelta_4 * axial
+            k_local[5][4] += elem.pdelta_4 * axial
+        elif ndm == 3 and ndf == 3 and dir_id == 2:
+            var noverl = axial / length
+            noverl *= 1.0 - elem.pdelta_3 - elem.pdelta_4
+            k_local[1][1] += noverl
+            k_local[1][4] -= noverl
+            k_local[4][1] -= noverl
+            k_local[4][4] += noverl
+        elif ndm == 3 and ndf == 3 and dir_id == 3:
+            var noverl = axial / length
+            noverl *= 1.0 - elem.pdelta_1 - elem.pdelta_2
+            k_local[2][2] += noverl
+            k_local[2][5] -= noverl
+            k_local[5][2] -= noverl
+            k_local[5][5] += noverl
+        elif elem.dof_count == 12 and dir_id == 2:
+            var noverl = axial / length
+            noverl *= 1.0 - elem.pdelta_3 - elem.pdelta_4
+            k_local[1][1] += noverl
+            k_local[1][7] -= noverl
+            k_local[7][1] -= noverl
+            k_local[7][7] += noverl
+        elif elem.dof_count == 12 and dir_id == 3:
+            var noverl = axial / length
+            noverl *= 1.0 - elem.pdelta_1 - elem.pdelta_2
+            k_local[2][2] += noverl
+            k_local[2][8] -= noverl
+            k_local[8][2] -= noverl
+            k_local[8][8] += noverl
+        elif elem.dof_count == 12 and dir_id == 5:
+            k_local[4][2] += elem.pdelta_1 * axial
+            k_local[4][8] -= elem.pdelta_1 * axial
+            k_local[10][2] += elem.pdelta_2 * axial
+            k_local[10][8] -= elem.pdelta_2 * axial
+        elif elem.dof_count == 12 and dir_id == 6:
+            k_local[5][1] -= elem.pdelta_3 * axial
+            k_local[5][7] += elem.pdelta_3 * axial
+            k_local[11][1] -= elem.pdelta_4 * axial
+            k_local[11][7] += elem.pdelta_4 * axial
+
+
+fn _assemble_zero_length_element(
+    e: Int,
+    elem: ElementInput,
+    nodes: List[NodeInput],
+    ndf: Int,
+    ndm: Int,
+    u: List[Float64],
+    uniaxial_defs: List[UniMaterialDef],
+    uniaxial_state_defs: List[Int],
+    mut uniaxial_states: List[UniMaterialState],
+    elem_uniaxial_offsets: List[Int],
+    elem_uniaxial_counts: List[Int],
+    elem_uniaxial_state_ids: List[Int],
+    mut K: List[List[Float64]],
+    mut F_int: List[Float64],
+):
+    var node1 = nodes[elem.node_index_1]
+    var node2 = nodes[elem.node_index_2]
+    var trans = link_orientation_matrix(
+        ndm,
+        node1.x,
+        node1.y,
+        node1.z,
+        node2.x,
+        node2.y,
+        node2.z,
+        elem.has_orient_x,
+        elem.orient_x_1,
+        elem.orient_x_2,
+        elem.orient_x_3,
+        elem.has_orient_y,
+        elem.orient_y_1,
+        elem.orient_y_2,
+        elem.orient_y_3,
+        False,
+    )
+    var dof_map = _elem_dof_map(elem)
+    var ug = _gather_element_u(dof_map, u)
+    var offset = elem_uniaxial_offsets[e]
+    var count = elem_uniaxial_counts[e]
+    for m in range(count):
+        var row = _zero_length_row(_elem_dir(elem, m), ndm, ndf, trans)
+        var strain = 0.0
+        for i in range(elem.dof_count):
+            strain += row[i] * ug[i]
+        var state_index = elem_uniaxial_state_ids[offset + m]
+        var def_index = uniaxial_state_defs[state_index]
+        var mat_def = uniaxial_defs[def_index]
+        var state = uniaxial_states[state_index]
+        uniaxial_set_trial_strain(mat_def, state, strain)
+        uniaxial_states[state_index] = state
+        var force = state.sig_t
+        var tangent = state.tangent_t
+        for i in range(elem.dof_count):
+            var ri = row[i]
+            if ri == 0.0:
+                continue
+            F_int[dof_map[i]] += ri * force
+            for j in range(elem.dof_count):
+                var rj = row[j]
+                if rj != 0.0:
+                    K[dof_map[i]][dof_map[j]] += ri * tangent * rj
+
+
+fn _assemble_two_node_link_element(
+    e: Int,
+    elem: ElementInput,
+    nodes: List[NodeInput],
+    ndf: Int,
+    ndm: Int,
+    u: List[Float64],
+    uniaxial_defs: List[UniMaterialDef],
+    uniaxial_state_defs: List[Int],
+    mut uniaxial_states: List[UniMaterialState],
+    elem_uniaxial_offsets: List[Int],
+    elem_uniaxial_counts: List[Int],
+    elem_uniaxial_state_ids: List[Int],
+    mut K: List[List[Float64]],
+    mut F_int: List[Float64],
+):
+    var node1 = nodes[elem.node_index_1]
+    var node2 = nodes[elem.node_index_2]
+    var dx = node2.x - node1.x
+    var dy = node2.y - node1.y
+    var dz = node2.z - node1.z
+    var length: Float64
+    if ndm == 2:
+        length = sqrt(dx * dx + dy * dy)
+    else:
+        length = sqrt(dx * dx + dy * dy + dz * dz)
+    var trans = link_orientation_matrix(
+        ndm,
+        node1.x,
+        node1.y,
+        node1.z,
+        node2.x,
+        node2.y,
+        node2.z,
+        elem.has_orient_x,
+        elem.orient_x_1,
+        elem.orient_x_2,
+        elem.orient_x_3,
+        elem.has_orient_y,
+        elem.orient_y_1,
+        elem.orient_y_2,
+        elem.orient_y_3,
+        True,
+    )
+    var tgl = _two_node_link_tgl(ndm, ndf, trans)
+    var tlb = _two_node_link_tlb(ndm, ndf, elem, length)
+    var dof_map = _elem_dof_map(elem)
+    var ug = _gather_element_u(dof_map, u)
+    var ul: List[Float64] = []
+    ul.resize(elem.dof_count, 0.0)
+    for i in range(elem.dof_count):
+        for j in range(elem.dof_count):
+            ul[i] += tgl[i][j] * ug[j]
+    var offset = elem_uniaxial_offsets[e]
+    var count = elem_uniaxial_counts[e]
+    var q_basic: List[Float64] = []
+    var k_basic: List[Float64] = []
+    q_basic.resize(count, 0.0)
+    k_basic.resize(count, 0.0)
+    for m in range(count):
+        var ub = 0.0
+        for j in range(elem.dof_count):
+            ub += tlb[m][j] * ul[j]
+        var state_index = elem_uniaxial_state_ids[offset + m]
+        var def_index = uniaxial_state_defs[state_index]
+        var mat_def = uniaxial_defs[def_index]
+        var state = uniaxial_states[state_index]
+        uniaxial_set_trial_strain(mat_def, state, ub)
+        uniaxial_states[state_index] = state
+        q_basic[m] = state.sig_t
+        k_basic[m] = state.tangent_t
+    var k_local: List[List[Float64]] = []
+    for _ in range(elem.dof_count):
+        var row: List[Float64] = []
+        row.resize(elem.dof_count, 0.0)
+        k_local.append(row^)
+    for m in range(count):
+        for i in range(elem.dof_count):
+            var ti = tlb[m][i]
+            if ti == 0.0:
+                continue
+            for j in range(elem.dof_count):
+                var tj = tlb[m][j]
+                if tj != 0.0:
+                    k_local[i][j] += ti * k_basic[m] * tj
+    var p_local: List[Float64] = []
+    p_local.resize(elem.dof_count, 0.0)
+    for i in range(elem.dof_count):
+        for m in range(count):
+            p_local[i] += tlb[m][i] * q_basic[m]
+    _two_node_link_add_pdelta_forces(ndm, ndf, elem, length, ul, q_basic, p_local)
+    _two_node_link_add_pdelta_stiff(ndm, ndf, elem, length, q_basic, k_local)
+    var p_global: List[Float64] = []
+    p_global.resize(elem.dof_count, 0.0)
+    for i in range(elem.dof_count):
+        for j in range(elem.dof_count):
+            p_global[i] += tgl[j][i] * p_local[j]
+    for i in range(elem.dof_count):
+        F_int[dof_map[i]] += p_global[i]
+    for i in range(elem.dof_count):
+        for j in range(elem.dof_count):
+            var kij = 0.0
+            for p in range(elem.dof_count):
+                if tgl[p][i] == 0.0:
+                    continue
+                for q in range(elem.dof_count):
+                    if tgl[q][j] != 0.0:
+                        kij += tgl[p][i] * k_local[p][q] * tgl[q][j]
+            K[dof_map[i]][dof_map[j]] += kij
+
+
+fn _assemble_zero_length_damping_element(
+    elem: ElementInput,
+    nodes: List[NodeInput],
+    ndf: Int,
+    ndm: Int,
+    materials_by_id: List[MaterialInput],
+    mut C: List[List[Float64]],
+):
+    if elem.damp_material_count <= 0:
+        return
+    var node1 = nodes[elem.node_index_1]
+    var node2 = nodes[elem.node_index_2]
+    var trans = link_orientation_matrix(
+        ndm,
+        node1.x,
+        node1.y,
+        node1.z,
+        node2.x,
+        node2.y,
+        node2.z,
+        elem.has_orient_x,
+        elem.orient_x_1,
+        elem.orient_x_2,
+        elem.orient_x_3,
+        elem.has_orient_y,
+        elem.orient_y_1,
+        elem.orient_y_2,
+        elem.orient_y_3,
+        False,
+    )
+    var dof_map = _elem_dof_map(elem)
+    for m in range(elem.damp_material_count):
+        var row = _zero_length_row(_elem_dir(elem, m), ndm, ndf, trans)
+        var damp_mat_id = _elem_damp_material(elem, m)
+        if damp_mat_id < 0 or damp_mat_id >= len(materials_by_id):
+            abort("zeroLength damp material not found")
+        var damp_mat = materials_by_id[damp_mat_id]
+        if damp_mat.id < 0:
+            abort("zeroLength damp material not found")
+        var eta = damp_mat.E
+        for i in range(elem.dof_count):
+            var ri = row[i]
+            if ri == 0.0:
+                continue
+            for j in range(elem.dof_count):
+                var rj = row[j]
+                if rj != 0.0:
+                    C[dof_map[i]][dof_map[j]] += ri * eta * rj
+
+
+fn assemble_zero_length_damping_typed(
+    nodes: List[NodeInput],
+    elements: List[ElementInput],
+    materials_by_id: List[MaterialInput],
+    node_count: Int,
+    ndf: Int,
+    ndm: Int,
+    mut C: List[List[Float64]],
+):
+    _zero_matrix(C)
+    var total_dofs = node_count * ndf
+    if len(C) != total_dofs:
+        abort("invalid damping matrix row count")
+    for i in range(total_dofs):
+        if len(C[i]) != total_dofs:
+            abort("invalid damping matrix column count")
+    for e in range(len(elements)):
+        var elem = elements[e]
+        if elem.type_tag != ElementTypeTag.ZeroLength:
+            continue
+        if elem.damp_material_count <= 0:
+            continue
+        _assemble_zero_length_damping_element(
+            elem, nodes, ndf, ndm, materials_by_id, C
+        )
+
+
+fn _find_damping_input(dampings: List[DampingInput], tag: Int) -> Int:
+    for i in range(len(dampings)):
+        if dampings[i].tag == tag:
+            return i
+    return -1
+
+
+fn _zero_length_secstif_active(
+    damping: DampingInput,
+    time: Float64,
+    dt: Float64,
+    time_series: List[TimeSeriesInput],
+    time_series_values: List[Float64],
+    time_series_times: List[Float64],
+) raises -> Float64:
+    if dt <= 0.0:
+        return 0.0
+    if time <= damping.activate_time or time >= damping.deactivate_time:
+        return 0.0
+    var factor = 1.0
+    if damping.factor_ts_index >= 0:
+        factor = eval_time_series_input(
+            time_series[damping.factor_ts_index],
+            time,
+            time_series_values,
+            time_series_times,
+        )
+    return factor
+
+
+fn assemble_zero_length_damping_committed_typed(
+    nodes: List[NodeInput],
+    elements: List[ElementInput],
+    dampings: List[DampingInput],
+    time_series: List[TimeSeriesInput],
+    time_series_values: List[Float64],
+    time_series_times: List[Float64],
+    ndf: Int,
+    ndm: Int,
+    time: Float64,
+    dt: Float64,
+    uniaxial_states: List[UniMaterialState],
+    elem_uniaxial_offsets: List[Int],
+    elem_uniaxial_counts: List[Int],
+    elem_uniaxial_state_ids: List[Int],
+    mut K_damp: List[List[Float64]],
+    mut F_committed: List[Float64],
+) raises:
+    _zero_matrix(K_damp)
+    _zero_vector(F_committed)
+    for e in range(len(elements)):
+        var elem = elements[e]
+        if elem.type_tag != ElementTypeTag.ZeroLength or elem.damping_tag < 0:
+            continue
+        var damping_index = _find_damping_input(dampings, elem.damping_tag)
+        if damping_index < 0:
+            abort("zeroLength damping not found")
+        var damping = dampings[damping_index]
+        if damping.type != "SecStif":
+            abort("unsupported zeroLength damping type")
+        var factor = _zero_length_secstif_active(
+            damping,
+            time,
+            dt,
+            time_series,
+            time_series_values,
+            time_series_times,
+        )
+        if factor == 0.0:
+            continue
+        var km = damping.beta / dt
+        var node1 = nodes[elem.node_index_1]
+        var node2 = nodes[elem.node_index_2]
+        var trans = link_orientation_matrix(
+            ndm,
+            node1.x,
+            node1.y,
+            node1.z,
+            node2.x,
+            node2.y,
+            node2.z,
+            elem.has_orient_x,
+            elem.orient_x_1,
+            elem.orient_x_2,
+            elem.orient_x_3,
+            elem.has_orient_y,
+            elem.orient_y_1,
+            elem.orient_y_2,
+            elem.orient_y_3,
+            False,
+        )
+        var dof_map = _elem_dof_map(elem)
+        var offset = elem_uniaxial_offsets[e]
+        var count = elem_uniaxial_counts[e]
+        for m in range(count):
+            var row = _zero_length_row(_elem_dir(elem, m), ndm, ndf, trans)
+            var state_index = elem_uniaxial_state_ids[offset + m]
+            var state = uniaxial_states[state_index]
+            var force_committed = factor * km * state.sig_c
+            var tangent = km * state.tangent_c
+            for i in range(elem.dof_count):
+                var ri = row[i]
+                if ri == 0.0:
+                    continue
+                F_committed[dof_map[i]] += ri * force_committed
+                for j in range(elem.dof_count):
+                    var rj = row[j]
+                    if rj != 0.0:
+                        K_damp[dof_map[i]][dof_map[j]] += ri * tangent * rj
+
+
+fn assemble_zero_length_damping_trial_typed(
+    nodes: List[NodeInput],
+    elements: List[ElementInput],
+    dampings: List[DampingInput],
+    time_series: List[TimeSeriesInput],
+    time_series_values: List[Float64],
+    time_series_times: List[Float64],
+    ndf: Int,
+    ndm: Int,
+    time: Float64,
+    dt: Float64,
+    uniaxial_states: List[UniMaterialState],
+    elem_uniaxial_offsets: List[Int],
+    elem_uniaxial_counts: List[Int],
+    elem_uniaxial_state_ids: List[Int],
+    mut K_damp: List[List[Float64]],
+    mut F_damp: List[Float64],
+) raises:
+    _zero_matrix(K_damp)
+    _zero_vector(F_damp)
+    for e in range(len(elements)):
+        var elem = elements[e]
+        if elem.type_tag != ElementTypeTag.ZeroLength or elem.damping_tag < 0:
+            continue
+        var damping_index = _find_damping_input(dampings, elem.damping_tag)
+        if damping_index < 0:
+            abort("zeroLength damping not found")
+        var damping = dampings[damping_index]
+        if damping.type != "SecStif":
+            abort("unsupported zeroLength damping type")
+        var factor = _zero_length_secstif_active(
+            damping,
+            time,
+            dt,
+            time_series,
+            time_series_values,
+            time_series_times,
+        )
+        if factor == 0.0:
+            continue
+        var km = damping.beta / dt
+        var node1 = nodes[elem.node_index_1]
+        var node2 = nodes[elem.node_index_2]
+        var trans = link_orientation_matrix(
+            ndm,
+            node1.x,
+            node1.y,
+            node1.z,
+            node2.x,
+            node2.y,
+            node2.z,
+            elem.has_orient_x,
+            elem.orient_x_1,
+            elem.orient_x_2,
+            elem.orient_x_3,
+            elem.has_orient_y,
+            elem.orient_y_1,
+            elem.orient_y_2,
+            elem.orient_y_3,
+            False,
+        )
+        var dof_map = _elem_dof_map(elem)
+        var offset = elem_uniaxial_offsets[e]
+        var count = elem_uniaxial_counts[e]
+        for m in range(count):
+            var row = _zero_length_row(_elem_dir(elem, m), ndm, ndf, trans)
+            var state_index = elem_uniaxial_state_ids[offset + m]
+            var state = uniaxial_states[state_index]
+            var force = factor * km * (state.sig_t - state.sig_c)
+            var tangent = km * state.tangent_t
+            for i in range(elem.dof_count):
+                var ri = row[i]
+                if ri == 0.0:
+                    continue
+                F_damp[dof_map[i]] += ri * force
+                for j in range(elem.dof_count):
+                    var rj = row[j]
+                    if rj != 0.0:
+                        K_damp[dof_map[i]][dof_map[j]] += ri * tangent * rj
 
 
 fn _build_elem_dof_soa(
@@ -769,6 +1539,88 @@ fn assemble_global_stiffness_typed(
     return K^
 
 
+fn assemble_link_stiffness_typed(
+    nodes: List[NodeInput],
+    elements: List[ElementInput],
+    sections_by_id: List[SectionInput],
+    materials_by_id: List[MaterialInput],
+    id_to_index: List[Int],
+    node_count: Int,
+    ndf: Int,
+    ndm: Int,
+    u: List[Float64],
+    uniaxial_defs: List[UniMaterialDef],
+    uniaxial_state_defs: List[Int],
+    mut uniaxial_states: List[UniMaterialState],
+    elem_uniaxial_offsets: List[Int],
+    elem_uniaxial_counts: List[Int],
+    elem_uniaxial_state_ids: List[Int],
+    force_basic_offsets: List[Int],
+    force_basic_counts: List[Int],
+    mut force_basic_q: List[Float64],
+    fiber_section_defs: List[FiberSection2dDef],
+    fiber_section_cells: List[FiberCell],
+    fiber_section_index_by_id: List[Int],
+    fiber_section3d_defs: List[FiberSection3dDef],
+    fiber_section3d_cells: List[FiberCell],
+    fiber_section3d_index_by_id: List[Int],
+    elem_dof_offsets: List[Int],
+    elem_dof_pool: List[Int],
+    mut dof_map6: List[Int],
+    mut dof_map12: List[Int],
+    mut u_elem6: List[Float64],
+    only_rayleigh_participating: Bool,
+    mut K: List[List[Float64]],
+) raises:
+    var total_dofs = node_count * ndf
+    var F_dummy: List[Float64] = []
+    F_dummy.resize(total_dofs, 0.0)
+    var empty_element_loads: List[ElementLoadInput] = []
+    var empty_elem_load_offsets: List[Int] = []
+    var empty_elem_load_pool: List[Int] = []
+    var filter_mode = 1
+    if only_rayleigh_participating:
+        filter_mode = 2
+    _assemble_global_stiffness_and_internal_filtered(
+        nodes,
+        elements,
+        empty_element_loads,
+        empty_elem_load_offsets,
+        empty_elem_load_pool,
+        0.0,
+        sections_by_id,
+        materials_by_id,
+        id_to_index,
+        node_count,
+        ndf,
+        ndm,
+        u,
+        uniaxial_defs,
+        uniaxial_state_defs,
+        uniaxial_states,
+        elem_uniaxial_offsets,
+        elem_uniaxial_counts,
+        elem_uniaxial_state_ids,
+        force_basic_offsets,
+        force_basic_counts,
+        force_basic_q,
+        fiber_section_defs,
+        fiber_section_cells,
+        fiber_section_index_by_id,
+        fiber_section3d_defs,
+        fiber_section3d_cells,
+        fiber_section3d_index_by_id,
+        elem_dof_offsets,
+        elem_dof_pool,
+        dof_map6,
+        dof_map12,
+        u_elem6,
+        filter_mode,
+        K,
+        F_dummy,
+    )
+
+
 fn assemble_internal_forces_typed(
     nodes: List[NodeInput],
     elements: List[ElementInput],
@@ -1157,6 +2009,84 @@ fn assemble_global_stiffness_and_internal(
     mut K: List[List[Float64]],
     mut F_int: List[Float64],
 ) raises:
+    _assemble_global_stiffness_and_internal_filtered(
+        nodes,
+        elements,
+        element_loads,
+        elem_load_offsets,
+        elem_load_pool,
+        load_scale,
+        sections_by_id,
+        materials_by_id,
+        id_to_index,
+        node_count,
+        ndf,
+        ndm,
+        u,
+        uniaxial_defs,
+        uniaxial_state_defs,
+        uniaxial_states,
+        elem_uniaxial_offsets,
+        elem_uniaxial_counts,
+        elem_uniaxial_state_ids,
+        force_basic_offsets,
+        force_basic_counts,
+        force_basic_q,
+        fiber_section_defs,
+        fiber_section_cells,
+        fiber_section_index_by_id,
+        fiber_section3d_defs,
+        fiber_section3d_cells,
+        fiber_section3d_index_by_id,
+        elem_dof_offsets,
+        elem_dof_pool,
+        dof_map6,
+        dof_map12,
+        u_elem6,
+        0,
+        K,
+        F_int,
+    )
+
+
+fn _assemble_global_stiffness_and_internal_filtered(
+    nodes: List[NodeInput],
+    elements: List[ElementInput],
+    element_loads: List[ElementLoadInput],
+    elem_load_offsets: List[Int],
+    elem_load_pool: List[Int],
+    load_scale: Float64,
+    sections_by_id: List[SectionInput],
+    materials_by_id: List[MaterialInput],
+    id_to_index: List[Int],
+    node_count: Int,
+    ndf: Int,
+    ndm: Int,
+    u: List[Float64],
+    uniaxial_defs: List[UniMaterialDef],
+    uniaxial_state_defs: List[Int],
+    mut uniaxial_states: List[UniMaterialState],
+    elem_uniaxial_offsets: List[Int],
+    elem_uniaxial_counts: List[Int],
+    elem_uniaxial_state_ids: List[Int],
+    force_basic_offsets: List[Int],
+    force_basic_counts: List[Int],
+    mut force_basic_q: List[Float64],
+    fiber_section_defs: List[FiberSection2dDef],
+    fiber_section_cells: List[FiberCell],
+    fiber_section_index_by_id: List[Int],
+    fiber_section3d_defs: List[FiberSection3dDef],
+    fiber_section3d_cells: List[FiberCell],
+    fiber_section3d_index_by_id: List[Int],
+    elem_dof_offsets: List[Int],
+    elem_dof_pool: List[Int],
+    mut dof_map6: List[Int],
+    mut dof_map12: List[Int],
+    mut u_elem6: List[Float64],
+    filter_mode: Int,
+    mut K: List[List[Float64]],
+    mut F_int: List[Float64],
+) raises:
     _zero_matrix(K)
     _zero_vector(F_int)
 
@@ -1180,6 +2110,8 @@ fn assemble_global_stiffness_and_internal(
 
     for e in range(elem_count):
         var elem = elements[e]
+        if not _assembly_filter_accepts_element(elem, filter_mode):
+            continue
         var elem_type = elem.type_tag
         if elem_type == ElementTypeTag.ElasticBeamColumn2d:
             var i1 = elem.node_index_1
@@ -1646,43 +2578,40 @@ fn assemble_global_stiffness_and_internal(
                 F_int[dof_map[3]] += N * l
                 F_int[dof_map[4]] += N * m
                 F_int[dof_map[5]] += N * n
-        elif elem_type == ElementTypeTag.Link:
-            var dof_map = [
-                _elem_dof(elem, 0),
-                _elem_dof(elem, 1),
-                _elem_dof(elem, 2),
-                _elem_dof(elem, 3),
-            ]
-            var offset = elem_uniaxial_offsets[e]
-            var count = elem_uniaxial_counts[e]
-
-            for m in range(count):
-                var state_index = elem_uniaxial_state_ids[offset + m]
-                var def_index = uniaxial_state_defs[state_index]
-                var mat_def = uniaxial_defs[def_index]
-                var state = uniaxial_states[state_index]
-                var dir = _elem_dir(elem, m)
-                if dir == LinkDirectionTag.UX:
-                    uniaxial_set_trial_strain(mat_def, state, u[dof_map[2]] - u[dof_map[0]])
-                else:
-                    uniaxial_set_trial_strain(mat_def, state, u[dof_map[3]] - u[dof_map[1]])
-                uniaxial_states[state_index] = state
-                var force = state.sig_t
-                var k = state.tangent_t
-                if dir == LinkDirectionTag.UX:
-                    K[dof_map[0]][dof_map[0]] += k
-                    K[dof_map[2]][dof_map[2]] += k
-                    K[dof_map[0]][dof_map[2]] -= k
-                    K[dof_map[2]][dof_map[0]] -= k
-                    F_int[dof_map[0]] -= force
-                    F_int[dof_map[2]] += force
-                else:
-                    K[dof_map[1]][dof_map[1]] += k
-                    K[dof_map[3]][dof_map[3]] += k
-                    K[dof_map[1]][dof_map[3]] -= k
-                    K[dof_map[3]][dof_map[1]] -= k
-                    F_int[dof_map[1]] -= force
-                    F_int[dof_map[3]] += force
+        elif elem_type == ElementTypeTag.ZeroLength:
+            _assemble_zero_length_element(
+                e,
+                elem,
+                nodes,
+                ndf,
+                ndm,
+                u,
+                uniaxial_defs,
+                uniaxial_state_defs,
+                uniaxial_states,
+                elem_uniaxial_offsets,
+                elem_uniaxial_counts,
+                elem_uniaxial_state_ids,
+                K,
+                F_int,
+            )
+        elif elem_type == ElementTypeTag.TwoNodeLink:
+            _assemble_two_node_link_element(
+                e,
+                elem,
+                nodes,
+                ndf,
+                ndm,
+                u,
+                uniaxial_defs,
+                uniaxial_state_defs,
+                uniaxial_states,
+                elem_uniaxial_offsets,
+                elem_uniaxial_counts,
+                elem_uniaxial_state_ids,
+                K,
+                F_int,
+            )
         elif elem_type == ElementTypeTag.ZeroLengthSection:
             var dof_map = [
                 _elem_dof(elem, 0),
