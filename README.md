@@ -15,18 +15,11 @@ This is a test project for now, primarily just to see how far I can push the vib
 2. Download `OpenSees.exe` and necessary `tcl` files, put into [OpenSees](./benchmark/OpenSees/)
 3. Run the [setup script](./scripts/setup.sh) to download docs and repos that can be used by the agent
 
-## Beam-Column Parity Targets
-
-- Frozen parity contract (Phase 0): [docs/beam_column_parity_contract.md](./docs/beam_column_parity_contract.md)
-- Harness schema/tolerance contract: [docs/harness.md](./docs/harness.md)
-- Validation case matrix (2D/3D x family x analysis): [tests/validation/PHASE0_CASE_MATRIX.md](./tests/validation/PHASE0_CASE_MATRIX.md)
-
 ## OpenSees Coverage Checklist
 
 Element families below are based on the local OpenSees reference tree (`docs/agent-reference/OpenSees/SRC/element`) and current Strut implementation status. This is a family-level view (not the full command/alias list from `OpenSeesElementCommands.cpp`).
 
 Legend: `✅` implemented in Strut, `❌` available in OpenSees but not implemented in Strut, blank cell = not available/not-applicable for that 2D/3D slot at family level. `Full` is full family coverage (`✅` only when all applicable 2D/3D variants are implemented; for non-2D/3D families it is the direct full-family status).
-
 
 | Element family              | 2D  | 3D  | Full |
 | --------------------------- | --- | --- | ---- |
