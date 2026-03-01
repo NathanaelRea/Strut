@@ -5,10 +5,13 @@ from sections.fiber2d import (
     append_fiber_section2d_from_json,
     fiber_section2d_commit,
     fiber_section2d_commit_all,
+    fiber_section2d_commit_from_offset,
     fiber_section2d_init_states,
     fiber_section2d_revert_trial,
     fiber_section2d_revert_trial_all,
+    fiber_section2d_revert_trial_from_offset,
     fiber_section2d_set_trial,
+    fiber_section2d_set_trial_from_offset,
 )
 from sections.fiber3d import (
     FiberSection3dDef,
@@ -20,4 +23,5 @@ from sections.fiber3d import (
     fiber_section3d_revert_trial,
     fiber_section3d_revert_trial_all,
     fiber_section3d_set_trial,
+    fiber_section3d_set_trial_from_offset,
 )

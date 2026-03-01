@@ -32,7 +32,12 @@ from solver.run_case.input_types import (
     RecorderInput,
     SectionInput,
 )
-from sections import FiberCell, FiberSection2dDef, FiberSection3dDef
+from sections import (
+    FiberCell,
+    FiberSection2dDef,
+    FiberSection3dDef,
+    fiber_section2d_set_trial_from_offset,
+)
 from tag_types import ElementTypeTag
 
 
@@ -663,7 +668,7 @@ fn _truss_element_force_global(
     var state_index = elem_uniaxial_state_ids[offset]
     var def_index = uniaxial_state_defs[state_index]
     var mat_def = uniaxial_defs[def_index]
-    var state = uniaxial_states[state_index]
+    ref state = uniaxial_states[state_index]
     var A = elem.area
 
     if ndf == 2:
@@ -685,7 +690,6 @@ fn _truss_element_force_global(
         ) * s
         var eps = du / L
         uniaxial_set_trial_strain(mat_def, state, eps)
-        uniaxial_states[state_index] = state
         var N = state.sig_t * A
         return [-N * c, -N * s, N * c, N * s]
 
@@ -711,7 +715,6 @@ fn _truss_element_force_global(
     ) * m + (u[dof_map[5]] - u[dof_map[2]]) * n
     var eps = du / L
     uniaxial_set_trial_strain(mat_def, state, eps)
-    uniaxial_states[state_index] = state
     var N = state.sig_t * A
     return [-N * l, -N * m, -N * n, N * l, N * m, N * n]
 
@@ -764,9 +767,8 @@ fn _zero_length_element_force_global(
         var state_index = elem_uniaxial_state_ids[offset + m]
         var def_index = uniaxial_state_defs[state_index]
         var mat_def = uniaxial_defs[def_index]
-        var state = uniaxial_states[state_index]
+        ref state = uniaxial_states[state_index]
         uniaxial_set_trial_strain(mat_def, state, strain)
-        uniaxial_states[state_index] = state
         for i in range(elem.dof_count):
             f_elem[i] += row[i] * state.sig_t
     return f_elem^
@@ -820,9 +822,8 @@ fn _zero_length_basic_force_for_recorder(
         var state_index = elem_uniaxial_state_ids[offset + m]
         var def_index = uniaxial_state_defs[state_index]
         var mat_def = uniaxial_defs[def_index]
-        var state = uniaxial_states[state_index]
+        ref state = uniaxial_states[state_index]
         uniaxial_set_trial_strain(mat_def, state, strain)
-        uniaxial_states[state_index] = state
         q_basic[m] = state.sig_t
     return q_basic^
 
@@ -927,9 +928,8 @@ fn _two_node_link_element_force_global(
         var state_index = elem_uniaxial_state_ids[offset + m]
         var def_index = uniaxial_state_defs[state_index]
         var mat_def = uniaxial_defs[def_index]
-        var state = uniaxial_states[state_index]
+        ref state = uniaxial_states[state_index]
         uniaxial_set_trial_strain(mat_def, state, ub)
-        uniaxial_states[state_index] = state
         q_basic[m] = state.sig_t
     var p_local: List[Float64] = []
     p_local.resize(elem.dof_count, 0.0)
@@ -1006,9 +1006,8 @@ fn _two_node_link_local_force_for_recorder(
         var state_index = elem_uniaxial_state_ids[offset + m]
         var def_index = uniaxial_state_defs[state_index]
         var mat_def = uniaxial_defs[def_index]
-        var state = uniaxial_states[state_index]
+        ref state = uniaxial_states[state_index]
         uniaxial_set_trial_strain(mat_def, state, ub)
-        uniaxial_states[state_index] = state
         q_basic[m] = state.sig_t
     var p_local: List[Float64] = []
     p_local.resize(elem.dof_count, 0.0)
@@ -1080,9 +1079,8 @@ fn _two_node_link_basic_force_for_recorder(
         var state_index = elem_uniaxial_state_ids[offset + m]
         var def_index = uniaxial_state_defs[state_index]
         var mat_def = uniaxial_defs[def_index]
-        var state = uniaxial_states[state_index]
+        ref state = uniaxial_states[state_index]
         uniaxial_set_trial_strain(mat_def, state, ub)
-        uniaxial_states[state_index] = state
         q_basic[m] = state.sig_t
     return q_basic^
 
@@ -1556,31 +1554,18 @@ fn _fiber_section_force_from_offset(
     eps0: Float64,
     kappa: Float64,
 ) raises -> List[Float64]:
-    if state_count != sec_def.fiber_count:
-        abort("section recorder fiber state count mismatch")
-    if state_offset < 0 or state_offset + state_count > len(elem_state_ids):
-        abort("section recorder fiber state offset out of range")
-
-    var axial_force = 0.0
-    var moment_z = 0.0
-    for i in range(state_count):
-        var cell = fibers[sec_def.fiber_offset + i]
-        var y_rel = cell.y - sec_def.y_bar
-        var eps = eps0 - y_rel * kappa
-        var state_index = elem_state_ids[state_offset + i]
-        if state_index < 0 or state_index >= len(uniaxial_states):
-            abort("section recorder fiber state index out of range")
-        if cell.def_index < 0 or cell.def_index >= len(uniaxial_defs):
-            abort("section recorder fiber material definition out of range")
-        var mat_def = uniaxial_defs[cell.def_index]
-        var state = uniaxial_states[state_index]
-        uniaxial_set_trial_strain(mat_def, state, eps)
-        uniaxial_states[state_index] = state
-
-        var fs = state.sig_t * cell.area
-        axial_force += fs
-        moment_z += -fs * y_rel
-    return [axial_force, moment_z]
+    var resp = fiber_section2d_set_trial_from_offset(
+        sec_def,
+        fibers,
+        uniaxial_defs,
+        elem_state_ids,
+        uniaxial_states,
+        state_offset,
+        state_count,
+        eps0,
+        kappa,
+    )
+    return [resp.axial_force, resp.moment_z]
 
 
 fn _force_beam_column2d_section_response(

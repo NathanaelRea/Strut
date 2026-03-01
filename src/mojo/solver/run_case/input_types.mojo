@@ -3,7 +3,13 @@ from os import abort
 from python import Python, PythonObject
 
 from strut_io import py_len
-from tag_types import ElementLoadTypeTag, ElementTypeTag, GeomTransfTag, RecorderTypeTag
+from tag_types import (
+    BeamIntegrationTag,
+    ElementLoadTypeTag,
+    ElementTypeTag,
+    GeomTransfTag,
+    RecorderTypeTag,
+)
 
 
 struct ModelInput(Movable, ImplicitlyCopyable):
@@ -694,6 +700,16 @@ fn geom_transf_tag(geom_name: String) -> Int:
     if geom_name == "Corotational":
         return GeomTransfTag.Corotational
     return GeomTransfTag.Unknown
+
+
+fn beam_integration_tag(integration_name: String) -> Int:
+    if integration_name == "Lobatto":
+        return BeamIntegrationTag.Lobatto
+    if integration_name == "Legendre":
+        return BeamIntegrationTag.Legendre
+    if integration_name == "Radau":
+        return BeamIntegrationTag.Radau
+    return BeamIntegrationTag.Unknown
 
 
 fn recorder_type_tag(type_name: String) -> Int:

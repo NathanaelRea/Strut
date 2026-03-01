@@ -17,10 +17,14 @@ WRAPPER_FRAMES = {
 
 MEMORY_BOUND_HINTS = {
     "assemble_stiffness",
+    "assemble_uniaxial",
+    "assemble_fiber",
     "kff_extract",
     "recorders",
     "constraints",
     "model_build_dof_map",
+    "uniaxial_revert_all",
+    "uniaxial_commit_all",
 }
 
 COMPUTE_BOUND_HINTS = {

@@ -11,9 +11,14 @@ from elements.utils import (
     _ensure_zero_matrix,
     _ensure_zero_vector,
 )
-from materials import UniMaterialDef, UniMaterialState, uniaxial_set_trial_strain
+from materials import UniMaterialDef, UniMaterialState
 from solver.run_case.input_types import ElementLoadInput
-from sections import FiberCell, FiberSection2dDef, FiberSection2dResponse
+from sections import (
+    FiberCell,
+    FiberSection2dDef,
+    FiberSection2dResponse,
+    fiber_section2d_set_trial_from_offset,
+)
 
 
 @always_inline
@@ -51,44 +56,17 @@ fn _fiber_section2d_set_trial_from_offset(
     eps0: Float64,
     kappa: Float64,
 ) -> FiberSection2dResponse:
-    if section_state_count != sec_def.fiber_count:
-        abort("dispBeamColumn2d fiber state count mismatch")
-    if section_state_offset < 0 or section_state_offset + section_state_count > len(
-        section_state_ids
-    ):
-        abort("dispBeamColumn2d fiber section state out of range")
-
-    var axial_force = 0.0
-    var moment_z = 0.0
-    var k11 = 0.0
-    var k12 = 0.0
-    var k22 = 0.0
-
-    for i in range(section_state_count):
-        var cell = fibers[sec_def.fiber_offset + i]
-        var y_rel = cell.y - sec_def.y_bar
-        var eps = eps0 - y_rel * kappa
-
-        var state_index = section_state_ids[section_state_offset + i]
-        if state_index < 0 or state_index >= len(uniaxial_states):
-            abort("dispBeamColumn2d fiber state index out of range")
-        if cell.def_index < 0 or cell.def_index >= len(uniaxial_defs):
-            abort("dispBeamColumn2d fiber material definition out of range")
-        var mat_def = uniaxial_defs[cell.def_index]
-        var state = uniaxial_states[state_index]
-        uniaxial_set_trial_strain(mat_def, state, eps)
-        uniaxial_states[state_index] = state
-
-        var area = cell.area
-        var fs = state.sig_t * area
-        var ks = state.tangent_t * area
-        axial_force += fs
-        moment_z += -fs * y_rel
-        k11 += ks
-        k12 += -ks * y_rel
-        k22 += ks * y_rel * y_rel
-
-    return FiberSection2dResponse(axial_force, moment_z, k11, k12, k22)
+    return fiber_section2d_set_trial_from_offset(
+        sec_def,
+        fibers,
+        uniaxial_defs,
+        section_state_ids,
+        uniaxial_states,
+        section_state_offset,
+        section_state_count,
+        eps0,
+        kappa,
+    )
 
 
 fn disp_beam_column2d_global_tangent_and_internal(

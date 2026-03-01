@@ -1,12 +1,18 @@
 from collections import List
+from elements import (
+    ForceBeamColumn2dScratch,
+    ForceBeamColumn3dScratch,
+    reset_force_beam_column2d_scratch,
+    reset_force_beam_column3d_scratch,
+)
 from solver.run_case.input_types import ElementLoadInput
 from materials import UniMaterialDef, UniMaterialState
 from python import Python
 
 from linalg import gaussian_elimination
 from solver.assembly import (
-    assemble_global_stiffness_and_internal,
-    assemble_global_stiffness_banded_frame2d_typed,
+    assemble_global_stiffness_banded_frame2d_soa,
+    assemble_global_stiffness_and_internal_soa,
 )
 from solver.banded import banded_gaussian_elimination, estimate_bandwidth_typed
 from solver.profile import _append_event
@@ -27,8 +33,31 @@ from tag_types import ElementTypeTag
 fn run_static_linear(
     typed_nodes: List[NodeInput],
     typed_elements: List[ElementInput],
+    node_x: List[Float64],
+    node_y: List[Float64],
+    node_z: List[Float64],
     elem_dof_offsets: List[Int],
     elem_dof_pool: List[Int],
+    elem_free_offsets: List[Int],
+    elem_free_pool: List[Int],
+    elem_node_offsets: List[Int],
+    elem_node_pool: List[Int],
+    elem_primary_material_ids: List[Int],
+    elem_type_tags: List[Int],
+    elem_geom_tags: List[Int],
+    elem_section_ids: List[Int],
+    elem_integration_tags: List[Int],
+    elem_num_int_pts: List[Int],
+    elem_area: List[Float64],
+    elem_thickness: List[Float64],
+    frame2d_elem_indices: List[Int],
+    frame3d_elem_indices: List[Int],
+    truss_elem_indices: List[Int],
+    zero_length_elem_indices: List[Int],
+    two_node_link_elem_indices: List[Int],
+    zero_length_section_elem_indices: List[Int],
+    quad_elem_indices: List[Int],
+    shell_elem_indices: List[Int],
     const_element_loads: List[ElementLoadInput],
     pattern_element_loads: List[ElementLoadInput],
     typed_sections_by_id: List[SectionInput],
@@ -68,6 +97,8 @@ fn run_static_linear(
     mut events: String,
     mut events_need_comma: Bool,
     frame_assemble_stiffness: Int,
+    frame_assemble_uniaxial: Int,
+    frame_assemble_fiber: Int,
     frame_kff_extract: Int,
     frame_solve_linear: Int,
     total_dofs: Int,
@@ -80,6 +111,8 @@ fn run_static_linear(
     var asm_dof_map6: List[Int] = []
     var asm_dof_map12: List[Int] = []
     var asm_u_elem6: List[Float64] = []
+    var force_beam_column2d_scratch = ForceBeamColumn2dScratch()
+    var force_beam_column3d_scratch = ForceBeamColumn3dScratch()
     var asm_free_map6: List[Int] = []
     var asm_f_dummy: List[Float64] = []
     var load_scale = 1.0
@@ -97,6 +130,8 @@ fn run_static_linear(
         ndm,
         ndf,
     )
+    reset_force_beam_column2d_scratch(force_beam_column2d_scratch)
+    reset_force_beam_column3d_scratch(force_beam_column3d_scratch)
     if do_profile:
         var t_asm_start = Int(time.perf_counter_ns())
         var asm_start_us = (t_asm_start - t0) // 1000
@@ -127,9 +162,16 @@ fn run_static_linear(
             if len(active_element_load_state.element_loads) > 0:
                 use_typed_banded = False
         if use_typed_banded:
-            K_ff_banded = assemble_global_stiffness_banded_frame2d_typed(
-                typed_nodes,
-                typed_elements,
+            K_ff_banded = assemble_global_stiffness_banded_frame2d_soa(
+                node_x,
+                node_y,
+                elem_type_tags,
+                elem_geom_tags,
+                elem_node_offsets,
+                elem_node_pool,
+                elem_section_ids,
+                elem_integration_tags,
+                elem_num_int_pts,
                 active_element_load_state.element_loads,
                 active_element_load_state.elem_load_offsets,
                 active_element_load_state.elem_load_pool,
@@ -147,11 +189,11 @@ fn run_static_linear(
                 fiber_section_defs,
                 fiber_section_cells,
                 fiber_section_index_by_id,
-                free_index,
                 free_count,
                 bw,
-                elem_dof_offsets,
                 elem_dof_pool,
+                elem_free_offsets,
+                elem_free_pool,
                 asm_free_map6,
                 asm_u_elem6,
                 asm_f_dummy,
@@ -161,9 +203,32 @@ fn run_static_linear(
             var row: List[Float64] = []
             row.resize(total_dofs, 0.0)
             K.append(row^)
-        assemble_global_stiffness_and_internal(
+        assemble_global_stiffness_and_internal_soa(
             typed_nodes,
             typed_elements,
+            node_x,
+            node_y,
+            node_z,
+            elem_dof_offsets,
+            elem_dof_pool,
+            elem_node_offsets,
+            elem_node_pool,
+            elem_primary_material_ids,
+            elem_type_tags,
+            elem_geom_tags,
+            elem_section_ids,
+            elem_integration_tags,
+            elem_num_int_pts,
+            elem_area,
+            elem_thickness,
+            frame2d_elem_indices,
+            frame3d_elem_indices,
+            truss_elem_indices,
+            zero_length_elem_indices,
+            two_node_link_elem_indices,
+            zero_length_section_elem_indices,
+            quad_elem_indices,
+            shell_elem_indices,
             active_element_load_state.element_loads,
             active_element_load_state.elem_load_offsets,
             active_element_load_state.elem_load_pool,
@@ -190,13 +255,19 @@ fn run_static_linear(
             fiber_section3d_defs,
             fiber_section3d_cells,
             fiber_section3d_index_by_id,
-            elem_dof_offsets,
-            elem_dof_pool,
+            force_beam_column2d_scratch,
+            force_beam_column3d_scratch,
             asm_dof_map6,
             asm_dof_map12,
             asm_u_elem6,
             K,
             F_int_dummy,
+            do_profile,
+            t0,
+            events,
+            events_need_comma,
+            frame_assemble_uniaxial,
+            frame_assemble_fiber,
         )
         if has_transformation_mpc:
             K = _collapse_matrix_by_rep(K, rep_dof)

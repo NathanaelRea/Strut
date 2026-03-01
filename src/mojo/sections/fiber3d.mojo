@@ -6,10 +6,12 @@ from materials import (
     UniMaterialDef,
     UniMaterialState,
     uni_mat_is_elastic,
+    uni_mat_initial_tangent,
     uniaxial_commit,
     uniaxial_revert_trial,
     uniaxial_set_trial_strain,
 )
+from solver.simd_contiguous import FLOAT64_SIMD_WIDTH, load_float64_contiguous_simd
 from sections.fiber2d import FiberCell
 from strut_io import py_len
 
@@ -19,12 +21,34 @@ struct FiberSection3dDef(Defaultable, Movable, ImplicitlyCopyable):
     var fiber_count: Int
     var y_bar: Float64
     var z_bar: Float64
+    var elastic_count: Int
+    var nonlinear_count: Int
+    var elastic_y_rel: List[Float64]
+    var elastic_z_rel: List[Float64]
+    var elastic_area: List[Float64]
+    var elastic_modulus: List[Float64]
+    var elastic_def_index: List[Int]
+    var nonlinear_y_rel: List[Float64]
+    var nonlinear_z_rel: List[Float64]
+    var nonlinear_area: List[Float64]
+    var nonlinear_def_index: List[Int]
 
     fn __init__(out self):
         self.fiber_offset = 0
         self.fiber_count = 0
         self.y_bar = 0.0
         self.z_bar = 0.0
+        self.elastic_count = 0
+        self.nonlinear_count = 0
+        self.elastic_y_rel = []
+        self.elastic_z_rel = []
+        self.elastic_area = []
+        self.elastic_modulus = []
+        self.elastic_def_index = []
+        self.nonlinear_y_rel = []
+        self.nonlinear_z_rel = []
+        self.nonlinear_area = []
+        self.nonlinear_def_index = []
 
     fn __init__(
         out self, fiber_offset: Int, fiber_count: Int, y_bar: Float64, z_bar: Float64
@@ -33,6 +57,34 @@ struct FiberSection3dDef(Defaultable, Movable, ImplicitlyCopyable):
         self.fiber_count = fiber_count
         self.y_bar = y_bar
         self.z_bar = z_bar
+        self.elastic_count = 0
+        self.nonlinear_count = 0
+        self.elastic_y_rel = []
+        self.elastic_z_rel = []
+        self.elastic_area = []
+        self.elastic_modulus = []
+        self.elastic_def_index = []
+        self.nonlinear_y_rel = []
+        self.nonlinear_z_rel = []
+        self.nonlinear_area = []
+        self.nonlinear_def_index = []
+
+    fn __copyinit__(out self, existing: Self):
+        self.fiber_offset = existing.fiber_offset
+        self.fiber_count = existing.fiber_count
+        self.y_bar = existing.y_bar
+        self.z_bar = existing.z_bar
+        self.elastic_count = existing.elastic_count
+        self.nonlinear_count = existing.nonlinear_count
+        self.elastic_y_rel = existing.elastic_y_rel.copy()
+        self.elastic_z_rel = existing.elastic_z_rel.copy()
+        self.elastic_area = existing.elastic_area.copy()
+        self.elastic_modulus = existing.elastic_modulus.copy()
+        self.elastic_def_index = existing.elastic_def_index.copy()
+        self.nonlinear_y_rel = existing.nonlinear_y_rel.copy()
+        self.nonlinear_z_rel = existing.nonlinear_z_rel.copy()
+        self.nonlinear_area = existing.nonlinear_area.copy()
+        self.nonlinear_def_index = existing.nonlinear_def_index.copy()
 
 
 struct FiberSection3dResponse(Defaultable, Movable, ImplicitlyCopyable):
@@ -88,6 +140,122 @@ fn _resolve_uniaxial_def_index(
     if mat_id >= len(uniaxial_def_by_id) or uniaxial_def_by_id[mat_id] < 0:
         abort("FiberSection3d requires uniaxial material for all fibers")
     return uniaxial_def_by_id[mat_id]
+
+
+fn _build_fiber_section3d_def(
+    fiber_offset: Int,
+    fiber_count: Int,
+    y_bar: Float64,
+    z_bar: Float64,
+    fibers: List[FiberCell],
+    uniaxial_defs: List[UniMaterialDef],
+) -> FiberSection3dDef:
+    var sec_def = FiberSection3dDef(fiber_offset, fiber_count, y_bar, z_bar)
+    for i in range(fiber_count):
+        var cell = fibers[fiber_offset + i]
+        var def_index = cell.def_index
+        if def_index < 0 or def_index >= len(uniaxial_defs):
+            abort("FiberSection3d fiber material definition out of range")
+        var mat_def = uniaxial_defs[def_index]
+        var y_rel = cell.y - y_bar
+        var z_rel = cell.z - z_bar
+        if uni_mat_is_elastic(mat_def):
+            sec_def.elastic_y_rel.append(y_rel)
+            sec_def.elastic_z_rel.append(z_rel)
+            sec_def.elastic_area.append(cell.area)
+            sec_def.elastic_modulus.append(uni_mat_initial_tangent(mat_def))
+            sec_def.elastic_def_index.append(def_index)
+        else:
+            sec_def.nonlinear_y_rel.append(y_rel)
+            sec_def.nonlinear_z_rel.append(z_rel)
+            sec_def.nonlinear_area.append(cell.area)
+            sec_def.nonlinear_def_index.append(def_index)
+    sec_def.elastic_count = len(sec_def.elastic_y_rel)
+    sec_def.nonlinear_count = len(sec_def.nonlinear_y_rel)
+    return sec_def
+
+
+@always_inline
+fn _fiber_section3d_elastic_response_simd[width: Int](
+    y_rel: List[Float64],
+    z_rel: List[Float64],
+    area: List[Float64],
+    modulus: List[Float64],
+    count: Int,
+    eps0: Float64,
+    kappa_y: Float64,
+    kappa_z: Float64,
+) -> (
+    Float64,
+    Float64,
+    Float64,
+    Float64,
+    Float64,
+    Float64,
+    Float64,
+    Float64,
+    Float64,
+):
+    var axial_force = 0.0
+    var moment_y = 0.0
+    var moment_z = 0.0
+    var k11 = 0.0
+    var k12 = 0.0
+    var k13 = 0.0
+    var k22 = 0.0
+    var k23 = 0.0
+    var k33 = 0.0
+
+    var i = 0
+    var eps0_vec = SIMD[DType.float64, width](eps0)
+    var kappa_y_vec = SIMD[DType.float64, width](kappa_y)
+    var kappa_z_vec = SIMD[DType.float64, width](kappa_z)
+    while i + width <= count:
+        var y_vec = load_float64_contiguous_simd[width](y_rel, i)
+        var z_vec = load_float64_contiguous_simd[width](z_rel, i)
+        var area_vec = load_float64_contiguous_simd[width](area, i)
+        var modulus_vec = load_float64_contiguous_simd[width](modulus, i)
+        var ks_vec = modulus_vec * area_vec
+        var fs_vec = ks_vec * (eps0_vec + z_vec * kappa_y_vec - y_vec * kappa_z_vec)
+        axial_force += fs_vec.reduce_add()
+        moment_y += (fs_vec * z_vec).reduce_add()
+        moment_z += (-fs_vec * y_vec).reduce_add()
+        k11 += ks_vec.reduce_add()
+        k12 += (ks_vec * z_vec).reduce_add()
+        k13 += (-ks_vec * y_vec).reduce_add()
+        k22 += (ks_vec * z_vec * z_vec).reduce_add()
+        k23 += (-ks_vec * z_vec * y_vec).reduce_add()
+        k33 += (ks_vec * y_vec * y_vec).reduce_add()
+        i += width
+
+    while i < count:
+        var y = y_rel[i]
+        var z = z_rel[i]
+        var ks = modulus[i] * area[i]
+        var fs = ks * (eps0 + z * kappa_y - y * kappa_z)
+        axial_force += fs
+        moment_y += fs * z
+        moment_z += -fs * y
+        k11 += ks
+        k12 += ks * z
+        k13 += -ks * y
+        k22 += ks * z * z
+        k23 += -ks * z * y
+        k33 += ks * y * y
+        i += 1
+
+    if count > 0:
+        var modulus0 = modulus[0]
+        var uniform_modulus = True
+        for j in range(1, count):
+            if modulus[j] != modulus0:
+                uniform_modulus = False
+                break
+        if uniform_modulus:
+            k12 = 0.0
+            k13 = 0.0
+
+    return (axial_force, moment_y, moment_z, k11, k12, k13, k22, k23, k33)
 
 
 fn _append_rect_patch_cells(
@@ -249,6 +417,7 @@ fn _append_straight_layer_cells(
 fn append_fiber_section3d_from_json(
     sec: PythonObject,
     uniaxial_def_by_id: List[Int],
+    uniaxial_defs: List[UniMaterialDef],
     mut defs: List[FiberSection3dDef],
     mut fibers: List[FiberCell],
 ) raises:
@@ -300,7 +469,11 @@ fn append_fiber_section3d_from_json(
     var y_bar = qz_sum / area_sum
     var z_bar = qy_sum / area_sum
 
-    defs.append(FiberSection3dDef(fiber_offset, fiber_count, y_bar, z_bar))
+    defs.append(
+        _build_fiber_section3d_def(
+            fiber_offset, fiber_count, y_bar, z_bar, fibers, uniaxial_defs
+        )
+    )
 
 
 fn fiber_section3d_init_states(
@@ -321,9 +494,21 @@ fn fiber_section3d_init_states(
         var sec_def = defs[s]
         section_uniaxial_offsets[s] = len(section_uniaxial_state_ids)
         section_uniaxial_counts[s] = sec_def.fiber_count
-        for i in range(sec_def.fiber_count):
-            var cell = fibers[sec_def.fiber_offset + i]
-            var def_index = cell.def_index
+        if sec_def.fiber_offset < 0 or sec_def.fiber_offset + sec_def.fiber_count > len(
+            fibers
+        ):
+            abort("FiberSection3d fiber data out of range")
+        for i in range(sec_def.elastic_count):
+            var def_index = sec_def.elastic_def_index[i]
+            if def_index < 0 or def_index >= len(uniaxial_defs):
+                abort("FiberSection3d fiber material definition out of range")
+            var mat_def = uniaxial_defs[def_index]
+            var state_index = len(uniaxial_states)
+            uniaxial_states.append(UniMaterialState(mat_def))
+            uniaxial_state_defs.append(def_index)
+            section_uniaxial_state_ids.append(state_index)
+        for i in range(sec_def.nonlinear_count):
+            var def_index = sec_def.nonlinear_def_index[i]
             if def_index < 0 or def_index >= len(uniaxial_defs):
                 abort("FiberSection3d fiber material definition out of range")
             var mat_def = uniaxial_defs[def_index]
@@ -335,6 +520,91 @@ fn fiber_section3d_init_states(
                 used_nonelastic = True
 
     return used_nonelastic
+
+
+fn fiber_section3d_set_trial_from_offset(
+    sec_def: FiberSection3dDef,
+    fibers: List[FiberCell],
+    uniaxial_defs: List[UniMaterialDef],
+    section_state_ids: List[Int],
+    mut uniaxial_states: List[UniMaterialState],
+    section_state_offset: Int,
+    section_state_count: Int,
+    eps0: Float64,
+    kappa_y: Float64,
+    kappa_z: Float64,
+) -> FiberSection3dResponse:
+    if section_state_count != sec_def.fiber_count:
+        abort("FiberSection3d section state count mismatch")
+    if sec_def.fiber_offset < 0 or sec_def.fiber_offset + sec_def.fiber_count > len(
+        fibers
+    ):
+        abort("FiberSection3d fiber data out of range")
+    if section_state_offset < 0 or section_state_offset + section_state_count > len(
+        section_state_ids
+    ):
+        abort("FiberSection3d section state ids out of range")
+    if section_state_offset + section_state_count > len(uniaxial_states):
+        abort("FiberSection3d section states out of range")
+
+    var elastic_resp = _fiber_section3d_elastic_response_simd[FLOAT64_SIMD_WIDTH](
+        sec_def.elastic_y_rel,
+        sec_def.elastic_z_rel,
+        sec_def.elastic_area,
+        sec_def.elastic_modulus,
+        sec_def.elastic_count,
+        eps0,
+        kappa_y,
+        kappa_z,
+    )
+    var axial_force = elastic_resp[0]
+    var moment_y = elastic_resp[1]
+    var moment_z = elastic_resp[2]
+    var k11 = elastic_resp[3]
+    var k12 = elastic_resp[4]
+    var k13 = elastic_resp[5]
+    var k22 = elastic_resp[6]
+    var k23 = elastic_resp[7]
+    var k33 = elastic_resp[8]
+
+    var nonlinear_state_offset = section_state_offset + sec_def.elastic_count
+    for i in range(sec_def.nonlinear_count):
+        var y_rel = sec_def.nonlinear_y_rel[i]
+        var z_rel = sec_def.nonlinear_z_rel[i]
+        var eps = eps0 + z_rel * kappa_y - y_rel * kappa_z
+        var state_index = nonlinear_state_offset + i
+        var def_index = sec_def.nonlinear_def_index[i]
+        if def_index < 0 or def_index >= len(uniaxial_defs):
+            abort("FiberSection3d uniaxial definition index out of range")
+
+        var mat_def = uniaxial_defs[def_index]
+        ref state = uniaxial_states[state_index]
+        uniaxial_set_trial_strain(mat_def, state, eps)
+
+        var area = sec_def.nonlinear_area[i]
+        var fs = state.sig_t * area
+        var ks = state.tangent_t * area
+        axial_force += fs
+        moment_y += fs * z_rel
+        moment_z += -fs * y_rel
+        k11 += ks
+        k12 += ks * z_rel
+        k13 += -ks * y_rel
+        k22 += ks * z_rel * z_rel
+        k23 += -ks * z_rel * y_rel
+        k33 += ks * y_rel * y_rel
+
+    return FiberSection3dResponse(
+        axial_force,
+        moment_y,
+        moment_z,
+        k11,
+        k12,
+        k13,
+        k22,
+        k23,
+        k33,
+    )
 
 
 fn fiber_section3d_set_trial(
@@ -365,57 +635,17 @@ fn fiber_section3d_set_trial(
     if offset + count > len(section_uniaxial_state_ids):
         abort("FiberSection3d section state ids out of range")
 
-    var axial_force = 0.0
-    var moment_y = 0.0
-    var moment_z = 0.0
-    var k11 = 0.0
-    var k12 = 0.0
-    var k13 = 0.0
-    var k22 = 0.0
-    var k23 = 0.0
-    var k33 = 0.0
-
-    for i in range(count):
-        var cell = fibers[sec_def.fiber_offset + i]
-        var y_rel = cell.y - sec_def.y_bar
-        var z_rel = cell.z - sec_def.z_bar
-        var eps = eps0 + z_rel * kappa_y - y_rel * kappa_z
-
-        var state_index = section_uniaxial_state_ids[offset + i]
-        if state_index < 0 or state_index >= len(uniaxial_states):
-            abort("FiberSection3d uniaxial state index out of range")
-        var def_index = cell.def_index
-        if def_index < 0 or def_index >= len(uniaxial_defs):
-            abort("FiberSection3d uniaxial definition index out of range")
-
-        var mat_def = uniaxial_defs[def_index]
-        var state = uniaxial_states[state_index]
-        uniaxial_set_trial_strain(mat_def, state, eps)
-        uniaxial_states[state_index] = state
-
-        var area = cell.area
-        var fs = state.sig_t * area
-        var ks = state.tangent_t * area
-        axial_force += fs
-        moment_y += fs * z_rel
-        moment_z += -fs * y_rel
-        k11 += ks
-        k12 += ks * z_rel
-        k13 += -ks * y_rel
-        k22 += ks * z_rel * z_rel
-        k23 += -ks * z_rel * y_rel
-        k33 += ks * y_rel * y_rel
-
-    return FiberSection3dResponse(
-        axial_force,
-        moment_y,
-        moment_z,
-        k11,
-        k12,
-        k13,
-        k22,
-        k23,
-        k33,
+    return fiber_section3d_set_trial_from_offset(
+        sec_def,
+        fibers,
+        uniaxial_defs,
+        section_uniaxial_state_ids,
+        uniaxial_states,
+        offset,
+        count,
+        eps0,
+        kappa_y,
+        kappa_z,
     )
 
 
@@ -437,10 +667,8 @@ fn fiber_section3d_commit(
         abort("FiberSection3d section state ids out of range")
 
     for i in range(count):
-        var state_index = section_uniaxial_state_ids[offset + i]
-        var state = uniaxial_states[state_index]
+        ref state = uniaxial_states[offset + i]
         uniaxial_commit(state)
-        uniaxial_states[state_index] = state
 
 
 fn fiber_section3d_revert_trial(
@@ -461,10 +689,8 @@ fn fiber_section3d_revert_trial(
         abort("FiberSection3d section state ids out of range")
 
     for i in range(count):
-        var state_index = section_uniaxial_state_ids[offset + i]
-        var state = uniaxial_states[state_index]
+        ref state = uniaxial_states[offset + i]
         uniaxial_revert_trial(state)
-        uniaxial_states[state_index] = state
 
 
 fn fiber_section3d_commit_all(

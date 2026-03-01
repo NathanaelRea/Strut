@@ -3,6 +3,21 @@ from math import cos
 from os import abort
 
 
+struct BeamIntegrationCache(Movable):
+    var integration: String
+    var num_int_pts: Int
+    var is_valid: Bool
+    var xis: List[Float64]
+    var weights: List[Float64]
+
+    fn __init__(out self):
+        self.integration = ""
+        self.num_int_pts = 0
+        self.is_valid = False
+        self.xis = []
+        self.weights = []
+
+
 fn _legendre_polynomial_and_derivative(n: Int, x: Float64) -> (Float64, Float64, Float64):
     if n == 0:
         return (1.0, 0.0, 0.0)
@@ -224,6 +239,21 @@ fn beam_integration_rule(
     for i in range(len(xis)):
         xis[i] = 0.5 * (xis[i] + 1.0)
         weights[i] *= 0.5
+
+
+fn beam_integration_cache_ensure(
+    mut cache: BeamIntegrationCache, integration: String, num_int_pts: Int
+):
+    if (
+        cache.is_valid
+        and cache.integration == integration
+        and cache.num_int_pts == num_int_pts
+    ):
+        return
+    beam_integration_rule(integration, num_int_pts, cache.xis, cache.weights)
+    cache.integration = integration
+    cache.num_int_pts = num_int_pts
+    cache.is_valid = True
 
 
 fn beam_integration_xi_weight(

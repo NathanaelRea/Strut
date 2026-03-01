@@ -1,94 +1,11 @@
 from collections import List
 from os import abort
+from solver.simd_contiguous import (
+    axpy_float64_segments,
+    dot_float64_segments,
+    scale_float64_segment,
+)
 from solver.run_case.input_types import ElementInput
-
-
-@always_inline
-fn _normalize_row_segment_simd4(
-    mut row: List[Float64], start_idx: Int, end_idx: Int, inv_pivot: Float64
-):
-    if start_idx > end_idx:
-        return
-    var i = start_idx
-    var inv_vec = SIMD[DType.float64, 4](inv_pivot)
-    while i + 3 <= end_idx:
-        var chunk = SIMD[DType.float64, 4](row[i], row[i + 1], row[i + 2], row[i + 3])
-        chunk = chunk * inv_vec
-        row[i] = chunk[0]
-        row[i + 1] = chunk[1]
-        row[i + 2] = chunk[2]
-        row[i + 3] = chunk[3]
-        i += 4
-    while i <= end_idx:
-        row[i] *= inv_pivot
-        i += 1
-
-
-@always_inline
-fn _eliminate_row_segment_simd4(
-    mut row_i: List[Float64],
-    idx_ij_start: Int,
-    row_k: List[Float64],
-    idx_kj_start: Int,
-    factor: Float64,
-    count: Int,
-):
-    if count <= 0:
-        return
-    var t = 0
-    var factor_vec = SIMD[DType.float64, 4](factor)
-    while t + 3 < count:
-        var a = SIMD[DType.float64, 4](
-            row_i[idx_ij_start + t],
-            row_i[idx_ij_start + t + 1],
-            row_i[idx_ij_start + t + 2],
-            row_i[idx_ij_start + t + 3],
-        )
-        var b = SIMD[DType.float64, 4](
-            row_k[idx_kj_start + t],
-            row_k[idx_kj_start + t + 1],
-            row_k[idx_kj_start + t + 2],
-            row_k[idx_kj_start + t + 3],
-        )
-        var out = a - factor_vec * b
-        row_i[idx_ij_start + t] = out[0]
-        row_i[idx_ij_start + t + 1] = out[1]
-        row_i[idx_ij_start + t + 2] = out[2]
-        row_i[idx_ij_start + t + 3] = out[3]
-        t += 4
-    while t < count:
-        row_i[idx_ij_start + t] -= factor * row_k[idx_kj_start + t]
-        t += 1
-
-
-@always_inline
-fn _dot_banded_row_tail_simd4(
-    row: List[Float64],
-    row_idx_start: Int,
-    x: List[Float64],
-    x_idx_start: Int,
-    count: Int,
-) -> Float64:
-    if count <= 0:
-        return 0.0
-    var sum = 0.0
-    var t = 0
-    while t + 3 < count:
-        var a = SIMD[DType.float64, 4](
-            row[row_idx_start + t],
-            row[row_idx_start + t + 1],
-            row[row_idx_start + t + 2],
-            row[row_idx_start + t + 3],
-        )
-        var b = SIMD[DType.float64, 4](
-            x[x_idx_start + t], x[x_idx_start + t + 1], x[x_idx_start + t + 2], x[x_idx_start + t + 3]
-        )
-        sum += (a * b).reduce_add()
-        t += 4
-    while t < count:
-        sum += row[row_idx_start + t] * x[x_idx_start + t]
-        t += 1
-    return sum
 
 
 fn banded_matrix(n: Int, bw: Int) -> List[List[Float64]]:
@@ -126,7 +43,7 @@ fn banded_gaussian_elimination(
         var j_end = k + bw
         if j_end > n - 1:
             j_end = n - 1
-        _normalize_row_segment_simd4(mat[k], bw + 1, j_end - k + bw, inv_pivot)
+        scale_float64_segment(mat[k], bw + 1, j_end - k, inv_pivot)
         b[k] *= inv_pivot
         mat[k][bw] = 1.0
         for c in range(width):
@@ -148,12 +65,12 @@ fn banded_gaussian_elimination(
             var j_start = k + 1
             var count = row_end - j_start + 1
             if count > 0:
-                _eliminate_row_segment_simd4(
+                axpy_float64_segments(
                     mat[i],
                     j_start - i + bw,
                     pivot_row,
                     j_start - k + bw,
-                    factor,
+                    -factor,
                     count,
                 )
             b[i] -= factor * b[k]
@@ -169,7 +86,7 @@ fn banded_gaussian_elimination(
             j_end = n - 1
         var count = j_end - i
         if count > 0:
-            s -= _dot_banded_row_tail_simd4(mat[i], bw + 1, x, i + 1, count)
+            s -= dot_float64_segments(mat[i], bw + 1, x, i + 1, count)
         x[i] = s
         if i == 0:
             break

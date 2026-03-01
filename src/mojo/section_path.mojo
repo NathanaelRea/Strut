@@ -194,7 +194,9 @@ def run_section_path():
     if sec_type == "FiberSection2d":
         var defs: List[FiberSection2dDef] = []
         var fibers: List[FiberCell] = []
-        append_fiber_section2d_from_json(section, uniaxial_def_by_id, defs, fibers)
+        append_fiber_section2d_from_json(
+            section, uniaxial_def_by_id, uniaxial_defs, defs, fibers
+        )
         if len(defs) != 1:
             abort("section_path expects exactly one FiberSection2d")
 
@@ -259,7 +261,7 @@ def run_section_path():
         var defs3d: List[FiberSection3dDef] = []
         var fibers3d: List[FiberCell] = []
         append_fiber_section3d_from_json(
-            section, uniaxial_def_by_id, defs3d, fibers3d
+            section, uniaxial_def_by_id, uniaxial_defs, defs3d, fibers3d
         )
         if len(defs3d) != 1:
             abort("section_path expects exactly one FiberSection3d")

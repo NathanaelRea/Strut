@@ -27,6 +27,13 @@ struct GeomTransfTag:
     alias Corotational = 3
 
 
+struct BeamIntegrationTag:
+    alias Unknown = 0
+    alias Lobatto = 1
+    alias Legendre = 2
+    alias Radau = 3
+
+
 struct RecorderTypeTag:
     alias Unknown = 0
     alias NodeDisplacement = 1

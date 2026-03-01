@@ -2,7 +2,7 @@ from collections import List
 from os import abort
 from python import Python, PythonObject
 
-from solver.assembly import assemble_internal_forces_typed
+from solver.assembly import assemble_internal_forces_typed_soa
 from solver.dof import node_dof_index, require_dof_in_range
 from solver.profile import (
     _append_event,
@@ -169,6 +169,10 @@ def run_case(
     var frame_transient_step = 14
     var frame_case_load_parse = 15
     var frame_model_build_dof_map = 16
+    var frame_assemble_uniaxial = 17
+    var frame_assemble_fiber = 18
+    var frame_uniaxial_revert_all = 19
+    var frame_uniaxial_commit_all = 20
 
     var frames = String()
     var events = String()
@@ -192,6 +196,10 @@ def run_case(
         _append_frame(frames, frames_need_comma, "transient_step")
         _append_frame(frames, frames_need_comma, "case_load_parse")
         _append_frame(frames, frames_need_comma, "model_build_dof_map")
+        _append_frame(frames, frames_need_comma, "assemble_uniaxial")
+        _append_frame(frames, frames_need_comma, "assemble_fiber")
+        _append_frame(frames, frames_need_comma, "uniaxial_revert_all")
+        _append_frame(frames, frames_need_comma, "uniaxial_commit_all")
         _append_event(events, events_need_comma, "O", frame_total, 0)
         _append_event(events, events_need_comma, "O", frame_case_load_parse, 0)
         _append_event(
@@ -254,8 +262,31 @@ def run_case(
     var fiber_section3d_index_by_id = state.fiber_section3d_index_by_id.copy()
     var elem_id_to_index = state.elem_id_to_index.copy()
     var pattern_element_loads = state.element_loads.copy()
+    var node_x = state.node_x.copy()
+    var node_y = state.node_y.copy()
+    var node_z = state.node_z.copy()
     var elem_dof_offsets = state.elem_dof_offsets.copy()
     var elem_dof_pool = state.elem_dof_pool.copy()
+    var elem_free_offsets = state.elem_free_offsets.copy()
+    var elem_free_pool = state.elem_free_pool.copy()
+    var elem_node_offsets = state.elem_node_offsets.copy()
+    var elem_node_pool = state.elem_node_pool.copy()
+    var elem_primary_material_ids = state.elem_primary_material_ids.copy()
+    var elem_type_tags = state.elem_type_tags.copy()
+    var elem_geom_tags = state.elem_geom_tags.copy()
+    var elem_section_ids = state.elem_section_ids.copy()
+    var elem_integration_tags = state.elem_integration_tags.copy()
+    var elem_num_int_pts = state.elem_num_int_pts.copy()
+    var elem_area = state.elem_area.copy()
+    var elem_thickness = state.elem_thickness.copy()
+    var frame2d_elem_indices = state.frame2d_elem_indices.copy()
+    var frame3d_elem_indices = state.frame3d_elem_indices.copy()
+    var truss_elem_indices = state.truss_elem_indices.copy()
+    var zero_length_elem_indices = state.zero_length_elem_indices.copy()
+    var two_node_link_elem_indices = state.two_node_link_elem_indices.copy()
+    var zero_length_section_elem_indices = state.zero_length_section_elem_indices.copy()
+    var quad_elem_indices = state.quad_elem_indices.copy()
+    var shell_elem_indices = state.shell_elem_indices.copy()
     var elem_uniaxial_offsets = state.elem_uniaxial_offsets.copy()
     var elem_uniaxial_counts = state.elem_uniaxial_counts.copy()
     var elem_uniaxial_state_ids = state.elem_uniaxial_state_ids.copy()
@@ -301,8 +332,31 @@ def run_case(
         run_static_linear(
             typed_nodes,
             typed_elements,
+            node_x,
+            node_y,
+            node_z,
             elem_dof_offsets,
             elem_dof_pool,
+            elem_free_offsets,
+            elem_free_pool,
+            elem_node_offsets,
+            elem_node_pool,
+            elem_primary_material_ids,
+            elem_type_tags,
+            elem_geom_tags,
+            elem_section_ids,
+            elem_integration_tags,
+            elem_num_int_pts,
+            elem_area,
+            elem_thickness,
+            frame2d_elem_indices,
+            frame3d_elem_indices,
+            truss_elem_indices,
+            zero_length_elem_indices,
+            two_node_link_elem_indices,
+            zero_length_section_elem_indices,
+            quad_elem_indices,
+            shell_elem_indices,
             const_element_loads,
             pattern_element_loads,
             typed_sections_by_id,
@@ -342,6 +396,8 @@ def run_case(
             events,
             events_need_comma,
             frame_assemble_stiffness,
+            frame_assemble_uniaxial,
+            frame_assemble_fiber,
             frame_kff_extract,
             frame_solve_linear,
             total_dofs,
@@ -363,8 +419,29 @@ def run_case(
                 time_series_times,
                 typed_nodes,
                 typed_elements,
+                node_x,
+                node_y,
+                node_z,
                 elem_dof_offsets,
                 elem_dof_pool,
+                elem_node_offsets,
+                elem_node_pool,
+                elem_primary_material_ids,
+                elem_type_tags,
+                elem_geom_tags,
+                elem_section_ids,
+                elem_integration_tags,
+                elem_num_int_pts,
+                elem_area,
+                elem_thickness,
+                frame2d_elem_indices,
+                frame3d_elem_indices,
+                truss_elem_indices,
+                zero_length_elem_indices,
+                two_node_link_elem_indices,
+                zero_length_section_elem_indices,
+                quad_elem_indices,
+                shell_elem_indices,
                 const_element_loads,
                 pattern_element_loads,
                 typed_sections_by_id,
@@ -408,10 +485,14 @@ def run_case(
                 events,
                 events_need_comma,
                 frame_assemble_stiffness,
+                frame_assemble_uniaxial,
+                frame_assemble_fiber,
                 frame_kff_extract,
                 frame_solve_nonlinear,
                 frame_nonlinear_step,
                 frame_nonlinear_iter,
+                frame_uniaxial_revert_all,
+                frame_uniaxial_commit_all,
                 has_transformation_mpc,
                 rep_dof,
                 constrained,
@@ -425,8 +506,29 @@ def run_case(
                 analysis_integrator_targets_pool,
                 typed_nodes,
                 typed_elements,
+                node_x,
+                node_y,
+                node_z,
                 elem_dof_offsets,
                 elem_dof_pool,
+                elem_node_offsets,
+                elem_node_pool,
+                elem_primary_material_ids,
+                elem_type_tags,
+                elem_geom_tags,
+                elem_section_ids,
+                elem_integration_tags,
+                elem_num_int_pts,
+                elem_area,
+                elem_thickness,
+                frame2d_elem_indices,
+                frame3d_elem_indices,
+                truss_elem_indices,
+                zero_length_elem_indices,
+                two_node_link_elem_indices,
+                zero_length_section_elem_indices,
+                quad_elem_indices,
+                shell_elem_indices,
                 const_element_loads,
                 pattern_element_loads,
                 typed_sections_by_id,
@@ -469,10 +571,14 @@ def run_case(
                 events,
                 events_need_comma,
                 frame_assemble_stiffness,
+                frame_assemble_uniaxial,
+                frame_assemble_fiber,
                 frame_kff_extract,
                 frame_solve_nonlinear,
                 frame_nonlinear_step,
                 frame_nonlinear_iter,
+                frame_uniaxial_revert_all,
+                frame_uniaxial_commit_all,
                 has_transformation_mpc,
                 rep_dof,
             )
@@ -496,8 +602,29 @@ def run_case(
             rayleigh_beta_k_comm,
             typed_nodes,
             typed_elements,
+            node_x,
+            node_y,
+            node_z,
             elem_dof_offsets,
             elem_dof_pool,
+            elem_node_offsets,
+            elem_node_pool,
+            elem_primary_material_ids,
+            elem_type_tags,
+            elem_geom_tags,
+            elem_section_ids,
+            elem_integration_tags,
+            elem_num_int_pts,
+            elem_area,
+            elem_thickness,
+            frame2d_elem_indices,
+            frame3d_elem_indices,
+            truss_elem_indices,
+            zero_length_elem_indices,
+            two_node_link_elem_indices,
+            zero_length_section_elem_indices,
+            quad_elem_indices,
+            shell_elem_indices,
             const_element_loads,
             pattern_element_loads,
             typed_sections_by_id,
@@ -550,6 +677,7 @@ def run_case(
             frame_recorders,
             frame_factorize,
             frame_transient_step,
+            frame_uniaxial_commit_all,
         )
     elif analysis_type == "transient_nonlinear":
         run_transient_nonlinear(
@@ -569,8 +697,29 @@ def run_case(
             rayleigh_beta_k_comm,
             typed_nodes,
             typed_elements,
+            node_x,
+            node_y,
+            node_z,
             elem_dof_offsets,
             elem_dof_pool,
+            elem_node_offsets,
+            elem_node_pool,
+            elem_primary_material_ids,
+            elem_type_tags,
+            elem_geom_tags,
+            elem_section_ids,
+            elem_integration_tags,
+            elem_num_int_pts,
+            elem_area,
+            elem_thickness,
+            frame2d_elem_indices,
+            frame3d_elem_indices,
+            truss_elem_indices,
+            zero_length_elem_indices,
+            two_node_link_elem_indices,
+            zero_length_section_elem_indices,
+            quad_elem_indices,
+            shell_elem_indices,
             const_element_loads,
             pattern_element_loads,
             typed_sections_by_id,
@@ -617,6 +766,8 @@ def run_case(
             events,
             events_need_comma,
             frame_assemble_stiffness,
+            frame_assemble_uniaxial,
+            frame_assemble_fiber,
             frame_solve_nonlinear,
             frame_nonlinear_step,
             frame_nonlinear_iter,
@@ -625,6 +776,8 @@ def run_case(
             frame_recorders,
             frame_factorize,
             frame_transient_step,
+            frame_uniaxial_revert_all,
+            frame_uniaxial_commit_all,
         )
     elif analysis_type == "staged":
         var builtins = Python.import_module("builtins")
@@ -763,8 +916,31 @@ def run_case(
                 run_static_linear(
                     typed_nodes,
                     typed_elements,
+                    node_x,
+                    node_y,
+                    node_z,
                     elem_dof_offsets,
                     elem_dof_pool,
+                    elem_free_offsets,
+                    elem_free_pool,
+                    elem_node_offsets,
+                    elem_node_pool,
+                    elem_primary_material_ids,
+                    elem_type_tags,
+                    elem_geom_tags,
+                    elem_section_ids,
+                    elem_integration_tags,
+                    elem_num_int_pts,
+                    elem_area,
+                    elem_thickness,
+                    frame2d_elem_indices,
+                    frame3d_elem_indices,
+                    truss_elem_indices,
+                    zero_length_elem_indices,
+                    two_node_link_elem_indices,
+                    zero_length_section_elem_indices,
+                    quad_elem_indices,
+                    shell_elem_indices,
                     const_element_loads,
                     stage_element_loads,
                     typed_sections_by_id,
@@ -804,6 +980,8 @@ def run_case(
                     events,
                     events_need_comma,
                     frame_assemble_stiffness,
+                    frame_assemble_uniaxial,
+                    frame_assemble_fiber,
                     frame_kff_extract,
                     frame_solve_linear,
                     total_dofs,
@@ -833,8 +1011,29 @@ def run_case(
                         time_series_times,
                         typed_nodes,
                         typed_elements,
+                        node_x,
+                        node_y,
+                        node_z,
                         elem_dof_offsets,
                         elem_dof_pool,
+                        elem_node_offsets,
+                        elem_node_pool,
+                        elem_primary_material_ids,
+                        elem_type_tags,
+                        elem_geom_tags,
+                        elem_section_ids,
+                        elem_integration_tags,
+                        elem_num_int_pts,
+                        elem_area,
+                        elem_thickness,
+                        frame2d_elem_indices,
+                        frame3d_elem_indices,
+                        truss_elem_indices,
+                        zero_length_elem_indices,
+                        two_node_link_elem_indices,
+                        zero_length_section_elem_indices,
+                        quad_elem_indices,
+                        shell_elem_indices,
                         const_element_loads,
                         stage_element_loads,
                         typed_sections_by_id,
@@ -878,10 +1077,14 @@ def run_case(
                         events,
                         events_need_comma,
                         frame_assemble_stiffness,
+                        frame_assemble_uniaxial,
+                        frame_assemble_fiber,
                         frame_kff_extract,
                         frame_solve_nonlinear,
                         frame_nonlinear_step,
                         frame_nonlinear_iter,
+                        frame_uniaxial_revert_all,
+                        frame_uniaxial_commit_all,
                         has_transformation_mpc,
                         rep_dof,
                         constrained,
@@ -904,8 +1107,29 @@ def run_case(
                         stage_analysis_targets_pool,
                         typed_nodes,
                         typed_elements,
+                        node_x,
+                        node_y,
+                        node_z,
                         elem_dof_offsets,
                         elem_dof_pool,
+                        elem_node_offsets,
+                        elem_node_pool,
+                        elem_primary_material_ids,
+                        elem_type_tags,
+                        elem_geom_tags,
+                        elem_section_ids,
+                        elem_integration_tags,
+                        elem_num_int_pts,
+                        elem_area,
+                        elem_thickness,
+                        frame2d_elem_indices,
+                        frame3d_elem_indices,
+                        truss_elem_indices,
+                        zero_length_elem_indices,
+                        two_node_link_elem_indices,
+                        zero_length_section_elem_indices,
+                        quad_elem_indices,
+                        shell_elem_indices,
                         const_element_loads,
                         stage_element_loads,
                         typed_sections_by_id,
@@ -948,10 +1172,14 @@ def run_case(
                         events,
                         events_need_comma,
                         frame_assemble_stiffness,
+                        frame_assemble_uniaxial,
+                        frame_assemble_fiber,
                         frame_kff_extract,
                         frame_solve_nonlinear,
                         frame_nonlinear_step,
                         frame_nonlinear_iter,
+                        frame_uniaxial_revert_all,
+                        frame_uniaxial_commit_all,
                         has_transformation_mpc,
                         rep_dof,
                     )
@@ -978,8 +1206,29 @@ def run_case(
                     stage_rayleigh_beta_k_comm,
                     typed_nodes,
                     typed_elements,
+                    node_x,
+                    node_y,
+                    node_z,
                     elem_dof_offsets,
                     elem_dof_pool,
+                    elem_node_offsets,
+                    elem_node_pool,
+                    elem_primary_material_ids,
+                    elem_type_tags,
+                    elem_geom_tags,
+                    elem_section_ids,
+                    elem_integration_tags,
+                    elem_num_int_pts,
+                    elem_area,
+                    elem_thickness,
+                    frame2d_elem_indices,
+                    frame3d_elem_indices,
+                    truss_elem_indices,
+                    zero_length_elem_indices,
+                    two_node_link_elem_indices,
+                    zero_length_section_elem_indices,
+                    quad_elem_indices,
+                    shell_elem_indices,
                     const_element_loads,
                     stage_element_loads,
                     typed_sections_by_id,
@@ -1032,6 +1281,7 @@ def run_case(
                     frame_recorders,
                     frame_factorize,
                     frame_transient_step,
+                    frame_uniaxial_commit_all,
                 )
                 if stage_pattern_type == "Plain":
                     stage_final_pattern_scale = 1.0
@@ -1060,8 +1310,29 @@ def run_case(
                     stage_rayleigh_beta_k_comm,
                     typed_nodes,
                     typed_elements,
+                    node_x,
+                    node_y,
+                    node_z,
                     elem_dof_offsets,
                     elem_dof_pool,
+                    elem_node_offsets,
+                    elem_node_pool,
+                    elem_primary_material_ids,
+                    elem_type_tags,
+                    elem_geom_tags,
+                    elem_section_ids,
+                    elem_integration_tags,
+                    elem_num_int_pts,
+                    elem_area,
+                    elem_thickness,
+                    frame2d_elem_indices,
+                    frame3d_elem_indices,
+                    truss_elem_indices,
+                    zero_length_elem_indices,
+                    two_node_link_elem_indices,
+                    zero_length_section_elem_indices,
+                    quad_elem_indices,
+                    shell_elem_indices,
                     const_element_loads,
                     stage_element_loads,
                     typed_sections_by_id,
@@ -1108,6 +1379,8 @@ def run_case(
                     events,
                     events_need_comma,
                     frame_assemble_stiffness,
+                    frame_assemble_uniaxial,
+                    frame_assemble_fiber,
                     frame_solve_nonlinear,
                     frame_nonlinear_step,
                     frame_nonlinear_iter,
@@ -1116,6 +1389,8 @@ def run_case(
                     frame_recorders,
                     frame_factorize,
                     frame_transient_step,
+                    frame_uniaxial_revert_all,
+                    frame_uniaxial_commit_all,
                 )
                 if stage_pattern_type == "Plain":
                     stage_final_pattern_scale = 1.0
@@ -1286,9 +1561,32 @@ def run_case(
         var F_int_reaction: List[Float64] = []
         var F_ext_reaction: List[Float64] = []
         if has_reaction_recorder:
-            F_int_reaction = assemble_internal_forces_typed(
+            F_int_reaction = assemble_internal_forces_typed_soa(
                 typed_nodes,
                 typed_elements,
+                node_x,
+                node_y,
+                node_z,
+                elem_dof_offsets,
+                elem_dof_pool,
+                elem_node_offsets,
+                elem_node_pool,
+                elem_primary_material_ids,
+                elem_type_tags,
+                elem_geom_tags,
+                elem_section_ids,
+                elem_integration_tags,
+                elem_num_int_pts,
+                elem_area,
+                elem_thickness,
+                frame2d_elem_indices,
+                frame3d_elem_indices,
+                truss_elem_indices,
+                zero_length_elem_indices,
+                two_node_link_elem_indices,
+                zero_length_section_elem_indices,
+                quad_elem_indices,
+                shell_elem_indices,
                 final_element_load_state.element_loads,
                 final_element_load_state.elem_load_offsets,
                 final_element_load_state.elem_load_pool,

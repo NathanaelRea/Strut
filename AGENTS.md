@@ -84,3 +84,4 @@ When implementing OpenSees behavior, first inspect the real implementation
 - [Testing and Benchmarks](./docs/agent-guides/testing-and-benchmarks.md)
 - [Dependency Management](./docs/agent-guides/dependency-management.md)
 - [Knowledge Capture](./docs/agent-guides/knowledge-capture.md)
+- [SIMD](./docs/simd.md)

@@ -21,6 +21,7 @@ from solver.run_case.input_types import (
     NodeInput,
     RecorderInput,
     SectionInput,
+    beam_integration_tag,
     parse_case_input,
 )
 from solver.time_series import (
@@ -37,6 +38,7 @@ from sections import (
 )
 from strut_io import py_len
 from tag_types import (
+    BeamIntegrationTag,
     ElementLoadTypeTag,
     ElementTypeTag,
     GeomTransfTag,
@@ -51,6 +53,12 @@ struct RunCaseState(Movable):
     var typed_nodes: List[NodeInput]
     var node_count: Int
     var id_to_index: List[Int]
+    var node_x: List[Float64]
+    var node_y: List[Float64]
+    var node_z: List[Float64]
+    var node_has_z: List[Bool]
+    var node_constraint_offsets: List[Int]
+    var node_constraint_pool: List[Int]
 
     var typed_sections_by_id: List[SectionInput]
     var typed_materials_by_id: List[MaterialInput]
@@ -74,6 +82,29 @@ struct RunCaseState(Movable):
     var elem_load_pool: List[Int]
     var elem_dof_offsets: List[Int]
     var elem_dof_pool: List[Int]
+    var elem_free_offsets: List[Int]
+    var elem_free_pool: List[Int]
+    var elem_node_offsets: List[Int]
+    var elem_node_pool: List[Int]
+    var elem_material_offsets: List[Int]
+    var elem_material_pool: List[Int]
+    var elem_primary_material_ids: List[Int]
+    var elem_type_tags: List[Int]
+    var elem_geom_tags: List[Int]
+    var elem_section_ids: List[Int]
+    var elem_integration_tags: List[Int]
+    var elem_num_int_pts: List[Int]
+    var elem_dof_counts: List[Int]
+    var elem_area: List[Float64]
+    var elem_thickness: List[Float64]
+    var frame2d_elem_indices: List[Int]
+    var frame3d_elem_indices: List[Int]
+    var truss_elem_indices: List[Int]
+    var zero_length_elem_indices: List[Int]
+    var two_node_link_elem_indices: List[Int]
+    var zero_length_section_elem_indices: List[Int]
+    var quad_elem_indices: List[Int]
+    var shell_elem_indices: List[Int]
     var elem_uniaxial_offsets: List[Int]
     var elem_uniaxial_counts: List[Int]
     var elem_uniaxial_state_ids: List[Int]
@@ -127,6 +158,12 @@ struct RunCaseState(Movable):
         self.typed_nodes = []
         self.node_count = 0
         self.id_to_index = []
+        self.node_x = []
+        self.node_y = []
+        self.node_z = []
+        self.node_has_z = []
+        self.node_constraint_offsets = []
+        self.node_constraint_pool = []
         self.typed_sections_by_id = []
         self.typed_materials_by_id = []
         self.uniaxial_defs = []
@@ -146,6 +183,29 @@ struct RunCaseState(Movable):
         self.elem_load_pool = []
         self.elem_dof_offsets = []
         self.elem_dof_pool = []
+        self.elem_free_offsets = []
+        self.elem_free_pool = []
+        self.elem_node_offsets = []
+        self.elem_node_pool = []
+        self.elem_material_offsets = []
+        self.elem_material_pool = []
+        self.elem_primary_material_ids = []
+        self.elem_type_tags = []
+        self.elem_geom_tags = []
+        self.elem_section_ids = []
+        self.elem_integration_tags = []
+        self.elem_num_int_pts = []
+        self.elem_dof_counts = []
+        self.elem_area = []
+        self.elem_thickness = []
+        self.frame2d_elem_indices = []
+        self.frame3d_elem_indices = []
+        self.truss_elem_indices = []
+        self.zero_length_elem_indices = []
+        self.two_node_link_elem_indices = []
+        self.zero_length_section_elem_indices = []
+        self.quad_elem_indices = []
+        self.shell_elem_indices = []
         self.elem_uniaxial_offsets = []
         self.elem_uniaxial_counts = []
         self.elem_uniaxial_state_ids = []
@@ -254,6 +314,30 @@ fn _set_elem_dir(mut elem: ElementInput, idx: Int, value: Int):
         elem.dir_5 = value
     else:
         elem.dir_6 = value
+
+
+fn _node_constraint(node: NodeInput, idx: Int) -> Int:
+    if idx == 0:
+        return node.constraint_1
+    if idx == 1:
+        return node.constraint_2
+    if idx == 2:
+        return node.constraint_3
+    if idx == 3:
+        return node.constraint_4
+    if idx == 4:
+        return node.constraint_5
+    return node.constraint_6
+
+
+fn _elem_node(elem: ElementInput, idx: Int) -> Int:
+    if idx == 0:
+        return elem.node_index_1
+    if idx == 1:
+        return elem.node_index_2
+    if idx == 2:
+        return elem.node_index_3
+    return elem.node_index_4
 
 
 fn _elem_material(elem: ElementInput, idx: Int) -> Int:
@@ -748,6 +832,7 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
             append_fiber_section2d_from_json(
                 sec,
                 uniaxial_def_by_id,
+                uniaxial_defs,
                 fiber_section_defs,
                 fiber_section_cells,
             )
@@ -758,6 +843,7 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
             append_fiber_section3d_from_json(
                 sec,
                 uniaxial_def_by_id,
+                uniaxial_defs,
                 fiber_section3d_defs,
                 fiber_section3d_cells,
             )
@@ -1107,6 +1193,133 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
         for d in range(elem.dof_count):
             elem_dof_pool[offset + d] = _elem_dof(elem, d)
 
+    var node_x: List[Float64] = []
+    var node_y: List[Float64] = []
+    var node_z: List[Float64] = []
+    var node_has_z: List[Bool] = []
+    node_x.resize(node_count, 0.0)
+    node_y.resize(node_count, 0.0)
+    node_z.resize(node_count, 0.0)
+    node_has_z.resize(node_count, False)
+    var node_constraint_offsets: List[Int] = []
+    node_constraint_offsets.resize(node_count + 1, 0)
+    var total_node_constraints = 0
+    for i in range(node_count):
+        var node = input.nodes[i]
+        node_x[i] = node.x
+        node_y[i] = node.y
+        node_z[i] = node.z
+        node_has_z[i] = node.has_z
+        node_constraint_offsets[i] = total_node_constraints
+        total_node_constraints += node.constraint_count
+    node_constraint_offsets[node_count] = total_node_constraints
+    var node_constraint_pool: List[Int] = []
+    node_constraint_pool.resize(total_node_constraints, 0)
+    for i in range(node_count):
+        var node = input.nodes[i]
+        var offset = node_constraint_offsets[i]
+        for c in range(node.constraint_count):
+            node_constraint_pool[offset + c] = _node_constraint(node, c)
+
+    var elem_node_offsets: List[Int] = []
+    elem_node_offsets.resize(elem_count + 1, 0)
+    var total_elem_nodes = 0
+    for e in range(elem_count):
+        elem_node_offsets[e] = total_elem_nodes
+        total_elem_nodes += typed_elements[e].node_count
+    elem_node_offsets[elem_count] = total_elem_nodes
+    var elem_node_pool: List[Int] = []
+    elem_node_pool.resize(total_elem_nodes, -1)
+    for e in range(elem_count):
+        var elem = typed_elements[e]
+        var offset = elem_node_offsets[e]
+        for n in range(elem.node_count):
+            elem_node_pool[offset + n] = _elem_node(elem, n)
+
+    var elem_material_offsets: List[Int] = []
+    elem_material_offsets.resize(elem_count + 1, 0)
+    var total_elem_materials = 0
+    for e in range(elem_count):
+        elem_material_offsets[e] = total_elem_materials
+        var elem = typed_elements[e]
+        if elem.material_count > 0:
+            total_elem_materials += elem.material_count
+        elif elem.material >= 0:
+            total_elem_materials += 1
+    elem_material_offsets[elem_count] = total_elem_materials
+    var elem_material_pool: List[Int] = []
+    elem_material_pool.resize(total_elem_materials, -1)
+    for e in range(elem_count):
+        var elem = typed_elements[e]
+        var offset = elem_material_offsets[e]
+        if elem.material_count > 0:
+            for m in range(elem.material_count):
+                elem_material_pool[offset + m] = _elem_material(elem, m)
+        elif elem.material >= 0:
+            elem_material_pool[offset] = elem.material
+
+    var elem_type_tags: List[Int] = []
+    var elem_geom_tags: List[Int] = []
+    var elem_section_ids: List[Int] = []
+    var elem_integration_tags: List[Int] = []
+    var elem_num_int_pts: List[Int] = []
+    var elem_primary_material_ids: List[Int] = []
+    var elem_dof_counts: List[Int] = []
+    var elem_area: List[Float64] = []
+    var elem_thickness: List[Float64] = []
+    var frame2d_elem_indices: List[Int] = []
+    var frame3d_elem_indices: List[Int] = []
+    var truss_elem_indices: List[Int] = []
+    var zero_length_elem_indices: List[Int] = []
+    var two_node_link_elem_indices: List[Int] = []
+    var zero_length_section_elem_indices: List[Int] = []
+    var quad_elem_indices: List[Int] = []
+    var shell_elem_indices: List[Int] = []
+    elem_type_tags.resize(elem_count, ElementTypeTag.Unknown)
+    elem_geom_tags.resize(elem_count, GeomTransfTag.Unknown)
+    elem_section_ids.resize(elem_count, -1)
+    elem_integration_tags.resize(elem_count, BeamIntegrationTag.Unknown)
+    elem_num_int_pts.resize(elem_count, 0)
+    elem_primary_material_ids.resize(elem_count, -1)
+    elem_dof_counts.resize(elem_count, 0)
+    elem_area.resize(elem_count, 0.0)
+    elem_thickness.resize(elem_count, 0.0)
+    for e in range(elem_count):
+        var elem = typed_elements[e]
+        elem_type_tags[e] = elem.type_tag
+        elem_geom_tags[e] = elem.geom_tag
+        elem_section_ids[e] = elem.section
+        elem_integration_tags[e] = beam_integration_tag(elem.integration)
+        elem_num_int_pts[e] = elem.num_int_pts
+        elem_primary_material_ids[e] = elem.material
+        elem_dof_counts[e] = elem.dof_count
+        elem_area[e] = elem.area
+        elem_thickness[e] = elem.thickness
+        if (
+            elem.type_tag == ElementTypeTag.ElasticBeamColumn2d
+            or elem.type_tag == ElementTypeTag.ForceBeamColumn2d
+            or elem.type_tag == ElementTypeTag.DispBeamColumn2d
+        ):
+            frame2d_elem_indices.append(e)
+        elif (
+            elem.type_tag == ElementTypeTag.ElasticBeamColumn3d
+            or elem.type_tag == ElementTypeTag.ForceBeamColumn3d
+            or elem.type_tag == ElementTypeTag.DispBeamColumn3d
+        ):
+            frame3d_elem_indices.append(e)
+        elif elem.type_tag == ElementTypeTag.Truss:
+            truss_elem_indices.append(e)
+        elif elem.type_tag == ElementTypeTag.ZeroLength:
+            zero_length_elem_indices.append(e)
+        elif elem.type_tag == ElementTypeTag.TwoNodeLink:
+            two_node_link_elem_indices.append(e)
+        elif elem.type_tag == ElementTypeTag.ZeroLengthSection:
+            zero_length_section_elem_indices.append(e)
+        elif elem.type_tag == ElementTypeTag.FourNodeQuad:
+            quad_elem_indices.append(e)
+        elif elem.type_tag == ElementTypeTag.Shell:
+            shell_elem_indices.append(e)
+
     var uniaxial_states: List[UniMaterialState] = []
     var uniaxial_state_defs: List[Int] = []
     var elem_uniaxial_offsets: List[Int] = []
@@ -1193,9 +1406,17 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
                 var state_count = num_int_pts * sec_def.fiber_count
                 elem_uniaxial_counts[e] = state_count
                 for _ in range(num_int_pts):
-                    for i in range(sec_def.fiber_count):
-                        var cell = fiber_section_cells[sec_def.fiber_offset + i]
-                        var def_index = cell.def_index
+                    for i in range(sec_def.elastic_count):
+                        var def_index = sec_def.elastic_def_index[i]
+                        if def_index < 0 or def_index >= len(uniaxial_defs):
+                            abort(beam_col_type + " fiber material definition out of range")
+                        var mat_def = uniaxial_defs[def_index]
+                        var state_index = len(uniaxial_states)
+                        uniaxial_states.append(UniMaterialState(mat_def))
+                        uniaxial_state_defs.append(def_index)
+                        elem_uniaxial_state_ids.append(state_index)
+                    for i in range(sec_def.nonlinear_count):
+                        var def_index = sec_def.nonlinear_def_index[i]
                         if def_index < 0 or def_index >= len(uniaxial_defs):
                             abort(beam_col_type + " fiber material definition out of range")
                         var mat_def = uniaxial_defs[def_index]
@@ -1207,9 +1428,17 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
                             used_nonelastic_uniaxial = True
                             force_beam_has_nonelastic = True
                 for _ in range(num_int_pts):
-                    for i in range(sec_def.fiber_count):
-                        var cell = fiber_section_cells[sec_def.fiber_offset + i]
-                        var def_index = cell.def_index
+                    for i in range(sec_def.elastic_count):
+                        var def_index = sec_def.elastic_def_index[i]
+                        if def_index < 0 or def_index >= len(uniaxial_defs):
+                            abort(beam_col_type + " fiber material definition out of range")
+                        var mat_def = uniaxial_defs[def_index]
+                        var state_index = len(uniaxial_states)
+                        uniaxial_states.append(UniMaterialState(mat_def))
+                        uniaxial_state_defs.append(def_index)
+                        elem_uniaxial_state_ids.append(state_index)
+                    for i in range(sec_def.nonlinear_count):
+                        var def_index = sec_def.nonlinear_def_index[i]
                         if def_index < 0 or def_index >= len(uniaxial_defs):
                             abort(beam_col_type + " fiber material definition out of range")
                         var mat_def = uniaxial_defs[def_index]
@@ -1235,9 +1464,17 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
                 var state_count = num_int_pts * sec_def.fiber_count
                 elem_uniaxial_counts[e] = state_count
                 for _ in range(num_int_pts):
-                    for i in range(sec_def.fiber_count):
-                        var cell = fiber_section_cells[sec_def.fiber_offset + i]
-                        var def_index = cell.def_index
+                    for i in range(sec_def.elastic_count):
+                        var def_index = sec_def.elastic_def_index[i]
+                        if def_index < 0 or def_index >= len(uniaxial_defs):
+                            abort(beam_col_type + " fiber material definition out of range")
+                        var mat_def = uniaxial_defs[def_index]
+                        var state_index = len(uniaxial_states)
+                        uniaxial_states.append(UniMaterialState(mat_def))
+                        uniaxial_state_defs.append(def_index)
+                        elem_uniaxial_state_ids.append(state_index)
+                    for i in range(sec_def.nonlinear_count):
+                        var def_index = sec_def.nonlinear_def_index[i]
                         if def_index < 0 or def_index >= len(uniaxial_defs):
                             abort(beam_col_type + " fiber material definition out of range")
                         var mat_def = uniaxial_defs[def_index]
@@ -1275,9 +1512,17 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
                         force_basic_q.append(0.0)
                 elem_uniaxial_counts[e] = state_count
                 for _ in range(num_int_pts):
-                    for i in range(sec_def.fiber_count):
-                        var cell = fiber_section3d_cells[sec_def.fiber_offset + i]
-                        var def_index = cell.def_index
+                    for i in range(sec_def.elastic_count):
+                        var def_index = sec_def.elastic_def_index[i]
+                        if def_index < 0 or def_index >= len(uniaxial_defs):
+                            abort(beam_col_type + " fiber material definition out of range")
+                        var mat_def = uniaxial_defs[def_index]
+                        var state_index = len(uniaxial_states)
+                        uniaxial_states.append(UniMaterialState(mat_def))
+                        uniaxial_state_defs.append(def_index)
+                        elem_uniaxial_state_ids.append(state_index)
+                    for i in range(sec_def.nonlinear_count):
+                        var def_index = sec_def.nonlinear_def_index[i]
                         if def_index < 0 or def_index >= len(uniaxial_defs):
                             abort(beam_col_type + " fiber material definition out of range")
                         var mat_def = uniaxial_defs[def_index]
@@ -1304,9 +1549,17 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
                 var sec_def = fiber_section_defs[sec_index]
                 var state_count = sec_def.fiber_count
                 elem_uniaxial_counts[e] = state_count
-                for i in range(sec_def.fiber_count):
-                    var cell = fiber_section_cells[sec_def.fiber_offset + i]
-                    var def_index = cell.def_index
+                for i in range(sec_def.elastic_count):
+                    var def_index = sec_def.elastic_def_index[i]
+                    if def_index < 0 or def_index >= len(uniaxial_defs):
+                        abort("zeroLengthSection fiber material definition out of range")
+                    var mat_def = uniaxial_defs[def_index]
+                    var state_index = len(uniaxial_states)
+                    uniaxial_states.append(UniMaterialState(mat_def))
+                    uniaxial_state_defs.append(def_index)
+                    elem_uniaxial_state_ids.append(state_index)
+                for i in range(sec_def.nonlinear_count):
+                    var def_index = sec_def.nonlinear_def_index[i]
                     if def_index < 0 or def_index >= len(uniaxial_defs):
                         abort("zeroLengthSection fiber material definition out of range")
                     var mat_def = uniaxial_defs[def_index]
@@ -1677,6 +1930,15 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
                 free_index[i] = len(free)
                 free.append(i)
 
+    var elem_free_offsets = elem_dof_offsets.copy()
+    var elem_free_pool: List[Int] = []
+    elem_free_pool.resize(len(elem_dof_pool), -1)
+    for e in range(elem_count):
+        var offset = elem_dof_offsets[e]
+        var count = elem_dof_offsets[e + 1] - offset
+        for d in range(count):
+            elem_free_pool[offset + d] = free_index[elem_dof_pool[offset + d]]
+
     var time_series: List[TimeSeriesInput] = []
     var time_series_values: List[Float64] = []
     var time_series_times: List[Float64] = []
@@ -1783,6 +2045,12 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
     state.typed_nodes = input.nodes.copy()
     state.node_count = node_count
     state.id_to_index = id_to_index^
+    state.node_x = node_x^
+    state.node_y = node_y^
+    state.node_z = node_z^
+    state.node_has_z = node_has_z^
+    state.node_constraint_offsets = node_constraint_offsets^
+    state.node_constraint_pool = node_constraint_pool^
     state.typed_sections_by_id = typed_sections_by_id^
     state.typed_materials_by_id = typed_materials_by_id^
     state.uniaxial_defs = uniaxial_defs^
@@ -1802,6 +2070,29 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
     state.elem_load_pool = elem_load_pool^
     state.elem_dof_offsets = elem_dof_offsets^
     state.elem_dof_pool = elem_dof_pool^
+    state.elem_free_offsets = elem_free_offsets^
+    state.elem_free_pool = elem_free_pool^
+    state.elem_node_offsets = elem_node_offsets^
+    state.elem_node_pool = elem_node_pool^
+    state.elem_material_offsets = elem_material_offsets^
+    state.elem_material_pool = elem_material_pool^
+    state.elem_primary_material_ids = elem_primary_material_ids^
+    state.elem_type_tags = elem_type_tags^
+    state.elem_geom_tags = elem_geom_tags^
+    state.elem_section_ids = elem_section_ids^
+    state.elem_integration_tags = elem_integration_tags^
+    state.elem_num_int_pts = elem_num_int_pts^
+    state.elem_dof_counts = elem_dof_counts^
+    state.elem_area = elem_area^
+    state.elem_thickness = elem_thickness^
+    state.frame2d_elem_indices = frame2d_elem_indices^
+    state.frame3d_elem_indices = frame3d_elem_indices^
+    state.truss_elem_indices = truss_elem_indices^
+    state.zero_length_elem_indices = zero_length_elem_indices^
+    state.two_node_link_elem_indices = two_node_link_elem_indices^
+    state.zero_length_section_elem_indices = zero_length_section_elem_indices^
+    state.quad_elem_indices = quad_elem_indices^
+    state.shell_elem_indices = shell_elem_indices^
     state.elem_uniaxial_offsets = elem_uniaxial_offsets^
     state.elem_uniaxial_counts = elem_uniaxial_counts^
     state.elem_uniaxial_state_ids = elem_uniaxial_state_ids^

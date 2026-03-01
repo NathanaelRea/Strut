@@ -154,13 +154,11 @@ fn uniaxial_revert_trial(mut state: UniMaterialState):
 
 fn uniaxial_commit_all(mut states: List[UniMaterialState]):
     for i in range(len(states)):
-        var state = states[i]
+        ref state = states[i]
         uniaxial_commit(state)
-        states[i] = state
 
 
 fn uniaxial_revert_trial_all(mut states: List[UniMaterialState]):
     for i in range(len(states)):
-        var state = states[i]
+        ref state = states[i]
         uniaxial_revert_trial(state)
-        states[i] = state

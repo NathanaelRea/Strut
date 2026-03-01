@@ -23,6 +23,8 @@ from elements.beam3d import (
     beam3d_pdelta_global_stiffness,
 )
 from elements.beam_integration import (
+    BeamIntegrationCache,
+    beam_integration_cache_ensure,
     beam_integration_is_supported,
     beam_integration_rule,
     beam_integration_validate_or_abort,
@@ -34,11 +36,17 @@ from elements.beam_column3d_nonlinear import (
 )
 from elements.disp_beam_column2d import disp_beam_column2d_global_tangent_and_internal
 from elements.disp_beam_column3d import disp_beam_column3d_global_tangent_and_internal
-from elements.force_beam_column2d import force_beam_column2d_global_tangent_and_internal
+from elements.force_beam_column2d import (
+    ForceBeamColumn2dScratch,
+    force_beam_column2d_global_tangent_and_internal,
+    reset_force_beam_column2d_scratch,
+)
 from elements.force_beam_column3d import (
+    ForceBeamColumn3dScratch,
     force_beam_column3d_fiber_global_tangent_and_internal,
     force_beam_column3d_fiber_section_response,
     force_beam_column3d_global_tangent_and_internal,
+    reset_force_beam_column3d_scratch,
 )
 from elements.link import (
     link_element_dof_count,

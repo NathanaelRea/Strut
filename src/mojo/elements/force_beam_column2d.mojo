@@ -3,7 +3,7 @@ from math import hypot
 from os import abort
 
 from elements.beam_loads import beam2d_basic_fixed_end_and_reactions, beam2d_section_load_response
-from elements.beam_integration import beam_integration_rule
+from elements.beam_integration import BeamIntegrationCache, beam_integration_cache_ensure
 from elements.utils import (
     _beam2d_transform_force_local_to_global_in_place,
     _beam2d_transform_stiffness_local_to_global_in_place,
@@ -14,12 +14,62 @@ from elements.utils import (
 from materials import (
     UniMaterialDef,
     UniMaterialState,
-    uni_mat_is_elastic,
     uni_mat_initial_tangent,
-    uniaxial_set_trial_strain,
 )
 from solver.run_case.input_types import ElementLoadInput
-from sections import FiberCell, FiberSection2dDef, FiberSection2dResponse
+from sections import (
+    FiberCell,
+    FiberSection2dDef,
+    FiberSection2dResponse,
+    fiber_section2d_set_trial_from_offset,
+)
+
+
+struct ForceBeamColumn2dScratch(Movable):
+    var integration_cache: BeamIntegrationCache
+    var section_load_axial: List[Float64]
+    var section_load_moment: List[Float64]
+    var u_local: List[Float64]
+    var geometry_valid: List[Bool]
+    var load_valid: List[Bool]
+    var cached_length: List[Float64]
+    var cached_inv_length: List[Float64]
+    var cached_cos: List[Float64]
+    var cached_sin: List[Float64]
+    var basic_map_cache: List[List[Float64]]
+    var section_load_axial_cache: List[List[Float64]]
+    var section_load_moment_cache: List[List[Float64]]
+    var fixed_end_cache: List[List[Float64]]
+
+    fn __init__(out self):
+        self.integration_cache = BeamIntegrationCache()
+        self.section_load_axial = []
+        self.section_load_moment = []
+        self.u_local = []
+        self.geometry_valid = []
+        self.load_valid = []
+        self.cached_length = []
+        self.cached_inv_length = []
+        self.cached_cos = []
+        self.cached_sin = []
+        self.basic_map_cache = []
+        self.section_load_axial_cache = []
+        self.section_load_moment_cache = []
+        self.fixed_end_cache = []
+
+
+fn reset_force_beam_column2d_scratch(mut scratch: ForceBeamColumn2dScratch):
+    scratch.integration_cache.is_valid = False
+    scratch.geometry_valid = []
+    scratch.load_valid = []
+    scratch.cached_length = []
+    scratch.cached_inv_length = []
+    scratch.cached_cos = []
+    scratch.cached_sin = []
+    scratch.basic_map_cache = []
+    scratch.section_load_axial_cache = []
+    scratch.section_load_moment_cache = []
+    scratch.fixed_end_cache = []
 
 
 @always_inline
@@ -112,44 +162,17 @@ fn _fiber_section2d_set_trial_from_offset(
     eps0: Float64,
     kappa: Float64,
 ) -> FiberSection2dResponse:
-    if section_state_count != sec_def.fiber_count:
-        abort("forceBeamColumn2d fiber state count mismatch")
-    if section_state_offset < 0 or section_state_offset + section_state_count > len(
-        section_state_ids
-    ):
-        abort("forceBeamColumn2d fiber section state out of range")
-
-    var axial_force = 0.0
-    var moment_z = 0.0
-    var k11 = 0.0
-    var k12 = 0.0
-    var k22 = 0.0
-
-    for i in range(section_state_count):
-        var cell = fibers[sec_def.fiber_offset + i]
-        var y_rel = cell.y - sec_def.y_bar
-        var eps = eps0 - y_rel * kappa
-
-        var state_index = section_state_ids[section_state_offset + i]
-        if state_index < 0 or state_index >= len(uniaxial_states):
-            abort("forceBeamColumn2d fiber state index out of range")
-        if cell.def_index < 0 or cell.def_index >= len(uniaxial_defs):
-            abort("forceBeamColumn2d fiber material definition out of range")
-        var mat_def = uniaxial_defs[cell.def_index]
-        var state = uniaxial_states[state_index]
-        uniaxial_set_trial_strain(mat_def, state, eps)
-        uniaxial_states[state_index] = state
-
-        var area = cell.area
-        var fs = state.sig_t * area
-        var ks = state.tangent_t * area
-        axial_force += fs
-        moment_z += -fs * y_rel
-        k11 += ks
-        k12 += -ks * y_rel
-        k22 += ks * y_rel * y_rel
-
-    return FiberSection2dResponse(axial_force, moment_z, k11, k12, k22)
+    return fiber_section2d_set_trial_from_offset(
+        sec_def,
+        fibers,
+        uniaxial_defs,
+        section_state_ids,
+        uniaxial_states,
+        section_state_offset,
+        section_state_count,
+        eps0,
+        kappa,
+    )
 
 
 fn _fiber_section2d_solve_for_force(
@@ -203,15 +226,27 @@ fn _fiber_section2d_solve_for_force(
 fn _fiber_section2d_initial_flexibility(
     sec_def: FiberSection2dDef, fibers: List[FiberCell], uniaxial_defs: List[UniMaterialDef]
 ) -> (Bool, Float64, Float64, Float64):
+    if sec_def.fiber_offset < 0 or sec_def.fiber_offset + sec_def.fiber_count > len(
+        fibers
+    ):
+        abort("forceBeamColumn2d fiber data out of range")
     var k11 = 0.0
     var k12 = 0.0
     var k22 = 0.0
-    for i in range(sec_def.fiber_count):
-        var cell = fibers[sec_def.fiber_offset + i]
-        if cell.def_index < 0 or cell.def_index >= len(uniaxial_defs):
+    for i in range(sec_def.elastic_count):
+        var tangent = sec_def.elastic_modulus[i] * sec_def.elastic_area[i]
+        var y_rel = sec_def.elastic_y_rel[i]
+        k11 += tangent
+        k12 += -tangent * y_rel
+        k22 += tangent * y_rel * y_rel
+    for i in range(sec_def.nonlinear_count):
+        var def_index = sec_def.nonlinear_def_index[i]
+        if def_index < 0 or def_index >= len(uniaxial_defs):
             abort("forceBeamColumn2d fiber material definition out of range")
-        var tangent = uni_mat_initial_tangent(uniaxial_defs[cell.def_index]) * cell.area
-        var y_rel = cell.y - sec_def.y_bar
+        var tangent = (
+            uni_mat_initial_tangent(uniaxial_defs[def_index]) * sec_def.nonlinear_area[i]
+        )
+        var y_rel = sec_def.nonlinear_y_rel[i]
         k11 += tangent
         k12 += -tangent * y_rel
         k22 += tangent * y_rel * y_rel
@@ -236,13 +271,18 @@ fn _fiber_section2d_response_flexibility(
 fn _fiber_section2d_all_materials_elastic(
     sec_def: FiberSection2dDef, fibers: List[FiberCell], uniaxial_defs: List[UniMaterialDef]
 ) -> Bool:
-    for i in range(sec_def.fiber_count):
-        var cell = fibers[sec_def.fiber_offset + i]
-        if cell.def_index < 0 or cell.def_index >= len(uniaxial_defs):
+    if sec_def.fiber_offset < 0 or sec_def.fiber_offset + sec_def.fiber_count > len(
+        fibers
+    ):
+        abort("forceBeamColumn2d fiber data out of range")
+    if sec_def.nonlinear_count == 0:
+        return True
+    for i in range(sec_def.nonlinear_count):
+        if sec_def.nonlinear_def_index[i] < 0 or sec_def.nonlinear_def_index[i] >= len(
+            uniaxial_defs
+        ):
             abort("forceBeamColumn2d fiber material definition out of range")
-        if not uni_mat_is_elastic(uniaxial_defs[cell.def_index]):
-            return False
-    return True
+    return False
 
 
 fn _copy_force_beam_column2d_states(
@@ -291,6 +331,119 @@ fn _set_force_beam_column2d_trial_basic_deformation(
     force_basic_q_state[basic_state_offset] = v0
     force_basic_q_state[basic_state_offset + 1] = v1
     force_basic_q_state[basic_state_offset + 2] = v2
+
+
+fn _ensure_force_beam_column2d_cache_slot(
+    mut scratch: ForceBeamColumn2dScratch, elem_index: Int
+):
+    if elem_index < 0:
+        return
+    var needed = elem_index + 1
+    if len(scratch.geometry_valid) < needed:
+        scratch.geometry_valid.resize(needed, False)
+        scratch.load_valid.resize(needed, False)
+        scratch.cached_length.resize(needed, 0.0)
+        scratch.cached_inv_length.resize(needed, 0.0)
+        scratch.cached_cos.resize(needed, 0.0)
+        scratch.cached_sin.resize(needed, 0.0)
+        while len(scratch.basic_map_cache) < needed:
+            scratch.basic_map_cache.append(List[Float64]())
+        while len(scratch.section_load_axial_cache) < needed:
+            scratch.section_load_axial_cache.append(List[Float64]())
+        while len(scratch.section_load_moment_cache) < needed:
+            scratch.section_load_moment_cache.append(List[Float64]())
+        while len(scratch.fixed_end_cache) < needed:
+            scratch.fixed_end_cache.append(List[Float64]())
+
+
+fn _ensure_force_beam_column2d_geometry_cache(
+    elem_index: Int,
+    x1: Float64,
+    y1: Float64,
+    x2: Float64,
+    y2: Float64,
+    mut scratch: ForceBeamColumn2dScratch,
+):
+    if elem_index < 0:
+        return
+    _ensure_force_beam_column2d_cache_slot(scratch, elem_index)
+    if scratch.geometry_valid[elem_index]:
+        return
+    var dx = x2 - x1
+    var dy = y2 - y1
+    var L = hypot(dx, dy)
+    if L == 0.0:
+        abort("zero-length element")
+    var inv_L = 1.0 / L
+    scratch.cached_length[elem_index] = L
+    scratch.cached_inv_length[elem_index] = inv_L
+    scratch.cached_cos[elem_index] = dx * inv_L
+    scratch.cached_sin[elem_index] = dy * inv_L
+
+    var basic_map = scratch.basic_map_cache[elem_index].copy()
+    basic_map.resize(18, 0.0)
+    for a in range(6):
+        var a0: Float64
+        var a1: Float64
+        var a2: Float64
+        (a0, a1, a2) = _beam2d_local_basic_map(a, inv_L)
+        var offset = 3 * a
+        basic_map[offset] = a0
+        basic_map[offset + 1] = a1
+        basic_map[offset + 2] = a2
+    scratch.basic_map_cache[elem_index] = basic_map^
+    scratch.geometry_valid[elem_index] = True
+
+
+fn _ensure_force_beam_column2d_load_cache(
+    elem_index: Int,
+    integration: String,
+    num_int_pts: Int,
+    element_loads: List[ElementLoadInput],
+    elem_load_offsets: List[Int],
+    elem_load_pool: List[Int],
+    load_scale: Float64,
+    mut scratch: ForceBeamColumn2dScratch,
+):
+    if elem_index < 0:
+        return
+    _ensure_force_beam_column2d_cache_slot(scratch, elem_index)
+    if scratch.load_valid[elem_index]:
+        return
+    beam_integration_cache_ensure(scratch.integration_cache, integration, num_int_pts)
+    var L = scratch.cached_length[elem_index]
+    var axial = scratch.section_load_axial_cache[elem_index].copy()
+    var moment = scratch.section_load_moment_cache[elem_index].copy()
+    axial.resize(num_int_pts, 0.0)
+    moment.resize(num_int_pts, 0.0)
+    for ip in range(num_int_pts):
+        var loads = beam2d_section_load_response(
+            element_loads,
+            elem_load_offsets,
+            elem_load_pool,
+            elem_index,
+            load_scale,
+            scratch.integration_cache.xis[ip] * L,
+            L,
+        )
+        axial[ip] = loads[0]
+        moment[ip] = loads[1]
+    scratch.section_load_axial_cache[elem_index] = axial^
+    scratch.section_load_moment_cache[elem_index] = moment^
+
+    var fixed_end = scratch.fixed_end_cache[elem_index].copy()
+    fixed_end.resize(6, 0.0)
+    var fixed = beam2d_basic_fixed_end_and_reactions(
+        element_loads, elem_load_offsets, elem_load_pool, elem_index, load_scale, L
+    )
+    fixed_end[0] = fixed[0]
+    fixed_end[1] = fixed[1]
+    fixed_end[2] = fixed[2]
+    fixed_end[3] = fixed[3]
+    fixed_end[4] = fixed[4]
+    fixed_end[5] = fixed[5]
+    scratch.fixed_end_cache[elem_index] = fixed_end^
+    scratch.load_valid[elem_index] = True
 
 
 fn _force_beam_column2d_exact_elastic_state(
@@ -709,6 +862,7 @@ fn force_beam_column2d_global_tangent_and_internal(
     mut force_basic_q_state: List[Float64],
     force_basic_q_offset: Int,
     force_basic_q_count: Int,
+    mut scratch: ForceBeamColumn2dScratch,
     mut k_global_out: List[List[Float64]],
     mut f_global_out: List[Float64],
 ):
@@ -739,6 +893,55 @@ fn force_beam_column2d_global_tangent_and_internal(
         force_basic_q_state,
         force_basic_q_offset,
         force_basic_q_count,
+        scratch,
+        k_global_out,
+        f_global_out,
+    )
+
+
+fn force_beam_column2d_global_tangent_and_internal(
+    x1: Float64,
+    y1: Float64,
+    x2: Float64,
+    y2: Float64,
+    u_elem_global: List[Float64],
+    sec_def: FiberSection2dDef,
+    fibers: List[FiberCell],
+    uniaxial_defs: List[UniMaterialDef],
+    mut uniaxial_states: List[UniMaterialState],
+    elem_state_ids: List[Int],
+    elem_state_offset: Int,
+    elem_state_count: Int,
+    geom_transf: String,
+    integration: String,
+    num_int_pts: Int,
+    mut force_basic_q_state: List[Float64],
+    force_basic_q_offset: Int,
+    force_basic_q_count: Int,
+    mut k_global_out: List[List[Float64]],
+    mut f_global_out: List[Float64],
+):
+    var scratch = ForceBeamColumn2dScratch()
+    force_beam_column2d_global_tangent_and_internal(
+        x1,
+        y1,
+        x2,
+        y2,
+        u_elem_global,
+        sec_def,
+        fibers,
+        uniaxial_defs,
+        uniaxial_states,
+        elem_state_ids,
+        elem_state_offset,
+        elem_state_count,
+        geom_transf,
+        integration,
+        num_int_pts,
+        force_basic_q_state,
+        force_basic_q_offset,
+        force_basic_q_count,
+        scratch,
         k_global_out,
         f_global_out,
     )
@@ -771,9 +974,81 @@ fn force_beam_column2d_global_tangent_and_internal(
     mut k_global_out: List[List[Float64]],
     mut f_global_out: List[Float64],
 ):
+    var scratch = ForceBeamColumn2dScratch()
+    force_beam_column2d_global_tangent_and_internal(
+        elem_index,
+        x1,
+        y1,
+        x2,
+        y2,
+        u_elem_global,
+        element_loads,
+        elem_load_offsets,
+        elem_load_pool,
+        load_scale,
+        sec_def,
+        fibers,
+        uniaxial_defs,
+        uniaxial_states,
+        elem_state_ids,
+        elem_state_offset,
+        elem_state_count,
+        geom_transf,
+        integration,
+        num_int_pts,
+        force_basic_q_state,
+        force_basic_q_offset,
+        force_basic_q_count,
+        scratch,
+        k_global_out,
+        f_global_out,
+    )
+
+
+fn force_beam_column2d_global_tangent_and_internal(
+    elem_index: Int,
+    x1: Float64,
+    y1: Float64,
+    x2: Float64,
+    y2: Float64,
+    u_elem_global: List[Float64],
+    element_loads: List[ElementLoadInput],
+    elem_load_offsets: List[Int],
+    elem_load_pool: List[Int],
+    load_scale: Float64,
+    sec_def: FiberSection2dDef,
+    fibers: List[FiberCell],
+    uniaxial_defs: List[UniMaterialDef],
+    mut uniaxial_states: List[UniMaterialState],
+    elem_state_ids: List[Int],
+    elem_state_offset: Int,
+    elem_state_count: Int,
+    geom_transf: String,
+    integration: String,
+    num_int_pts: Int,
+    mut force_basic_q_state: List[Float64],
+    force_basic_q_offset: Int,
+    force_basic_q_count: Int,
+    mut scratch: ForceBeamColumn2dScratch,
+    mut k_global_out: List[List[Float64]],
+    mut f_global_out: List[Float64],
+):
+    _ensure_force_beam_column2d_geometry_cache(elem_index, x1, y1, x2, y2, scratch)
+    _ensure_force_beam_column2d_load_cache(
+        elem_index,
+        integration,
+        num_int_pts,
+        element_loads,
+        elem_load_offsets,
+        elem_load_pool,
+        load_scale,
+        scratch,
+    )
     var dx = x2 - x1
     var dy = y2 - y1
     var L = hypot(dx, dy)
+    if elem_index >= 0 and elem_index < len(scratch.cached_length):
+        L = scratch.cached_length[elem_index]
     if L == 0.0:
         abort("zero-length element")
 
@@ -781,33 +1056,38 @@ fn force_beam_column2d_global_tangent_and_internal(
     var required_state_count = num_int_pts * fibers_per_section
     if elem_state_count != required_state_count:
         abort("forceBeamColumn2d element state count mismatch")
-    var xis: List[Float64] = []
-    var weights: List[Float64] = []
-    beam_integration_rule(integration, num_int_pts, xis, weights)
-    var section_load_axial: List[Float64] = []
-    var section_load_moment: List[Float64] = []
-    section_load_axial.resize(num_int_pts, 0.0)
-    section_load_moment.resize(num_int_pts, 0.0)
-    for ip in range(num_int_pts):
-        var loads = beam2d_section_load_response(
-            element_loads,
-            elem_load_offsets,
-            elem_load_pool,
-            elem_index,
-            load_scale,
-            xis[ip] * L,
-            L,
-        )
-        section_load_axial[ip] = loads[0]
-        section_load_moment[ip] = loads[1]
+    beam_integration_cache_ensure(scratch.integration_cache, integration, num_int_pts)
+    scratch.section_load_axial.resize(num_int_pts, 0.0)
+    scratch.section_load_moment.resize(num_int_pts, 0.0)
+    if elem_index >= 0 and elem_index < len(scratch.section_load_axial_cache):
+        for ip in range(num_int_pts):
+            scratch.section_load_axial[ip] = scratch.section_load_axial_cache[elem_index][ip]
+            scratch.section_load_moment[ip] = (
+                scratch.section_load_moment_cache[elem_index][ip]
+            )
+    else:
+        for ip in range(num_int_pts):
+            scratch.section_load_axial[ip] = 0.0
+            scratch.section_load_moment[ip] = 0.0
     var fixed_end = beam2d_basic_fixed_end_and_reactions(
         element_loads, elem_load_offsets, elem_load_pool, elem_index, load_scale, L
     )
+    if elem_index >= 0 and elem_index < len(scratch.fixed_end_cache):
+        fixed_end = (
+            scratch.fixed_end_cache[elem_index][0],
+            scratch.fixed_end_cache[elem_index][1],
+            scratch.fixed_end_cache[elem_index][2],
+            scratch.fixed_end_cache[elem_index][3],
+            scratch.fixed_end_cache[elem_index][4],
+            scratch.fixed_end_cache[elem_index][5],
+        )
 
     var c = dx / L
     var s = dy / L
-    var u_local: List[Float64] = []
-    _beam2d_transform_u_global_to_local(c, s, u_elem_global, u_local)
+    if elem_index >= 0 and elem_index < len(scratch.cached_cos):
+        c = scratch.cached_cos[elem_index]
+        s = scratch.cached_sin[elem_index]
+    _beam2d_transform_u_global_to_local(c, s, u_elem_global, scratch.u_local)
 
     var predictor_state_count = 3 + 2 * num_int_pts
     var active_basic_count = predictor_state_count + 3
@@ -827,10 +1107,10 @@ fn force_beam_column2d_global_tangent_and_internal(
     ):
         abort("forceBeamColumn2d fiber backup state out of range")
 
-    var chord_rotation = (u_local[4] - u_local[1]) / L
-    var v_basic_0 = u_local[3] - u_local[0]
-    var v_basic_1 = u_local[2] - chord_rotation
-    var v_basic_2 = u_local[5] - chord_rotation
+    var chord_rotation = (scratch.u_local[4] - scratch.u_local[1]) / L
+    var v_basic_0 = scratch.u_local[3] - scratch.u_local[0]
+    var v_basic_1 = scratch.u_local[2] - chord_rotation
+    var v_basic_2 = scratch.u_local[5] - chord_rotation
     var basic_prev_0 = force_basic_q_state[basic_state_offset]
     var basic_prev_1 = force_basic_q_state[basic_state_offset + 1]
     var basic_prev_2 = force_basic_q_state[basic_state_offset + 2]
@@ -898,10 +1178,10 @@ fn force_beam_column2d_global_tangent_and_internal(
     if all_materials_elastic:
         var solved = _force_beam_column2d_exact_elastic_state(
             L,
-            xis,
-            weights,
-            section_load_axial,
-            section_load_moment,
+            scratch.integration_cache.xis,
+            scratch.integration_cache.weights,
+            scratch.section_load_axial,
+            scratch.section_load_moment,
             sec_def,
             fibers,
             uniaxial_defs,
@@ -965,10 +1245,10 @@ fn force_beam_column2d_global_tangent_and_internal(
                 )
             var solved = _force_beam_column2d_try_increment(
                 L,
-                xis,
-                weights,
-                section_load_axial,
-                section_load_moment,
+                scratch.integration_cache.xis,
+                scratch.integration_cache.weights,
+                scratch.section_load_axial,
+                scratch.section_load_moment,
                 sec_def,
                 fibers,
                 uniaxial_defs,
@@ -1019,10 +1299,10 @@ fn force_beam_column2d_global_tangent_and_internal(
 
                 var solved = _force_beam_column2d_try_increment(
                     L,
-                    xis,
-                    weights,
-                    section_load_axial,
-                    section_load_moment,
+                    scratch.integration_cache.xis,
+                    scratch.integration_cache.weights,
+                    scratch.section_load_axial,
+                    scratch.section_load_moment,
                     sec_def,
                     fibers,
                     uniaxial_defs,
@@ -1125,17 +1405,36 @@ fn force_beam_column2d_global_tangent_and_internal(
     var k22 = best_solved[10]
 
     var inv_L = 1.0 / L
+    if elem_index >= 0 and elem_index < len(scratch.cached_inv_length):
+        inv_L = scratch.cached_inv_length[elem_index]
     _ensure_zero_matrix(k_global_out, 6, 6)
+    var use_cached_basic_map = (
+        elem_index >= 0
+        and elem_index < len(scratch.basic_map_cache)
+        and len(scratch.basic_map_cache[elem_index]) == 18
+    )
     for a in range(6):
+        var a_offset = 3 * a
         var a0: Float64
         var a1: Float64
         var a2: Float64
-        (a0, a1, a2) = _beam2d_local_basic_map(a, inv_L)
+        if use_cached_basic_map:
+            a0 = scratch.basic_map_cache[elem_index][a_offset]
+            a1 = scratch.basic_map_cache[elem_index][a_offset + 1]
+            a2 = scratch.basic_map_cache[elem_index][a_offset + 2]
+        else:
+            (a0, a1, a2) = _beam2d_local_basic_map(a, inv_L)
         for b in range(6):
+            var b_offset = 3 * b
             var b0: Float64
             var b1: Float64
             var b2: Float64
-            (b0, b1, b2) = _beam2d_local_basic_map(b, inv_L)
+            if use_cached_basic_map:
+                b0 = scratch.basic_map_cache[elem_index][b_offset]
+                b1 = scratch.basic_map_cache[elem_index][b_offset + 1]
+                b2 = scratch.basic_map_cache[elem_index][b_offset + 2]
+            else:
+                (b0, b1, b2) = _beam2d_local_basic_map(b, inv_L)
             k_global_out[a][b] = (
                 a0 * (k00 * b0 + k01 * b1 + k02 * b2)
                 + a1 * (k10 * b0 + k11 * b1 + k12 * b2)
@@ -1159,7 +1458,7 @@ fn force_beam_column2d_global_tangent_and_internal(
     f_global_out[1] += fixed_end[4]
     f_global_out[4] += fixed_end[5]
     if geom_transf == "PDelta":
-        var pdelta_shear = (u_local[1] - u_local[4]) * q0 * inv_L
+        var pdelta_shear = (scratch.u_local[1] - scratch.u_local[4]) * q0 * inv_L
         f_global_out[1] += pdelta_shear
         f_global_out[4] -= pdelta_shear
 

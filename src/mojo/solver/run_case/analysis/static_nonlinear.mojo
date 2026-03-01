@@ -1,4 +1,10 @@
 from collections import List
+from elements import (
+    ForceBeamColumn2dScratch,
+    ForceBeamColumn3dScratch,
+    reset_force_beam_column2d_scratch,
+    reset_force_beam_column3d_scratch,
+)
 from math import sqrt
 from materials import UniMaterialDef, UniMaterialState
 from os import abort
@@ -7,12 +13,13 @@ from python import Python
 from linalg import gaussian_elimination_into, lu_factorize_into, lu_solve_into
 from materials import uniaxial_commit_all, uniaxial_revert_trial_all
 from solver.assembly import (
-    assemble_global_stiffness_and_internal,
-    assemble_internal_forces_typed,
+    assemble_global_stiffness_and_internal_soa,
+    assemble_internal_forces_typed_soa,
 )
 from solver.banded import banded_gaussian_elimination, banded_matrix, estimate_bandwidth_typed
 from solver.dof import node_dof_index, require_dof_in_range
 from solver.profile import _append_event
+from solver.simd_contiguous import dot_float64_contiguous, sum_sq_float64_contiguous
 from solver.run_case.input_types import (
     AnalysisInput,
     ElementLoadInput,
@@ -50,35 +57,6 @@ from solver.run_case.load_state import (
 )
 
 
-@always_inline
-fn _sum_sq_simd4(values: List[Float64], count: Int) -> Float64:
-    var total = 0.0
-    var i = 0
-    while i + 3 < count:
-        var vec = SIMD[DType.float64, 4](values[i], values[i + 1], values[i + 2], values[i + 3])
-        total += (vec * vec).reduce_add()
-        i += 4
-    while i < count:
-        total += values[i] * values[i]
-        i += 1
-    return total
-
-
-@always_inline
-fn _dot_simd4(lhs: List[Float64], rhs: List[Float64], count: Int) -> Float64:
-    var total = 0.0
-    var i = 0
-    while i + 3 < count:
-        var lhs_vec = SIMD[DType.float64, 4](lhs[i], lhs[i + 1], lhs[i + 2], lhs[i + 3])
-        var rhs_vec = SIMD[DType.float64, 4](rhs[i], rhs[i + 1], rhs[i + 2], rhs[i + 3])
-        total += (lhs_vec * rhs_vec).reduce_add()
-        i += 4
-    while i < count:
-        total += lhs[i] * rhs[i]
-        i += 1
-    return total
-
-
 fn _static_nonlinear_algorithm_mode(algorithm: String, label: String) -> Int:
     if algorithm == "Newton":
         return NonlinearAlgorithmMode.Newton
@@ -111,8 +89,29 @@ fn run_static_nonlinear_load_control(
     time_series_times: List[Float64],
     typed_nodes: List[NodeInput],
     typed_elements: List[ElementInput],
+    node_x: List[Float64],
+    node_y: List[Float64],
+    node_z: List[Float64],
     elem_dof_offsets: List[Int],
     elem_dof_pool: List[Int],
+    elem_node_offsets: List[Int],
+    elem_node_pool: List[Int],
+    elem_primary_material_ids: List[Int],
+    elem_type_tags: List[Int],
+    elem_geom_tags: List[Int],
+    elem_section_ids: List[Int],
+    elem_integration_tags: List[Int],
+    elem_num_int_pts: List[Int],
+    elem_area: List[Float64],
+    elem_thickness: List[Float64],
+    frame2d_elem_indices: List[Int],
+    frame3d_elem_indices: List[Int],
+    truss_elem_indices: List[Int],
+    zero_length_elem_indices: List[Int],
+    two_node_link_elem_indices: List[Int],
+    zero_length_section_elem_indices: List[Int],
+    quad_elem_indices: List[Int],
+    shell_elem_indices: List[Int],
     const_element_loads: List[ElementLoadInput],
     pattern_element_loads: List[ElementLoadInput],
     typed_sections_by_id: List[SectionInput],
@@ -156,10 +155,14 @@ fn run_static_nonlinear_load_control(
     mut events: String,
     mut events_need_comma: Bool,
     frame_assemble_stiffness: Int,
+    frame_assemble_uniaxial: Int,
+    frame_assemble_fiber: Int,
     frame_kff_extract: Int,
     frame_solve_nonlinear: Int,
     frame_nonlinear_step: Int,
     frame_nonlinear_iter: Int,
+    frame_uniaxial_revert_all: Int,
+    frame_uniaxial_commit_all: Int,
     has_transformation_mpc: Bool,
     rep_dof: List[Int],
     constrained: List[Bool],
@@ -168,6 +171,8 @@ fn run_static_nonlinear_load_control(
     var asm_dof_map6: List[Int] = []
     var asm_dof_map12: List[Int] = []
     var asm_u_elem6: List[Float64] = []
+    var force_beam_column2d_scratch = ForceBeamColumn2dScratch()
+    var force_beam_column3d_scratch = ForceBeamColumn3dScratch()
     var max_iters = analysis.max_iters
     var tol = analysis.tol
     var rel_tol = analysis.rel_tol
@@ -294,9 +299,34 @@ fn run_static_nonlinear_load_control(
             ndm,
             ndf,
         )
-        assemble_global_stiffness_and_internal(
+        reset_force_beam_column2d_scratch(force_beam_column2d_scratch)
+        reset_force_beam_column3d_scratch(force_beam_column3d_scratch)
+        assemble_global_stiffness_and_internal_soa(
             typed_nodes,
             typed_elements,
+            node_x,
+            node_y,
+            node_z,
+            elem_dof_offsets,
+            elem_dof_pool,
+            elem_node_offsets,
+            elem_node_pool,
+            elem_primary_material_ids,
+            elem_type_tags,
+            elem_geom_tags,
+            elem_section_ids,
+            elem_integration_tags,
+            elem_num_int_pts,
+            elem_area,
+            elem_thickness,
+            frame2d_elem_indices,
+            frame3d_elem_indices,
+            truss_elem_indices,
+            zero_length_elem_indices,
+            two_node_link_elem_indices,
+            zero_length_section_elem_indices,
+            quad_elem_indices,
+            shell_elem_indices,
             initial_element_load_state.element_loads,
             initial_element_load_state.elem_load_offsets,
             initial_element_load_state.elem_load_pool,
@@ -323,13 +353,19 @@ fn run_static_nonlinear_load_control(
             fiber_section3d_defs,
             fiber_section3d_cells,
             fiber_section3d_index_by_id,
-            elem_dof_offsets,
-            elem_dof_pool,
+            force_beam_column2d_scratch,
+            force_beam_column3d_scratch,
             asm_dof_map6,
             asm_dof_map12,
             asm_u_elem6,
             K,
             F_int,
+            do_profile,
+            t0,
+            events,
+            events_need_comma,
+            frame_assemble_uniaxial,
+            frame_assemble_fiber,
         )
         if has_transformation_mpc:
             K = _collapse_matrix_by_rep(K, rep_dof)
@@ -337,7 +373,27 @@ fn run_static_nonlinear_load_control(
             for i in range(free_count):
                 for j in range(free_count):
                     K_init_ff[i][j] = K[free[i]][free[j]]
+        if do_profile:
+            var t_revert_start = Int(time.perf_counter_ns())
+            var revert_start_us = (t_revert_start - t0) // 1000
+            _append_event(
+                events,
+                events_need_comma,
+                "O",
+                frame_uniaxial_revert_all,
+                revert_start_us,
+            )
         uniaxial_revert_trial_all(uniaxial_states)
+        if do_profile:
+            var t_revert_end = Int(time.perf_counter_ns())
+            var revert_end_us = (t_revert_end - t0) // 1000
+            _append_event(
+                events,
+                events_need_comma,
+                "C",
+                frame_uniaxial_revert_all,
+                revert_end_us,
+            )
     var F_f: List[Float64] = []
     F_f.resize(free_count, 0.0)
     var has_reaction_recorder = _has_recorder_type(recorders, RecorderTypeTag.NodeReaction)
@@ -369,6 +425,8 @@ fn run_static_nonlinear_load_control(
             ndm,
             ndf,
         )
+        reset_force_beam_column2d_scratch(force_beam_column2d_scratch)
+        reset_force_beam_column3d_scratch(force_beam_column3d_scratch)
         var u_base = u.copy()
         var force_basic_q_base = force_basic_q.copy()
         var converged = False
@@ -404,7 +462,27 @@ fn run_static_nonlinear_load_control(
                         frame_nonlinear_iter,
                         iter_start_us,
                     )
+                if do_profile:
+                    var t_revert_start = Int(time.perf_counter_ns())
+                    var revert_start_us = (t_revert_start - t0) // 1000
+                    _append_event(
+                        events,
+                        events_need_comma,
+                        "O",
+                        frame_uniaxial_revert_all,
+                        revert_start_us,
+                    )
                 uniaxial_revert_trial_all(uniaxial_states)
+                if do_profile:
+                    var t_revert_end = Int(time.perf_counter_ns())
+                    var revert_end_us = (t_revert_end - t0) // 1000
+                    _append_event(
+                        events,
+                        events_need_comma,
+                        "C",
+                        frame_uniaxial_revert_all,
+                        revert_end_us,
+                    )
                 if do_profile:
                     var t_asm_start = Int(time.perf_counter_ns())
                     var asm_start_us = (t_asm_start - t0) // 1000
@@ -415,9 +493,32 @@ fn run_static_nonlinear_load_control(
                         frame_assemble_stiffness,
                         asm_start_us,
                     )
-                assemble_global_stiffness_and_internal(
+                assemble_global_stiffness_and_internal_soa(
                     typed_nodes,
                     typed_elements,
+                    node_x,
+                    node_y,
+                    node_z,
+                    elem_dof_offsets,
+                    elem_dof_pool,
+                    elem_node_offsets,
+                    elem_node_pool,
+                    elem_primary_material_ids,
+                    elem_type_tags,
+                    elem_geom_tags,
+                    elem_section_ids,
+                    elem_integration_tags,
+                    elem_num_int_pts,
+                    elem_area,
+                    elem_thickness,
+                    frame2d_elem_indices,
+                    frame3d_elem_indices,
+                    truss_elem_indices,
+                    zero_length_elem_indices,
+                    two_node_link_elem_indices,
+                    zero_length_section_elem_indices,
+                    quad_elem_indices,
+                    shell_elem_indices,
                     active_element_load_state.element_loads,
                     active_element_load_state.elem_load_offsets,
                     active_element_load_state.elem_load_pool,
@@ -444,13 +545,19 @@ fn run_static_nonlinear_load_control(
                     fiber_section3d_defs,
                     fiber_section3d_cells,
                     fiber_section3d_index_by_id,
-                    elem_dof_offsets,
-                    elem_dof_pool,
+                    force_beam_column2d_scratch,
+                    force_beam_column3d_scratch,
                     asm_dof_map6,
                     asm_dof_map12,
                     asm_u_elem6,
                     K,
                     F_int,
+                    do_profile,
+                    t0,
+                    events,
+                    events_need_comma,
+                    frame_assemble_uniaxial,
+                    frame_assemble_fiber,
                 )
                 if has_transformation_mpc:
                     K = _collapse_matrix_by_rep(K, rep_dof)
@@ -531,7 +638,7 @@ fn run_static_nonlinear_load_control(
                         events, events_need_comma, "C", frame_kff_extract, kff_end_us
                     )
 
-                var residual_norm_dbg = sqrt(_sum_sq_simd4(F_f, free_count))
+                var residual_norm_dbg = sqrt(sum_sq_float64_contiguous(F_f, free_count))
 
                 if attempt_test_mode == 2:
                     if residual_norm_dbg <= attempt_tol:
@@ -609,8 +716,8 @@ fn run_static_nonlinear_load_control(
                         max_u = abs_val
                 if has_transformation_mpc:
                     _enforce_equal_dof_values(u, rep_dof, constrained)
-                var disp_incr_norm = sqrt(_sum_sq_simd4(u_f, free_count))
-                var energy_incr = abs(_dot_simd4(u_f, F_f, free_count))
+                var disp_incr_norm = sqrt(sum_sq_float64_contiguous(u_f, free_count))
+                var energy_incr = abs(dot_float64_contiguous(u_f, F_f, free_count))
                 var scale_tol = attempt_rel_tol * max_u
                 if scale_tol < attempt_rel_tol:
                     scale_tol = attempt_rel_tol
@@ -646,7 +753,27 @@ fn run_static_nonlinear_load_control(
             )
         if not converged:
             abort("static_nonlinear did not converge")
+        if do_profile:
+            var t_commit_start = Int(time.perf_counter_ns())
+            var commit_start_us = (t_commit_start - t0) // 1000
+            _append_event(
+                events,
+                events_need_comma,
+                "O",
+                frame_uniaxial_commit_all,
+                commit_start_us,
+            )
         uniaxial_commit_all(uniaxial_states)
+        if do_profile:
+            var t_commit_end = Int(time.perf_counter_ns())
+            var commit_end_us = (t_commit_end - t0) // 1000
+            _append_event(
+                events,
+                events_need_comma,
+                "C",
+                frame_uniaxial_commit_all,
+                commit_end_us,
+            )
         _sync_force_beam_column2d_committed_basic_states(
             typed_nodes,
             typed_elements,
@@ -659,9 +786,32 @@ fn run_static_nonlinear_load_control(
         var F_int_reaction: List[Float64] = []
         var F_ext_reaction: List[Float64] = []
         if has_reaction_recorder:
-            F_int_reaction = assemble_internal_forces_typed(
+            F_int_reaction = assemble_internal_forces_typed_soa(
                 typed_nodes,
                 typed_elements,
+                node_x,
+                node_y,
+                node_z,
+                elem_dof_offsets,
+                elem_dof_pool,
+                elem_node_offsets,
+                elem_node_pool,
+                elem_primary_material_ids,
+                elem_type_tags,
+                elem_geom_tags,
+                elem_section_ids,
+                elem_integration_tags,
+                elem_num_int_pts,
+                elem_area,
+                elem_thickness,
+                frame2d_elem_indices,
+                frame3d_elem_indices,
+                truss_elem_indices,
+                zero_length_elem_indices,
+                two_node_link_elem_indices,
+                zero_length_section_elem_indices,
+                quad_elem_indices,
+                shell_elem_indices,
                 active_element_load_state.element_loads,
                 active_element_load_state.elem_load_offsets,
                 active_element_load_state.elem_load_pool,
@@ -688,6 +838,8 @@ fn run_static_nonlinear_load_control(
                 fiber_section3d_defs,
                 fiber_section3d_cells,
                 fiber_section3d_index_by_id,
+                force_beam_column2d_scratch,
+                force_beam_column3d_scratch,
             )
             F_ext_reaction = F_step.copy()
         for r in range(len(recorders)):
@@ -994,8 +1146,29 @@ fn run_static_nonlinear_displacement_control(
     analysis_integrator_targets_pool: List[Float64],
     typed_nodes: List[NodeInput],
     typed_elements: List[ElementInput],
+    node_x: List[Float64],
+    node_y: List[Float64],
+    node_z: List[Float64],
     elem_dof_offsets: List[Int],
     elem_dof_pool: List[Int],
+    elem_node_offsets: List[Int],
+    elem_node_pool: List[Int],
+    elem_primary_material_ids: List[Int],
+    elem_type_tags: List[Int],
+    elem_geom_tags: List[Int],
+    elem_section_ids: List[Int],
+    elem_integration_tags: List[Int],
+    elem_num_int_pts: List[Int],
+    elem_area: List[Float64],
+    elem_thickness: List[Float64],
+    frame2d_elem_indices: List[Int],
+    frame3d_elem_indices: List[Int],
+    truss_elem_indices: List[Int],
+    zero_length_elem_indices: List[Int],
+    two_node_link_elem_indices: List[Int],
+    zero_length_section_elem_indices: List[Int],
+    quad_elem_indices: List[Int],
+    shell_elem_indices: List[Int],
     const_element_loads: List[ElementLoadInput],
     pattern_element_loads: List[ElementLoadInput],
     typed_sections_by_id: List[SectionInput],
@@ -1038,10 +1211,14 @@ fn run_static_nonlinear_displacement_control(
     mut events: String,
     mut events_need_comma: Bool,
     frame_assemble_stiffness: Int,
+    frame_assemble_uniaxial: Int,
+    frame_assemble_fiber: Int,
     frame_kff_extract: Int,
     frame_solve_nonlinear: Int,
     frame_nonlinear_step: Int,
     frame_nonlinear_iter: Int,
+    frame_uniaxial_revert_all: Int,
+    frame_uniaxial_commit_all: Int,
     has_transformation_mpc: Bool,
     rep_dof: List[Int],
 ) raises -> Float64:
@@ -1049,6 +1226,8 @@ fn run_static_nonlinear_displacement_control(
     var asm_dof_map6: List[Int] = []
     var asm_dof_map12: List[Int] = []
     var asm_u_elem6: List[Float64] = []
+    var force_beam_column2d_scratch = ForceBeamColumn2dScratch()
+    var force_beam_column3d_scratch = ForceBeamColumn3dScratch()
     var max_iters = analysis.max_iters
     var tol = analysis.tol
     var rel_tol = analysis.rel_tol
@@ -1207,9 +1386,34 @@ fn run_static_nonlinear_displacement_control(
             ndm,
             ndf,
         )
-        assemble_global_stiffness_and_internal(
+        reset_force_beam_column2d_scratch(force_beam_column2d_scratch)
+        reset_force_beam_column3d_scratch(force_beam_column3d_scratch)
+        assemble_global_stiffness_and_internal_soa(
             typed_nodes,
             typed_elements,
+            node_x,
+            node_y,
+            node_z,
+            elem_dof_offsets,
+            elem_dof_pool,
+            elem_node_offsets,
+            elem_node_pool,
+            elem_primary_material_ids,
+            elem_type_tags,
+            elem_geom_tags,
+            elem_section_ids,
+            elem_integration_tags,
+            elem_num_int_pts,
+            elem_area,
+            elem_thickness,
+            frame2d_elem_indices,
+            frame3d_elem_indices,
+            truss_elem_indices,
+            zero_length_elem_indices,
+            two_node_link_elem_indices,
+            zero_length_section_elem_indices,
+            quad_elem_indices,
+            shell_elem_indices,
             initial_element_load_state.element_loads,
             initial_element_load_state.elem_load_offsets,
             initial_element_load_state.elem_load_pool,
@@ -1236,20 +1440,46 @@ fn run_static_nonlinear_displacement_control(
             fiber_section3d_defs,
             fiber_section3d_cells,
             fiber_section3d_index_by_id,
-            elem_dof_offsets,
-            elem_dof_pool,
+            force_beam_column2d_scratch,
+            force_beam_column3d_scratch,
             asm_dof_map6,
             asm_dof_map12,
             asm_u_elem6,
             K,
             F_int,
+            do_profile,
+            t0,
+            events,
+            events_need_comma,
+            frame_assemble_uniaxial,
+            frame_assemble_fiber,
         )
         if has_transformation_mpc:
             K = _collapse_matrix_by_rep(K, rep_dof)
         for i in range(free_count):
             for j in range(free_count):
                 K_init_ff[i][j] = K[free[i]][free[j]]
+        if do_profile:
+            var t_revert_start = Int(time.perf_counter_ns())
+            var revert_start_us = (t_revert_start - t0) // 1000
+            _append_event(
+                events,
+                events_need_comma,
+                "O",
+                frame_uniaxial_revert_all,
+                revert_start_us,
+            )
         uniaxial_revert_trial_all(uniaxial_states)
+        if do_profile:
+            var t_revert_end = Int(time.perf_counter_ns())
+            var revert_end_us = (t_revert_end - t0) // 1000
+            _append_event(
+                events,
+                events_need_comma,
+                "C",
+                frame_uniaxial_revert_all,
+                revert_end_us,
+            )
 
     for step in range(steps):
         if do_profile:
@@ -1307,7 +1537,27 @@ fn run_static_nonlinear_displacement_control(
                                 frame_nonlinear_iter,
                                 iter_start_us,
                             )
+                        if do_profile:
+                            var t_revert_start = Int(time.perf_counter_ns())
+                            var revert_start_us = (t_revert_start - t0) // 1000
+                            _append_event(
+                                events,
+                                events_need_comma,
+                                "O",
+                                frame_uniaxial_revert_all,
+                                revert_start_us,
+                            )
                         uniaxial_revert_trial_all(uniaxial_states)
+                        if do_profile:
+                            var t_revert_end = Int(time.perf_counter_ns())
+                            var revert_end_us = (t_revert_end - t0) // 1000
+                            _append_event(
+                                events,
+                                events_need_comma,
+                                "C",
+                                frame_uniaxial_revert_all,
+                                revert_end_us,
+                            )
                         if do_profile:
                             var t_asm_start = Int(time.perf_counter_ns())
                             var asm_start_us = (t_asm_start - t0) // 1000
@@ -1328,9 +1578,34 @@ fn run_static_nonlinear_displacement_control(
                             ndm,
                             ndf,
                         )
-                        assemble_global_stiffness_and_internal(
+                        reset_force_beam_column2d_scratch(force_beam_column2d_scratch)
+                        reset_force_beam_column3d_scratch(force_beam_column3d_scratch)
+                        assemble_global_stiffness_and_internal_soa(
                             typed_nodes,
                             typed_elements,
+                            node_x,
+                            node_y,
+                            node_z,
+                            elem_dof_offsets,
+                            elem_dof_pool,
+                            elem_node_offsets,
+                            elem_node_pool,
+                            elem_primary_material_ids,
+                            elem_type_tags,
+                            elem_geom_tags,
+                            elem_section_ids,
+                            elem_integration_tags,
+                            elem_num_int_pts,
+                            elem_area,
+                            elem_thickness,
+                            frame2d_elem_indices,
+                            frame3d_elem_indices,
+                            truss_elem_indices,
+                            zero_length_elem_indices,
+                            two_node_link_elem_indices,
+                            zero_length_section_elem_indices,
+                            quad_elem_indices,
+                            shell_elem_indices,
                             active_element_load_state.element_loads,
                             active_element_load_state.elem_load_offsets,
                             active_element_load_state.elem_load_pool,
@@ -1357,13 +1632,19 @@ fn run_static_nonlinear_displacement_control(
                             fiber_section3d_defs,
                             fiber_section3d_cells,
                             fiber_section3d_index_by_id,
-                            elem_dof_offsets,
-                            elem_dof_pool,
+                            force_beam_column2d_scratch,
+                            force_beam_column3d_scratch,
                             asm_dof_map6,
                             asm_dof_map12,
                             asm_u_elem6,
                             K,
                             F_int,
+                            do_profile,
+                            t0,
+                            events,
+                            events_need_comma,
+                            frame_assemble_uniaxial,
+                            frame_assemble_fiber,
                         )
                         if has_transformation_mpc:
                             K = _collapse_matrix_by_rep(K, rep_dof)
@@ -1443,7 +1724,7 @@ fn run_static_nonlinear_displacement_control(
                             )
 
                         if attempt_test_mode == 2:
-                            var residual_norm = sqrt(_sum_sq_simd4(R_f, free_count))
+                            var residual_norm = sqrt(sum_sq_float64_contiguous(R_f, free_count))
                             if residual_norm <= attempt_tol:
                                 if do_profile:
                                     var t_iter_end = Int(time.perf_counter_ns())
@@ -1511,8 +1792,8 @@ fn run_static_nonlinear_displacement_control(
                         load_factor += sol_aug[free_count]
                         if has_transformation_mpc:
                             _enforce_equal_dof_values(u, rep_dof, constrained)
-                        var disp_incr_norm = sqrt(_sum_sq_simd4(sol_aug, free_count))
-                        var energy_incr = abs(_dot_simd4(sol_aug, rhs_aug, free_count))
+                        var disp_incr_norm = sqrt(sum_sq_float64_contiguous(sol_aug, free_count))
+                        var energy_incr = abs(dot_float64_contiguous(sol_aug, rhs_aug, free_count))
                         var scale_tol = attempt_rel_tol * max_u
                         if scale_tol < attempt_rel_tol:
                             scale_tol = attempt_rel_tol
@@ -1550,7 +1831,27 @@ fn run_static_nonlinear_displacement_control(
             if not attempt_ok:
                 abort("static_nonlinear did not converge (DisplacementControl)")
 
+            if do_profile:
+                var t_commit_start = Int(time.perf_counter_ns())
+                var commit_start_us = (t_commit_start - t0) // 1000
+                _append_event(
+                    events,
+                    events_need_comma,
+                    "O",
+                    frame_uniaxial_commit_all,
+                    commit_start_us,
+                )
             uniaxial_commit_all(uniaxial_states)
+            if do_profile:
+                var t_commit_end = Int(time.perf_counter_ns())
+                var commit_end_us = (t_commit_end - t0) // 1000
+                _append_event(
+                    events,
+                    events_need_comma,
+                    "C",
+                    frame_uniaxial_commit_all,
+                    commit_end_us,
+                )
             _sync_force_beam_column2d_committed_basic_states(
                 typed_nodes,
                 typed_elements,
@@ -1579,12 +1880,37 @@ fn run_static_nonlinear_displacement_control(
             ndm,
             ndf,
         )
+        reset_force_beam_column2d_scratch(force_beam_column2d_scratch)
+        reset_force_beam_column3d_scratch(force_beam_column3d_scratch)
         var F_int_reaction: List[Float64] = []
         var F_ext_reaction: List[Float64] = []
         if has_reaction_recorder:
-            F_int_reaction = assemble_internal_forces_typed(
+            F_int_reaction = assemble_internal_forces_typed_soa(
                 typed_nodes,
                 typed_elements,
+                node_x,
+                node_y,
+                node_z,
+                elem_dof_offsets,
+                elem_dof_pool,
+                elem_node_offsets,
+                elem_node_pool,
+                elem_primary_material_ids,
+                elem_type_tags,
+                elem_geom_tags,
+                elem_section_ids,
+                elem_integration_tags,
+                elem_num_int_pts,
+                elem_area,
+                elem_thickness,
+                frame2d_elem_indices,
+                frame3d_elem_indices,
+                truss_elem_indices,
+                zero_length_elem_indices,
+                two_node_link_elem_indices,
+                zero_length_section_elem_indices,
+                quad_elem_indices,
+                shell_elem_indices,
                 active_element_load_state.element_loads,
                 active_element_load_state.elem_load_offsets,
                 active_element_load_state.elem_load_pool,
@@ -1611,6 +1937,8 @@ fn run_static_nonlinear_displacement_control(
                 fiber_section3d_defs,
                 fiber_section3d_cells,
                 fiber_section3d_index_by_id,
+                force_beam_column2d_scratch,
+                force_beam_column3d_scratch,
             )
             F_ext_reaction = F_step.copy()
 

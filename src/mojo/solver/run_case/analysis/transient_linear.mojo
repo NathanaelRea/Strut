@@ -1,19 +1,36 @@
 from collections import List
+from elements import (
+    ForceBeamColumn2dScratch,
+    ForceBeamColumn3dScratch,
+    reset_force_beam_column2d_scratch,
+    reset_force_beam_column3d_scratch,
+)
 from materials import UniMaterialDef, UniMaterialState, uniaxial_commit_all
 from os import abort
 from python import Python
 from sections import FiberCell, FiberSection2dDef, FiberSection3dDef
+from sys import simd_width_of
 
 from linalg import lu_factorize_into, lu_solve_into
 from solver.assembly import (
-    assemble_global_stiffness_typed,
-    assemble_internal_forces_typed,
+    assemble_global_stiffness_typed_soa,
+    assemble_internal_forces_typed_soa,
     assemble_link_stiffness_typed,
     assemble_zero_length_damping_committed_typed,
     assemble_zero_length_damping_typed,
 )
 from solver.dof import node_dof_index, require_dof_in_range
 from solver.profile import _append_event
+from solver.simd_contiguous import (
+    copy_float64_contiguous,
+    dot_float64_contiguous,
+    load_float64_contiguous_simd,
+    store_float64_contiguous_simd,
+)
+from solver.simd_indexed import (
+    gather_float64_by_index_simd,
+    scatter_float64_by_index_simd,
+)
 from solver.run_case.input_types import (
     AnalysisInput,
     DampingInput,
@@ -50,39 +67,6 @@ from tag_types import ElementTypeTag, RecorderTypeTag
 
 
 @always_inline
-fn _copy_vector_simd4(mut dst: List[Float64], src: List[Float64]):
-    if len(dst) != len(src):
-        abort("vector size mismatch in _copy_vector_simd4")
-    var n = len(dst)
-    var i = 0
-    while i + 3 < n:
-        var chunk = SIMD[DType.float64, 4](src[i], src[i + 1], src[i + 2], src[i + 3])
-        dst[i] = chunk[0]
-        dst[i + 1] = chunk[1]
-        dst[i + 2] = chunk[2]
-        dst[i + 3] = chunk[3]
-        i += 4
-    while i < n:
-        dst[i] = src[i]
-        i += 1
-
-
-@always_inline
-fn _dot_row_simd4(row: List[Float64], vec: List[Float64], count: Int) -> Float64:
-    var sum = 0.0
-    var i = 0
-    while i + 3 < count:
-        var a = SIMD[DType.float64, 4](row[i], row[i + 1], row[i + 2], row[i + 3])
-        var b = SIMD[DType.float64, 4](vec[i], vec[i + 1], vec[i + 2], vec[i + 3])
-        sum += (a * b).reduce_add()
-        i += 4
-    while i < count:
-        sum += row[i] * vec[i]
-        i += 1
-    return sum
-
-
-@always_inline
 fn _has_nonparticipating_link_for_rayleigh(elements: List[ElementInput]) -> Bool:
     for e in range(len(elements)):
         var elem = elements[e]
@@ -114,11 +98,11 @@ fn _has_zero_length_dampers(elements: List[ElementInput]) -> Bool:
 
 
 @always_inline
-fn _build_effective_rhs_newmark_simd4(
+fn _build_effective_rhs_newmark_simd_impl[width: Int](
     free: List[Int],
-    u: List[Float64],
-    v: List[Float64],
-    a: List[Float64],
+    u_f: List[Float64],
+    v_f: List[Float64],
+    a_f: List[Float64],
     F_ext_step: List[Float64],
     M_f: List[Float64],
     a0: Float64,
@@ -133,101 +117,154 @@ fn _build_effective_rhs_newmark_simd4(
 ):
     var n = len(free)
     var i = 0
-    var a0_vec = SIMD[DType.float64, 4](a0)
-    var a1_vec = SIMD[DType.float64, 4](a1)
-    var a2_vec = SIMD[DType.float64, 4](a2)
-    var a3_vec = SIMD[DType.float64, 4](a3)
-    var a4_vec = SIMD[DType.float64, 4](a4)
-    var a5_vec = SIMD[DType.float64, 4](a5)
-    while i + 3 < n:
-        var idx0 = free[i]
-        var idx1 = free[i + 1]
-        var idx2 = free[i + 2]
-        var idx3 = free[i + 3]
-        var u_vec = SIMD[DType.float64, 4](u[idx0], u[idx1], u[idx2], u[idx3])
-        var v_vec = SIMD[DType.float64, 4](v[idx0], v[idx1], v[idx2], v[idx3])
-        var a_vec = SIMD[DType.float64, 4](a[idx0], a[idx1], a[idx2], a[idx3])
+    var a0_vec = SIMD[DType.float64, width](a0)
+    var a1_vec = SIMD[DType.float64, width](a1)
+    var a2_vec = SIMD[DType.float64, width](a2)
+    var a3_vec = SIMD[DType.float64, width](a3)
+    var a4_vec = SIMD[DType.float64, width](a4)
+    var a5_vec = SIMD[DType.float64, width](a5)
+    while i + width <= n:
+        var u_vec = load_float64_contiguous_simd[width](u_f, i)
+        var v_vec = load_float64_contiguous_simd[width](v_f, i)
+        var a_vec = load_float64_contiguous_simd[width](a_f, i)
         var c_vec = a1_vec * u_vec + a4_vec * v_vec + a5_vec * a_vec
-        var p_ext_vec = SIMD[DType.float64, 4](
-            F_ext_step[idx0], F_ext_step[idx1], F_ext_step[idx2], F_ext_step[idx3]
+        var p_ext_vec = gather_float64_by_index_simd[width](free, i, F_ext_step)
+        var m_vec = load_float64_contiguous_simd[width](M_f, i)
+        var p_eff_vec = p_ext_vec + m_vec * (
+            a0_vec * u_vec + a2_vec * v_vec + a3_vec * a_vec
         )
-        var m_vec = SIMD[DType.float64, 4](M_f[i], M_f[i + 1], M_f[i + 2], M_f[i + 3])
-        var p_eff_vec = p_ext_vec + m_vec * (a0_vec * u_vec + a2_vec * v_vec + a3_vec * a_vec)
-        P_ext_f[i] = p_ext_vec[0]
-        P_ext_f[i + 1] = p_ext_vec[1]
-        P_ext_f[i + 2] = p_ext_vec[2]
-        P_ext_f[i + 3] = p_ext_vec[3]
-        C_term[i] = c_vec[0]
-        C_term[i + 1] = c_vec[1]
-        C_term[i + 2] = c_vec[2]
-        C_term[i + 3] = c_vec[3]
-        P_eff[i] = p_eff_vec[0]
-        P_eff[i + 1] = p_eff_vec[1]
-        P_eff[i + 2] = p_eff_vec[2]
-        P_eff[i + 3] = p_eff_vec[3]
-        i += 4
+        store_float64_contiguous_simd[width](P_ext_f, i, p_ext_vec)
+        store_float64_contiguous_simd[width](C_term, i, c_vec)
+        store_float64_contiguous_simd[width](P_eff, i, p_eff_vec)
+        i += width
     while i < n:
         var idx = free[i]
         P_ext_f[i] = F_ext_step[idx]
-        C_term[i] = a1 * u[idx] + a4 * v[idx] + a5 * a[idx]
-        P_eff[i] = P_ext_f[i] + M_f[i] * (a0 * u[idx] + a2 * v[idx] + a3 * a[idx])
+        C_term[i] = a1 * u_f[i] + a4 * v_f[i] + a5 * a_f[i]
+        P_eff[i] = P_ext_f[i] + M_f[i] * (a0 * u_f[i] + a2 * v_f[i] + a3 * a_f[i])
         i += 1
 
 
 @always_inline
-fn _update_newmark_state_from_solution_simd4(
+fn _build_effective_rhs_newmark_simd(
     free: List[Int],
-    mut u: List[Float64],
-    mut v: List[Float64],
-    mut a: List[Float64],
     u_f: List[Float64],
+    v_f: List[Float64],
+    a_f: List[Float64],
+    F_ext_step: List[Float64],
+    M_f: List[Float64],
+    a0: Float64,
+    a1: Float64,
+    a2: Float64,
+    a3: Float64,
+    a4: Float64,
+    a5: Float64,
+    mut P_ext_f: List[Float64],
+    mut C_term: List[Float64],
+    mut P_eff: List[Float64],
+):
+    _build_effective_rhs_newmark_simd_impl[simd_width_of[DType.float64]()](
+        free,
+        u_f,
+        v_f,
+        a_f,
+        F_ext_step,
+        M_f,
+        a0,
+        a1,
+        a2,
+        a3,
+        a4,
+        a5,
+        P_ext_f,
+        C_term,
+        P_eff,
+    )
+
+
+@always_inline
+fn _update_newmark_state_from_solution_simd_impl[width: Int](
+    mut u_f: List[Float64],
+    mut v_f: List[Float64],
+    mut a_f: List[Float64],
+    u_next_f: List[Float64],
     a0: Float64,
     a2: Float64,
     a3: Float64,
     gamma: Float64,
     dt: Float64,
 ):
+    var n = len(u_f)
+    var i = 0
+    var a0_vec = SIMD[DType.float64, width](a0)
+    var a2_vec = SIMD[DType.float64, width](a2)
+    var a3_vec = SIMD[DType.float64, width](a3)
+    var gamma_vec = SIMD[DType.float64, width](gamma)
+    var one_minus_gamma_vec = SIMD[DType.float64, width](1.0 - gamma)
+    var dt_vec = SIMD[DType.float64, width](dt)
+    while i + width <= n:
+        var u_old = load_float64_contiguous_simd[width](u_f, i)
+        var v_old = load_float64_contiguous_simd[width](v_f, i)
+        var a_old = load_float64_contiguous_simd[width](a_f, i)
+        var u_next = load_float64_contiguous_simd[width](u_next_f, i)
+        var a_next = a0_vec * (u_next - u_old) - a2_vec * v_old - a3_vec * a_old
+        var v_next = v_old + dt_vec * (
+            one_minus_gamma_vec * a_old + gamma_vec * a_next
+        )
+        store_float64_contiguous_simd[width](u_f, i, u_next)
+        store_float64_contiguous_simd[width](v_f, i, v_next)
+        store_float64_contiguous_simd[width](a_f, i, a_next)
+        i += width
+    while i < n:
+        var u_next = u_next_f[i]
+        var a_next = a0 * (u_next - u_f[i]) - a2 * v_f[i] - a3 * a_f[i]
+        var v_next = v_f[i] + dt * ((1.0 - gamma) * a_f[i] + gamma * a_next)
+        u_f[i] = u_next
+        v_f[i] = v_next
+        a_f[i] = a_next
+        i += 1
+
+
+@always_inline
+fn _update_newmark_state_from_solution_simd(
+    mut u_f: List[Float64],
+    mut v_f: List[Float64],
+    mut a_f: List[Float64],
+    u_next_f: List[Float64],
+    a0: Float64,
+    a2: Float64,
+    a3: Float64,
+    gamma: Float64,
+    dt: Float64,
+):
+    _update_newmark_state_from_solution_simd_impl[simd_width_of[DType.float64]()](
+        u_f, v_f, a_f, u_next_f, a0, a2, a3, gamma, dt
+    )
+
+
+@always_inline
+fn _scatter_free_vector_to_full_simd_impl[width: Int](
+    free: List[Int], src: List[Float64], mut dst: List[Float64]
+):
     var n = len(free)
     var i = 0
-    var a0_vec = SIMD[DType.float64, 4](a0)
-    var a2_vec = SIMD[DType.float64, 4](a2)
-    var a3_vec = SIMD[DType.float64, 4](a3)
-    var gamma_vec = SIMD[DType.float64, 4](gamma)
-    var one_minus_gamma_vec = SIMD[DType.float64, 4](1.0 - gamma)
-    var dt_vec = SIMD[DType.float64, 4](dt)
-    while i + 3 < n:
-        var idx0 = free[i]
-        var idx1 = free[i + 1]
-        var idx2 = free[i + 2]
-        var idx3 = free[i + 3]
-        var u_old = SIMD[DType.float64, 4](u[idx0], u[idx1], u[idx2], u[idx3])
-        var v_old = SIMD[DType.float64, 4](v[idx0], v[idx1], v[idx2], v[idx3])
-        var a_old = SIMD[DType.float64, 4](a[idx0], a[idx1], a[idx2], a[idx3])
-        var u_next = SIMD[DType.float64, 4](u_f[i], u_f[i + 1], u_f[i + 2], u_f[i + 3])
-        var a_next = a0_vec * (u_next - u_old) - a2_vec * v_old - a3_vec * a_old
-        var v_next = v_old + dt_vec * (one_minus_gamma_vec * a_old + gamma_vec * a_next)
-        u[idx0] = u_next[0]
-        u[idx1] = u_next[1]
-        u[idx2] = u_next[2]
-        u[idx3] = u_next[3]
-        v[idx0] = v_next[0]
-        v[idx1] = v_next[1]
-        v[idx2] = v_next[2]
-        v[idx3] = v_next[3]
-        a[idx0] = a_next[0]
-        a[idx1] = a_next[1]
-        a[idx2] = a_next[2]
-        a[idx3] = a_next[3]
-        i += 4
+    while i + width <= n:
+        scatter_float64_by_index_simd[width](
+            free, i, dst, load_float64_contiguous_simd[width](src, i)
+        )
+        i += width
     while i < n:
-        var idx = free[i]
-        var u_next = u_f[i]
-        var a_next = a0 * (u_next - u[idx]) - a2 * v[idx] - a3 * a[idx]
-        var v_next = v[idx] + dt * ((1.0 - gamma) * a[idx] + gamma * a_next)
-        u[idx] = u_next
-        v[idx] = v_next
-        a[idx] = a_next
+        dst[free[i]] = src[i]
         i += 1
+
+
+@always_inline
+fn _scatter_free_vector_to_full(
+    free: List[Int], src: List[Float64], mut dst: List[Float64]
+):
+    _scatter_free_vector_to_full_simd_impl[simd_width_of[DType.float64]()](
+        free, src, dst
+    )
 
 
 fn run_transient_linear(
@@ -247,8 +284,29 @@ fn run_transient_linear(
     rayleigh_beta_k_comm: Float64,
     typed_nodes: List[NodeInput],
     typed_elements: List[ElementInput],
+    node_x: List[Float64],
+    node_y: List[Float64],
+    node_z: List[Float64],
     elem_dof_offsets: List[Int],
     elem_dof_pool: List[Int],
+    elem_node_offsets: List[Int],
+    elem_node_pool: List[Int],
+    elem_primary_material_ids: List[Int],
+    elem_type_tags: List[Int],
+    elem_geom_tags: List[Int],
+    elem_section_ids: List[Int],
+    elem_integration_tags: List[Int],
+    elem_num_int_pts: List[Int],
+    elem_area: List[Float64],
+    elem_thickness: List[Float64],
+    frame2d_elem_indices: List[Int],
+    frame3d_elem_indices: List[Int],
+    truss_elem_indices: List[Int],
+    zero_length_elem_indices: List[Int],
+    two_node_link_elem_indices: List[Int],
+    zero_length_section_elem_indices: List[Int],
+    quad_elem_indices: List[Int],
+    shell_elem_indices: List[Int],
     const_element_loads: List[ElementLoadInput],
     pattern_element_loads: List[ElementLoadInput],
     typed_sections_by_id: List[SectionInput],
@@ -301,6 +359,7 @@ fn run_transient_linear(
     frame_recorders: Int,
     frame_factorize: Int,
     frame_transient_step: Int,
+    frame_uniaxial_commit_all: Int,
 ) raises:
     var time = Python.import_module("time")
 
@@ -343,6 +402,8 @@ fn run_transient_linear(
             has_mass = True
     if not has_mass:
         abort("transient_linear requires masses on free dofs")
+    var force_beam_column2d_scratch = ForceBeamColumn2dScratch()
+    var force_beam_column3d_scratch = ForceBeamColumn3dScratch()
 
     if do_profile:
         var t_asm_start = Int(time.perf_counter_ns())
@@ -367,9 +428,34 @@ fn run_transient_linear(
         ndm,
         ndf,
     )
-    var K = assemble_global_stiffness_typed(
+    reset_force_beam_column2d_scratch(force_beam_column2d_scratch)
+    reset_force_beam_column3d_scratch(force_beam_column3d_scratch)
+    var K = assemble_global_stiffness_typed_soa(
         typed_nodes,
         typed_elements,
+        node_x,
+        node_y,
+        node_z,
+        elem_dof_offsets,
+        elem_dof_pool,
+        elem_node_offsets,
+        elem_node_pool,
+        elem_primary_material_ids,
+        elem_type_tags,
+        elem_geom_tags,
+        elem_section_ids,
+        elem_integration_tags,
+        elem_num_int_pts,
+        elem_area,
+        elem_thickness,
+        frame2d_elem_indices,
+        frame3d_elem_indices,
+        truss_elem_indices,
+        zero_length_elem_indices,
+        two_node_link_elem_indices,
+        zero_length_section_elem_indices,
+        quad_elem_indices,
+        shell_elem_indices,
         active_element_load_state.element_loads,
         active_element_load_state.elem_load_offsets,
         active_element_load_state.elem_load_pool,
@@ -396,6 +482,8 @@ fn run_transient_linear(
         fiber_section3d_defs,
         fiber_section3d_cells,
         fiber_section3d_index_by_id,
+        force_beam_column2d_scratch,
+        force_beam_column3d_scratch,
     )
     if do_profile:
         var t_asm_end = Int(time.perf_counter_ns())
@@ -625,6 +713,14 @@ fn run_transient_linear(
     v.resize(total_dofs, 0.0)
     var a: List[Float64] = []
     a.resize(total_dofs, 0.0)
+    var u_f: List[Float64] = []
+    u_f.resize(free_count, 0.0)
+    var v_f: List[Float64] = []
+    v_f.resize(free_count, 0.0)
+    var a_f: List[Float64] = []
+    a_f.resize(free_count, 0.0)
+    for i in range(free_count):
+        u_f[i] = u[free[i]]
 
     var F_ext_step: List[Float64] = []
     F_ext_step.resize(total_dofs, 0.0)
@@ -638,8 +734,8 @@ fn run_transient_linear(
     lu_rhs.resize(free_count, 0.0)
     var lu_work: List[Float64] = []
     lu_work.resize(free_count, 0.0)
-    var u_f: List[Float64] = []
-    u_f.resize(free_count, 0.0)
+    var u_next_f: List[Float64] = []
+    u_next_f.resize(free_count, 0.0)
     var record_reactions = _has_recorder_type(recorders, RecorderTypeTag.NodeReaction)
     var record_any_element_force = (
         _has_recorder_type(recorders, RecorderTypeTag.ElementForce) or _has_recorder_type(recorders, RecorderTypeTag.EnvelopeElementForce)
@@ -690,7 +786,7 @@ fn run_transient_linear(
                 )
         var t = Float64(step + 1) * dt
         if pattern_type == "UniformExcitation":
-            _copy_vector_simd4(F_ext_step, F_const)
+            copy_float64_contiguous(F_ext_step, F_const, len(F_ext_step))
             active_element_load_state = build_active_element_load_state(
                 const_element_loads,
                 pattern_element_loads,
@@ -700,6 +796,8 @@ fn run_transient_linear(
                 ndm,
                 ndf,
             )
+            reset_force_beam_column2d_scratch(force_beam_column2d_scratch)
+            reset_force_beam_column3d_scratch(force_beam_column3d_scratch)
             if do_profile:
                 var t_ts_start = Int(time.perf_counter_ns())
                 var ts_start_us = (t_ts_start - t0) // 1000
@@ -757,8 +855,10 @@ fn run_transient_linear(
                     frame_time_series_eval,
                     ts_end_us,
                 )
-                _copy_vector_simd4(
-                    F_ext_step, build_active_nodal_load(F_const, F_pattern, factor)
+                copy_float64_contiguous(
+                    F_ext_step,
+                    build_active_nodal_load(F_const, F_pattern, factor),
+                    len(F_ext_step),
                 )
                 active_element_load_state = build_active_element_load_state(
                     const_element_loads,
@@ -769,8 +869,14 @@ fn run_transient_linear(
                     ndm,
                     ndf,
                 )
+                reset_force_beam_column2d_scratch(force_beam_column2d_scratch)
+                reset_force_beam_column3d_scratch(force_beam_column3d_scratch)
             else:
-                _copy_vector_simd4(F_ext_step, build_active_nodal_load(F_const, F_pattern, 1.0))
+                copy_float64_contiguous(
+                    F_ext_step,
+                    build_active_nodal_load(F_const, F_pattern, 1.0),
+                    len(F_ext_step),
+                )
                 active_element_load_state = build_active_element_load_state(
                     const_element_loads,
                     pattern_element_loads,
@@ -780,8 +886,24 @@ fn run_transient_linear(
                     ndm,
                     ndf,
                 )
-        _build_effective_rhs_newmark_simd4(
-            free, u, v, a, F_ext_step, M_f, a0, a1, a2, a3, a4, a5, P_ext_f, C_term, P_eff
+                reset_force_beam_column2d_scratch(force_beam_column2d_scratch)
+                reset_force_beam_column3d_scratch(force_beam_column3d_scratch)
+        _build_effective_rhs_newmark_simd(
+            free,
+            u_f,
+            v_f,
+            a_f,
+            F_ext_step,
+            M_f,
+            a0,
+            a1,
+            a2,
+            a3,
+            a4,
+            a5,
+            P_ext_f,
+            C_term,
+            P_eff,
         )
         if has_zero_length_dampers:
             var K_zero_length_damp_global: List[List[Float64]] = []
@@ -831,7 +953,7 @@ fn run_transient_linear(
                 var fac_end_us = (t_fac_end - t0) // 1000
                 _append_event(events, events_need_comma, "C", frame_factorize, fac_end_us)
         for i in range(free_count):
-            lu_rhs[i] = P_eff[i] + _dot_row_simd4(C_ff[i], C_term, free_count)
+            lu_rhs[i] = P_eff[i] + dot_float64_contiguous(C_ff[i], C_term, free_count)
             if has_zero_length_dampers:
                 lu_rhs[i] += F_zero_length_damp_committed_f[i]
         if do_profile:
@@ -840,16 +962,23 @@ fn run_transient_linear(
             _append_event(
                 events, events_need_comma, "O", frame_solve_linear, solve_start_us
             )
-        lu_solve_into(K_lu, lu_pivots, lu_rhs, lu_work, u_f)
+        lu_solve_into(K_lu, lu_pivots, lu_rhs, lu_work, u_next_f)
         if do_profile:
             var t_solve_end = Int(time.perf_counter_ns())
             var solve_end_us = (t_solve_end - t0) // 1000
             _append_event(
                 events, events_need_comma, "C", frame_solve_linear, solve_end_us
             )
-        _update_newmark_state_from_solution_simd4(
-            free, u, v, a, u_f, a0, a2, a3, gamma, dt
+        _update_newmark_state_from_solution_simd(
+            u_f, v_f, a_f, u_next_f, a0, a2, a3, gamma, dt
         )
+        var need_full_state = (
+            has_transformation_mpc or record_reactions or len(recorders) > 0 or step == steps - 1
+        )
+        if need_full_state:
+            _scatter_free_vector_to_full(free, u_f, u)
+            _scatter_free_vector_to_full(free, v_f, v)
+            _scatter_free_vector_to_full(free, a_f, a)
         if has_transformation_mpc:
             if do_profile:
                 var t_constraints_start = Int(time.perf_counter_ns())
@@ -881,9 +1010,32 @@ fn run_transient_linear(
             var rec_start_us = (t_rec_start - t0) // 1000
             _append_event(events, events_need_comma, "O", frame_recorders, rec_start_us)
         if record_reactions:
-            F_int_reaction = assemble_internal_forces_typed(
+            F_int_reaction = assemble_internal_forces_typed_soa(
                 typed_nodes,
                 typed_elements,
+                node_x,
+                node_y,
+                node_z,
+                elem_dof_offsets,
+                elem_dof_pool,
+                elem_node_offsets,
+                elem_node_pool,
+                elem_primary_material_ids,
+                elem_type_tags,
+                elem_geom_tags,
+                elem_section_ids,
+                elem_integration_tags,
+                elem_num_int_pts,
+                elem_area,
+                elem_thickness,
+                frame2d_elem_indices,
+                frame3d_elem_indices,
+                truss_elem_indices,
+                zero_length_elem_indices,
+                two_node_link_elem_indices,
+                zero_length_section_elem_indices,
+                quad_elem_indices,
+                shell_elem_indices,
                 active_element_load_state.element_loads,
                 active_element_load_state.elem_load_offsets,
                 active_element_load_state.elem_load_pool,
@@ -910,11 +1062,36 @@ fn run_transient_linear(
                 fiber_section3d_defs,
                 fiber_section3d_cells,
                 fiber_section3d_index_by_id,
+                force_beam_column2d_scratch,
+                force_beam_column3d_scratch,
             )
         elif has_zero_length_dampers:
-            _ = assemble_internal_forces_typed(
+            _ = assemble_internal_forces_typed_soa(
                 typed_nodes,
                 typed_elements,
+                node_x,
+                node_y,
+                node_z,
+                elem_dof_offsets,
+                elem_dof_pool,
+                elem_node_offsets,
+                elem_node_pool,
+                elem_primary_material_ids,
+                elem_type_tags,
+                elem_geom_tags,
+                elem_section_ids,
+                elem_integration_tags,
+                elem_num_int_pts,
+                elem_area,
+                elem_thickness,
+                frame2d_elem_indices,
+                frame3d_elem_indices,
+                truss_elem_indices,
+                zero_length_elem_indices,
+                two_node_link_elem_indices,
+                zero_length_section_elem_indices,
+                quad_elem_indices,
+                shell_elem_indices,
                 active_element_load_state.element_loads,
                 active_element_load_state.elem_load_offsets,
                 active_element_load_state.elem_load_pool,
@@ -941,6 +1118,8 @@ fn run_transient_linear(
                 fiber_section3d_defs,
                 fiber_section3d_cells,
                 fiber_section3d_index_by_id,
+                force_beam_column2d_scratch,
+                force_beam_column3d_scratch,
             )
         if record_any_element_force:
             for i in range(elem_count):
@@ -1227,7 +1406,27 @@ fn run_transient_linear(
                 events, events_need_comma, "C", frame_transient_step, rec_end_us
             )
         if has_zero_length_dampers:
+            if do_profile:
+                var t_commit_start = Int(time.perf_counter_ns())
+                var commit_start_us = (t_commit_start - t0) // 1000
+                _append_event(
+                    events,
+                    events_need_comma,
+                    "O",
+                    frame_uniaxial_commit_all,
+                    commit_start_us,
+                )
             uniaxial_commit_all(uniaxial_states)
+            if do_profile:
+                var t_commit_end = Int(time.perf_counter_ns())
+                var commit_end_us = (t_commit_end - t0) // 1000
+                _append_event(
+                    events,
+                    events_need_comma,
+                    "C",
+                    frame_uniaxial_commit_all,
+                    commit_end_us,
+                )
     _flush_envelope_outputs(
         envelope_files,
         envelope_min,
