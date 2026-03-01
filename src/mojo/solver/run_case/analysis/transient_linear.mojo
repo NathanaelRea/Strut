@@ -1200,12 +1200,22 @@ fn run_transient_linear(
                         ndf,
                         u,
                         typed_nodes,
+                        typed_sections_by_id,
+                        fiber_section_defs,
+                        fiber_section_cells,
+                        fiber_section_index_by_id,
+                        fiber_section3d_defs,
+                        fiber_section3d_cells,
+                        fiber_section3d_index_by_id,
                         uniaxial_defs,
                         uniaxial_state_defs,
                         uniaxial_states,
                         elem_uniaxial_offsets,
                         elem_uniaxial_counts,
                         elem_uniaxial_state_ids,
+                        force_basic_offsets,
+                        force_basic_counts,
+                        force_basic_q,
                     )
                     var filename = rec.output + "_ele" + String(elem_id) + ".out"
                     _append_output(

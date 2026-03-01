@@ -14,6 +14,7 @@ from solver.dof import node_dof_index, require_dof_in_range
 from solver.reorder import build_node_adjacency_typed, rcm_order
 from solver.run_case.input_types import (
     AnalysisInput,
+    CaseInput,
     DampingInput,
     ElementLoadInput,
     ElementInput,
@@ -21,20 +22,17 @@ from solver.run_case.input_types import (
     NodeInput,
     RecorderInput,
     SectionInput,
+    StageInput,
     beam_integration_tag,
     parse_case_input,
 )
-from solver.time_series import (
-    TimeSeriesInput,
-    find_time_series_input,
-    parse_time_series_inputs,
-)
+from solver.time_series import TimeSeriesInput, find_time_series_input
 from sections import (
     FiberCell,
     FiberSection2dDef,
     FiberSection3dDef,
-    append_fiber_section2d_from_json,
-    append_fiber_section3d_from_json,
+    append_fiber_section2d_from_input,
+    append_fiber_section3d_from_input,
 )
 from strut_io import py_len
 from tag_types import (
@@ -137,6 +135,7 @@ struct RunCaseState(Movable):
     var time_series_values: List[Float64]
     var time_series_times: List[Float64]
     var dampings: List[DampingInput]
+    var stages: List[StageInput]
     var ts_index: Int
     var pattern_type: String
     var uniform_excitation_direction: Int
@@ -234,6 +233,7 @@ struct RunCaseState(Movable):
         self.time_series_values = []
         self.time_series_times = []
         self.dampings = []
+        self.stages = []
         self.ts_index = -1
         self.pattern_type = "Plain"
         self.uniform_excitation_direction = 0
@@ -366,18 +366,6 @@ fn _elem_damp_material(elem: ElementInput, idx: Int) -> Int:
     if idx == 4:
         return elem.damp_material_5
     return elem.damp_material_6
-
-
-fn _normalize_dampings_raw(dampings_raw: PythonObject) raises -> PythonObject:
-    var builtins = Python.import_module("builtins")
-    if Bool(builtins.isinstance(dampings_raw, builtins.list)):
-        return dampings_raw
-    if Bool(builtins.isinstance(dampings_raw, builtins.dict)):
-        var dampings_list = builtins.list()
-        dampings_list.append(dampings_raw)
-        return dampings_list
-    abort("dampings must be list or object")
-    return builtins.list()
 
 
 fn _find_damping_input(dampings: List[DampingInput], tag: Int) -> Int:
@@ -572,9 +560,8 @@ fn _elem_dir(elem: ElementInput, idx: Int) -> Int:
     return elem.dir_6
 
 
-fn load_case_state(data: PythonObject) raises -> RunCaseState:
+fn load_case_state_from_input(input: CaseInput) raises -> RunCaseState:
     var state = RunCaseState()
-    var input = parse_case_input(data)
 
     var ndm = input.model.ndm
     var ndf = input.model.ndf
@@ -602,7 +589,6 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
             id_to_index.resize(nid + 1, -1)
         id_to_index[nid] = i
 
-    var sections = data.get("sections", [])
     var typed_sections_by_id: List[SectionInput] = []
     for i in range(len(input.sections)):
         var sid = input.sections[i].id
@@ -822,15 +808,17 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
     var fiber_section3d_cells: List[FiberCell] = []
     var fiber_section3d_index_by_id: List[Int] = []
     fiber_section3d_index_by_id.resize(len(typed_sections_by_id), -1)
-    for i in range(py_len(sections)):
-        var sec = sections[i]
-        var sec_type = String(sec["type"])
-        var sid = Int(sec["id"])
+    for i in range(len(input.sections)):
+        var sec = input.sections[i]
+        var sec_type = sec.type
+        var sid = sec.id
         if sec_type == "FiberSection2d":
             if sid >= len(fiber_section_index_by_id):
                 fiber_section_index_by_id.resize(sid + 1, -1)
-            append_fiber_section2d_from_json(
+            append_fiber_section2d_from_input(
                 sec,
+                input.fiber_patches,
+                input.fiber_layers,
                 uniaxial_def_by_id,
                 uniaxial_defs,
                 fiber_section_defs,
@@ -840,8 +828,10 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
         elif sec_type == "FiberSection3d":
             if sid >= len(fiber_section3d_index_by_id):
                 fiber_section3d_index_by_id.resize(sid + 1, -1)
-            append_fiber_section3d_from_json(
+            append_fiber_section3d_from_input(
                 sec,
+                input.fiber_patches,
+                input.fiber_layers,
                 uniaxial_def_by_id,
                 uniaxial_defs,
                 fiber_section3d_defs,
@@ -1939,42 +1929,10 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
         for d in range(count):
             elem_free_pool[offset + d] = free_index[elem_dof_pool[offset + d]]
 
-    var time_series: List[TimeSeriesInput] = []
-    var time_series_values: List[Float64] = []
-    var time_series_times: List[Float64] = []
-    parse_time_series_inputs(data, time_series, time_series_values, time_series_times)
-    var dampings: List[DampingInput] = []
-    var dampings_raw = _normalize_dampings_raw(input.dampings)
-    for i in range(py_len(dampings_raw)):
-        var raw = dampings_raw[i]
-        var damping = DampingInput()
-        damping.tag = Int(raw.get("id", raw.get("tag", -1)))
-        if damping.tag < 0:
-            abort("damping requires id")
-        if _find_damping_input(dampings, damping.tag) >= 0:
-            abort("duplicate damping id")
-        damping.type = String(raw.get("type", ""))
-        if damping.type == "SecStiff":
-            damping.type = "SecStif"
-        if damping.type != "SecStif":
-            abort("unsupported damping type: " + damping.type)
-        damping.beta = Float64(raw.get("beta", 0.0))
-        if damping.beta <= 0.0:
-            abort("SecStif damping requires beta > 0")
-        damping.activate_time = Float64(
-            raw.get("activateTime", raw.get("activate_time", 0.0))
-        )
-        damping.deactivate_time = Float64(
-            raw.get("deactivateTime", raw.get("deactivate_time", 1.0e20))
-        )
-        damping.factor_ts_tag = Int(raw.get("factor", raw.get("factor_time_series", -1)))
-        if damping.factor_ts_tag >= 0:
-            damping.factor_ts_index = find_time_series_input(
-                time_series, damping.factor_ts_tag
-            )
-            if damping.factor_ts_index < 0:
-                abort("damping factor time_series tag not found")
-        dampings.append(damping^)
+    var time_series = input.time_series.copy()
+    var time_series_values = input.time_series_values.copy()
+    var time_series_times = input.time_series_times.copy()
+    var dampings = input.dampings.copy()
     for i in range(len(typed_elements)):
         var elem = typed_elements[i]
         if elem.type_tag == ElementTypeTag.ZeroLength and elem.damping_tag >= 0:
@@ -2123,6 +2081,7 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
     state.time_series_values = time_series_values^
     state.time_series_times = time_series_times^
     state.dampings = dampings^
+    state.stages = input.stages.copy()
     state.ts_index = ts_index
     state.pattern_type = pattern_type
     state.uniform_excitation_direction = uniform_excitation_direction
@@ -2139,3 +2098,7 @@ fn load_case_state(data: PythonObject) raises -> RunCaseState:
     state.recorders = input.recorders.copy()
 
     return state^
+
+
+fn load_case_state(data: PythonObject) raises -> RunCaseState:
+    return load_case_state_from_input(parse_case_input(data))

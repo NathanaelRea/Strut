@@ -198,6 +198,7 @@ def test_json_to_tcl_emits_staged_analysis_with_load_const_and_pattern_override(
 
     text = _run_json_to_tcl(case)
     assert "loadConst -time 0.0\n" in text
+    assert text.count("pattern Plain 1 1 {\n") == 1
     assert "pattern UniformExcitation 3 1 -accel 2\n" in text
     assert "rayleigh 0.0 0.0 0.0 0.02\n" in text
     assert text.count("analysis Static\n") == 1

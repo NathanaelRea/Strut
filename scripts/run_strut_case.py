@@ -3,11 +3,16 @@ import argparse
 import json
 import os
 import math
+import pickle
 import shutil
 import subprocess
 import tempfile
 from pathlib import Path
 import sys
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
 
 
 def run(cmd, env=None, verbose=False):
@@ -155,9 +160,13 @@ def _warn_zero_length_node_separation(case_data: dict) -> None:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--input", required=True)
+    parser.add_argument("--input")
+    parser.add_argument("--input-tcl")
     parser.add_argument("--output", required=True)
+    parser.add_argument("--compute-only", action="store_true")
     args = parser.parse_args()
+    if bool(args.input) == bool(args.input_tcl):
+        raise SystemExit("exactly one of --input or --input-tcl is required")
 
     repo_root = Path(__file__).resolve().parents[1]
     uv = shutil.which("uv")
@@ -196,43 +205,64 @@ def main():
             verbose=verbose,
         )
 
-    input_path = Path(args.input).resolve()
-    case_data = json.loads(input_path.read_text(encoding="utf-8"))
-    _warn_zero_length_node_separation(case_data)
-    normalized_input = input_path
+    normalized_input = None
     tmp_path = None
-    if _normalize_time_series_paths(case_data, input_path, repo_root):
+    input_pickle = None
+    if args.input_tcl:
+        input_tcl = Path(args.input_tcl).resolve()
+        case_data = __import__("tcl_to_strut").convert_tcl_to_solver_input(
+            input_tcl, repo_root, args.compute_only
+        )
         tmp = tempfile.NamedTemporaryFile(
-            mode="w",
-            suffix=".json",
-            prefix="strut_case_resolved_",
+            mode="wb",
+            suffix=".pkl",
+            prefix="strut_case_direct_tcl_",
             delete=False,
-            encoding="utf-8",
         )
         try:
-            tmp.write(json.dumps(case_data))
+            pickle.dump(case_data, tmp)
             tmp.flush()
         finally:
             tmp.close()
-        tmp_path = Path(tmp.name)
-        normalized_input = tmp_path
-        if verbose:
-            print(f"+ normalized time_series values_path(s) in {tmp_path}")
+        input_pickle = Path(tmp.name)
+    else:
+        input_path = Path(args.input).resolve()
+        case_data = json.loads(input_path.read_text(encoding="utf-8"))
+        _warn_zero_length_node_separation(case_data)
+        normalized_input = input_path
+        if _normalize_time_series_paths(case_data, input_path, repo_root):
+            tmp = tempfile.NamedTemporaryFile(
+                mode="w",
+                suffix=".json",
+                prefix="strut_case_resolved_",
+                delete=False,
+                encoding="utf-8",
+            )
+            try:
+                tmp.write(json.dumps(case_data))
+                tmp.flush()
+            finally:
+                tmp.close()
+            tmp_path = Path(tmp.name)
+            normalized_input = tmp_path
+            if verbose:
+                print(f"+ normalized time_series values_path(s) in {tmp_path}")
 
     try:
-        run(
-            [
-                str(solver_path),
-                "--input",
-                str(normalized_input),
-                "--output",
-                args.output,
-            ],
-            verbose=verbose,
-        )
+        cmd = [str(solver_path)]
+        if input_pickle is not None:
+            cmd += ["--input-pickle", str(input_pickle)]
+        else:
+            cmd += ["--input", str(normalized_input)]
+        if args.compute_only:
+            cmd.append("--compute-only")
+        cmd += ["--output", args.output]
+        run(cmd, verbose=verbose)
     finally:
         if tmp_path is not None:
             tmp_path.unlink(missing_ok=True)
+        if input_pickle is not None:
+            input_pickle.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

@@ -29,10 +29,43 @@ fn load_json(path: String) raises -> PythonObject:
     return data
 
 
-fn parse_args() -> (String, String, String, String):
+fn load_pickle(path: String) raises -> PythonObject:
+    var pickle = Python.import_module("pickle")
+    var pathlib = Python.import_module("pathlib")
+    var builtins = Python.import_module("builtins")
+    var path_obj = pathlib.Path(path)
+    var resolved = path_obj.resolve()
+    var file_obj = path_obj.open("rb")
+    try:
+        var data = pickle.load(file_obj)
+        if Bool(builtins.isinstance(data, builtins.dict)):
+            if not data.__contains__("__strut_case_json_path"):
+                data["__strut_case_json_path"] = PythonObject(String(resolved))
+            if not data.__contains__("__strut_case_dir"):
+                data["__strut_case_dir"] = PythonObject(String(resolved.parent))
+            return data
+    finally:
+        file_obj.close()
+    return builtins.dict()
+
+
+fn parse_args() -> (String, String, String, String, String, Bool):
     var args = argv()
     var input_path = arg_value(args, "--input")
+    var input_pickle_path = arg_value(args, "--input-pickle")
     var output_path = arg_value(args, "--output")
     var batch_path = arg_value(args, "--batch")
     var profile_path = arg_value(args, "--profile")
-    return (input_path, output_path, batch_path, profile_path)
+    var compute_only = False
+    for i in range(len(args)):
+        if String(args[i]) == "--compute-only":
+            compute_only = True
+            break
+    return (
+        input_path,
+        input_pickle_path,
+        output_path,
+        batch_path,
+        profile_path,
+        compute_only,
+    )

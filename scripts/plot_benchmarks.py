@@ -450,10 +450,6 @@ def plot_recent_bar(
 
     ax.set_ylabel(f"Analysis time ({unit_label})")
     ax.set_title(title)
-    if y_scale == "log":
-        ax.set_yscale("log")
-    elif y_scale != "linear":
-        raise ValueError(f"unsupported y scale: {y_scale}")
     ax.set_xticks(list(x))
     display_names = [_truncate_label(name, label_max_len) for name in names]
     ax.set_xticklabels(display_names, rotation=45, ha="right", fontsize=8)
@@ -517,7 +513,6 @@ def plot_archive_trend(
 
     ax.set_ylabel(f"Mean median analysis time ({unit_label})")
     ax.set_title(title)
-    ax.set_yscale("log")
     ax.grid(axis="y", linestyle=":", alpha=0.5)
     ax.legend()
     if min_timestamp is not None:
@@ -685,8 +680,7 @@ def main() -> None:
                 small_errors,
                 small_spans,
                 group_gap=args.group_gap,
-                title="Recent benchmark (small cases) [log y]",
-                y_scale="log",
+                title="Recent benchmark (small cases)",
             )
             pdf.savefig(fig)
             plt.close(fig)
@@ -698,10 +692,9 @@ def main() -> None:
                 medium_errors,
                 medium_spans,
                 group_gap=args.group_gap,
-                title="Recent benchmark (medium cases) [log y]",
+                title="Recent benchmark (medium cases)",
                 unit_label="ms",
                 scale=1.0 / 1e3,
-                y_scale="log",
             )
             pdf.savefig(fig)
             plt.close(fig)
@@ -713,8 +706,7 @@ def main() -> None:
                 large_errors,
                 large_spans,
                 group_gap=args.group_gap,
-                title="Recent benchmark (large cases) [log y]",
-                y_scale="log",
+                title="Recent benchmark (large cases)",
             )
             pdf.savefig(fig)
             plt.close(fig)

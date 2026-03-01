@@ -1,0 +1,6 @@
+{
+  "name": "opensees_example_eigen_two_story_shear_frame",
+  "entry_tcl": "docs/agent-reference/OpenSeesExamplesBasic/eigen_analysis_of_a_two_story_shear_frame/EigenAnal_twoStoreyShearFrame7.tcl",
+  "enabled": true,
+  "status": "todo"
+}

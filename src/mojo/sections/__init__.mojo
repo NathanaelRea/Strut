@@ -2,6 +2,7 @@ from sections.fiber2d import (
     FiberCell,
     FiberSection2dDef,
     FiberSection2dResponse,
+    append_fiber_section2d_from_input,
     append_fiber_section2d_from_json,
     fiber_section2d_commit,
     fiber_section2d_commit_all,
@@ -16,6 +17,7 @@ from sections.fiber2d import (
 from sections.fiber3d import (
     FiberSection3dDef,
     FiberSection3dResponse,
+    append_fiber_section3d_from_input,
     append_fiber_section3d_from_json,
     fiber_section3d_commit,
     fiber_section3d_commit_all,

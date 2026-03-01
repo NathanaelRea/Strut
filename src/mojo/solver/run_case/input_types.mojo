@@ -3,6 +3,11 @@ from os import abort
 from python import Python, PythonObject
 
 from strut_io import py_len
+from solver.time_series import (
+    TimeSeriesInput,
+    find_time_series_input,
+    parse_time_series_inputs,
+)
 from tag_types import (
     BeamIntegrationTag,
     ElementLoadTypeTag,
@@ -76,6 +81,10 @@ struct SectionInput(Movable, ImplicitlyCopyable):
     var J: Float64
     var nu: Float64
     var h: Float64
+    var fiber_patch_offset: Int
+    var fiber_patch_count: Int
+    var fiber_layer_offset: Int
+    var fiber_layer_count: Int
 
     fn __init__(out self):
         self.id = -1
@@ -89,6 +98,10 @@ struct SectionInput(Movable, ImplicitlyCopyable):
         self.J = 0.0
         self.nu = 0.0
         self.h = 0.0
+        self.fiber_patch_offset = 0
+        self.fiber_patch_count = 0
+        self.fiber_layer_offset = 0
+        self.fiber_layer_count = 0
 
     fn __init__(out self, id: Int, type: String):
         self.id = id
@@ -102,6 +115,60 @@ struct SectionInput(Movable, ImplicitlyCopyable):
         self.J = 0.0
         self.nu = 0.0
         self.h = 0.0
+        self.fiber_patch_offset = 0
+        self.fiber_patch_count = 0
+        self.fiber_layer_offset = 0
+        self.fiber_layer_count = 0
+
+
+struct FiberPatchInput(Movable, ImplicitlyCopyable):
+    var type: String
+    var material: Int
+    var num_subdiv_y: Int
+    var num_subdiv_z: Int
+    var y_i: Float64
+    var z_i: Float64
+    var y_j: Float64
+    var z_j: Float64
+    var y_k: Float64
+    var z_k: Float64
+    var y_l: Float64
+    var z_l: Float64
+
+    fn __init__(out self):
+        self.type = ""
+        self.material = -1
+        self.num_subdiv_y = 0
+        self.num_subdiv_z = 0
+        self.y_i = 0.0
+        self.z_i = 0.0
+        self.y_j = 0.0
+        self.z_j = 0.0
+        self.y_k = 0.0
+        self.z_k = 0.0
+        self.y_l = 0.0
+        self.z_l = 0.0
+
+
+struct FiberLayerInput(Movable, ImplicitlyCopyable):
+    var type: String
+    var material: Int
+    var num_bars: Int
+    var bar_area: Float64
+    var y_start: Float64
+    var z_start: Float64
+    var y_end: Float64
+    var z_end: Float64
+
+    fn __init__(out self):
+        self.type = ""
+        self.material = -1
+        self.num_bars = 0
+        self.bar_area = 0.0
+        self.y_start = 0.0
+        self.z_start = 0.0
+        self.y_end = 0.0
+        self.z_end = 0.0
 
 
 struct MaterialInput(Movable, ImplicitlyCopyable):
@@ -445,6 +512,8 @@ struct AnalysisInput(Movable, ImplicitlyCopyable):
     var integrator_type: String
     var integrator_gamma: Float64
     var integrator_beta: Float64
+    var integrator_step: Float64
+    var has_integrator_step: Bool
     var integrator_node: Int
     var integrator_dof: Int
     var integrator_cutback: Float64
@@ -477,6 +546,8 @@ struct AnalysisInput(Movable, ImplicitlyCopyable):
         self.integrator_type = ""
         self.integrator_gamma = 0.5
         self.integrator_beta = 0.25
+        self.integrator_step = 1.0
+        self.has_integrator_step = False
         self.integrator_node = -1
         self.integrator_dof = -1
         self.integrator_cutback = 0.5
@@ -580,6 +651,48 @@ struct DampingInput(Movable, ImplicitlyCopyable):
         self.factor_ts_index = -1
 
 
+struct StageInput(Movable, ImplicitlyCopyable):
+    var analysis: AnalysisInput
+    var analysis_integrator_targets_pool: List[Float64]
+    var pattern: PatternInput
+    var rayleigh: RayleighInput
+    var loads: List[NodalLoadInput]
+    var element_loads: List[ElementLoadInput]
+    var has_load_const: Bool
+    var load_const_time: Float64
+    var time_series: List[TimeSeriesInput]
+    var time_series_values: List[Float64]
+    var time_series_times: List[Float64]
+
+    fn __init__(out self):
+        self.analysis = AnalysisInput()
+        self.analysis_integrator_targets_pool = []
+        self.pattern = PatternInput()
+        self.rayleigh = RayleighInput()
+        self.loads = []
+        self.element_loads = []
+        self.has_load_const = False
+        self.load_const_time = 0.0
+        self.time_series = []
+        self.time_series_values = []
+        self.time_series_times = []
+
+    fn __copyinit__(out self, existing: Self):
+        self.analysis = existing.analysis
+        self.analysis_integrator_targets_pool = (
+            existing.analysis_integrator_targets_pool.copy()
+        )
+        self.pattern = existing.pattern
+        self.rayleigh = existing.rayleigh
+        self.loads = existing.loads.copy()
+        self.element_loads = existing.element_loads.copy()
+        self.has_load_const = existing.has_load_const
+        self.load_const_time = existing.load_const_time
+        self.time_series = existing.time_series.copy()
+        self.time_series_values = existing.time_series_values.copy()
+        self.time_series_times = existing.time_series_times.copy()
+
+
 struct RecorderInput(Movable, ImplicitlyCopyable):
     var type_tag: Int
     var output: String
@@ -621,6 +734,8 @@ struct CaseInput(Movable):
     var model: ModelInput
     var nodes: List[NodeInput]
     var sections: List[SectionInput]
+    var fiber_patches: List[FiberPatchInput]
+    var fiber_layers: List[FiberLayerInput]
     var materials: List[MaterialInput]
     var elements: List[ElementInput]
     var element_loads: List[ElementLoadInput]
@@ -630,8 +745,11 @@ struct CaseInput(Movable):
     var mp_constraints: List[MPConstraintInput]
     var pattern: PatternInput
     var rayleigh: RayleighInput
-    var dampings: PythonObject
-    var time_series: PythonObject
+    var time_series: List[TimeSeriesInput]
+    var time_series_values: List[Float64]
+    var time_series_times: List[Float64]
+    var dampings: List[DampingInput]
+    var stages: List[StageInput]
     var analysis_integrator_targets_pool: List[Float64]
     var recorder_nodes_pool: List[Int]
     var recorder_elements_pool: List[Int]
@@ -644,6 +762,8 @@ struct CaseInput(Movable):
         self.model = ModelInput(0, 0)
         self.nodes = []
         self.sections = []
+        self.fiber_patches = []
+        self.fiber_layers = []
         self.materials = []
         self.elements = []
         self.element_loads = []
@@ -653,8 +773,11 @@ struct CaseInput(Movable):
         self.mp_constraints = []
         self.pattern = PatternInput()
         self.rayleigh = RayleighInput()
-        self.dampings = None
-        self.time_series = None
+        self.time_series = []
+        self.time_series_values = []
+        self.time_series_times = []
+        self.dampings = []
+        self.stages = []
         self.analysis_integrator_targets_pool = []
         self.recorder_nodes_pool = []
         self.recorder_elements_pool = []
@@ -790,6 +913,8 @@ fn parse_analysis_input_from_raw(
     )
     analysis.integrator_gamma = Float64(integrator_raw.get("gamma", 0.5))
     analysis.integrator_beta = Float64(integrator_raw.get("beta", 0.25))
+    analysis.has_integrator_step = integrator_raw.__contains__("step")
+    analysis.integrator_step = Float64(integrator_raw.get("step", 1.0))
     if integrator_raw.__contains__("node"):
         analysis.integrator_node = Int(integrator_raw["node"])
     if integrator_raw.__contains__("dof"):
@@ -813,6 +938,151 @@ fn parse_analysis_input_from_raw(
         for i in range(py_len(targets)):
             integrator_targets_pool.append(Float64(targets[i]))
     return analysis^
+
+
+fn _normalize_dampings_raw(dampings_raw: PythonObject) raises -> PythonObject:
+    var builtins = Python.import_module("builtins")
+    if Bool(builtins.isinstance(dampings_raw, builtins.list)):
+        return dampings_raw
+    if Bool(builtins.isinstance(dampings_raw, builtins.dict)):
+        var dampings_list = builtins.list()
+        dampings_list.append(dampings_raw)
+        return dampings_list
+    abort("dampings must be list or object")
+    return builtins.list()
+
+
+fn parse_pattern_input_from_raw(pattern_raw: PythonObject) raises -> PatternInput:
+    var pattern = PatternInput()
+    if pattern_raw is None:
+        return pattern^
+    pattern.has_pattern = True
+    pattern.type = String(pattern_raw.get("type", "Plain"))
+    if pattern_raw.__contains__("time_series"):
+        pattern.has_time_series = True
+        pattern.time_series = Int(pattern_raw["time_series"])
+    if pattern_raw.__contains__("direction"):
+        pattern.has_direction = True
+        pattern.direction = Int(pattern_raw["direction"])
+    if pattern_raw.__contains__("accel"):
+        pattern.has_accel = True
+        pattern.accel = Int(pattern_raw["accel"])
+    return pattern^
+
+
+fn parse_rayleigh_input_from_raw(rayleigh_raw: PythonObject) raises -> RayleighInput:
+    var rayleigh = RayleighInput()
+    if rayleigh_raw is None:
+        return rayleigh^
+    rayleigh.has_rayleigh = True
+    rayleigh.alpha_m = Float64(rayleigh_raw.get("alphaM", 0.0))
+    rayleigh.beta_k = Float64(rayleigh_raw.get("betaK", 0.0))
+    rayleigh.beta_k_init = Float64(rayleigh_raw.get("betaKInit", 0.0))
+    rayleigh.beta_k_comm = Float64(rayleigh_raw.get("betaKComm", 0.0))
+    return rayleigh^
+
+
+fn parse_element_load_input_from_raw(load: PythonObject) raises -> ElementLoadInput:
+    var load_type = String(load.get("type", ""))
+    return ElementLoadInput(
+        Int(load["element"]),
+        load_type,
+        element_load_type_tag(load_type),
+        Float64(load.get("wy", load.get("w", 0.0))),
+        Float64(load.get("wz", 0.0)),
+        Float64(load.get("wx", load.get("wa", load.get("axial", 0.0)))),
+        Float64(load.get("py", load.get("P", load.get("Ptrans", 0.0)))),
+        Float64(load.get("pz", 0.0)),
+        Float64(load.get("px", load.get("N", load.get("Paxial", 0.0)))),
+        Float64(load.get("x", load.get("xL", load.get("aOverL", 0.0)))),
+    )
+
+
+fn parse_nodal_load_input_from_raw(load: PythonObject) raises -> NodalLoadInput:
+    return NodalLoadInput(Int(load["node"]), Int(load["dof"]), Float64(load["value"]))
+
+
+fn parse_damping_inputs_from_raw(
+    dampings_raw: PythonObject, time_series: List[TimeSeriesInput]
+) raises -> List[DampingInput]:
+    var normalized = _normalize_dampings_raw(dampings_raw)
+    var parsed: List[DampingInput] = []
+    for i in range(py_len(normalized)):
+        var raw = normalized[i]
+        var damping = DampingInput()
+        damping.tag = Int(raw.get("id", raw.get("tag", -1)))
+        if damping.tag < 0:
+            abort("damping requires id")
+        for j in range(len(parsed)):
+            if parsed[j].tag == damping.tag:
+                abort("duplicate damping id")
+        damping.type = String(raw.get("type", ""))
+        if damping.type == "SecStiff":
+            damping.type = "SecStif"
+        if damping.type != "SecStif":
+            abort("unsupported damping type: " + damping.type)
+        damping.beta = Float64(raw.get("beta", 0.0))
+        if damping.beta <= 0.0:
+            abort("SecStif damping requires beta > 0")
+        damping.activate_time = Float64(
+            raw.get("activateTime", raw.get("activate_time", 0.0))
+        )
+        damping.deactivate_time = Float64(
+            raw.get("deactivateTime", raw.get("deactivate_time", 1.0e20))
+        )
+        damping.factor_ts_tag = Int(raw.get("factor", raw.get("factor_time_series", -1)))
+        if damping.factor_ts_tag >= 0:
+            damping.factor_ts_index = find_time_series_input(
+                time_series, damping.factor_ts_tag
+            )
+            if damping.factor_ts_index < 0:
+                abort("damping factor time_series tag not found")
+        parsed.append(damping^)
+    return parsed^
+
+
+fn parse_stage_input_from_raw(
+    stage_raw: PythonObject, data: PythonObject
+) raises -> StageInput:
+    var stage = StageInput()
+    var stage_analysis_raw = stage_raw.get("analysis", stage_raw)
+    stage.analysis = parse_analysis_input_from_raw(
+        stage_analysis_raw, stage.analysis_integrator_targets_pool
+    )
+    stage.pattern = parse_pattern_input_from_raw(stage_raw.get("pattern", None))
+    stage.rayleigh = parse_rayleigh_input_from_raw(stage_raw.get("rayleigh", None))
+    if stage_raw.__contains__("load_const"):
+        var load_const = stage_raw["load_const"]
+        if load_const is not None:
+            var builtins = Python.import_module("builtins")
+            if Bool(builtins.isinstance(load_const, builtins.bool)):
+                stage.has_load_const = Bool(load_const)
+            else:
+                stage.has_load_const = True
+                stage.load_const_time = Float64(load_const.get("time", 0.0))
+    if stage_raw.__contains__("loads"):
+        var loads_raw = stage_raw["loads"]
+        for i in range(py_len(loads_raw)):
+            stage.loads.append(parse_nodal_load_input_from_raw(loads_raw[i]))
+    if stage_raw.__contains__("element_loads"):
+        var element_loads_raw = stage_raw["element_loads"]
+        for i in range(py_len(element_loads_raw)):
+            stage.element_loads.append(
+                parse_element_load_input_from_raw(element_loads_raw[i])
+            )
+    if stage_raw.__contains__("time_series"):
+        var builtins = Python.import_module("builtins")
+        var stage_data = builtins.dict()
+        stage_data["time_series"] = stage_raw["time_series"]
+        if data.__contains__("__strut_case_dir"):
+            stage_data["__strut_case_dir"] = data["__strut_case_dir"]
+        parse_time_series_inputs(
+            stage_data,
+            stage.time_series,
+            stage.time_series_values,
+            stage.time_series_times,
+        )
+    return stage^
 
 
 fn parse_case_input(data: PythonObject) raises -> CaseInput:
@@ -874,6 +1144,52 @@ fn parse_case_input(data: PythonObject) raises -> CaseInput:
             parsed.nu = Float64(params["nu"])
         if params.__contains__("h"):
             parsed.h = Float64(params["h"])
+        if parsed.type == "FiberSection2d" or parsed.type == "FiberSection3d":
+            var patches_raw = params.get("patches", [])
+            parsed.fiber_patch_offset = len(case_input.fiber_patches)
+            parsed.fiber_patch_count = py_len(patches_raw)
+            for j in range(py_len(patches_raw)):
+                var patch = patches_raw[j]
+                var patch_input = FiberPatchInput()
+                patch_input.type = String(patch["type"])
+                if patch_input.type == "quad":
+                    patch_input.type = "quadr"
+                patch_input.material = Int(patch["material"])
+                patch_input.num_subdiv_y = Int(patch["num_subdiv_y"])
+                patch_input.num_subdiv_z = Int(patch["num_subdiv_z"])
+                if patch.__contains__("y_i"):
+                    patch_input.y_i = Float64(patch["y_i"])
+                if patch.__contains__("z_i"):
+                    patch_input.z_i = Float64(patch["z_i"])
+                if patch.__contains__("y_j"):
+                    patch_input.y_j = Float64(patch["y_j"])
+                if patch.__contains__("z_j"):
+                    patch_input.z_j = Float64(patch["z_j"])
+                if patch.__contains__("y_k"):
+                    patch_input.y_k = Float64(patch["y_k"])
+                if patch.__contains__("z_k"):
+                    patch_input.z_k = Float64(patch["z_k"])
+                if patch.__contains__("y_l"):
+                    patch_input.y_l = Float64(patch["y_l"])
+                if patch.__contains__("z_l"):
+                    patch_input.z_l = Float64(patch["z_l"])
+                case_input.fiber_patches.append(patch_input)
+
+            var layers_raw = params.get("layers", [])
+            parsed.fiber_layer_offset = len(case_input.fiber_layers)
+            parsed.fiber_layer_count = py_len(layers_raw)
+            for j in range(py_len(layers_raw)):
+                var layer = layers_raw[j]
+                var layer_input = FiberLayerInput()
+                layer_input.type = String(layer["type"])
+                layer_input.material = Int(layer["material"])
+                layer_input.num_bars = Int(layer["num_bars"])
+                layer_input.bar_area = Float64(layer["bar_area"])
+                layer_input.y_start = Float64(layer["y_start"])
+                layer_input.z_start = Float64(layer["z_start"])
+                layer_input.y_end = Float64(layer["y_end"])
+                layer_input.z_end = Float64(layer["z_end"])
+                case_input.fiber_layers.append(layer_input)
         case_input.sections.append(parsed)
 
     var materials_raw = data.get("materials", [])
@@ -1075,37 +1391,13 @@ fn parse_case_input(data: PythonObject) raises -> CaseInput:
 
     var element_loads_raw = data.get("element_loads", [])
     for i in range(py_len(element_loads_raw)):
-        var load = element_loads_raw[i]
-        var load_type = String(load.get("type", ""))
-        var load_type_tag = element_load_type_tag(load_type)
-        var wy = Float64(load.get("wy", load.get("w", 0.0)))
-        var wz = Float64(load.get("wz", 0.0))
-        var wx = Float64(load.get("wx", load.get("wa", load.get("axial", 0.0))))
-        var py = Float64(load.get("py", load.get("P", load.get("Ptrans", 0.0))))
-        var pz = Float64(load.get("pz", 0.0))
-        var px = Float64(load.get("px", load.get("N", load.get("Paxial", 0.0))))
-        var x = Float64(load.get("x", load.get("xL", load.get("aOverL", 0.0))))
         case_input.element_loads.append(
-            ElementLoadInput(
-                Int(load["element"]),
-                load_type,
-                load_type_tag,
-                wy,
-                wz,
-                wx,
-                py,
-                pz,
-                px,
-                x,
-            )
+            parse_element_load_input_from_raw(element_loads_raw[i])
         )
 
     var loads_raw = data.get("loads", [])
     for i in range(py_len(loads_raw)):
-        var load = loads_raw[i]
-        case_input.loads.append(
-            NodalLoadInput(Int(load["node"]), Int(load["dof"]), Float64(load["value"]))
-        )
+        case_input.loads.append(parse_nodal_load_input_from_raw(loads_raw[i]))
 
     var masses_raw = data.get("masses", [])
     for i in range(py_len(masses_raw)):
@@ -1118,6 +1410,14 @@ fn parse_case_input(data: PythonObject) raises -> CaseInput:
     case_input.analysis = parse_analysis_input_from_raw(
         analysis_raw, case_input.analysis_integrator_targets_pool
     )
+    if case_input.analysis.type == "staged":
+        if not analysis_raw.__contains__("stages"):
+            abort("staged analysis requires analysis.stages")
+        var stages_raw = analysis_raw["stages"]
+        if py_len(stages_raw) < 1:
+            abort("staged analysis requires non-empty analysis.stages")
+        for i in range(py_len(stages_raw)):
+            case_input.stages.append(parse_stage_input_from_raw(stages_raw[i], data))
 
     var mpc_raw = data.get("mp_constraints", [])
     for i in range(py_len(mpc_raw)):
@@ -1147,42 +1447,18 @@ fn parse_case_input(data: PythonObject) raises -> CaseInput:
                 parsed.dof_6 = Int(dofs[5])
         case_input.mp_constraints.append(parsed)
 
-    var pattern_raw = data.get("pattern", None)
-    var pattern = PatternInput()
-    if pattern_raw is not None:
-        pattern.has_pattern = True
-        pattern.type = String(pattern_raw.get("type", "Plain"))
-        if pattern_raw.__contains__("time_series"):
-            pattern.has_time_series = True
-            pattern.time_series = Int(pattern_raw["time_series"])
-        if pattern_raw.__contains__("direction"):
-            pattern.has_direction = True
-            pattern.direction = Int(pattern_raw["direction"])
-        if pattern_raw.__contains__("accel"):
-            pattern.has_accel = True
-            pattern.accel = Int(pattern_raw["accel"])
-    case_input.pattern = pattern^
-
-    var rayleigh_raw = data.get("rayleigh", None)
-    var rayleigh = RayleighInput()
-    if rayleigh_raw is not None:
-        rayleigh.has_rayleigh = True
-        rayleigh.alpha_m = Float64(rayleigh_raw.get("alphaM", 0.0))
-        rayleigh.beta_k = Float64(rayleigh_raw.get("betaK", 0.0))
-        rayleigh.beta_k_init = Float64(rayleigh_raw.get("betaKInit", 0.0))
-        rayleigh.beta_k_comm = Float64(rayleigh_raw.get("betaKComm", 0.0))
-    case_input.rayleigh = rayleigh^
-
-    if data.__contains__("time_series"):
-        case_input.time_series = data["time_series"]
-    else:
-        var builtins = Python.import_module("builtins")
-        case_input.time_series = builtins.list()
+    case_input.pattern = parse_pattern_input_from_raw(data.get("pattern", None))
+    case_input.rayleigh = parse_rayleigh_input_from_raw(data.get("rayleigh", None))
+    parse_time_series_inputs(
+        data,
+        case_input.time_series,
+        case_input.time_series_values,
+        case_input.time_series_times,
+    )
     if data.__contains__("dampings"):
-        case_input.dampings = data["dampings"]
-    else:
-        var builtins = Python.import_module("builtins")
-        case_input.dampings = builtins.list()
+        case_input.dampings = parse_damping_inputs_from_raw(
+            data["dampings"], case_input.time_series
+        )
 
     var recorders_raw = data.get("recorders", [])
     for i in range(py_len(recorders_raw)):

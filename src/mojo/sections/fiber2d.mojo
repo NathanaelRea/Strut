@@ -11,6 +11,7 @@ from materials import (
     uniaxial_revert_trial,
     uniaxial_set_trial_strain,
 )
+from solver.run_case.input_types import FiberLayerInput, FiberPatchInput, SectionInput
 from solver.simd_contiguous import FLOAT64_SIMD_WIDTH, load_float64_contiguous_simd
 from strut_io import py_len
 
@@ -410,6 +411,209 @@ fn append_fiber_section2d_from_json(
             )
         else:
             abort("unsupported FiberSection2d layer type: " + layer_type)
+
+    var fiber_count = len(fibers) - fiber_offset
+    if fiber_count <= 0:
+        abort("FiberSection2d produced no fibers")
+    if area_sum <= 0.0:
+        abort("FiberSection2d total area must be > 0")
+    var y_bar = qz_sum / area_sum
+
+    defs.append(
+        _build_fiber_section2d_def(
+            fiber_offset, fiber_count, y_bar, fibers, uniaxial_defs
+        )
+    )
+
+
+fn _append_rect_patch_cells_input(
+    patch: FiberPatchInput,
+    uniaxial_def_by_id: List[Int],
+    mut fibers: List[FiberCell],
+    mut area_sum: Float64,
+    mut qz_sum: Float64,
+):
+    var mat_id = patch.material
+    var def_index = _resolve_uniaxial_def_index(mat_id, uniaxial_def_by_id)
+    var ny = patch.num_subdiv_y
+    var nz = patch.num_subdiv_z
+    if ny <= 0 or nz <= 0:
+        abort("FiberSection2d patch rect requires num_subdiv_y and num_subdiv_z > 0")
+
+    var y_i = patch.y_i
+    var z_i = patch.z_i
+    var y_j = patch.y_j
+    var z_j = patch.z_j
+
+    var y_min = y_i
+    var y_max = y_j
+    if y_min > y_max:
+        y_min = y_j
+        y_max = y_i
+
+    var z_min = z_i
+    var z_max = z_j
+    if z_min > z_max:
+        z_min = z_j
+        z_max = z_i
+
+    var dy_total = y_max - y_min
+    var dz_total = z_max - z_min
+    if dy_total <= 0.0 or dz_total <= 0.0:
+        abort("FiberSection2d patch rect must have non-zero side lengths")
+
+    var dy = dy_total / Float64(ny)
+    var dz = dz_total / Float64(nz)
+    var area = dy * dz
+
+    for iy in range(ny):
+        var y = y_min + (Float64(iy) + 0.5) * dy
+        for iz in range(nz):
+            var z = z_min + (Float64(iz) + 0.5) * dz
+            fibers.append(FiberCell(y, z, area, def_index))
+            area_sum += area
+            qz_sum += area * y
+
+
+fn _append_quadr_patch_cells_input(
+    patch: FiberPatchInput,
+    uniaxial_def_by_id: List[Int],
+    mut fibers: List[FiberCell],
+    mut area_sum: Float64,
+    mut qz_sum: Float64,
+):
+    var mat_id = patch.material
+    var def_index = _resolve_uniaxial_def_index(mat_id, uniaxial_def_by_id)
+    var ny = patch.num_subdiv_y
+    var nz = patch.num_subdiv_z
+    if ny <= 0 or nz <= 0:
+        abort("FiberSection2d patch quadr requires num_subdiv_y and num_subdiv_z > 0")
+
+    var y_i = patch.y_i
+    var z_i = patch.z_i
+    var y_j = patch.y_j
+    var z_j = patch.z_j
+    var y_k = patch.y_k
+    var z_k = patch.z_k
+    var y_l = patch.y_l
+    var z_l = patch.z_l
+
+    for iy in range(ny):
+        var u0 = Float64(iy) / Float64(ny)
+        var u1 = Float64(iy + 1) / Float64(ny)
+        var uc = 0.5 * (u0 + u1)
+        for iz in range(nz):
+            var v0 = Float64(iz) / Float64(nz)
+            var v1 = Float64(iz + 1) / Float64(nz)
+            var vc = 0.5 * (v0 + v1)
+
+            var y00 = (1.0 - u0) * (1.0 - v0) * y_i + u0 * (1.0 - v0) * y_j + u0 * v0 * y_k + (1.0 - u0) * v0 * y_l
+            var z00 = (1.0 - u0) * (1.0 - v0) * z_i + u0 * (1.0 - v0) * z_j + u0 * v0 * z_k + (1.0 - u0) * v0 * z_l
+            var y10 = (1.0 - u1) * (1.0 - v0) * y_i + u1 * (1.0 - v0) * y_j + u1 * v0 * y_k + (1.0 - u1) * v0 * y_l
+            var z10 = (1.0 - u1) * (1.0 - v0) * z_i + u1 * (1.0 - v0) * z_j + u1 * v0 * z_k + (1.0 - u1) * v0 * z_l
+            var y11 = (1.0 - u1) * (1.0 - v1) * y_i + u1 * (1.0 - v1) * y_j + u1 * v1 * y_k + (1.0 - u1) * v1 * y_l
+            var z11 = (1.0 - u1) * (1.0 - v1) * z_i + u1 * (1.0 - v1) * z_j + u1 * v1 * z_k + (1.0 - u1) * v1 * z_l
+            var y01 = (1.0 - u0) * (1.0 - v1) * y_i + u0 * (1.0 - v1) * y_j + u0 * v1 * y_k + (1.0 - u0) * v1 * y_l
+            var z01 = (1.0 - u0) * (1.0 - v1) * z_i + u0 * (1.0 - v1) * z_j + u0 * v1 * z_k + (1.0 - u0) * v1 * z_l
+
+            var twice_area = (
+                y00 * z10
+                + y10 * z11
+                + y11 * z01
+                + y01 * z00
+                - z00 * y10
+                - z10 * y11
+                - z11 * y01
+                - z01 * y00
+            )
+            var area = abs(twice_area) * 0.5
+            if area <= 0.0:
+                abort("FiberSection2d patch quadr generated zero-area cell")
+
+            var yc = (1.0 - uc) * (1.0 - vc) * y_i + uc * (1.0 - vc) * y_j + uc * vc * y_k + (1.0 - uc) * vc * y_l
+            var zc = (1.0 - uc) * (1.0 - vc) * z_i + uc * (1.0 - vc) * z_j + uc * vc * z_k + (1.0 - uc) * vc * z_l
+            fibers.append(FiberCell(yc, zc, area, def_index))
+            area_sum += area
+            qz_sum += area * yc
+
+
+fn _append_straight_layer_cells_input(
+    layer: FiberLayerInput,
+    uniaxial_def_by_id: List[Int],
+    mut fibers: List[FiberCell],
+    mut area_sum: Float64,
+    mut qz_sum: Float64,
+):
+    var mat_id = layer.material
+    var def_index = _resolve_uniaxial_def_index(mat_id, uniaxial_def_by_id)
+    var num_bars = layer.num_bars
+    if num_bars <= 0:
+        abort("FiberSection2d layer straight requires num_bars > 0")
+    var bar_area = layer.bar_area
+    if bar_area <= 0.0:
+        abort("FiberSection2d layer straight requires bar_area > 0")
+
+    var y_start = layer.y_start
+    var z_start = layer.z_start
+    var y_end = layer.y_end
+    var z_end = layer.z_end
+
+    if num_bars == 1:
+        var y = 0.5 * (y_start + y_end)
+        var z = 0.5 * (z_start + z_end)
+        fibers.append(FiberCell(y, z, bar_area, def_index))
+        area_sum += bar_area
+        qz_sum += bar_area * y
+        return
+
+    for i in range(num_bars):
+        var t = Float64(i) / Float64(num_bars - 1)
+        var y = y_start + (y_end - y_start) * t
+        var z = z_start + (z_end - z_start) * t
+        fibers.append(FiberCell(y, z, bar_area, def_index))
+        area_sum += bar_area
+        qz_sum += bar_area * y
+
+
+fn append_fiber_section2d_from_input(
+    sec: SectionInput,
+    fiber_patches: List[FiberPatchInput],
+    fiber_layers: List[FiberLayerInput],
+    uniaxial_def_by_id: List[Int],
+    uniaxial_defs: List[UniMaterialDef],
+    mut defs: List[FiberSection2dDef],
+    mut fibers: List[FiberCell],
+):
+    if sec.type != "FiberSection2d":
+        abort("append_fiber_section2d_from_input requires FiberSection2d")
+    if sec.fiber_patch_count == 0 and sec.fiber_layer_count == 0:
+        abort("FiberSection2d requires at least one patch or layer")
+
+    var fiber_offset = len(fibers)
+    var area_sum = 0.0
+    var qz_sum = 0.0
+
+    for i in range(sec.fiber_patch_count):
+        var patch = fiber_patches[sec.fiber_patch_offset + i]
+        if patch.type == "rect":
+            _append_rect_patch_cells_input(
+                patch, uniaxial_def_by_id, fibers, area_sum, qz_sum
+            )
+        elif patch.type == "quadr":
+            _append_quadr_patch_cells_input(
+                patch, uniaxial_def_by_id, fibers, area_sum, qz_sum
+            )
+        else:
+            abort("unsupported FiberSection2d patch type: " + patch.type)
+
+    for i in range(sec.fiber_layer_count):
+        var layer = fiber_layers[sec.fiber_layer_offset + i]
+        if layer.type == "straight":
+            _append_straight_layer_cells_input(
+                layer, uniaxial_def_by_id, fibers, area_sum, qz_sum
+            )
+        else:
+            abort("unsupported FiberSection2d layer type: " + layer.type)
 
     var fiber_count = len(fibers) - fiber_offset
     if fiber_count <= 0:

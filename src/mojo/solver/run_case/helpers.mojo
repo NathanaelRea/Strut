@@ -23,6 +23,12 @@ from elements import (
     force_beam_column3d_global_tangent_and_internal,
     link_orientation_matrix,
 )
+from elements.beam3d import (
+    _beam3d_rotation,
+    _beam3d_transform_matrix,
+    _beam3d_transform_u_global_to_local,
+)
+from elements.utils import _beam2d_transform_u_global_to_local
 from materials import UniMaterialDef, UniMaterialState, uniaxial_set_trial_strain
 from solver.dof import node_dof_index, require_dof_in_range
 from solver.run_case.input_types import (
@@ -1137,6 +1143,30 @@ fn _two_node_link_deformation_for_recorder(
     return ub^
 
 
+fn _beam2d_force_global_to_local(
+    node1: NodeInput, node2: NodeInput, f_global: List[Float64]
+) raises -> List[Float64]:
+    var dx = node2.x - node1.x
+    var dy = node2.y - node1.y
+    var L = sqrt(dx * dx + dy * dy)
+    if L == 0.0:
+        abort("zero-length element")
+    var c = dx / L
+    var s = dy / L
+    var f_local: List[Float64] = []
+    f_local.resize(6, 0.0)
+    _beam2d_transform_u_global_to_local(c, s, f_global, f_local)
+    return f_local^
+
+
+fn _beam3d_force_global_to_local(
+    node1: NodeInput, node2: NodeInput, f_global: List[Float64]
+) -> List[Float64]:
+    var R = _beam3d_rotation(node1.x, node1.y, node1.z, node2.x, node2.y, node2.z)
+    var T = _beam3d_transform_matrix(R)
+    return _beam3d_transform_u_global_to_local(T, f_global)
+
+
 fn _force_beam_column2d_element_force_global(
     elem_index: Int,
     elem: ElementInput,
@@ -1273,6 +1303,12 @@ fn _force_beam_column2d_element_force_global(
             )
             for a in range(6):
                 f_global_elastic[a] -= f_load[a]
+        var q_offset = force_basic_offsets[elem_index]
+        if q_offset >= 0 and q_offset + 2 < len(force_basic_q):
+            var f_local = _beam2d_force_global_to_local(node1, node2, f_global_elastic)
+            force_basic_q[q_offset] = f_local[0]
+            force_basic_q[q_offset + 1] = f_local[2]
+            force_basic_q[q_offset + 2] = f_local[5]
         return f_global_elastic^
 
     var sec_id = elem.section
@@ -2407,12 +2443,22 @@ fn _element_local_force_for_recorder(
     ndf: Int,
     u: List[Float64],
     nodes: List[NodeInput],
+    sections_by_id: List[SectionInput],
+    fiber_section_defs: List[FiberSection2dDef],
+    fiber_section_cells: List[FiberCell],
+    fiber_section_index_by_id: List[Int],
+    fiber_section3d_defs: List[FiberSection3dDef],
+    fiber_section3d_cells: List[FiberCell],
+    fiber_section3d_index_by_id: List[Int],
     uniaxial_defs: List[UniMaterialDef],
     uniaxial_state_defs: List[Int],
     mut uniaxial_states: List[UniMaterialState],
     elem_uniaxial_offsets: List[Int],
     elem_uniaxial_counts: List[Int],
     elem_uniaxial_state_ids: List[Int],
+    force_basic_offsets: List[Int],
+    force_basic_counts: List[Int],
+    mut force_basic_q: List[Float64],
 ) raises -> List[Float64]:
     var elem_ndm = 2
     if ndf >= 6 or nodes[elem.node_index_1].has_z or nodes[elem.node_index_2].has_z:
@@ -2447,7 +2493,106 @@ fn _element_local_force_for_recorder(
             elem_uniaxial_counts,
             elem_uniaxial_state_ids,
         )
-    abort("element_local_force recorder supports zeroLength and twoNodeLink only")
+    if (
+        elem.type_tag == ElementTypeTag.ElasticBeamColumn2d
+        or elem.type_tag == ElementTypeTag.ForceBeamColumn2d
+        or elem.type_tag == ElementTypeTag.DispBeamColumn2d
+    ):
+        var f_global: List[Float64]
+        if elem.type_tag == ElementTypeTag.ElasticBeamColumn2d:
+            var empty_element_loads: List[ElementLoadInput] = []
+            var empty_elem_load_offsets: List[Int] = []
+            var empty_elem_load_pool: List[Int] = []
+            f_global = _beam2d_element_force_global(
+                elem_index,
+                elem,
+                nodes,
+                sections_by_id,
+                ndf,
+                u,
+                empty_element_loads,
+                empty_elem_load_offsets,
+                empty_elem_load_pool,
+                0.0,
+            )
+        elif elem.type_tag == ElementTypeTag.ForceBeamColumn2d:
+            f_global = _force_beam_column2d_element_force_global(
+                elem_index,
+                elem,
+                nodes,
+                sections_by_id,
+                ndf,
+                u,
+                fiber_section_defs,
+                fiber_section_cells,
+                fiber_section_index_by_id,
+                uniaxial_defs,
+                uniaxial_states,
+                elem_uniaxial_offsets,
+                elem_uniaxial_counts,
+                elem_uniaxial_state_ids,
+                force_basic_offsets,
+                force_basic_counts,
+                force_basic_q,
+            )
+        else:
+            f_global = _disp_beam_column2d_element_force_global(
+                elem_index,
+                elem,
+                nodes,
+                sections_by_id,
+                ndf,
+                u,
+                fiber_section_defs,
+                fiber_section_cells,
+                fiber_section_index_by_id,
+                uniaxial_defs,
+                uniaxial_states,
+                elem_uniaxial_offsets,
+                elem_uniaxial_counts,
+                elem_uniaxial_state_ids,
+            )
+        return _beam2d_force_global_to_local(
+            nodes[elem.node_index_1], nodes[elem.node_index_2], f_global
+        )
+    if (
+        elem.type_tag == ElementTypeTag.ElasticBeamColumn3d
+        or elem.type_tag == ElementTypeTag.ForceBeamColumn3d
+        or elem.type_tag == ElementTypeTag.DispBeamColumn3d
+    ):
+        var empty_element_loads: List[ElementLoadInput] = []
+        var empty_elem_load_offsets: List[Int] = []
+        var empty_elem_load_pool: List[Int] = []
+        var f_global = _beam_column3d_element_force_global(
+            elem_index,
+            elem,
+            nodes,
+            sections_by_id,
+            ndf,
+            u,
+            fiber_section3d_defs,
+            fiber_section3d_cells,
+            fiber_section3d_index_by_id,
+            uniaxial_defs,
+            uniaxial_states,
+            elem_uniaxial_offsets,
+            elem_uniaxial_counts,
+            elem_uniaxial_state_ids,
+            force_basic_offsets,
+            force_basic_counts,
+            force_basic_q,
+            empty_element_loads,
+            empty_elem_load_offsets,
+            empty_elem_load_pool,
+            0.0,
+        )
+        return _beam3d_force_global_to_local(
+            nodes[elem.node_index_1], nodes[elem.node_index_2], f_global
+        )
+    abort(
+        "element_local_force recorder supports zeroLength, twoNodeLink, "
+        "elasticBeamColumn2d/3d, forceBeamColumn2d/3d, or dispBeamColumn2d/3d only"
+    )
     return []
 
 

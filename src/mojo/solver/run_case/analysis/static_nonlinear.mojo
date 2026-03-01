@@ -411,6 +411,8 @@ fn run_static_nonlinear_load_control(
         if has_transformation_mpc:
             _enforce_equal_dof_values(u, rep_dof, constrained)
         var scale = Float64(step + 1) / Float64(steps)
+        if analysis.has_integrator_step:
+            scale = Float64(step + 1) * analysis.integrator_step
         if ts_index >= 0:
             scale = eval_time_series_input(
                 time_series[ts_index], scale, time_series_values, time_series_times
@@ -919,12 +921,22 @@ fn run_static_nonlinear_load_control(
                         ndf,
                         u,
                         typed_nodes,
+                        typed_sections_by_id,
+                        fiber_section_defs,
+                        fiber_section_cells,
+                        fiber_section_index_by_id,
+                        fiber_section3d_defs,
+                        fiber_section3d_cells,
+                        fiber_section3d_index_by_id,
                         uniaxial_defs,
                         uniaxial_state_defs,
                         uniaxial_states,
                         elem_uniaxial_offsets,
                         elem_uniaxial_counts,
                         elem_uniaxial_state_ids,
+                        force_basic_offsets,
+                        force_basic_counts,
+                        force_basic_q,
                     )
                     var filename = rec.output + "_ele" + String(elem_id) + ".out"
                     _append_output(
@@ -1723,7 +1735,11 @@ fn run_static_nonlinear_displacement_control(
                                 kff_end_us,
                             )
 
-                        if attempt_test_mode == 2:
+                        # For DisplacementControl, the pre-solve residual is evaluated at the
+                        # current equilibrium state. Treating that as convergence before any
+                        # augmented solve would leave the control displacement unchanged and
+                        # spin forever on the same target.
+                        if attempt_test_mode == 2 and abs(u[control_idx] - u_base[control_idx]) > 0.0:
                             var residual_norm = sqrt(sum_sq_float64_contiguous(R_f, free_count))
                             if residual_norm <= attempt_tol:
                                 if do_profile:
@@ -2019,12 +2035,22 @@ fn run_static_nonlinear_displacement_control(
                         ndf,
                         u,
                         typed_nodes,
+                        typed_sections_by_id,
+                        fiber_section_defs,
+                        fiber_section_cells,
+                        fiber_section_index_by_id,
+                        fiber_section3d_defs,
+                        fiber_section3d_cells,
+                        fiber_section3d_index_by_id,
                         uniaxial_defs,
                         uniaxial_state_defs,
                         uniaxial_states,
                         elem_uniaxial_offsets,
                         elem_uniaxial_counts,
                         elem_uniaxial_state_ids,
+                        force_basic_offsets,
+                        force_basic_counts,
+                        force_basic_q,
                     )
                     var filename = rec.output + "_ele" + String(elem_id) + ".out"
                     _append_output(

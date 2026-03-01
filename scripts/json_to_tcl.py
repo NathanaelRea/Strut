@@ -1017,7 +1017,8 @@ def main():
         pattern = data.get("pattern")
         analysis = data.get("analysis", {"type": "static_linear", "steps": 1})
         analysis_type = analysis.get("type", "static_linear")
-        if loads or element_loads or pattern is not None:
+        emit_top_level_pattern = analysis_type != "staged"
+        if emit_top_level_pattern and (loads or element_loads or pattern is not None):
             if ts_list:
                 if pattern is None:
                     if len(ts_list) == 1:
@@ -1125,7 +1126,7 @@ def main():
                     _emit_time_series(f, ts, case_dir, data)
                     ts_tags.add(ts["tag"])
 
-                stage_pattern = stage.get("pattern")
+                stage_pattern = stage.get("pattern", pattern if stage_idx == 0 else None)
                 stage_loads = stage.get("loads", loads if stage_idx == 0 else [])
                 stage_element_loads = stage.get(
                     "element_loads",

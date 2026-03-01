@@ -8,14 +8,33 @@ import shutil
 import subprocess
 import time
 import math
+import sys
+import pickle
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from statistics import mean, median
 from typing import Dict, Iterable, List, Optional, Tuple
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
 ABS_TOL = 1e-8
 REL_TOL = 1e-5
+DEFAULT_RECORDER_TOLERANCES = {
+    "node_displacement": {"atol": 1e-9, "rtol": 1e-5},
+    "node_reaction": {"atol": 1e-9, "rtol": 1e-5},
+    "drift": {"atol": 1e-9, "rtol": 1e-5},
+    "element_force": {"atol": 1e-8, "rtol": 1e-5},
+    "element_local_force": {"atol": 1e-8, "rtol": 1e-5},
+    "element_basic_force": {"atol": 1e-8, "rtol": 1e-5},
+    "element_deformation": {"atol": 1e-8, "rtol": 1e-5},
+    "envelope_element_force": {"atol": 1e-8, "rtol": 1e-5},
+    "section_force": {"atol": 1e-8, "rtol": 1e-5},
+    "section_deformation": {"atol": 1e-9, "rtol": 1e-6},
+    "modal_eigen": {"atol": 1e-8, "rtol": 1e-5},
+}
 ELEMENT_RESPONSE_RECORDER_TYPES = (
     "element_force",
     "element_local_force",
@@ -27,7 +46,10 @@ ELEMENT_RESPONSE_RECORDER_TYPES = (
 @dataclass(frozen=True)
 class CaseSpec:
     name: str
-    json_path: Path
+    json_path: Optional[Path] = None
+    tcl_path: Optional[Path] = None
+    metadata_path: Optional[Path] = None
+    benchmark_size: Optional[str] = None
 
 
 BENCHMARK_SUITES: Dict[str, List[str]] = {
@@ -176,11 +198,388 @@ def _count_constrained_dofs(node: dict, ndf: int) -> int:
     return 0
 
 
-def _case_free_dofs(path: Path) -> Optional[int]:
+def _case_json_path(case: CaseSpec) -> Path:
+    if case.json_path is None:
+        raise ValueError(f"case `{case.name}` has no JSON path")
+    return case.json_path
+
+
+def _case_metadata_path(case: CaseSpec) -> Path:
+    if case.metadata_path is not None:
+        return case.metadata_path
+    return _case_json_path(case)
+
+
+def _load_case_metadata(path: Path) -> dict:
+    data = json.loads(path.read_text())
+    if not isinstance(data, dict):
+        raise ValueError(f"invalid case metadata: {path}")
+    return data
+
+
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
+def _resolve_repo_relative_path(raw_path: str) -> Path:
+    path = Path(raw_path)
+    if path.is_absolute():
+        return path.resolve()
+    return (_repo_root() / path).resolve()
+
+
+def _is_direct_tcl_manifest(path: Path) -> bool:
+    if path.name != "direct_tcl_case.json":
+        return False
     try:
-        data = json.loads(path.read_text())
+        data = _load_case_metadata(path)
     except Exception:
-        return None
+        return False
+    entry_tcl = data.get("entry_tcl")
+    return isinstance(entry_tcl, str) and bool(entry_tcl)
+
+
+def _direct_tcl_case_spec(manifest_path: Path) -> CaseSpec:
+    data = _load_case_metadata(manifest_path)
+    name = str(data.get("name") or manifest_path.parent.name)
+    entry_tcl = data.get("entry_tcl")
+    if not isinstance(entry_tcl, str) or not entry_tcl:
+        raise ValueError(f"direct Tcl case missing entry_tcl: {manifest_path}")
+    benchmark_size = data.get("benchmark_size")
+    if not isinstance(benchmark_size, str):
+        benchmark_size = None
+    return CaseSpec(
+        name=name,
+        tcl_path=_resolve_repo_relative_path(entry_tcl),
+        metadata_path=manifest_path,
+        benchmark_size=benchmark_size,
+    )
+
+
+def _direct_case_root(case: CaseSpec) -> Path:
+    return _case_metadata_path(case).parent
+
+
+def _reference_output_path(reference_dir: Path, raw_path: str) -> Optional[Path]:
+    path = Path(raw_path)
+    current = reference_dir
+    for part in path.parts:
+        candidate = current / part
+        if candidate.exists():
+            current = candidate
+            continue
+        if not current.exists() or not current.is_dir():
+            return None
+        matches = [child for child in current.iterdir() if child.name.lower() == part.lower()]
+        if len(matches) != 1:
+            return None
+        current = matches[0]
+    return current
+
+
+def _normalized_recorder_outputs(recorder: dict) -> List[str]:
+    if recorder.get("parity", True) is False:
+        return []
+    rec_type = recorder["type"]
+    output = recorder.get("output", rec_type)
+    if rec_type in ("node_displacement", "node_reaction"):
+        nodes = recorder.get("nodes", [])
+        if len(nodes) != 1:
+            raise SystemExit(
+                f"direct Tcl benchmark normalization requires single-node recorder: {recorder}"
+            )
+        return [f"{output}_node{int(nodes[0])}.out"]
+    if rec_type == "element_force":
+        elements = recorder.get("elements", [])
+        if len(elements) != 1:
+            raise SystemExit(
+                f"direct Tcl benchmark normalization requires single-element recorder: {recorder}"
+            )
+        return [f"{output}_ele{int(elements[0])}.out"]
+    if rec_type in ("element_local_force", "element_basic_force", "element_deformation"):
+        elements = recorder.get("elements", [])
+        if len(elements) != 1:
+            raise SystemExit(
+                f"direct Tcl benchmark normalization requires single-element recorder: {recorder}"
+            )
+        return [f"{output}_ele{int(elements[0])}.out"]
+    if rec_type == "envelope_element_force":
+        elements = recorder.get("elements", [])
+        if len(elements) != 1:
+            raise SystemExit(
+                f"direct Tcl benchmark normalization requires single-element recorder: {recorder}"
+            )
+        return [f"{output}_ele{int(elements[0])}.out"]
+    if rec_type in ("section_force", "section_deformation"):
+        elements = recorder.get("elements", [])
+        if len(elements) != 1:
+            raise SystemExit(
+                f"direct Tcl benchmark normalization requires single-element recorder: {recorder}"
+            )
+        section = recorder.get("section")
+        if section is None:
+            sections = recorder.get("sections") or []
+            if len(sections) != 1:
+                raise SystemExit(
+                    f"direct Tcl benchmark normalization requires single section: {recorder}"
+                )
+            section = sections[0]
+        return [f"{output}_ele{int(elements[0])}_sec{int(section)}.out"]
+    if rec_type == "drift":
+        return [f"{output}_i{int(recorder['i_node'])}_j{int(recorder['j_node'])}.out"]
+    raise SystemExit(f"unsupported direct Tcl benchmark recorder normalization: {rec_type}")
+
+
+def _normalize_reference_outputs(
+    case_data: dict, reference_dir: Path, *, strict: bool = True
+) -> None:
+    data = case_data
+    grouped_recorders: dict[str, list[dict]] = {}
+    for recorder in data.get("recorders", []):
+        raw_path = recorder.get("raw_path")
+        if not raw_path or recorder.get("parity", True) is False:
+            continue
+        grouped_recorders.setdefault(raw_path, []).append(recorder)
+
+    for raw_path, recorders in grouped_recorders.items():
+        source = _reference_output_path(reference_dir, raw_path)
+        if source is None or not source.exists():
+            if strict:
+                raise SystemExit(f"missing raw OpenSees recorder output: {raw_path}")
+            continue
+        strip_time = bool(recorders[0].get("include_time"))
+        normalized_rows = []
+        for line in source.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            parts = line.replace(",", " ").split()
+            if strip_time and parts:
+                parts = parts[1:]
+            normalized_rows.append(parts)
+
+        targets: list[str] = []
+        for recorder in recorders:
+            targets.extend(_normalized_recorder_outputs(recorder))
+        if not targets:
+            continue
+
+        payloads = [[] for _ in targets]
+        if len(targets) == 1:
+            for parts in normalized_rows:
+                payloads[0].append(" ".join(parts))
+        else:
+            for parts in normalized_rows:
+                if len(parts) % len(targets) != 0:
+                    raise SystemExit(
+                        "cannot evenly split grouped recorder output "
+                        f"{raw_path}: {len(parts)} values across {len(targets)} targets"
+                    )
+                width = len(parts) // len(targets)
+                for idx, _ in enumerate(targets):
+                    start = idx * width
+                    payloads[idx].append(" ".join(parts[start : start + width]))
+
+        for rel_name, rows in zip(targets, payloads):
+            payload = "\n".join(rows)
+            if payload:
+                payload += "\n"
+            (reference_dir / rel_name).write_text(payload, encoding="utf-8")
+
+
+def _normalize_opensees_benchmark_outputs(case_data: dict, output_dir: Path) -> None:
+    if not output_dir.exists():
+        return
+    _normalize_reference_outputs(case_data, output_dir, strict=False)
+
+
+def _normalize_opensees_output_root(entries: List[dict], output_root: Path) -> None:
+    for entry in entries:
+        _normalize_opensees_benchmark_outputs(
+            entry["case_data"], output_root / entry["name"]
+        )
+
+
+def _canonical_reference_ready(case_data: dict, reference_dir: Path) -> bool:
+    if not reference_dir.exists():
+        return False
+    data = case_data
+    for recorder in data.get("recorders", []):
+        for rel_name in _normalized_recorder_outputs(recorder):
+            if not (reference_dir / rel_name).exists():
+                return False
+    return True
+
+
+def _load_direct_tcl_case_data(case: CaseSpec, repo_root: Path) -> dict:
+    import tcl_to_strut
+
+    if case.tcl_path is None:
+        raise SystemExit(f"direct Tcl case `{case.name}` is missing tcl_path")
+    case_data = tcl_to_strut.convert_tcl_to_solver_input(case.tcl_path, repo_root)
+    metadata = _load_case_metadata(_case_metadata_path(case))
+    for key in ("parity_tolerance", "parity_tolerance_by_recorder", "parity_mode"):
+        if key in metadata:
+            case_data[key] = metadata[key]
+    return case_data
+
+
+def _write_solver_input_pickle(case_data: dict, output_path: Path) -> Path:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("wb") as handle:
+        pickle.dump(case_data, handle)
+    return output_path
+
+
+def _write_direct_tcl_wrapper(
+    *,
+    original_script_name: str,
+    wrapper_path: Path,
+    compute_only: bool,
+) -> Path:
+    lines = [
+        "set __strut_out_dir [pwd]",
+        'set __strut_wrapper_dir [file dirname [info script]]',
+        "set __strut_analysis_us 0",
+        "cd $__strut_wrapper_dir",
+        'if {[llength [info commands analyze]] > 0 && [llength [info commands __strut_orig_analyze]] == 0} {',
+        "  rename analyze __strut_orig_analyze",
+        "  proc analyze args {",
+        "    global __strut_analysis_us",
+        "    set __strut_t0 [clock microseconds]",
+        "    set __strut_rc [catch {uplevel 1 [linsert $args 0 __strut_orig_analyze]} __strut_result __strut_opts]",
+        "    set __strut_t1 [clock microseconds]",
+        "    incr __strut_analysis_us [expr {$__strut_t1 - $__strut_t0}]",
+        "    return -options $__strut_opts $__strut_result",
+        "  }",
+        "}",
+        'if {[llength [info commands eigen]] > 0 && [llength [info commands __strut_orig_eigen]] == 0} {',
+        "  rename eigen __strut_orig_eigen",
+        "  proc eigen args {",
+        "    global __strut_analysis_us",
+        "    set __strut_t0 [clock microseconds]",
+        "    set __strut_rc [catch {uplevel 1 [linsert $args 0 __strut_orig_eigen]} __strut_result __strut_opts]",
+        "    set __strut_t1 [clock microseconds]",
+        "    incr __strut_analysis_us [expr {$__strut_t1 - $__strut_t0}]",
+        "    return -options $__strut_opts $__strut_result",
+        "  }",
+        "}",
+    ]
+    if compute_only:
+        lines.extend(
+            [
+                'if {[llength [info commands recorder]] > 0 && [llength [info commands __strut_orig_recorder]] == 0} {',
+                "  rename recorder __strut_orig_recorder",
+                "  proc recorder args { return {} }",
+                "}",
+            ]
+        )
+    lines.extend(
+        [
+            f'set __strut_case_rc [catch {{source {{{original_script_name}}}}} __strut_case_msg __strut_case_opts]',
+            'set __strut_fp [open "analysis_time_us.txt" w]',
+            "puts $__strut_fp $__strut_analysis_us",
+            "close $__strut_fp",
+            'if {$__strut_out_dir ne $__strut_wrapper_dir} {',
+            '  if {[file exists "Data"]} {',
+            '    file copy -force "Data" $__strut_out_dir/',
+            "  }",
+            '  if {[file exists "analysis_time_us.txt"]} {',
+            '    file copy -force "analysis_time_us.txt" $__strut_out_dir/',
+            "  }",
+            "}",
+            "cd $__strut_out_dir",
+            "if {$__strut_case_rc != 0} {",
+            "  return -options $__strut_case_opts $__strut_case_msg",
+            "}",
+        ]
+    )
+    wrapper_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return wrapper_path
+
+
+def _prepare_direct_tcl_wrappers(
+    case: CaseSpec, repo_root: Path, tcl_root: Path
+) -> tuple[Path, Path]:
+    if case.tcl_path is None:
+        raise SystemExit(f"direct Tcl case `{case.name}` is missing tcl_path")
+
+    script_path = case.tcl_path.resolve()
+    script_dir = script_path.parent
+    script_parent = script_dir.parent
+    mirror_root = tcl_root / "_direct_tcl_mirror" / case.name
+    ensure_clean_dir(mirror_root)
+    mirrored_parent = mirror_root / script_parent.name
+    shutil.copytree(script_parent, mirrored_parent, dirs_exist_ok=True)
+    mirrored_script_dir = mirrored_parent / script_dir.name
+
+    timed_wrapper = _write_direct_tcl_wrapper(
+        original_script_name=script_path.name,
+        wrapper_path=mirrored_script_dir / f"__strut_{case.name}_timed.tcl",
+        compute_only=False,
+    )
+    compute_wrapper = _write_direct_tcl_wrapper(
+        original_script_name=script_path.name,
+        wrapper_path=mirrored_script_dir / f"__strut_{case.name}_compute.tcl",
+        compute_only=True,
+    )
+    return timed_wrapper, compute_wrapper
+
+
+def _emit_case_tcl(case_json: Path, tcl_out: Path, repo_root: Path, env, verbose: bool) -> Path:
+    tcl_out.parent.mkdir(parents=True, exist_ok=True)
+    run(
+        [
+            "uv",
+            "run",
+            "python",
+            str(repo_root / "scripts" / "json_to_tcl.py"),
+            str(case_json),
+            str(tcl_out),
+        ],
+        env=env,
+        verbose=verbose,
+    )
+    return tcl_out
+
+
+def _prepare_case_json_for_solver(case_json: Path, output_path: Path) -> Path:
+    case_data = _load_case_metadata(case_json)
+    _absolutize_time_series_paths(case_data, case_json)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(case_data, indent=2) + "\n", encoding="utf-8")
+    return output_path
+
+
+def _ensure_direct_tcl_case_artifacts(
+    case: CaseSpec, repo_root: Path, env, verbose: bool
+) -> dict:
+    if case.tcl_path is None:
+        return _load_case_metadata(_case_json_path(case))
+
+    case_root = _direct_case_root(case)
+    case_root.mkdir(parents=True, exist_ok=True)
+    case_data = _load_direct_tcl_case_data(case, repo_root)
+    reference_dir = case_root / "reference"
+    if not _canonical_reference_ready(case_data, reference_dir):
+        log(f"{case.name}: canonical OpenSees reference missing; running original Tcl.")
+        ensure_clean_dir(reference_dir)
+        run(
+            [
+                str(repo_root / "scripts" / "run_opensees_wine.sh"),
+                "--script",
+                str(case.tcl_path),
+                "--output",
+                str(reference_dir),
+            ],
+            env=env,
+            verbose=verbose,
+        )
+    _normalize_reference_outputs(case_data, reference_dir)
+    return case_data
+
+
+def _case_free_dofs(case_data: dict) -> Optional[int]:
+    data = case_data
     model = data.get("model", {})
     ndf = model.get("ndf")
     nodes = data.get("nodes")
@@ -194,11 +593,8 @@ def _case_free_dofs(path: Path) -> Optional[int]:
     return total - constrained
 
 
-def _case_size_override(path: Path) -> Optional[str]:
-    try:
-        data = json.loads(path.read_text())
-    except Exception:
-        return None
+def _case_size_override(case_data: dict) -> Optional[str]:
+    data = case_data
     label = data.get("benchmark_size")
     if not isinstance(label, str):
         return None
@@ -230,7 +626,7 @@ def _analysis_is_transient(analysis: dict) -> bool:
 
 
 def _load_case_flags(path: Path) -> Tuple[bool, bool]:
-    data = json.loads(path.read_text())
+    data = _load_case_metadata(path)
     enabled = bool(data.get("enabled", True))
     disabled = not enabled
     runnable = enabled
@@ -253,14 +649,18 @@ def _is_case_json(path: Path) -> bool:
 
 
 def _include_in_default_benchmarks(path: Path) -> bool:
-    data = json.loads(path.read_text())
+    data = _load_case_metadata(path)
     if not bool(data.get("enabled", True)):
         return False
     status = str(data.get("status", "")).strip().lower()
     if status == "benchmark":
         return True
     # Keep the default path focused on the lightweight elastic benchmark set.
-    stem_tokens = [token for token in path.stem.lower().split("_") if token]
+    if path.name == "direct_tcl_case.json":
+        stem = str(data.get("name") or path.parent.name)
+    else:
+        stem = path.stem
+    stem_tokens = [token for token in stem.lower().split("_") if token]
     return "elastic" in stem_tokens
 
 
@@ -271,6 +671,15 @@ def load_case_enabled(path: Path) -> bool:
 
 def _absolutize_time_series_paths(case_data: dict, case_json_path: Path) -> None:
     repo_root = Path(__file__).resolve().parents[1]
+
+    def _resolve_optional_repo_path(path_text):
+        if not isinstance(path_text, str) or not path_text:
+            return None
+        path_obj = Path(path_text)
+        if path_obj.is_absolute():
+            return path_obj
+        return (repo_root / path_obj).resolve()
+
     time_series = case_data.get("time_series")
     if isinstance(time_series, dict):
         entries = [time_series]
@@ -302,6 +711,18 @@ def _absolutize_time_series_paths(case_data: dict, case_json_path: Path) -> None
         if from_repo_root.exists():
             ts[key] = str(from_repo_root.resolve())
             continue
+        source_example = _resolve_optional_repo_path(case_data.get("source_example"))
+        if source_example is not None:
+            from_source_example = (source_example.parent / raw_path).resolve()
+            if from_source_example.exists():
+                ts[key] = str(from_source_example)
+                continue
+        source_doc = _resolve_optional_repo_path(case_data.get("source_doc"))
+        if source_doc is not None:
+            from_source_doc = (source_doc.parent / raw_path).resolve()
+            if from_source_doc.exists():
+                ts[key] = str(from_source_doc)
+                continue
         ts[key] = str(from_case_dir.resolve())
 
 
@@ -313,7 +734,7 @@ def filter_cases_by_enabled(
     disabled_selected = 0
     skipped_disabled = 0
     for case in case_specs:
-        disabled, runnable = _load_case_flags(case.json_path)
+        disabled, runnable = _load_case_flags(_case_metadata_path(case))
         if disabled:
             disabled_selected += 1
         if include_disabled or runnable:
@@ -327,16 +748,21 @@ def resolve_case_from_name(validation_root: Path, name: str) -> Optional[CaseSpe
     case_dir = validation_root / name
     case_json = case_dir / f"{name}.json"
     if case_json.exists():
-        return CaseSpec(name=name, json_path=case_json)
+        return CaseSpec(name=name, json_path=case_json, metadata_path=case_json)
+    direct_manifest = case_dir / "direct_tcl_case.json"
+    if _is_direct_tcl_manifest(direct_manifest):
+        return _direct_tcl_case_spec(direct_manifest)
     return None
 
 
 def resolve_case_from_path(path: Path) -> Optional[CaseSpec]:
     if not path.exists():
         return None
+    if _is_direct_tcl_manifest(path):
+        return _direct_tcl_case_spec(path)
     if not _is_case_json(path):
         return None
-    return CaseSpec(name=path.stem, json_path=path)
+    return CaseSpec(name=path.stem, json_path=path, metadata_path=path)
 
 
 def expand_case_patterns(
@@ -346,39 +772,69 @@ def expand_case_patterns(
     for pattern in patterns:
         if any(ch in pattern for ch in "*?["):
             for match in validation_root.glob(f"{pattern}/{pattern}.json"):
-                cases.append(CaseSpec(name=match.stem, json_path=match))
+                cases.append(
+                    CaseSpec(name=match.stem, json_path=match, metadata_path=match)
+                )
+            for match in validation_root.glob(f"{pattern}/direct_tcl_case.json"):
+                if _is_direct_tcl_manifest(match):
+                    cases.append(_direct_tcl_case_spec(match))
             for match in validation_root.glob(pattern):
                 if match.is_dir():
                     candidate = match / f"{match.name}.json"
                     if candidate.exists():
-                        cases.append(CaseSpec(name=candidate.stem, json_path=candidate))
+                        cases.append(
+                            CaseSpec(
+                                name=candidate.stem,
+                                json_path=candidate,
+                                metadata_path=candidate,
+                            )
+                        )
+                    else:
+                        direct_manifest = match / "direct_tcl_case.json"
+                        if _is_direct_tcl_manifest(direct_manifest):
+                            cases.append(_direct_tcl_case_spec(direct_manifest))
                 elif match.suffix == ".json":
-                    cases.append(CaseSpec(name=match.stem, json_path=match))
+                    cases.append(
+                        CaseSpec(name=match.stem, json_path=match, metadata_path=match)
+                    )
         else:
             case = resolve_case_from_name(validation_root, pattern)
             if case:
                 cases.append(case)
-    unique = {case.json_path.resolve(): case for case in cases}
+    unique = {_case_metadata_path(case).resolve(): case for case in cases}
     return sorted(unique.values(), key=lambda c: c.name)
 
 
 def discover_default_cases(validation_root: Path) -> List[CaseSpec]:
     cases = []
     for match in validation_root.glob("*/*.json"):
+        if _is_direct_tcl_manifest(match):
+            continue
         if not _is_case_json(match):
             continue
         if not _include_in_default_benchmarks(match):
             continue
-        cases.append(CaseSpec(name=match.stem, json_path=match))
+        cases.append(CaseSpec(name=match.stem, json_path=match, metadata_path=match))
+    for match in validation_root.glob("*/direct_tcl_case.json"):
+        if not _is_direct_tcl_manifest(match):
+            continue
+        if not _include_in_default_benchmarks(match):
+            continue
+        cases.append(_direct_tcl_case_spec(match))
     return sorted(cases, key=lambda c: c.name)
 
 
 def discover_all_cases(validation_root: Path) -> List[CaseSpec]:
     cases = [
-        CaseSpec(name=match.stem, json_path=match)
+        CaseSpec(name=match.stem, json_path=match, metadata_path=match)
         for match in validation_root.glob("*/*.json")
         if _is_case_json(match)
     ]
+    cases.extend(
+        _direct_tcl_case_spec(match)
+        for match in validation_root.glob("*/direct_tcl_case.json")
+        if _is_direct_tcl_manifest(match)
+    )
     return sorted(cases, key=lambda c: c.name)
 
 
@@ -767,6 +1223,71 @@ def _compare_mode_shape_vectors(
     if dot < 0.0:
         got_unit = [-v for v in got_unit]
     return _compare_vectors(ref_unit, got_unit, rtol=rtol, atol=atol)
+
+
+def _max_abs_vector(rows: List[List[float]]) -> List[float]:
+    if not rows:
+        raise ValueError("empty transient series")
+    width = len(rows[0])
+    peaks = [0.0] * width
+    for row in rows:
+        if len(row) != width:
+            raise ValueError("transient series row width mismatch")
+        for i, value in enumerate(row):
+            mag = abs(value)
+            if mag > peaks[i]:
+                peaks[i] = mag
+    return peaks
+
+
+def _compare_transient_rows(
+    ref_vals: List[List[float]],
+    strut_vals: List[List[float]],
+    label: str,
+    failures: List[str],
+    rtol: float,
+    atol: float,
+    parity_mode: str,
+) -> None:
+    if parity_mode == "max_abs":
+        ref_peak = _max_abs_vector(ref_vals)
+        strut_peak = _max_abs_vector(strut_vals)
+        ok, errors = _compare_vectors(ref_peak, strut_peak, rtol=rtol, atol=atol)
+        if not ok:
+            failures.append(f"{label} max-abs mismatch")
+            failures.extend([f"  {err}" for err in errors])
+        return
+    if len(ref_vals) != len(strut_vals):
+        failures.append(f"{label} step count mismatch: {len(ref_vals)} != {len(strut_vals)}")
+        return
+    for step, (rvec, gvec) in enumerate(zip(ref_vals, strut_vals), start=1):
+        ok, errors = _compare_vectors(rvec, gvec, rtol=rtol, atol=atol)
+        if not ok:
+            failures.append(f"{label} mismatch at step {step}")
+            failures.extend([f"  {err}" for err in errors])
+            break
+
+
+def _resolve_recorder_tolerance(
+    rec_type: str,
+    global_rtol: float,
+    global_atol: float,
+    has_global_override: bool,
+    per_recorder_overrides: dict,
+) -> Tuple[float, float]:
+    default_entry = DEFAULT_RECORDER_TOLERANCES.get(rec_type, {})
+    rtol = float(default_entry.get("rtol", REL_TOL))
+    atol = float(default_entry.get("atol", ABS_TOL))
+    if has_global_override:
+        rtol = float(global_rtol)
+        atol = float(global_atol)
+    override = per_recorder_overrides.get(rec_type, {})
+    if isinstance(override, dict):
+        if "rtol" in override:
+            rtol = float(override["rtol"])
+        if "atol" in override:
+            atol = float(override["atol"])
+    return rtol, atol
 
 
 def _inject_opensees_timing(tcl_lines: List[str], timing_file: str) -> List[str]:
@@ -1231,6 +1752,7 @@ def main() -> None:
     summary_cases = []
     csv_rows = []
     parity_failures = []
+    benchmark_parity_failures = []
 
     log(f"Running {len(case_specs)} benchmark case(s).")
     log(
@@ -1255,46 +1777,75 @@ def main() -> None:
     if not run_opensees and not run_strut:
         raise SystemExit("No engines selected. Use --engine opensees|strut|both.")
 
+    prepared_case_data: Dict[str, dict] = {}
+    for case in case_specs:
+        prepared_case_data[case.name] = _ensure_direct_tcl_case_artifacts(
+            case, repo_root, env, verbose
+        )
+
     def build_case_tcl(case: CaseSpec) -> dict:
         case_name = case.name
+        try:
+            case_data = prepared_case_data[case.name]
+        except KeyError as exc:
+            raise SystemExit(
+                f"case `{case.name}` was not prepared before benchmarking"
+            ) from exc
         case_entry = {
             "name": case_name,
-            "json": str(case.json_path),
-            "dofs": _case_free_dofs(case.json_path),
+            "case_data": case_data,
+            "dofs": _case_free_dofs(case_data),
+            "status": str(
+                _load_case_metadata(_case_metadata_path(case)).get("status", "")
+            )
+            .strip()
+            .lower(),
         }
-        size_override = _case_size_override(case.json_path)
+        if case.json_path is not None:
+            case_entry["json"] = str(_case_json_path(case))
+        elif run_strut:
+            case_entry["input_pickle"] = str(
+                _write_solver_input_pickle(
+                    case_data,
+                    results_root / ".tmp" / "strut_inputs" / f"{case_name}.pkl",
+                )
+            )
+        size_override = case.benchmark_size or _case_size_override(case_data)
         if size_override is not None:
             case_entry["size"] = size_override
 
-        tcl_out = results_root / "tcl" / f"{case_name}.tcl"
-        run(
-            [
-                "uv",
-                "run",
-                "python",
-                str(repo_root / "scripts" / "json_to_tcl.py"),
-                str(case.json_path),
-                str(tcl_out),
-            ],
-            env=env,
-            verbose=verbose,
-        )
-        tcl_compute = results_root / "tcl" / f"{case_name}_compute.tcl"
-        tcl_timed = results_root / "tcl" / f"{case_name}_timed.tcl"
-        tcl_lines = tcl_out.read_text().splitlines()
-        tcl_compute.write_text(
-            "\n".join(
-                line for line in tcl_lines if not line.lstrip().startswith("recorder ")
+        if case.tcl_path is not None:
+            tcl_timed, tcl_compute = _prepare_direct_tcl_wrappers(
+                case, repo_root, results_root / "tcl"
             )
-            + "\n",
-            encoding="utf-8",
-        )
-        tcl_timed.write_text(
-            "\n".join(_inject_opensees_timing(tcl_lines, "analysis_time_us.txt"))
-            + "\n",
-            encoding="utf-8",
-        )
-        case_entry["tcl"] = str(tcl_out)
+            case_entry["tcl"] = str(case.tcl_path)
+            case_entry["uses_eigen"] = _tcl_uses_eigen(case.tcl_path)
+        else:
+            case_json = _case_json_path(case)
+            tcl_out = _emit_case_tcl(
+                case_json,
+                results_root / "tcl" / f"{case_name}.tcl",
+                repo_root,
+                env,
+                verbose,
+            )
+            tcl_compute = tcl_out.parent / f"{tcl_out.stem}_compute.tcl"
+            tcl_timed = tcl_out.parent / f"{tcl_out.stem}_timed.tcl"
+            tcl_lines = tcl_out.read_text().splitlines()
+            tcl_compute.write_text(
+                "\n".join(
+                    line for line in tcl_lines if not line.lstrip().startswith("recorder ")
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            tcl_timed.write_text(
+                "\n".join(_inject_opensees_timing(tcl_lines, "analysis_time_us.txt"))
+                + "\n",
+                encoding="utf-8",
+            )
+            case_entry["tcl"] = str(tcl_out)
+            case_entry["uses_eigen"] = _tcl_uses_eigen(tcl_timed)
         case_entry["tcl_compute"] = str(tcl_compute)
         case_entry["tcl_timed"] = str(tcl_timed)
         return case_entry
@@ -1304,8 +1855,7 @@ def main() -> None:
         batch_case_entries = []
         skipped_eigen_cases = []
         for entry in case_entries:
-            timed_tcl = Path(entry["tcl_timed"])
-            if _tcl_uses_eigen(timed_tcl):
+            if entry.get("uses_eigen", False):
                 skipped_eigen_cases.append(entry["name"])
                 continue
             batch_case_entries.append(entry)
@@ -1381,21 +1931,13 @@ def main() -> None:
         batch_entries = []
         for entry in entries:
             case_name = entry["name"]
-            if compute:
-                compute_case = json.loads(Path(entry["json"]).read_text())
-                compute_case["recorders"] = []
-                _absolutize_time_series_paths(compute_case, Path(entry["json"]))
-                compute_json = results_root / ".tmp" / f"{case_name}_compute_batch.json"
-                compute_json.write_text(
-                    json.dumps(compute_case, indent=2) + "\n", encoding="utf-8"
-                )
-                input_path = compute_json
-            else:
-                input_path = Path(entry["json"])
             batch_entry = {
-                "input": str(input_path),
                 "output": str(output_root / case_name),
             }
+            if "input_pickle" in entry:
+                batch_entry["input_pickle"] = str(entry["input_pickle"])
+            else:
+                batch_entry["input"] = str(Path(entry["json"]))
             if args.profile and not compute and profile_root is not None:
                 batch_entry["profile"] = str(
                     profile_root / f"{case_name}.speedscope.json"
@@ -1475,12 +2017,11 @@ def main() -> None:
             raise SystemExit("Mojo solver not initialized.")
         batch_manifest = _write_strut_batch_manifest(entries, output_root, compute)
         try:
+            cmd = [str(strut_solver), "--batch", str(batch_manifest)]
+            if compute:
+                cmd.append("--compute-only")
             run(
-                [
-                    str(strut_solver),
-                    "--batch",
-                    str(batch_manifest),
-                ],
+                cmd,
                 env=env,
                 verbose=verbose,
                 capture_on_error=True,
@@ -1509,27 +2050,15 @@ def main() -> None:
             case_name = entry["name"]
             target_dir = output_root / case_name
             ensure_clean_dir(target_dir)
-            if compute:
-                compute_case = json.loads(Path(entry["json"]).read_text())
-                compute_case["recorders"] = []
-                _absolutize_time_series_paths(compute_case, Path(entry["json"]))
-                compute_json = (
-                    results_root / ".tmp" / f"{case_name}_compute_batch_fallback.json"
-                )
-                compute_json.write_text(
-                    json.dumps(compute_case, indent=2) + "\n", encoding="utf-8"
-                )
-                input_path = compute_json
-            else:
-                input_path = Path(entry["json"])
             try:
-                cmd = [
-                    str(strut_solver),
-                    "--input",
-                    str(input_path),
-                    "--output",
-                    str(target_dir),
-                ]
+                cmd = [str(strut_solver)]
+                if "input_pickle" in entry:
+                    cmd += ["--input-pickle", str(entry["input_pickle"])]
+                else:
+                    cmd += ["--input", str(Path(entry["json"]))]
+                if compute:
+                    cmd.append("--compute-only")
+                cmd += ["--output", str(target_dir)]
                 if args.profile and not compute and profile_root is not None:
                     cmd += [
                         "--profile",
@@ -1597,6 +2126,7 @@ def main() -> None:
                 warmup=args.warmup,
             )
         )
+        _normalize_opensees_output_root(case_entries, results_root / "opensees")
         log_ok("OpenSees batch pass OK.")
         batch_stats = {
             "times_s": opensees_times,
@@ -1873,13 +2403,12 @@ def main() -> None:
                 target_dir = tmp_dir
             if strut_solver is None:
                 raise SystemExit("Mojo solver not initialized.")
-            cmd = [
-                str(strut_solver),
-                "--input",
-                str(case_entry["json"]),
-                "--output",
-                str(target_dir),
-            ]
+            cmd = [str(strut_solver)]
+            if "input_pickle" in case_entry:
+                cmd += ["--input-pickle", str(case_entry["input_pickle"])]
+            else:
+                cmd += ["--input", str(case_entry["json"])]
+            cmd += ["--output", str(target_dir)]
             if args.profile and last_run and profile_root is not None:
                 profile_path = profile_root / f"{case_name}.speedscope.json"
                 cmd += ["--profile", str(profile_path)]
@@ -1900,21 +2429,14 @@ def main() -> None:
                 tmp_dir = results_root / ".tmp" / "strut_compute" / case_name
                 ensure_clean_dir(tmp_dir)
                 target_dir = tmp_dir
-            compute_case = json.loads(Path(case_entry["json"]).read_text())
-            compute_case["recorders"] = []
-            _absolutize_time_series_paths(compute_case, Path(case_entry["json"]))
-            compute_json = results_root / ".tmp" / f"{case_name}_compute.json"
-            compute_json.write_text(
-                json.dumps(compute_case, indent=2) + "\n", encoding="utf-8"
-            )
+            cmd = [str(strut_solver)]
+            if "input_pickle" in case_entry:
+                cmd += ["--input-pickle", str(case_entry["input_pickle"])]
+            else:
+                cmd += ["--input", str(case_entry["json"])]
+            cmd += ["--compute-only", "--output", str(target_dir)]
             run(
-                [
-                    str(strut_solver),
-                    "--input",
-                    str(compute_json),
-                    "--output",
-                    str(target_dir),
-                ],
+                cmd,
                 env=env,
                 verbose=verbose,
                 capture_on_error=True,
@@ -1929,6 +2451,9 @@ def main() -> None:
                 results_root / "opensees",
                 args.repeat,
                 args.warmup,
+            )
+            _normalize_opensees_benchmark_outputs(
+                case_entry["case_data"], results_root / "opensees" / case_name
             )
             log_ok(f"[{case_name}] OpenSees total pass OK.")
             stats = {
@@ -2092,19 +2617,38 @@ def main() -> None:
                     )
 
         if run_opensees and run_strut:
-            case_data = json.loads(Path(case_entry["json"]).read_text())
+            case_data = case_entry["case_data"]
+            case_parity_failures: List[str] = []
             recorders = case_data.get("recorders", [])
             analysis = case_data.get("analysis", {})
             analysis_type = str(analysis.get("type", "static_linear"))
             is_transient = _analysis_is_transient(analysis)
             use_last_common_row = analysis_type == "static_nonlinear"
             tol = case_data.get("parity_tolerance", {})
-            rtol = tol.get("rtol", REL_TOL)
-            atol = tol.get("atol", ABS_TOL)
+            global_rtol = tol.get("rtol", REL_TOL)
+            global_atol = tol.get("atol", ABS_TOL)
+            has_global_override = isinstance(tol, dict) and (
+                "rtol" in tol or "atol" in tol
+            )
+            tol_by_recorder = case_data.get("parity_tolerance_by_recorder", {})
+            if not isinstance(tol_by_recorder, dict):
+                tol_by_recorder = {}
+            parity_mode = str(case_data.get("parity_mode", "step")).strip().lower()
+            if parity_mode not in ("step", "max_abs"):
+                raise SystemExit(
+                    f"unsupported parity_mode: {parity_mode} (expected step|max_abs)"
+                )
             for rec in recorders:
                 if rec.get("parity", True) is False:
                     continue
                 rec_type = rec.get("type")
+                rec_rtol, rec_atol = _resolve_recorder_tolerance(
+                    rec_type,
+                    global_rtol,
+                    global_atol,
+                    has_global_override,
+                    tol_by_recorder,
+                )
                 if rec_type == "node_displacement":
                     output = rec.get("output", "node_disp")
                     for node_id in rec.get("nodes", []):
@@ -2121,12 +2665,12 @@ def main() -> None:
                             / f"{output}_node{node_id}.out"
                         )
                         if not ref_file.exists():
-                            parity_failures.append(
+                            case_parity_failures.append(
                                 f"{case_name}: missing OpenSees output: {ref_file}"
                             )
                             continue
                         if not strut_file.exists():
-                            parity_failures.append(
+                            case_parity_failures.append(
                                 f"{case_name}: missing Mojo output: {strut_file}"
                             )
                             continue
@@ -2141,37 +2685,29 @@ def main() -> None:
                                     use_last_common_row=use_last_common_row,
                                 )
                         except ValueError as exc:
-                            parity_failures.append(f"{case_name}: {exc}")
+                            case_parity_failures.append(f"{case_name}: {exc}")
                             continue
                         if is_transient:
-                            if len(ref_vals) != len(strut_vals):
-                                parity_failures.append(
-                                    f"{case_name}: node {node_id} step count mismatch: {len(ref_vals)} != {len(strut_vals)}"
-                                )
-                                continue
-                            for step, (rvec, gvec) in enumerate(
-                                zip(ref_vals, strut_vals), start=1
-                            ):
-                                ok, errors = _compare_vectors(
-                                    rvec, gvec, rtol=rtol, atol=atol
-                                )
-                                if not ok:
-                                    parity_failures.append(
-                                        f"{case_name}: node {node_id} mismatch at step {step}"
-                                    )
-                                    parity_failures.extend(
-                                        [f"  {err}" for err in errors]
-                                    )
-                                    break
+                            _compare_transient_rows(
+                                ref_vals,
+                                strut_vals,
+                                f"{case_name}: node {node_id}",
+                                case_parity_failures,
+                                rec_rtol,
+                                rec_atol,
+                                parity_mode,
+                            )
                         else:
                             ok, errors = _compare_vectors(
-                                ref_vals, strut_vals, rtol=rtol, atol=atol
+                                ref_vals, strut_vals, rtol=rec_rtol, atol=rec_atol
                             )
                             if not ok:
-                                parity_failures.append(
+                                case_parity_failures.append(
                                     f"{case_name}: node {node_id} mismatch"
                                 )
-                                parity_failures.extend([f"  {err}" for err in errors])
+                                case_parity_failures.extend(
+                                    [f"  {err}" for err in errors]
+                                )
                 elif rec_type == "element_force":
                     output = rec.get("output", "element_force")
                     for elem_id in rec.get("elements", []):
@@ -2188,12 +2724,12 @@ def main() -> None:
                             / f"{output}_ele{elem_id}.out"
                         )
                         if not ref_file.exists():
-                            parity_failures.append(
+                            case_parity_failures.append(
                                 f"{case_name}: missing OpenSees output: {ref_file}"
                             )
                             continue
                         if not strut_file.exists():
-                            parity_failures.append(
+                            case_parity_failures.append(
                                 f"{case_name}: missing Mojo output: {strut_file}"
                             )
                             continue
@@ -2208,37 +2744,29 @@ def main() -> None:
                                     use_last_common_row=use_last_common_row,
                                 )
                         except ValueError as exc:
-                            parity_failures.append(f"{case_name}: {exc}")
+                            case_parity_failures.append(f"{case_name}: {exc}")
                             continue
                         if is_transient:
-                            if len(ref_vals) != len(strut_vals):
-                                parity_failures.append(
-                                    f"{case_name}: element {elem_id} step count mismatch: {len(ref_vals)} != {len(strut_vals)}"
-                                )
-                                continue
-                            for step, (rvec, gvec) in enumerate(
-                                zip(ref_vals, strut_vals), start=1
-                            ):
-                                ok, errors = _compare_vectors(
-                                    rvec, gvec, rtol=rtol, atol=atol
-                                )
-                                if not ok:
-                                    parity_failures.append(
-                                        f"{case_name}: element {elem_id} mismatch at step {step}"
-                                    )
-                                    parity_failures.extend(
-                                        [f"  {err}" for err in errors]
-                                    )
-                                    break
+                            _compare_transient_rows(
+                                ref_vals,
+                                strut_vals,
+                                f"{case_name}: element {elem_id}",
+                                case_parity_failures,
+                                rec_rtol,
+                                rec_atol,
+                                parity_mode,
+                            )
                         else:
                             ok, errors = _compare_vectors(
-                                ref_vals, strut_vals, rtol=rtol, atol=atol
+                                ref_vals, strut_vals, rtol=rec_rtol, atol=rec_atol
                             )
                             if not ok:
-                                parity_failures.append(
+                                case_parity_failures.append(
                                     f"{case_name}: element {elem_id} mismatch"
                                 )
-                                parity_failures.extend([f"  {err}" for err in errors])
+                                case_parity_failures.extend(
+                                    [f"  {err}" for err in errors]
+                                )
                 elif rec_type == "node_reaction":
                     output = rec.get("output", "reaction")
                     for node_id in rec.get("nodes", []):
@@ -2255,12 +2783,12 @@ def main() -> None:
                             / f"{output}_node{node_id}.out"
                         )
                         if not ref_file.exists():
-                            parity_failures.append(
+                            case_parity_failures.append(
                                 f"{case_name}: missing OpenSees output: {ref_file}"
                             )
                             continue
                         if not strut_file.exists():
-                            parity_failures.append(
+                            case_parity_failures.append(
                                 f"{case_name}: missing Mojo output: {strut_file}"
                             )
                             continue
@@ -2275,37 +2803,29 @@ def main() -> None:
                                     use_last_common_row=use_last_common_row,
                                 )
                         except ValueError as exc:
-                            parity_failures.append(f"{case_name}: {exc}")
+                            case_parity_failures.append(f"{case_name}: {exc}")
                             continue
                         if is_transient:
-                            if len(ref_vals) != len(strut_vals):
-                                parity_failures.append(
-                                    f"{case_name}: reaction node {node_id} step count mismatch: {len(ref_vals)} != {len(strut_vals)}"
-                                )
-                                continue
-                            for step, (rvec, gvec) in enumerate(
-                                zip(ref_vals, strut_vals), start=1
-                            ):
-                                ok, errors = _compare_vectors(
-                                    rvec, gvec, rtol=rtol, atol=atol
-                                )
-                                if not ok:
-                                    parity_failures.append(
-                                        f"{case_name}: reaction node {node_id} mismatch at step {step}"
-                                    )
-                                    parity_failures.extend(
-                                        [f"  {err}" for err in errors]
-                                    )
-                                    break
+                            _compare_transient_rows(
+                                ref_vals,
+                                strut_vals,
+                                f"{case_name}: reaction node {node_id}",
+                                case_parity_failures,
+                                rec_rtol,
+                                rec_atol,
+                                parity_mode,
+                            )
                         else:
                             ok, errors = _compare_vectors(
-                                ref_vals, strut_vals, rtol=rtol, atol=atol
+                                ref_vals, strut_vals, rtol=rec_rtol, atol=rec_atol
                             )
                             if not ok:
-                                parity_failures.append(
+                                case_parity_failures.append(
                                     f"{case_name}: reaction node {node_id} mismatch"
                                 )
-                                parity_failures.extend([f"  {err}" for err in errors])
+                                case_parity_failures.extend(
+                                    [f"  {err}" for err in errors]
+                                )
                 elif rec_type == "drift":
                     output = rec.get("output", "drift")
                     i_node = int(rec["i_node"])
@@ -2323,12 +2843,12 @@ def main() -> None:
                         / f"{output}_i{i_node}_j{j_node}.out"
                     )
                     if not ref_file.exists():
-                        parity_failures.append(
+                        case_parity_failures.append(
                             f"{case_name}: missing OpenSees output: {ref_file}"
                         )
                         continue
                     if not strut_file.exists():
-                        parity_failures.append(
+                        case_parity_failures.append(
                             f"{case_name}: missing Mojo output: {strut_file}"
                         )
                         continue
@@ -2343,35 +2863,29 @@ def main() -> None:
                                 use_last_common_row=use_last_common_row,
                             )
                     except ValueError as exc:
-                        parity_failures.append(f"{case_name}: {exc}")
+                        case_parity_failures.append(f"{case_name}: {exc}")
                         continue
                     if is_transient:
-                        if len(ref_vals) != len(strut_vals):
-                            parity_failures.append(
-                                f"{case_name}: drift i{i_node}-j{j_node} step count mismatch: {len(ref_vals)} != {len(strut_vals)}"
-                            )
-                            continue
-                        for step, (rvec, gvec) in enumerate(
-                            zip(ref_vals, strut_vals), start=1
-                        ):
-                            ok, errors = _compare_vectors(
-                                rvec, gvec, rtol=rtol, atol=atol
-                            )
-                            if not ok:
-                                parity_failures.append(
-                                    f"{case_name}: drift i{i_node}-j{j_node} mismatch at step {step}"
-                                )
-                                parity_failures.extend([f"  {err}" for err in errors])
-                                break
+                        _compare_transient_rows(
+                            ref_vals,
+                            strut_vals,
+                            f"{case_name}: drift i{i_node}-j{j_node}",
+                            case_parity_failures,
+                            rec_rtol,
+                            rec_atol,
+                            parity_mode,
+                        )
                     else:
                         ok, errors = _compare_vectors(
-                            ref_vals, strut_vals, rtol=rtol, atol=atol
+                            ref_vals, strut_vals, rtol=rec_rtol, atol=rec_atol
                         )
                         if not ok:
-                            parity_failures.append(
+                            case_parity_failures.append(
                                 f"{case_name}: drift i{i_node}-j{j_node} mismatch"
                             )
-                            parity_failures.extend([f"  {err}" for err in errors])
+                            case_parity_failures.extend(
+                                [f"  {err}" for err in errors]
+                            )
                 elif rec_type in ELEMENT_RESPONSE_RECORDER_TYPES:
                     output = rec.get("output", rec_type)
                     for elem_id in rec.get("elements", []):
@@ -2388,12 +2902,12 @@ def main() -> None:
                             / f"{output}_ele{elem_id}.out"
                         )
                         if not ref_file.exists():
-                            parity_failures.append(
+                            case_parity_failures.append(
                                 f"{case_name}: missing OpenSees output: {ref_file}"
                             )
                             continue
                         if not strut_file.exists():
-                            parity_failures.append(
+                            case_parity_failures.append(
                                 f"{case_name}: missing Mojo output: {strut_file}"
                             )
                             continue
@@ -2408,37 +2922,29 @@ def main() -> None:
                                     use_last_common_row=use_last_common_row,
                                 )
                         except ValueError as exc:
-                            parity_failures.append(f"{case_name}: {exc}")
+                            case_parity_failures.append(f"{case_name}: {exc}")
                             continue
                         if is_transient:
-                            if len(ref_vals) != len(strut_vals):
-                                parity_failures.append(
-                                    f"{case_name}: {rec_type} element {elem_id} step count mismatch: {len(ref_vals)} != {len(strut_vals)}"
-                                )
-                                continue
-                            for step, (rvec, gvec) in enumerate(
-                                zip(ref_vals, strut_vals), start=1
-                            ):
-                                ok, errors = _compare_vectors(
-                                    rvec, gvec, rtol=rtol, atol=atol
-                                )
-                                if not ok:
-                                    parity_failures.append(
-                                        f"{case_name}: {rec_type} element {elem_id} mismatch at step {step}"
-                                    )
-                                    parity_failures.extend(
-                                        [f"  {err}" for err in errors]
-                                    )
-                                    break
+                            _compare_transient_rows(
+                                ref_vals,
+                                strut_vals,
+                                f"{case_name}: {rec_type} element {elem_id}",
+                                case_parity_failures,
+                                rec_rtol,
+                                rec_atol,
+                                parity_mode,
+                            )
                         else:
                             ok, errors = _compare_vectors(
-                                ref_vals, strut_vals, rtol=rtol, atol=atol
+                                ref_vals, strut_vals, rtol=rec_rtol, atol=rec_atol
                             )
                             if not ok:
-                                parity_failures.append(
+                                case_parity_failures.append(
                                     f"{case_name}: {rec_type} element {elem_id} mismatch"
                                 )
-                                parity_failures.extend([f"  {err}" for err in errors])
+                                case_parity_failures.extend(
+                                    [f"  {err}" for err in errors]
+                                )
                 elif rec_type == "envelope_element_force":
                     output = rec.get("output", "envelope_element_force")
                     for elem_id in rec.get("elements", []):
@@ -2455,12 +2961,12 @@ def main() -> None:
                             / f"{output}_ele{elem_id}.out"
                         )
                         if not ref_file.exists():
-                            parity_failures.append(
+                            case_parity_failures.append(
                                 f"{case_name}: missing OpenSees output: {ref_file}"
                             )
                             continue
                         if not strut_file.exists():
-                            parity_failures.append(
+                            case_parity_failures.append(
                                 f"{case_name}: missing Mojo output: {strut_file}"
                             )
                             continue
@@ -2468,10 +2974,10 @@ def main() -> None:
                             ref_vals = _load_all_values(ref_file)
                             strut_vals = _load_all_values(strut_file)
                         except ValueError as exc:
-                            parity_failures.append(f"{case_name}: {exc}")
+                            case_parity_failures.append(f"{case_name}: {exc}")
                             continue
                         if len(ref_vals) != len(strut_vals):
-                            parity_failures.append(
+                            case_parity_failures.append(
                                 f"{case_name}: envelope element {elem_id} row count mismatch: {len(ref_vals)} != {len(strut_vals)}"
                             )
                             continue
@@ -2479,13 +2985,15 @@ def main() -> None:
                             zip(ref_vals, strut_vals), start=1
                         ):
                             ok, errors = _compare_vectors(
-                                rvec, gvec, rtol=rtol, atol=atol
+                                rvec, gvec, rtol=rec_rtol, atol=rec_atol
                             )
                             if not ok:
-                                parity_failures.append(
+                                case_parity_failures.append(
                                     f"{case_name}: envelope element {elem_id} mismatch at row {row}"
                                 )
-                                parity_failures.extend([f"  {err}" for err in errors])
+                                case_parity_failures.extend(
+                                    [f"  {err}" for err in errors]
+                                )
                                 break
                 elif rec_type in ("section_force", "section_deformation"):
                     default_output = (
@@ -2497,7 +3005,7 @@ def main() -> None:
                     sections = rec.get("sections")
                     if sections is None:
                         if "section" not in rec:
-                            parity_failures.append(
+                            case_parity_failures.append(
                                 f"{case_name}: {rec_type} recorder missing section/sections"
                             )
                             continue
@@ -2517,12 +3025,12 @@ def main() -> None:
                                 / f"{output}_ele{elem_id}_sec{sec_no}.out"
                             )
                             if not ref_file.exists():
-                                parity_failures.append(
+                                case_parity_failures.append(
                                     f"{case_name}: missing OpenSees output: {ref_file}"
                                 )
                                 continue
                             if not strut_file.exists():
-                                parity_failures.append(
+                                case_parity_failures.append(
                                     f"{case_name}: missing Mojo output: {strut_file}"
                                 )
                                 continue
@@ -2537,37 +3045,27 @@ def main() -> None:
                                         use_last_common_row=use_last_common_row,
                                     )
                             except ValueError as exc:
-                                parity_failures.append(f"{case_name}: {exc}")
+                                case_parity_failures.append(f"{case_name}: {exc}")
                                 continue
                             if is_transient:
-                                if len(ref_vals) != len(strut_vals):
-                                    parity_failures.append(
-                                        f"{case_name}: {rec_type} element {elem_id} section {sec_no} step count mismatch: {len(ref_vals)} != {len(strut_vals)}"
-                                    )
-                                    continue
-                                for step, (rvec, gvec) in enumerate(
-                                    zip(ref_vals, strut_vals), start=1
-                                ):
-                                    ok, errors = _compare_vectors(
-                                        rvec, gvec, rtol=rtol, atol=atol
-                                    )
-                                    if not ok:
-                                        parity_failures.append(
-                                            f"{case_name}: {rec_type} element {elem_id} section {sec_no} mismatch at step {step}"
-                                        )
-                                        parity_failures.extend(
-                                            [f"  {err}" for err in errors]
-                                        )
-                                        break
+                                _compare_transient_rows(
+                                    ref_vals,
+                                    strut_vals,
+                                    f"{case_name}: {rec_type} element {elem_id} section {sec_no}",
+                                    case_parity_failures,
+                                    rec_rtol,
+                                    rec_atol,
+                                    parity_mode,
+                                )
                             else:
                                 ok, errors = _compare_vectors(
-                                    ref_vals, strut_vals, rtol=rtol, atol=atol
+                                    ref_vals, strut_vals, rtol=rec_rtol, atol=rec_atol
                                 )
                                 if not ok:
-                                    parity_failures.append(
+                                    case_parity_failures.append(
                                         f"{case_name}: {rec_type} element {elem_id} section {sec_no} mismatch"
                                     )
-                                    parity_failures.extend(
+                                    case_parity_failures.extend(
                                         [f"  {err}" for err in errors]
                                     )
                 elif rec_type == "modal_eigen":
@@ -2582,12 +3080,12 @@ def main() -> None:
                         results_root / "strut" / case_name / f"{output}_eigenvalues.out"
                     )
                     if not eig_ref.exists():
-                        parity_failures.append(
+                        case_parity_failures.append(
                             f"{case_name}: missing OpenSees output: {eig_ref}"
                         )
                         continue
                     if not eig_strut.exists():
-                        parity_failures.append(
+                        case_parity_failures.append(
                             f"{case_name}: missing Mojo output: {eig_strut}"
                         )
                         continue
@@ -2595,18 +3093,18 @@ def main() -> None:
                         ref_rows = _load_all_values(eig_ref)
                         strut_rows = _load_all_values(eig_strut)
                     except ValueError as exc:
-                        parity_failures.append(f"{case_name}: {exc}")
+                        case_parity_failures.append(f"{case_name}: {exc}")
                         continue
                     ref_vals = [row[0] for row in ref_rows]
                     strut_vals = [row[0] for row in strut_rows]
                     ok, errors = _compare_vectors(
-                        ref_vals, strut_vals, rtol=rtol, atol=atol
+                        ref_vals, strut_vals, rtol=rec_rtol, atol=rec_atol
                     )
                     if not ok:
-                        parity_failures.append(
+                        case_parity_failures.append(
                             f"{case_name}: modal eigenvalue mismatch"
                         )
-                        parity_failures.extend([f"  {err}" for err in errors])
+                        case_parity_failures.extend([f"  {err}" for err in errors])
 
                     for mode_no in rec.get("modes", []):
                         for node_id in rec.get("nodes", []):
@@ -2623,12 +3121,12 @@ def main() -> None:
                                 / f"{output}_mode{int(mode_no)}_node{int(node_id)}.out"
                             )
                             if not ref_file.exists():
-                                parity_failures.append(
+                                case_parity_failures.append(
                                     f"{case_name}: missing OpenSees output: {ref_file}"
                                 )
                                 continue
                             if not strut_file.exists():
-                                parity_failures.append(
+                                case_parity_failures.append(
                                     f"{case_name}: missing Mojo output: {strut_file}"
                                 )
                                 continue
@@ -2636,20 +3134,28 @@ def main() -> None:
                                 ref_vec = _load_last_values(ref_file)
                                 strut_vec = _load_last_values(strut_file)
                             except ValueError as exc:
-                                parity_failures.append(f"{case_name}: {exc}")
+                                case_parity_failures.append(f"{case_name}: {exc}")
                                 continue
                             ok, errors = _compare_mode_shape_vectors(
-                                ref_vec, strut_vec, rtol=rtol, atol=atol
+                                ref_vec, strut_vec, rtol=rec_rtol, atol=rec_atol
                             )
                             if not ok:
-                                parity_failures.append(
+                                case_parity_failures.append(
                                     f"{case_name}: modal mode shape mismatch mode={mode_no} node={node_id}"
                                 )
-                                parity_failures.extend([f"  {err}" for err in errors])
+                                case_parity_failures.extend(
+                                    [f"  {err}" for err in errors]
+                                )
                 else:
-                    parity_failures.append(
+                    case_parity_failures.append(
                         f"{case_name}: unsupported recorder type: {rec_type}"
                     )
+
+            if case_parity_failures:
+                if case_entry.get("status") == "benchmark":
+                    benchmark_parity_failures.extend(case_parity_failures)
+                else:
+                    parity_failures.extend(case_parity_failures)
 
         summary_cases.append(case_entry)
 
@@ -2712,6 +3218,10 @@ def main() -> None:
     print(f"Wrote {metadata_json}")
     print(f"Wrote {phase_summary_csv}")
     print(f"Wrote {phase_rollup_csv}")
+    if benchmark_parity_failures:
+        log("PARITY WARN (benchmark-only cases)")
+        for failure in _summarize_parity_failures(benchmark_parity_failures):
+            log(failure)
     if parity_failures:
         log_err("PARITY FAILED")
         for failure in _summarize_parity_failures(parity_failures):

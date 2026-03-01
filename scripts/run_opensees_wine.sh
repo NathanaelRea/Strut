@@ -136,27 +136,34 @@ run_script() {
 
   local script_dir
   script_dir="$(dirname "$script_path")"
-  local copied_files=()
-  if [[ "$script_dir" != "$analysis_dir" ]]; then
-    while IFS= read -r -d '' helper; do
-      local dest="$analysis_dir/$(basename "$helper")"
-      cp "$helper" "$dest"
-      copied_files+=("$dest")
-    done < <(find "$script_dir" -maxdepth 1 -type f -name '*.tcl' -print0)
-  fi
+  local script_parent
+  script_parent="$(dirname "$script_dir")"
+  local script_dir_name
+  script_dir_name="$(basename "$script_dir")"
+  local work_root
+  work_root="$(mktemp -d)"
+  local mirrored_parent="${work_root}/$(basename "$script_parent")"
+  local mirrored_script_dir="${mirrored_parent}/${script_dir_name}"
+  cp -a "${script_parent}/." "${mirrored_parent}/"
 
   local run_script_name
   run_script_name="$(basename "$script_path")"
 
-  pushd "$analysis_dir" >/dev/null
+  pushd "$mirrored_script_dir" >/dev/null
   {
     env TCL_LIBRARY="$tcl_dir_win" wine "$opensees_exe" "$run_script_name" >/dev/null 2>&1
   }
   popd >/dev/null
 
-  for helper in "${copied_files[@]}"; do
-    rm -f "$helper"
+  if [[ -d "${mirrored_script_dir}/Data" ]]; then
+    cp -a "${mirrored_script_dir}/Data" "${analysis_dir}/"
+  fi
+  for metric_file in analysis_time_us.txt case_time_us.txt case_error.txt; do
+    if [[ -f "${mirrored_script_dir}/${metric_file}" ]]; then
+      cp "${mirrored_script_dir}/${metric_file}" "${analysis_dir}/${metric_file}"
+    fi
   done
+  rm -rf "$work_root"
 }
 
 discover_scripts() {

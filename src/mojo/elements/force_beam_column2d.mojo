@@ -618,14 +618,8 @@ fn _force_beam_column2d_try_increment(
     var eps0_offset = force_basic_q_offset + 3
     var kappa_offset = eps0_offset + num_int_pts
 
-    var init_flex = _fiber_section2d_initial_flexibility(sec_def, fibers, uniaxial_defs)
-    if use_initial_section_flexibility != 0 and not init_flex[0]:
-        return (False, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-
     var elem_tol = 1.0e-8
     var max_elem_iters = 80
-    if use_initial_section_flexibility == 1:
-        max_elem_iters *= 10
 
     var target_v0 = base_v0 + dv_trial0
     var target_v1 = base_v1 + dv_trial1
@@ -641,70 +635,7 @@ fn _force_beam_column2d_try_increment(
     var k21: Float64
     var k22: Float64
 
-    var predictor_f00 = 0.0
-    var predictor_f01 = 0.0
-    var predictor_f02 = 0.0
-    var predictor_f10 = 0.0
-    var predictor_f11 = 0.0
-    var predictor_f12 = 0.0
-    var predictor_f20 = 0.0
-    var predictor_f21 = 0.0
-    var predictor_f22 = 0.0
-
-    for ip in range(num_int_pts):
-        var xi = xis[ip]
-        var weight = weights[ip]
-        var wL = weight * L
-        var b_mi = xi - 1.0
-        var b_mj = xi
-        var ip_state_offset = elem_state_offset + ip * fibers_per_section
-        var resp = _fiber_section2d_set_trial_from_offset(
-            sec_def,
-            fibers,
-            uniaxial_defs,
-            uniaxial_states,
-            elem_state_ids,
-            ip_state_offset,
-            fibers_per_section,
-            force_basic_q_state[eps0_offset + ip],
-            force_basic_q_state[kappa_offset + ip],
-        )
-        var sec_flex = _fiber_section2d_response_flexibility(resp)
-        if not sec_flex[0]:
-            return (False, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-        var sec_f00 = sec_flex[1]
-        var sec_f01 = sec_flex[2]
-        var sec_f11 = sec_flex[3]
-        var sec_f10 = sec_f01
-
-        predictor_f00 += wL * sec_f00
-        predictor_f01 += wL * sec_f01 * b_mi
-        predictor_f02 += wL * sec_f01 * b_mj
-        predictor_f10 += wL * b_mi * sec_f10
-        predictor_f11 += wL * b_mi * sec_f11 * b_mi
-        predictor_f12 += wL * b_mi * sec_f11 * b_mj
-        predictor_f20 += wL * b_mj * sec_f10
-        predictor_f21 += wL * b_mj * sec_f11 * b_mi
-        predictor_f22 += wL * b_mj * sec_f11 * b_mj
-    var predictor_k = _invert_3x3_values(
-        predictor_f00,
-        predictor_f01,
-        predictor_f02,
-        predictor_f10,
-        predictor_f11,
-        predictor_f12,
-        predictor_f20,
-        predictor_f21,
-        predictor_f22,
-    )
-    if not predictor_k[0]:
-        return (False, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-
-    q0 += predictor_k[1] * dv_trial0 + predictor_k[2] * dv_trial1 + predictor_k[3] * dv_trial2
-    q1 += predictor_k[4] * dv_trial0 + predictor_k[5] * dv_trial1 + predictor_k[6] * dv_trial2
-    q2 += predictor_k[7] * dv_trial0 + predictor_k[8] * dv_trial1 + predictor_k[9] * dv_trial2
-
-    for iter in range(max_elem_iters):
+    for _ in range(max_elem_iters):
         var f00 = 0.0
         var f01 = 0.0
         var f02 = 0.0
@@ -730,8 +661,7 @@ fn _force_beam_column2d_try_increment(
             var ip_state_offset = elem_state_offset + ip * fibers_per_section
             var eps0 = force_basic_q_state[eps0_offset + ip]
             var kappa = force_basic_q_state[kappa_offset + ip]
-
-            var resp_current = _fiber_section2d_set_trial_from_offset(
+            var solved = _fiber_section2d_solve_for_force(
                 sec_def,
                 fibers,
                 uniaxial_defs,
@@ -739,47 +669,18 @@ fn _force_beam_column2d_try_increment(
                 elem_state_ids,
                 ip_state_offset,
                 fibers_per_section,
+                axial_target,
+                moment_target,
                 eps0,
                 kappa,
+                80,
+                1.0e-8,
             )
-            var current_flex = _fiber_section2d_response_flexibility(resp_current)
-            if not current_flex[0]:
+            if not solved[0]:
                 return (False, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-
-            var predictor_sec_f00: Float64
-            var predictor_sec_f01: Float64
-            var predictor_sec_f11: Float64
-            if use_initial_section_flexibility == 1:
-                predictor_sec_f00 = init_flex[1]
-                predictor_sec_f01 = init_flex[2]
-                predictor_sec_f11 = init_flex[3]
-            elif use_initial_section_flexibility == 2 and iter == 0:
-                predictor_sec_f00 = init_flex[1]
-                predictor_sec_f01 = init_flex[2]
-                predictor_sec_f11 = init_flex[3]
-            else:
-                predictor_sec_f00 = current_flex[1]
-                predictor_sec_f01 = current_flex[2]
-                predictor_sec_f11 = current_flex[3]
-
-            var d_axial = axial_target - resp_current.axial_force
-            var d_moment = moment_target - resp_current.moment_z
-            var deps0 = predictor_sec_f00 * d_axial + predictor_sec_f01 * d_moment
-            var dkappa = predictor_sec_f01 * d_axial + predictor_sec_f11 * d_moment
-            eps0 += deps0
-            kappa += dkappa
-
-            var resp_trial = _fiber_section2d_set_trial_from_offset(
-                sec_def,
-                fibers,
-                uniaxial_defs,
-                uniaxial_states,
-                elem_state_ids,
-                ip_state_offset,
-                fibers_per_section,
-                eps0,
-                kappa,
-            )
+            var resp_trial = solved[1]
+            eps0 = solved[2]
+            kappa = solved[3]
             force_basic_q_state[eps0_offset + ip] = eps0
             force_basic_q_state[kappa_offset + ip] = kappa
 
@@ -791,11 +692,6 @@ fn _force_beam_column2d_try_increment(
             var sec_f11 = sec_flex[3]
             var sec_f10 = sec_f01
 
-            var residual_axial = axial_target - resp_trial.axial_force
-            var residual_moment = moment_target - resp_trial.moment_z
-            var residual_eps0 = sec_f00 * residual_axial + sec_f01 * residual_moment
-            var residual_kappa = sec_f10 * residual_axial + sec_f11 * residual_moment
-
             f00 += wL * sec_f00
             f01 += wL * sec_f01 * b_mi
             f02 += wL * sec_f01 * b_mj
@@ -806,9 +702,9 @@ fn _force_beam_column2d_try_increment(
             f21 += wL * b_mj * sec_f11 * b_mi
             f22 += wL * b_mj * sec_f11 * b_mj
 
-            vr0 += wL * (eps0 + residual_eps0)
-            vr1 += wL * b_mi * (kappa + residual_kappa)
-            vr2 += wL * b_mj * (kappa + residual_kappa)
+            vr0 += wL * eps0
+            vr1 += wL * b_mi * kappa
+            vr2 += wL * b_mj * kappa
         var k_inv = _invert_3x3_values(f00, f01, f02, f10, f11, f12, f20, f21, f22)
         if not k_inv[0]:
             return (False, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)

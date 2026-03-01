@@ -1,7 +1,9 @@
 import importlib.util
 import json
+import pickle
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -43,6 +45,25 @@ def _write_case(path: Path, enabled=True, status="active") -> None:
     )
 
 
+def _write_direct_tcl_case(
+    path: Path,
+    entry_tcl: Path,
+    enabled=True,
+    status="active",
+    benchmark_size=None,
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "name": path.parent.name,
+        "entry_tcl": str(entry_tcl.resolve()),
+        "enabled": enabled,
+        "status": status,
+    }
+    if benchmark_size is not None:
+        payload["benchmark_size"] = benchmark_size
+    path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+
 def test_load_case_enabled_uses_enabled_flag_only(tmp_path: Path):
     bench_case = tmp_path / "bench.json"
     normal_disabled_case = tmp_path / "disabled.json"
@@ -79,6 +100,25 @@ def test_discover_default_cases_excludes_disabled_cases(monkeypatch, tmp_path: P
         case.name for case in run_benchmarks.discover_default_cases(validation_root)
     ]
     assert case_names == ["elastic_enabled_case"]
+
+
+def test_discover_default_cases_includes_enabled_direct_tcl_case(tmp_path: Path):
+    validation_root = tmp_path / "validation"
+    entry_tcl = tmp_path / "examples" / "ElasticExample.tcl"
+    entry_tcl.parent.mkdir(parents=True, exist_ok=True)
+    entry_tcl.write_text("puts ok\n", encoding="utf-8")
+    _write_direct_tcl_case(
+        validation_root / "opensees_example_2d_elastic_cantileaver_column" / "direct_tcl_case.json",
+        entry_tcl=entry_tcl,
+        enabled=True,
+        status="active",
+    )
+
+    cases = run_benchmarks.discover_default_cases(validation_root)
+
+    assert [case.name for case in cases] == ["opensees_example_2d_elastic_cantileaver_column"]
+    assert cases[0].tcl_path == entry_tcl.resolve()
+    assert cases[0].json_path is None
 
 
 def test_discover_default_cases_ignores_non_case_json(tmp_path: Path):
@@ -136,6 +176,24 @@ def test_discover_all_cases_includes_disabled_cases(tmp_path: Path):
     assert case_names == ["bench_case", "disabled_case", "enabled_case"]
 
 
+def test_discover_all_cases_includes_direct_tcl_cases(tmp_path: Path):
+    validation_root = tmp_path / "validation"
+    entry_tcl = tmp_path / "examples" / "Ex1a.Canti2D.EQ.modif.tcl"
+    entry_tcl.parent.mkdir(parents=True, exist_ok=True)
+    entry_tcl.write_text("puts ok\n", encoding="utf-8")
+    _write_direct_tcl_case(
+        validation_root / "direct_case" / "direct_tcl_case.json",
+        entry_tcl=entry_tcl,
+        enabled=False,
+        status="active",
+    )
+
+    cases = run_benchmarks.discover_all_cases(validation_root)
+
+    assert [case.name for case in cases] == ["direct_case"]
+    assert cases[0].tcl_path == entry_tcl.resolve()
+
+
 def test_expand_case_patterns_deduplicates_and_sorts(tmp_path: Path):
     validation_root = tmp_path / "validation"
     _write_case(validation_root / "beta_case" / "beta_case.json")
@@ -145,6 +203,153 @@ def test_expand_case_patterns_deduplicates_and_sorts(tmp_path: Path):
         validation_root, ["*case", "alpha_case"]
     )
     assert [case.name for case in cases] == ["alpha_case", "beta_case"]
+
+
+def test_resolve_case_from_name_supports_direct_tcl_manifest(tmp_path: Path):
+    validation_root = tmp_path / "validation"
+    entry_tcl = tmp_path / "examples" / "case.tcl"
+    entry_tcl.parent.mkdir(parents=True, exist_ok=True)
+    entry_tcl.write_text("puts ok\n", encoding="utf-8")
+    manifest = validation_root / "direct_case" / "direct_tcl_case.json"
+    _write_direct_tcl_case(manifest, entry_tcl=entry_tcl, benchmark_size="medium")
+
+    case = run_benchmarks.resolve_case_from_name(validation_root, "direct_case")
+
+    assert case is not None
+    assert case.name == "direct_case"
+    assert case.tcl_path == entry_tcl.resolve()
+    assert case.benchmark_size == "medium"
+
+
+def test_write_solver_input_pickle_round_trips(tmp_path: Path):
+    payload = {"model": {"ndm": 2, "ndf": 3}, "recorders": []}
+    out_path = tmp_path / "solver.pkl"
+
+    result = run_benchmarks._write_solver_input_pickle(payload, out_path)
+
+    assert result == out_path
+    assert out_path.exists()
+    assert pickle.loads(out_path.read_bytes()) == payload
+
+
+def test_ensure_direct_tcl_case_artifacts_creates_canonical_reference(
+    monkeypatch, tmp_path: Path
+):
+    repo_root = tmp_path / "repo"
+    case_root = (
+        repo_root
+        / "tests"
+        / "validation"
+        / "opensees_example_2d_elastic_cantileaver_column"
+    )
+    manifest = case_root / "direct_tcl_case.json"
+    entry_tcl = tmp_path / "examples" / "Ex1a.Canti2D.EQ.modif.tcl"
+    entry_tcl.parent.mkdir(parents=True, exist_ok=True)
+    entry_tcl.write_text("puts ok\n", encoding="utf-8")
+    _write_direct_tcl_case(manifest, entry_tcl=entry_tcl)
+    case = run_benchmarks._direct_tcl_case_spec(manifest)
+
+    calls = []
+    monkeypatch.setitem(
+        sys.modules,
+        "tcl_to_strut",
+        SimpleNamespace(
+            convert_tcl_to_solver_input=lambda entry, repo_root, compute_only=False: {
+                "schema_version": "1.0",
+                "metadata": {"name": "generated", "units": "unknown"},
+                "model": {"ndm": 2, "ndf": 3},
+                "nodes": [],
+                "elements": [],
+                "recorders": [
+                    {
+                        "type": "node_displacement",
+                        "nodes": [1],
+                        "output": "disp",
+                        "raw_path": "Data/Disp.out",
+                        "include_time": True,
+                    }
+                ],
+            }
+        ),
+    )
+
+    def fake_run(cmd, env=None, verbose=False, capture_on_error=False):
+        calls.append(cmd)
+        if "run_opensees_wine.sh" in cmd[0]:
+            out_dir = Path(cmd[-1])
+            out_dir.mkdir(parents=True, exist_ok=True)
+            (out_dir / "Data").mkdir(parents=True, exist_ok=True)
+            (out_dir / "Data" / "Disp.out").write_text(
+                "0.0 1.0\n0.1 2.0\n", encoding="utf-8"
+            )
+
+    monkeypatch.setattr(run_benchmarks, "run", fake_run)
+
+    case_data = run_benchmarks._ensure_direct_tcl_case_artifacts(
+        case,
+        repo_root=repo_root,
+        env={},
+        verbose=False,
+    )
+
+    assert case_data["recorders"][0]["output"] == "disp"
+    assert (case_root / "reference" / "disp_node1.out").read_text(encoding="utf-8") == (
+        "1.0\n2.0\n"
+    )
+    assert len(calls) == 1
+    assert "run_opensees_wine.sh" in calls[0][0]
+
+
+def test_ensure_direct_tcl_case_artifacts_reuses_existing_canonical_reference(
+    monkeypatch, tmp_path: Path
+):
+    repo_root = tmp_path / "repo"
+    case_root = repo_root / "tests" / "validation" / "direct_case"
+    manifest = case_root / "direct_tcl_case.json"
+    entry_tcl = tmp_path / "examples" / "case.tcl"
+    entry_tcl.parent.mkdir(parents=True, exist_ok=True)
+    entry_tcl.write_text("puts ok\n", encoding="utf-8")
+    _write_direct_tcl_case(manifest, entry_tcl=entry_tcl)
+    (case_root / "reference").mkdir(parents=True, exist_ok=True)
+    (case_root / "reference" / "disp_node1.out").write_text("1.0\n", encoding="utf-8")
+    case = run_benchmarks._direct_tcl_case_spec(manifest)
+
+    calls = []
+    monkeypatch.setitem(
+        sys.modules,
+        "tcl_to_strut",
+        SimpleNamespace(
+            convert_tcl_to_solver_input=lambda entry, repo_root, compute_only=False: {
+                "schema_version": "1.0",
+                "metadata": {"name": "generated", "units": "unknown"},
+                "model": {"ndm": 2, "ndf": 3},
+                "nodes": [],
+                "elements": [],
+                "recorders": [
+                    {
+                        "type": "node_displacement",
+                        "nodes": [1],
+                        "output": "disp",
+                    }
+                ],
+            }
+        ),
+    )
+
+    def fake_run(cmd, env=None, verbose=False, capture_on_error=False):
+        calls.append(cmd)
+
+    monkeypatch.setattr(run_benchmarks, "run", fake_run)
+
+    case_data = run_benchmarks._ensure_direct_tcl_case_artifacts(
+        case,
+        repo_root=repo_root,
+        env={},
+        verbose=False,
+    )
+
+    assert case_data["recorders"][0]["output"] == "disp"
+    assert calls == []
 
 
 def test_filter_cases_by_enabled_counts_disabled_and_skipped(tmp_path: Path):
@@ -197,23 +402,16 @@ def test_filter_cases_by_enabled_include_disabled_keeps_all_cases(tmp_path: Path
 
 
 def test_case_free_dofs_counts_boolean_and_index_constraints(tmp_path: Path):
-    case_path = tmp_path / "case.json"
-    case_path.write_text(
-        json.dumps(
-            {
-                "model": {"ndf": 3},
-                "nodes": [
-                    {"id": 1, "constraints": [True, False, True]},
-                    {"id": 2, "constraints": [1]},
-                    {"id": 3},
-                ],
-            }
-        )
-        + "\n",
-        encoding="utf-8",
-    )
+    case_data = {
+        "model": {"ndf": 3},
+        "nodes": [
+            {"id": 1, "constraints": [True, False, True]},
+            {"id": 2, "constraints": [1]},
+            {"id": 3},
+        ],
+    }
     # Total DOFs = 3 nodes * 3 ndf = 9. Constrained = 2 (bool) + 1 (index list) = 3.
-    assert run_benchmarks._case_free_dofs(case_path) == 6
+    assert run_benchmarks._case_free_dofs(case_data) == 6
 
 
 def test_absolutize_time_series_paths_resolves_relative_values_path(tmp_path: Path):
@@ -254,6 +452,29 @@ def test_absolutize_time_series_paths_resolves_from_repo_root_when_needed(
     ).resolve()
     assert resolved.is_absolute()
     assert resolved == expected
+
+
+def test_absolutize_time_series_paths_resolves_relative_to_source_example(
+    tmp_path: Path,
+):
+    case_json = tmp_path / "validation" / "case_c" / "case_c.json"
+    case_json.parent.mkdir(parents=True, exist_ok=True)
+    example_dir = tmp_path / "examples"
+    example_dir.mkdir(parents=True, exist_ok=True)
+    example_tcl = example_dir / "example.tcl"
+    example_tcl.write_text("# placeholder\n", encoding="utf-8")
+    motion = example_dir / "gm.acc"
+    motion.write_text("0.0 1.0\n", encoding="utf-8")
+    case_data = {
+        "source_example": str(example_tcl.resolve()),
+        "time_series": [{"type": "Path", "tag": 1, "values_path": "gm.acc"}],
+    }
+
+    run_benchmarks._absolutize_time_series_paths(case_data, case_json)
+
+    resolved = Path(case_data["time_series"][0]["values_path"])
+    assert resolved.is_absolute()
+    assert resolved == motion.resolve()
 
 
 def test_inject_opensees_timing_wraps_all_analyze_calls_and_accumulates():
@@ -306,6 +527,29 @@ def test_tcl_uses_eigen_false_without_eigen(tmp_path: Path):
     tcl = tmp_path / "case.tcl"
     tcl.write_text("analyze 1\n", encoding="utf-8")
     assert run_benchmarks._tcl_uses_eigen(tcl) is False
+
+
+def test_normalize_opensees_benchmark_outputs_writes_parity_filenames(tmp_path: Path):
+    output_dir = tmp_path / "opensees_case"
+    (output_dir / "Data").mkdir(parents=True, exist_ok=True)
+    (output_dir / "Data" / "Disp.out").write_text(
+        "0.0 1.0\n0.1 2.0\n", encoding="utf-8"
+    )
+    case_data = {
+        "recorders": [
+            {
+                "type": "node_displacement",
+                "nodes": [1],
+                "output": "disp",
+                "raw_path": "Data/Disp.out",
+                "include_time": True,
+            }
+        ]
+    }
+
+    run_benchmarks._normalize_opensees_benchmark_outputs(case_data, output_dir)
+
+    assert (output_dir / "disp_node1.out").read_text(encoding="utf-8") == "1.0\n2.0\n"
 
 
 def test_compare_mode_shape_vectors_tolerates_sign_flip():
@@ -398,3 +642,32 @@ def test_analysis_is_transient_false_for_non_transient_staged():
         ],
     }
     assert run_benchmarks._analysis_is_transient(analysis) is False
+
+
+def test_compare_transient_rows_max_abs_uses_peaks_not_first_mismatch():
+    failures = []
+
+    run_benchmarks._compare_transient_rows(
+        ref_vals=[[0.0, 1.0], [1.0, 3.0]],
+        strut_vals=[[0.0, 2.0], [1.0, 3.05]],
+        label="case: node 1",
+        failures=failures,
+        rtol=0.05,
+        atol=0.0,
+        parity_mode="max_abs",
+    )
+
+    assert failures == []
+
+
+def test_resolve_recorder_tolerance_prefers_per_recorder_override():
+    rtol, atol = run_benchmarks._resolve_recorder_tolerance(
+        "element_force",
+        global_rtol=0.2,
+        global_atol=0.001,
+        has_global_override=True,
+        per_recorder_overrides={"element_force": {"rtol": 0.3, "atol": 0.01}},
+    )
+
+    assert rtol == pytest.approx(0.3)
+    assert atol == pytest.approx(0.01)

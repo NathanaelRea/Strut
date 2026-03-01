@@ -111,17 +111,18 @@ Current limitation: `forceBeamColumn3d`/`dispBeamColumn3d` support is currently 
 
 ## Harness Workflow
 
-1. `scripts/json_to_tcl.py` converts a JSON model to a deterministic Tcl script.
-2. `scripts/run_case.py` runs OpenSees (Wine) to produce reference outputs.
-3. `scripts/run_strut_case.py` runs the current Strut implementation and writes outputs.
-4. `scripts/compare_case.py` compares recorder outputs with recorder-specific tolerances.
-5. `uv run run_tests.py` builds the solver, then runs unit, schema, and parity checks.
-6. `scripts/run_and_plot_case.py <case.json>` runs a case and generates overlay plots for all comparable `.out` files/components.
+1. JSON-authored cases use `scripts/json_to_tcl.py` to convert JSON models to deterministic Tcl when OpenSees reference generation is needed.
+2. Direct-Tcl cases use the original reference Tcl for OpenSees and parse that same Tcl directly into Strut input.
+3. `scripts/run_case.py` runs OpenSees (Wine) to produce reference outputs, then runs Strut on either JSON input or direct Tcl input.
+4. `scripts/run_strut_case.py` runs the current Strut implementation and writes outputs.
+5. `scripts/compare_case.py` compares recorder outputs with recorder-specific tolerances and can load direct-Tcl parity metadata straight from the Tcl parser.
+6. `uv run run_tests.py` builds the solver, then runs unit, schema, and parity checks.
+7. `scripts/run_and_plot_case.py <case.json>` runs a JSON-authored case and generates overlay plots for all comparable `.out` files/components.
 
 ## Reproduction Commands
 
 - Run Ex2c staged parity case end-to-end:
-  - `STRUT_FORCE_CASE=1 uv run scripts/run_case.py tests/validation/opensees_example_ex2c_canti2d_inelastic_fiber/opensees_example_ex2c_canti2d_inelastic_fiber.json`
+  - `STRUT_FORCE_CASE=1 uv run scripts/run_case.py tests/validation/opensees_example_ex2c_canti2d_inelastic_fiber/direct_tcl_case.json`
 - Re-run parity check only:
   - `uv run scripts/compare_case.py --case opensees_example_ex2c_canti2d_inelastic_fiber`
 - Run per-case benchmark (no batch, no archive):
