@@ -194,7 +194,10 @@ fn run_static_nonlinear_load_control(
         primary_algorithm_mode == NonlinearAlgorithmMode.Newton
         or primary_algorithm_mode == NonlinearAlgorithmMode.ModifiedNewton
     ):
-        fallback_algorithm_mode = NonlinearAlgorithmMode.ModifiedNewtonInitial
+        if primary_algorithm_mode == NonlinearAlgorithmMode.Newton:
+            fallback_algorithm_mode = NonlinearAlgorithmMode.ModifiedNewton
+        else:
+            fallback_algorithm_mode = NonlinearAlgorithmMode.ModifiedNewtonInitial
         has_fallback = True
     elif primary_algorithm_mode != NonlinearAlgorithmMode.Newton:
         fallback_algorithm_mode = NonlinearAlgorithmMode.Newton
@@ -217,6 +220,8 @@ fn run_static_nonlinear_load_control(
         if fallback_max_iters < max_iters * 5:
             fallback_max_iters = max_iters * 5
         fallback_tol = tol
+        if fallback_tol < 1.0e-10:
+            fallback_tol = 1.0e-10
         fallback_rel_tol = rel_tol
     if fallback_max_iters < 1:
         abort("static_nonlinear fallback_max_iters must be >= 1")
@@ -451,7 +456,6 @@ fn run_static_nonlinear_load_control(
                 attempt_rel_tol = fallback_rel_tol
 
             var tangent_initialized = False
-            var awaiting_equilibrium_confirmation = False
             var tangent_factored = False
             for _ in range(attempt_max_iters):
                 if do_profile:
@@ -739,12 +743,8 @@ fn run_static_nonlinear_load_control(
                         iter_end_us,
                     )
                 if converged_iter:
-                    if awaiting_equilibrium_confirmation:
-                        converged = True
-                        break
-                    awaiting_equilibrium_confirmation = True
-                else:
-                    awaiting_equilibrium_confirmation = False
+                    converged = True
+                    break
             if converged:
                 break
         if do_profile:
@@ -1537,7 +1537,6 @@ fn run_static_nonlinear_displacement_control(
                         attempt_rel_tol = fallback_rel_tol
 
                     var tangent_initialized = False
-                    var awaiting_equilibrium_confirmation = False
                     for _ in range(attempt_max_iters):
                         if do_profile:
                             var t_iter_start = Int(time.perf_counter_ns())
@@ -1829,12 +1828,8 @@ fn run_static_nonlinear_displacement_control(
                                 iter_end_us,
                             )
                         if converged_iter:
-                            if awaiting_equilibrium_confirmation:
-                                converged = True
-                                break
-                            awaiting_equilibrium_confirmation = True
-                        else:
-                            awaiting_equilibrium_confirmation = False
+                            converged = True
+                            break
                     if converged:
                         break
                 if converged:

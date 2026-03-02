@@ -2,5 +2,5 @@
   "name": "opensees_example_elastic_frame",
   "entry_tcl": "docs/agent-reference/OpenSeesExamplesBasic/elastic_frame_example/ElasticFrame.tcl",
   "enabled": true,
-  "status": "todo"
+  "status": "active"
 }

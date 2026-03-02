@@ -107,6 +107,29 @@ def test_convert_typed_case_returns_dataclass_model():
     )
 
 
+def test_convert_ex5_disables_transient_force_beam_local_force_parity():
+    entry = (
+        REPO_ROOT
+        / "docs/agent-reference/OpenSeesExamplesAdvanced"
+        / "Ex5Fram2DEQUniform"
+        / "Ex5.Frame2D.complete.Dynamic.EQ.Uniform.tcl"
+    )
+
+    case = tcl_to_strut.convert_tcl_to_case(entry, REPO_ROOT)
+
+    recorders = {}
+    for recorder in case["recorders"]:
+        key = (recorder["type"], recorder.get("output"))
+        recorders[key] = recorder
+
+    assert recorders[("node_reaction", "RBase")]["parity"] is False
+    assert recorders[("element_local_force", "Fel1")]["parity"] is False
+    assert recorders[("section_force", "ForceEle1sec1")]["parity"] is False
+    assert recorders[("section_force", "ForceEle1sec5")]["parity"] is False
+    assert recorders[("section_deformation", "DefoEle1sec1")].get("parity", True) is True
+    assert recorders[("section_deformation", "DefoEle1sec5")].get("parity", True) is True
+
+
 def test_solver_input_matches_json_adapter_for_tcl_case():
     entry = (
         REPO_ROOT

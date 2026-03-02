@@ -635,7 +635,13 @@ fn _force_beam_column2d_try_increment(
     var k21: Float64
     var k22: Float64
 
-    for _ in range(max_elem_iters):
+    var initial_sec_flex = _fiber_section2d_initial_flexibility(
+        sec_def, fibers, uniaxial_defs
+    )
+    if not initial_sec_flex[0]:
+        return (False, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+
+    for elem_iter in range(max_elem_iters):
         var f00 = 0.0
         var f01 = 0.0
         var f02 = 0.0
@@ -684,12 +690,27 @@ fn _force_beam_column2d_try_increment(
             force_basic_q_state[eps0_offset + ip] = eps0
             force_basic_q_state[kappa_offset + ip] = kappa
 
-            var sec_flex = _fiber_section2d_response_flexibility(resp_trial)
-            if not sec_flex[0]:
-                return (False, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-            var sec_f00 = sec_flex[1]
-            var sec_f01 = sec_flex[2]
-            var sec_f11 = sec_flex[3]
+            var use_initial_flex = (
+                use_initial_section_flexibility == 1
+                or (
+                    use_initial_section_flexibility == 2
+                    and elem_iter == 0
+                )
+            )
+            var sec_f00: Float64
+            var sec_f01: Float64
+            var sec_f11: Float64
+            if use_initial_flex:
+                sec_f00 = initial_sec_flex[1]
+                sec_f01 = initial_sec_flex[2]
+                sec_f11 = initial_sec_flex[3]
+            else:
+                var sec_flex = _fiber_section2d_response_flexibility(resp_trial)
+                if not sec_flex[0]:
+                    return (False, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+                sec_f00 = sec_flex[1]
+                sec_f01 = sec_flex[2]
+                sec_f11 = sec_flex[3]
             var sec_f10 = sec_f01
 
             f00 += wL * sec_f00

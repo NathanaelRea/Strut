@@ -2,6 +2,6 @@
   "name": "opensees_example_ex5_frame2d_eq_uniform_rc_fiber",
   "entry_tcl": "docs/agent-reference/OpenSeesExamplesAdvanced/Ex5Fram2DEQUniform/Ex5.Frame2D.complete.Dynamic.EQ.Uniform.tcl",
   "enabled": true,
-  "status": "benchmark",
+  "status": "active",
   "benchmark_size": "medium"
 }

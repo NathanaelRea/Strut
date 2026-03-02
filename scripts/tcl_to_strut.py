@@ -495,7 +495,11 @@ class TclStrutBuilder:
         )
         if has_force_beam and has_transient_stage:
             for recorder in self.recorders:
-                if recorder.get("type") in {"node_reaction", "section_force"}:
+                if recorder.get("type") in {
+                    "node_reaction",
+                    "element_local_force",
+                    "section_force",
+                }:
                     recorder["parity"] = False
         if has_nonlinear_material or has_force_beam:
             case.parity_tolerance = {"rtol": 0.2, "atol": 1.0e-3}

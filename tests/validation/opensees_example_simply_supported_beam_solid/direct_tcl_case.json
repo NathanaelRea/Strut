@@ -2,5 +2,5 @@
   "name": "opensees_example_simply_supported_beam_solid",
   "entry_tcl": "docs/agent-reference/OpenSeesExamplesBasic/simply_supported_beam_modeled_with_two_dimensional_solid_elements/Example6_4.tcl",
   "enabled": true,
-  "status": "todo"
+  "status": "active"
 }
