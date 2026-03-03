@@ -6,7 +6,7 @@ Tools for comparing OpenSees (Wine) and Strut (Mojo) runtime performance.
 
 Use `scripts/run_benchmarks.py` to run the default enabled validation cases on
 both engines, or a custom case list from `tests/validation/`. The Mojo solver is precompiled before
-timing (cached at `build/strut/strut`).
+timing (cached at `build/strut/strut`, or `build/strut/strut_profile` for `--profile` runs).
 
 Examples:
 
@@ -49,6 +49,7 @@ uv run scripts/run_benchmarks.py --cases elastic_truss_basic,elastic_four_node_q
 
 - `benchmark/results/` contains the latest run (summary plus last-run outputs).
 - Runs with `--profile` write to `benchmark/results-profile/` and default to `--no-archive`.
+- `--profile` builds and reuses a dedicated `build/strut/strut_profile` binary, so switching between normal and profiled runs does not overwrite the default solver.
 - `--profile <DIR>` works in both per-case and batch runs and writes per-case files as `<case>.speedscope.json` into `DIR`.
 - Compute-only outputs are written to `benchmark/results/opensees_compute/` and `benchmark/results/strut_compute/` (or the `results-profile` equivalents when profiling).
 - `metadata.json` records machine/build/run metadata for reproducible baseline/perf comparisons.

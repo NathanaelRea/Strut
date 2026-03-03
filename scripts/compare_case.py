@@ -209,51 +209,7 @@ def _load_direct_tcl_case_data(
     return data
 
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--case")
-    parser.add_argument("--case-root")
-    parser.add_argument("--case-json")
-    parser.add_argument("--input-tcl")
-    args = parser.parse_args()
-
-    repo_root = Path(__file__).resolve().parents[1]
-    if args.case_json:
-        case_json = Path(args.case_json).resolve()
-        if args.case_root:
-            case_root = Path(args.case_root).resolve()
-        else:
-            case_root = case_json.parent
-        if not case_json.exists():
-            raise SystemExit(f"missing case JSON: {case_json}")
-        data = json.loads(case_json.read_text())
-    elif args.input_tcl:
-        entry_tcl = Path(args.input_tcl).resolve()
-        if args.case_root:
-            case_root = Path(args.case_root).resolve()
-            manifest_path = _resolve_direct_manifest(case_root)
-            if not manifest_path.exists():
-                manifest_path = None
-        else:
-            case_root = repo_root / "tests" / "validation" / entry_tcl.stem
-            manifest_path = None
-        data = _load_direct_tcl_case_data(entry_tcl, repo_root, manifest_path)
-    elif args.case:
-        case_root = repo_root / "tests" / "validation" / args.case
-        case_json = case_root / f"{args.case}.json"
-        if case_json.exists():
-            data = json.loads(case_json.read_text())
-        else:
-            manifest_path = _resolve_direct_manifest(case_root)
-            if not manifest_path.exists():
-                raise SystemExit(
-                    f"missing case JSON or direct Tcl manifest in: {case_root}"
-                )
-            entry_tcl = _resolve_entry_tcl_from_manifest(manifest_path, repo_root)
-            data = _load_direct_tcl_case_data(entry_tcl, repo_root, manifest_path)
-    else:
-        raise SystemExit("either --case, --case-json, or --input-tcl is required")
-
+def _compare_output_dirs(data: dict, ref_dir: Path, strut_dir: Path) -> list[str]:
     recorders = data.get("recorders", [])
     tol = data.get("parity_tolerance", {})
     rtol = tol.get("rtol", REL_TOL)
@@ -271,9 +227,6 @@ def main():
         )
     analysis = data.get("analysis", {})
     is_transient = _analysis_is_transient(analysis)
-
-    ref_dir = case_root / "reference"
-    strut_dir = case_root / "strut"
 
     failures = []
     for rec in recorders:
@@ -574,6 +527,57 @@ def main():
                         failures.extend([f"  {err}" for err in errors])
         else:
             raise ValueError(f"unsupported recorder type: {rec_type}")
+    return failures
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--case")
+    parser.add_argument("--case-root")
+    parser.add_argument("--case-json")
+    parser.add_argument("--input-tcl")
+    args = parser.parse_args()
+
+    repo_root = Path(__file__).resolve().parents[1]
+    if args.case_json:
+        case_json = Path(args.case_json).resolve()
+        if args.case_root:
+            case_root = Path(args.case_root).resolve()
+        else:
+            case_root = case_json.parent
+        if not case_json.exists():
+            raise SystemExit(f"missing case JSON: {case_json}")
+        data = json.loads(case_json.read_text())
+    elif args.input_tcl:
+        entry_tcl = Path(args.input_tcl).resolve()
+        if args.case_root:
+            case_root = Path(args.case_root).resolve()
+            manifest_path = _resolve_direct_manifest(case_root)
+            if not manifest_path.exists():
+                manifest_path = None
+        else:
+            case_root = repo_root / "tests" / "validation" / entry_tcl.stem
+            manifest_path = None
+        data = _load_direct_tcl_case_data(entry_tcl, repo_root, manifest_path)
+    elif args.case:
+        case_root = repo_root / "tests" / "validation" / args.case
+        case_json = case_root / f"{args.case}.json"
+        if case_json.exists():
+            data = json.loads(case_json.read_text())
+        else:
+            manifest_path = _resolve_direct_manifest(case_root)
+            if not manifest_path.exists():
+                raise SystemExit(
+                    f"missing case JSON or direct Tcl manifest in: {case_root}"
+                )
+            entry_tcl = _resolve_entry_tcl_from_manifest(manifest_path, repo_root)
+            data = _load_direct_tcl_case_data(entry_tcl, repo_root, manifest_path)
+    else:
+        raise SystemExit("either --case, --case-json, or --input-tcl is required")
+
+    ref_dir = case_root / "reference"
+    strut_dir = case_root / "strut"
+    failures = _compare_output_dirs(data, ref_dir, strut_dir)
 
     if failures:
         print("PARITY FAILED")

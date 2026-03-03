@@ -125,8 +125,8 @@ Current limitation: `forceBeamColumn3d`/`dispBeamColumn3d` support is currently 
   - `STRUT_FORCE_CASE=1 uv run scripts/run_case.py tests/validation/opensees_example_ex2c_canti2d_inelastic_fiber/direct_tcl_case.json`
 - Re-run parity check only:
   - `uv run scripts/compare_case.py --case opensees_example_ex2c_canti2d_inelastic_fiber`
-- Run per-case benchmark (no batch, no archive):
-  - `uv run scripts/run_benchmarks.py --cases opensees_example_ex2c_canti2d_inelastic_fiber --include-disabled --engine mojo --repeat 1 --warmup 0 --no-batch --no-archive`
+- Run per-case benchmark (Mojo is always per-case, no archive):
+  - `uv run scripts/run_benchmarks.py --cases opensees_example_ex2c_canti2d_inelastic_fiber --include-disabled --engine strut --repeat 1 --warmup 0 --no-archive`
 
 ## Output Format
 

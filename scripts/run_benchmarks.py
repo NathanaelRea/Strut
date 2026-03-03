@@ -11,6 +11,7 @@ import time
 import math
 import sys
 import pickle
+import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -51,6 +52,16 @@ class CaseSpec:
     tcl_path: Optional[Path] = None
     metadata_path: Optional[Path] = None
     benchmark_size: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class RuntimeFailure:
+    case_name: str
+    case_file: str
+    engine: str
+    phase: str
+    detail: str
+    error_file: Optional[str] = None
 
 
 BENCHMARK_SUITES: Dict[str, List[str]] = {
@@ -186,6 +197,36 @@ def log_err(msg: str) -> None:
 def _write_case_error(output_dir: Path, message: str) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "case_error.txt").write_text(f"{message}\n", encoding="utf-8")
+
+
+def _format_subprocess_failure(
+    label: str, exc: subprocess.CalledProcessError
+) -> str:
+    parts = [f"{label} (exit {exc.returncode})"]
+    cmd = exc.cmd
+    if isinstance(cmd, list):
+        parts.append("cmd=" + " ".join(str(part) for part in cmd))
+    elif cmd:
+        parts.append(f"cmd={cmd}")
+    stderr = str(exc.stderr or "").strip()
+    stdout = str(exc.output or "").strip()
+    if stderr:
+        parts.append(f"stderr={stderr.splitlines()[-1]}")
+    if stdout:
+        parts.append(f"stdout={stdout.splitlines()[-1]}")
+    return "; ".join(parts)
+
+
+def _compact_error_text(text: str, max_lines: int = 4, max_chars: int = 400) -> str:
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return "empty case_error.txt"
+    compact = " | ".join(lines[:max_lines])
+    if len(lines) > max_lines:
+        compact += " | ..."
+    if len(compact) > max_chars:
+        compact = compact[: max_chars - 3].rstrip() + "..."
+    return compact
 
 
 def _count_constrained_dofs(node: dict, ndf: int) -> int:
@@ -416,37 +457,98 @@ def _normalize_reference_outputs(
             if strict:
                 raise SystemExit(f"missing raw OpenSees recorder output: {raw_path}")
             continue
-        strip_time = bool(recorders[0].get("include_time"))
-        normalized_rows = []
-        for line in source.read_text(encoding="utf-8").splitlines():
-            if not line.strip():
-                continue
-            parts = line.replace(",", " ").split()
-            if strip_time and parts:
-                parts = parts[1:]
-            normalized_rows.append(parts)
-
         targets: list[str] = []
         for recorder in recorders:
             targets.extend(_normalized_recorder_outputs(recorder))
         if not targets:
             continue
+        strip_time = bool(recorders[0].get("include_time"))
+        group_layout = recorders[0].get("group_layout")
+        preserve_existing_targets = all(
+            (reference_dir / rel_name).exists() for rel_name in targets
+        )
+        normalized_rows = []
+        for line in source.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            parts = line.replace(",", " ").split()
+            if (
+                group_layout
+                and group_layout.get("type") == "envelope_element_force"
+                and strip_time
+            ):
+                normalized_rows.append(parts)
+                continue
+            if strip_time and parts:
+                parts = parts[1:]
+            normalized_rows.append(parts)
 
         payloads = [[] for _ in targets]
-        if len(targets) == 1:
-            for parts in normalized_rows:
-                payloads[0].append(" ".join(parts))
-        else:
-            for parts in normalized_rows:
-                if len(parts) % len(targets) != 0:
-                    raise SystemExit(
-                        "cannot evenly split grouped recorder output "
-                        f"{raw_path}: {len(parts)} values across {len(targets)} targets"
-                    )
-                width = len(parts) // len(targets)
-                for idx, _ in enumerate(targets):
-                    start = idx * width
-                    payloads[idx].append(" ".join(parts[start : start + width]))
+        if group_layout and group_layout.get("type") == "envelope_element_force":
+            layout_elements = group_layout.get("elements") or []
+            layout_widths = group_layout.get("values_per_element") or []
+            width_by_element = dict(zip(layout_elements, layout_widths))
+            widths = []
+            for recorder in recorders:
+                elements = recorder.get("elements") or []
+                if len(elements) != 1 or elements[0] not in width_by_element:
+                    widths = []
+                    break
+                widths.append(int(width_by_element[elements[0]]))
+            if widths:
+                expected = sum(widths)
+                paired_payloads = [[] for _ in targets]
+                used_paired_layout = False
+                for parts in normalized_rows:
+                    if len(parts) == expected:
+                        if used_paired_layout:
+                            raise SystemExit(
+                                f"mixed grouped envelope layouts in {raw_path}"
+                            )
+                        offset = 0
+                        for idx, width in enumerate(widths):
+                            payloads[idx].append(" ".join(parts[offset : offset + width]))
+                            offset += width
+                        continue
+                    if strip_time and len(parts) == 2 * expected:
+                        used_paired_layout = True
+                        offset = 0
+                        for idx, width in enumerate(widths):
+                            segment = parts[offset : offset + 2 * width]
+                            paired_payloads[idx].extend(segment[1::2])
+                            offset += 2 * width
+                        continue
+                    if expected != len(parts):
+                        if preserve_existing_targets:
+                            payloads = []
+                            break
+                        raise SystemExit(
+                            "cannot split grouped recorder output "
+                            f"{raw_path}: expected {expected} values, got {len(parts)}"
+                        )
+                if used_paired_layout and payloads:
+                    for idx in range(len(targets)):
+                        payloads[idx] = [" ".join(paired_payloads[idx])]
+            else:
+                group_layout = None
+        if not group_layout:
+            if len(targets) == 1:
+                for parts in normalized_rows:
+                    payloads[0].append(" ".join(parts))
+            else:
+                for parts in normalized_rows:
+                    if len(parts) % len(targets) != 0:
+                        raise SystemExit(
+                            "cannot evenly split grouped recorder output "
+                            f"{raw_path}: {len(parts)} values across {len(targets)} targets"
+                        )
+                    width = len(parts) // len(targets)
+                    for idx, _ in enumerate(targets):
+                        start = idx * width
+                        payloads[idx].append(" ".join(parts[start : start + width]))
+
+        if not payloads:
+            continue
 
         for rel_name, rows in zip(targets, payloads):
             payload = "\n".join(rows)
@@ -492,6 +594,86 @@ def _load_direct_tcl_case_data(case: CaseSpec, repo_root: Path) -> dict:
     return case_data
 
 
+def _write_generated_direct_tcl_case(case_data: dict, case_root: Path) -> Path:
+    generated_case_json = case_root / "generated" / "case.json"
+    generated_case_json.parent.mkdir(parents=True, exist_ok=True)
+    generated_case_json.write_text(
+        json.dumps(case_data, indent=2) + "\n", encoding="utf-8"
+    )
+    return generated_case_json
+
+
+def _write_parser_check(case_root: Path) -> None:
+    (case_root / ".parser-check").write_text("ok\n", encoding="utf-8")
+
+
+def _clear_parser_check(case_root: Path) -> None:
+    (case_root / ".parser-check").unlink(missing_ok=True)
+
+
+def _validate_generated_tcl_matches_original(
+    *,
+    repo_root: Path,
+    case_root: Path,
+    case_data: dict,
+    original_reference_tcl: Path,
+    generated_tcl: Path,
+    env,
+    verbose: bool,
+) -> None:
+    import compare_case
+
+    original_reference_dir = case_root / "reference-original"
+    generated_reference_dir = case_root / "reference"
+    parser_check_path = case_root / ".parser-check"
+    needs_original = not original_reference_dir.exists()
+    needs_generated = not generated_reference_dir.exists()
+    needs_compare = not parser_check_path.exists()
+    if not needs_original and not needs_generated and not needs_compare:
+        return
+
+    if needs_original:
+        log(f"{case_root.name}: canonical OpenSees reference missing; running original Tcl.")
+        ensure_clean_dir(original_reference_dir)
+        run(
+            [
+                str(repo_root / "scripts" / "run_opensees_wine.sh"),
+                "--script",
+                str(original_reference_tcl),
+                "--output",
+                str(original_reference_dir),
+            ],
+            env=env,
+            verbose=verbose,
+        )
+        _normalize_reference_outputs(case_data, original_reference_dir)
+
+    if needs_generated:
+        ensure_clean_dir(generated_reference_dir)
+        run(
+            [
+                str(repo_root / "scripts" / "run_opensees_wine.sh"),
+                "--script",
+                str(generated_tcl),
+                "--output",
+                str(generated_reference_dir),
+            ],
+            env=env,
+            verbose=verbose,
+        )
+        _normalize_reference_outputs(case_data, generated_reference_dir)
+
+    failures = compare_case._compare_output_dirs(
+        case_data, original_reference_dir, generated_reference_dir
+    )
+    if failures:
+        _clear_parser_check(case_root)
+        raise SystemExit(
+            "generated Tcl does not match original Tcl:\n" + "\n".join(failures)
+        )
+    _write_parser_check(case_root)
+
+
 def _write_solver_input_pickle(case_data: dict, output_path: Path) -> Path:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("wb") as handle:
@@ -499,17 +681,37 @@ def _write_solver_input_pickle(case_data: dict, output_path: Path) -> Path:
     return output_path
 
 
+def _direct_tcl_raw_output_paths(case_data: dict) -> list[str]:
+    raw_paths: set[str] = set()
+    for recorder in case_data.get("recorders", []):
+        if recorder.get("parity", True) is False:
+            continue
+        raw_path = recorder.get("raw_path")
+        if isinstance(raw_path, str) and raw_path:
+            raw_paths.add(raw_path)
+    return sorted(raw_paths)
+
+
 def _write_direct_tcl_wrapper(
     *,
     original_script_name: str,
     wrapper_path: Path,
     compute_only: bool,
+    raw_output_paths: list[str],
 ) -> Path:
     lines = [
         "set __strut_out_dir [pwd]",
         'set __strut_wrapper_dir [file dirname [info script]]',
         "set __strut_analysis_us 0",
         "cd $__strut_wrapper_dir",
+        'if {[llength [info commands exit]] > 0 && [llength [info commands __strut_orig_exit]] == 0} {',
+        "  rename exit __strut_orig_exit",
+        "  proc exit args { return {} }",
+        "}",
+        'if {[llength [info commands quit]] > 0 && [llength [info commands __strut_orig_quit]] == 0} {',
+        "  rename quit __strut_orig_quit",
+        "  proc quit args { return {} }",
+        "}",
         'if {[llength [info commands analyze]] > 0 && [llength [info commands __strut_orig_analyze]] == 0} {',
         "  rename analyze __strut_orig_analyze",
         "  proc analyze args {",
@@ -540,6 +742,11 @@ def _write_direct_tcl_wrapper(
                 "  rename recorder __strut_orig_recorder",
                 "  proc recorder args { return {} }",
                 "}",
+                "foreach __strut_display_cmd {prp vup vpn viewWindow display} {",
+                '  if {[llength [info commands $__strut_display_cmd]] == 0} {',
+                "    proc $__strut_display_cmd args { return {} }",
+                "  }",
+                "}",
             ]
         )
     lines.extend(
@@ -549,12 +756,22 @@ def _write_direct_tcl_wrapper(
             "puts $__strut_fp $__strut_analysis_us",
             "close $__strut_fp",
             'if {$__strut_out_dir ne $__strut_wrapper_dir} {',
-            '  if {[file exists "Data"]} {',
-            '    file copy -force "Data" $__strut_out_dir/',
-            "  }",
             '  if {[file exists "analysis_time_us.txt"]} {',
             '    file copy -force "analysis_time_us.txt" $__strut_out_dir/',
             "  }",
+        ]
+    )
+    for raw_path in raw_output_paths:
+        lines.extend(
+            [
+                f'  if {{[file exists {{{raw_path}}}]}} {{',
+                f'    file mkdir [file dirname [file join $__strut_out_dir {{{raw_path}}}]]',
+                f'    file copy -force {{{raw_path}}} [file join $__strut_out_dir {{{raw_path}}}]',
+                "  }",
+            ]
+        )
+    lines.extend(
+        [
             "}",
             "cd $__strut_out_dir",
             "if {$__strut_case_rc != 0} {",
@@ -567,7 +784,7 @@ def _write_direct_tcl_wrapper(
 
 
 def _prepare_direct_tcl_wrappers(
-    case: CaseSpec, repo_root: Path, tcl_root: Path
+    case: CaseSpec, case_data: dict, tcl_root: Path
 ) -> tuple[Path, Path]:
     if case.tcl_path is None:
         raise SystemExit(f"direct Tcl case `{case.name}` is missing tcl_path")
@@ -580,21 +797,32 @@ def _prepare_direct_tcl_wrappers(
     mirrored_parent = mirror_root / script_parent.name
     shutil.copytree(script_parent, mirrored_parent, dirs_exist_ok=True)
     mirrored_script_dir = mirrored_parent / script_dir.name
+    raw_output_paths = _direct_tcl_raw_output_paths(case_data)
 
     timed_wrapper = _write_direct_tcl_wrapper(
         original_script_name=script_path.name,
         wrapper_path=mirrored_script_dir / f"__strut_{case.name}_timed.tcl",
         compute_only=False,
+        raw_output_paths=raw_output_paths,
     )
     compute_wrapper = _write_direct_tcl_wrapper(
         original_script_name=script_path.name,
         wrapper_path=mirrored_script_dir / f"__strut_{case.name}_compute.tcl",
         compute_only=True,
+        raw_output_paths=raw_output_paths,
     )
     return timed_wrapper, compute_wrapper
 
 
-def _emit_case_tcl(case_json: Path, tcl_out: Path, repo_root: Path, env, verbose: bool) -> Path:
+def _emit_case_tcl(
+    case_json: Path,
+    tcl_out: Path,
+    repo_root: Path,
+    env,
+    verbose: bool,
+    *,
+    capture_on_error: bool = False,
+) -> Path:
     tcl_out.parent.mkdir(parents=True, exist_ok=True)
     run(
         [
@@ -607,6 +835,7 @@ def _emit_case_tcl(case_json: Path, tcl_out: Path, repo_root: Path, env, verbose
         ],
         env=env,
         verbose=verbose,
+        capture_on_error=capture_on_error,
     )
     return tcl_out
 
@@ -628,22 +857,36 @@ def _ensure_direct_tcl_case_artifacts(
     case_root = _direct_case_root(case)
     case_root.mkdir(parents=True, exist_ok=True)
     case_data = _load_direct_tcl_case_data(case, repo_root)
-    reference_dir = case_root / "reference"
-    if not _canonical_reference_ready(case_data, reference_dir):
-        log(f"{case.name}: canonical OpenSees reference missing; running original Tcl.")
-        ensure_clean_dir(reference_dir)
-        run(
-            [
-                str(repo_root / "scripts" / "run_opensees_wine.sh"),
-                "--script",
-                str(case.tcl_path),
-                "--output",
-                str(reference_dir),
-            ],
-            env=env,
-            verbose=verbose,
+    generated_case_json = _write_generated_direct_tcl_case(case_data, case_root)
+    try:
+        generated_tcl = _emit_case_tcl(
+            generated_case_json,
+            case_root / "generated" / "model.tcl",
+            repo_root,
+            env,
+            verbose,
+            capture_on_error=True,
         )
-    _normalize_reference_outputs(case_data, reference_dir)
+        with tempfile.TemporaryDirectory(
+            prefix=f"strut_direct_tcl_{case.name}_", dir="/tmp"
+        ) as validation_root:
+            original_reference_tcl, _ = _prepare_direct_tcl_wrappers(
+                case, case_data, Path(validation_root)
+            )
+            _validate_generated_tcl_matches_original(
+                repo_root=repo_root,
+                case_root=case_root,
+                case_data=case_data,
+                original_reference_tcl=original_reference_tcl,
+                generated_tcl=generated_tcl,
+                env=env,
+                verbose=verbose,
+            )
+    except (OSError, ValueError, subprocess.CalledProcessError, SystemExit) as exc:
+        _clear_parser_check(case_root)
+        log(f"{case.name}: generated Tcl unavailable; benchmarking original Tcl.")
+        if verbose:
+            log(f"{case.name}: fallback reason: {exc}")
     return case_data
 
 
@@ -930,6 +1173,9 @@ def collect_run_metadata(
     profile_root: Optional[Path],
     strut_solver: Optional[Path],
 ) -> dict:
+    requested_batch_mode = not args.no_batch
+    opensees_batch_mode = requested_batch_mode and args.engine in {"both", "opensees"}
+    strut_batch_mode = False
     metadata = {
         "platform": {
             "system": platform.system(),
@@ -945,7 +1191,9 @@ def collect_run_metadata(
         "runner": {
             "benchmark_suite": args.benchmark_suite,
             "engine": args.engine,
-            "batch_mode": not args.no_batch,
+            "batch_mode": opensees_batch_mode or strut_batch_mode,
+            "opensees_batch_mode": opensees_batch_mode,
+            "strut_batch_mode": strut_batch_mode,
             "repeat": args.repeat,
             "warmup": args.warmup,
             "profile_enabled": bool(args.profile),
@@ -1153,6 +1401,11 @@ def run_engine(
     return times
 
 
+def default_strut_solver_path(repo_root: Path, profile: bool) -> Path:
+    solver_name = "strut_profile" if profile else "strut"
+    return repo_root / "build" / "strut" / solver_name
+
+
 def ensure_strut_solver(repo_root: Path, verbose: bool, profile: bool) -> Path:
     if shutil.which("uv") is None:
         raise SystemExit(
@@ -1161,7 +1414,7 @@ def ensure_strut_solver(repo_root: Path, verbose: bool, profile: bool) -> Path:
     solver_path = os.getenv("STRUT_MOJO_BIN")
     if solver_path:
         return Path(solver_path)
-    solver_path = repo_root / "build" / "strut" / "strut"
+    solver_path = default_strut_solver_path(repo_root, profile)
     solver_path.parent.mkdir(parents=True, exist_ok=True)
     log("Building Mojo solver...")
     build_cmd = [str(repo_root / "scripts" / "build_mojo_solver.sh")]
@@ -1389,12 +1642,64 @@ def _read_analysis_us(path: Path) -> Optional[float]:
         return None
 
 
-def _summarize_parity_failures(parity_failures: List[str]) -> List[str]:
+def _read_runtime_failures(
+    case_entries: List[dict],
+    results_root: Path,
+    run_opensees: bool,
+    run_strut: bool,
+    include_compute_only: bool,
+) -> List[RuntimeFailure]:
+    failures: List[RuntimeFailure] = []
+    seen = set()
+    locations = []
+    if run_opensees:
+        locations.append(("opensees", "total", results_root / "opensees"))
+    if run_strut:
+        locations.append(("strut", "total", results_root / "strut"))
+    if include_compute_only and run_opensees:
+        locations.append(
+            ("opensees", "compute-only", results_root / "opensees_compute")
+        )
+    if include_compute_only and run_strut:
+        locations.append(("strut", "compute-only", results_root / "strut_compute"))
+
+    for case_entry in case_entries:
+        case_name = case_entry["name"]
+        case_file = str(case_entry.get("case_file", ""))
+        for engine, phase, output_root in locations:
+            error_file = output_root / case_name / "case_error.txt"
+            if not error_file.exists():
+                continue
+            detail = _compact_error_text(error_file.read_text(encoding="utf-8"))
+            key = (case_name, engine, phase, str(error_file), detail)
+            if key in seen:
+                continue
+            seen.add(key)
+            failures.append(
+                RuntimeFailure(
+                    case_name=case_name,
+                    case_file=case_file,
+                    engine=engine,
+                    phase=phase,
+                    detail=detail,
+                    error_file=str(error_file),
+                )
+            )
+    return failures
+
+
+def _summarize_benchmark_failures(
+    runtime_failures: List[RuntimeFailure],
+    parity_failures: List[str],
+    case_file_map: Optional[Dict[str, str]] = None,
+) -> List[str]:
     grouped: Dict[str, Dict[str, List[str]]] = {}
     case_order: List[str] = []
+    case_files: Dict[str, str] = {}
     case_last_category: Dict[str, str] = {}
     last_case: Optional[str] = None
     category_order = [
+        "runtime failures",
         "node mismatch",
         "reaction mismatch",
         "element mismatch",
@@ -1407,6 +1712,7 @@ def _summarize_parity_failures(parity_failures: List[str]) -> List[str]:
         "other",
     ]
     label_by_category = {
+        "runtime failures": "Runtime Failures",
         "node mismatch": "Node Mismatch",
         "reaction mismatch": "Reaction Mismatch",
         "element mismatch": "Element Mismatch",
@@ -1419,14 +1725,29 @@ def _summarize_parity_failures(parity_failures: List[str]) -> List[str]:
         "other": "Other",
     }
 
-    def add(case: str, category: str, detail: str) -> None:
+    def ensure_case(case: str) -> None:
         if case not in grouped:
             grouped[case] = {}
             case_order.append(case)
+
+    def add(case: str, category: str, detail: str) -> None:
+        ensure_case(case)
         bucket = grouped[case].setdefault(category, [])
         if detail not in bucket:
             bucket.append(detail)
         case_last_category[case] = category
+
+    if case_file_map:
+        case_files.update({case: path for case, path in case_file_map.items() if path})
+
+    for failure in runtime_failures:
+        ensure_case(failure.case_name)
+        if failure.case_file:
+            case_files[failure.case_name] = failure.case_file
+        detail = f"{failure.engine} {failure.phase}: {failure.detail}"
+        if failure.error_file:
+            detail += f" [error_file={failure.error_file}]"
+        add(failure.case_name, "runtime failures", detail)
 
     for failure in parity_failures:
         if failure.startswith("  "):
@@ -1494,26 +1815,45 @@ def _summarize_parity_failures(parity_failures: List[str]) -> List[str]:
 
     lines = []
     for case_name in case_order:
-        lines.append(f"Error: {case_name}")
+        lines.append(f"FAILED {case_name}")
+        case_file = case_files.get(case_name)
+        if case_file:
+            lines.append(f"  Case File: {case_file}")
         case_categories = grouped[case_name]
         missing_opensees = case_categories.get("missing opensees files", [])
         missing_strut = case_categories.get("missing strut files", [])
         if missing_opensees and not missing_strut:
-            lines.append("Missing all Opensees Outputs")
+            lines.append("  Missing all Opensees Outputs")
         elif missing_strut and not missing_opensees:
-            lines.append("Missing all Mojo Outputs")
+            lines.append("  Missing all Mojo Outputs")
         else:
             if missing_opensees:
                 lines.append(
-                    f"Missing Opensees outputs: {json.dumps(missing_opensees)}"
+                    f"  Missing Opensees outputs: {json.dumps(missing_opensees)}"
                 )
             if missing_strut:
-                lines.append(f"Missing Mojo outputs: {json.dumps(missing_strut)}")
+                lines.append(f"  Missing Mojo outputs: {json.dumps(missing_strut)}")
         for category in category_order:
             details = case_categories.get(category)
             if details:
-                lines.append(f"{label_by_category[category]}: {json.dumps(details)}")
+                lines.append(
+                    f"  {label_by_category[category]}: {json.dumps(details)}"
+                )
     return lines
+
+
+def _summarize_parity_failures(parity_failures: List[str]) -> List[str]:
+    lines = _summarize_benchmark_failures([], parity_failures)
+    out: List[str] = []
+    for line in lines:
+        if line.startswith("FAILED "):
+            out.append("Error: " + line[len("FAILED ") :])
+            continue
+        if line.startswith("  "):
+            out.append(line[2:])
+            continue
+        out.append(line)
+    return out
 
 
 def main() -> None:
@@ -1572,7 +1912,7 @@ def main() -> None:
     parser.add_argument(
         "--no-batch",
         action="store_true",
-        help="Disable default batch mode and run each case in a separate process.",
+        help="Disable OpenSees batch mode and run OpenSees cases in separate processes. Mojo always runs per case.",
     )
     parser.add_argument(
         "--warmup",
@@ -1638,9 +1978,10 @@ def main() -> None:
                 args.gen_frame_stories = 17
                 generate_suite_force_pair = True
 
-    batch_mode = not args.no_batch
+    requested_batch_mode = not args.no_batch
+    opensees_batch_mode = requested_batch_mode and args.engine in {"both", "opensees"}
     auto_batch_default_gen = (
-        batch_mode
+        opensees_batch_mode
         and args.cases is None
         and args.gen_frame_bays is None
         and args.gen_frame_stories is None
@@ -1790,6 +2131,7 @@ def main() -> None:
     summary_cases = []
     csv_rows = []
     parity_failures = []
+    setup_failures: List[RuntimeFailure] = []
 
     log(f"Running {len(case_specs)} benchmark case(s).")
     log(
@@ -1816,9 +2158,20 @@ def main() -> None:
 
     prepared_case_data: Dict[str, dict] = {}
     for case in case_specs:
-        prepared_case_data[case.name] = _ensure_direct_tcl_case_artifacts(
-            case, repo_root, env, verbose
-        )
+        try:
+            prepared_case_data[case.name] = _ensure_direct_tcl_case_artifacts(
+                case, repo_root, env, verbose
+            )
+        except (OSError, ValueError, subprocess.CalledProcessError, SystemExit) as exc:
+            setup_failures.append(
+                RuntimeFailure(
+                    case_name=case.name,
+                    case_file=str(_case_metadata_path(case)),
+                    engine="setup",
+                    phase="prepare",
+                    detail=str(exc),
+                )
+            )
 
     def build_case_tcl(case: CaseSpec) -> dict:
         case_name = case.name
@@ -1832,9 +2185,12 @@ def main() -> None:
             "name": case_name,
             "case_data": case_data,
             "dofs": _case_free_dofs(case_data),
+            "case_file": str(_case_metadata_path(case)),
         }
         if case.json_path is not None:
             case_entry["json"] = str(_case_json_path(case))
+        elif case.tcl_path is not None:
+            case_entry["json"] = str(_direct_case_root(case) / "generated" / "case.json")
         elif run_strut:
             case_entry["input_pickle"] = str(
                 _write_solver_input_pickle(
@@ -1847,11 +2203,37 @@ def main() -> None:
             case_entry["size"] = size_override
 
         if case.tcl_path is not None:
-            tcl_timed, tcl_compute = _prepare_direct_tcl_wrappers(
-                case, repo_root, results_root / "tcl"
-            )
-            case_entry["tcl"] = str(case.tcl_path)
-            case_entry["uses_eigen"] = _tcl_uses_eigen(case.tcl_path)
+            direct_case_root = _direct_case_root(case)
+            generated_tcl = direct_case_root / "generated" / "model.tcl"
+            parser_check = direct_case_root / ".parser-check"
+            if generated_tcl.exists() and parser_check.exists():
+                tcl_out = results_root / "tcl" / f"{case_name}.tcl"
+                shutil.copy2(generated_tcl, tcl_out)
+                tcl_compute = tcl_out.parent / f"{tcl_out.stem}_compute.tcl"
+                tcl_timed = tcl_out.parent / f"{tcl_out.stem}_timed.tcl"
+                tcl_lines = tcl_out.read_text().splitlines()
+                tcl_compute.write_text(
+                    "\n".join(
+                        line
+                        for line in tcl_lines
+                        if not line.lstrip().startswith("recorder ")
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+                tcl_timed.write_text(
+                    "\n".join(_inject_opensees_timing(tcl_lines, "analysis_time_us.txt"))
+                    + "\n",
+                    encoding="utf-8",
+                )
+                case_entry["tcl"] = str(tcl_out)
+                case_entry["uses_eigen"] = _tcl_uses_eigen(tcl_timed)
+            else:
+                tcl_timed, tcl_compute = _prepare_direct_tcl_wrappers(
+                    case, case_data, results_root / "tcl"
+                )
+                case_entry["tcl"] = str(tcl_timed)
+                case_entry["uses_eigen"] = _tcl_uses_eigen(tcl_timed)
         else:
             case_json = _case_json_path(case)
             tcl_out = _emit_case_tcl(
@@ -1882,24 +2264,37 @@ def main() -> None:
         case_entry["tcl_timed"] = str(tcl_timed)
         return case_entry
 
-    case_entries = [build_case_tcl(case) for case in case_specs]
-    if batch_mode:
+    runnable_cases = [case for case in case_specs if case.name in prepared_case_data]
+    case_entries = [build_case_tcl(case) for case in runnable_cases]
+    if setup_failures:
+        log_err(
+            f"Setup failed for {len(setup_failures)} benchmark case(s); continuing with remaining cases."
+        )
+    if not case_entries:
+        if setup_failures:
+            log_err("BENCHMARK FAILED")
+            for failure in _summarize_benchmark_failures(setup_failures, []):
+                log_err(failure)
+            raise SystemExit(1)
+        raise SystemExit("No runnable benchmark cases remain after preparation.")
+    opensees_batch_entries = case_entries
+    skipped_opensees_batch_cases: List[str] = []
+    if opensees_batch_mode:
         batch_case_entries = []
-        skipped_eigen_cases = []
-        for entry in case_entries:
+        for entry in opensees_batch_entries:
             if entry.get("uses_eigen", False):
-                skipped_eigen_cases.append(entry["name"])
+                skipped_opensees_batch_cases.append(entry["name"])
                 continue
             batch_case_entries.append(entry)
-        if skipped_eigen_cases:
+        if skipped_opensees_batch_cases:
             log(
-                "Batch mode: skipping eigen/modal cases: "
-                + ", ".join(sorted(skipped_eigen_cases))
+                "OpenSees batch mode: skipping eigen/modal cases: "
+                + ", ".join(sorted(skipped_opensees_batch_cases))
             )
-        case_entries = batch_case_entries
-        if not case_entries:
+        opensees_batch_entries = batch_case_entries
+        if not opensees_batch_entries and run_opensees and not run_strut:
             raise SystemExit(
-                "No non-eigen cases remain for batch mode. Use --no-batch to run eigen/modal cases."
+                "No non-eigen OpenSees cases remain for batch mode. Use --no-batch to run OpenSees eigen/modal cases."
             )
     case_entries_by_name = {entry["name"]: entry for entry in case_entries}
 
@@ -1957,115 +2352,30 @@ def main() -> None:
         batch_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         return batch_path
 
-    def _write_strut_batch_manifest(
-        entries: List[dict], output_root: Path, compute: bool
-    ) -> Path:
-        batch_entries = []
-        for entry in entries:
-            case_name = entry["name"]
-            batch_entry = {
-                "output": str(output_root / case_name),
-            }
-            if "input_pickle" in entry:
-                batch_entry["input_pickle"] = str(entry["input_pickle"])
-            else:
-                batch_entry["input"] = str(Path(entry["json"]))
-            if args.profile and not compute and profile_root is not None:
-                batch_entry["profile"] = str(
-                    profile_root / f"{case_name}.speedscope.json"
-                )
-            batch_entries.append(batch_entry)
-        batch = {"cases": batch_entries}
-        batch_path = (
-            results_root
-            / ".tmp"
-            / ("strut_batch_compute.json" if compute else "strut_batch.json")
-        )
-        batch_path.write_text(json.dumps(batch, indent=2) + "\n", encoding="utf-8")
-        return batch_path
-
-    def run_opensees_batch(
-        entries: List[dict], output_root: Path, compute: bool
-    ) -> None:
+    def run_opensees_batch(entries: List[dict], output_root: Path, compute: bool) -> bool:
         ensure_clean_dir(output_root)
         batch_script = _write_batch_tcl(entries, output_root, compute)
-        run(
-            [
-                str(repo_root / "scripts" / "run_opensees_wine.sh"),
-                "--script",
-                str(batch_script),
-                "--output",
-                str(output_root),
-            ],
-            env=env,
-            verbose=verbose,
-        )
-
-    def run_opensees_batch_repeated(
-        entries: List[dict], output_root: Path, compute: bool, repeat: int, warmup: int
-    ):
-        if not entries:
-            return [], {}, {}
-
-        pass_label = "compute-only" if compute else "total"
-        n = len(entries)
-        names = [entry["name"] for entry in entries]
-        analysis_by_case = {name: [] for name in names}
-        total_by_case = {name: [] for name in names}
-
-        for i in range(warmup):
-            log(f"OpenSees batch {pass_label} warmup {i + 1}/{warmup}...")
-            offset = i % n
-            rotated = entries[offset:] + entries[:offset]
-            run_opensees_batch(rotated, output_root, compute)
-
-        times = []
-        for i in range(repeat):
-            log(f"OpenSees batch {pass_label} repeat {i + 1}/{repeat}...")
-            offset = i % n
-            rotated = entries[offset:] + entries[:offset]
-            start = time.perf_counter()
-            run_opensees_batch(rotated, output_root, compute)
-            end = time.perf_counter()
-            times.append(end - start)
-
-            analysis_map = _load_case_metric(
-                output_root, entries, "analysis_time_us.txt"
-            )
-            total_map = _load_case_metric(output_root, entries, "case_time_us.txt")
-            for name in names:
-                analysis_us = analysis_map.get(name)
-                total_us = total_map.get(name)
-                if analysis_us is not None:
-                    analysis_by_case[name].append(analysis_us)
-                if total_us is not None:
-                    total_by_case[name].append(total_us)
-
-        return times, analysis_by_case, total_by_case
-
-    def run_strut_batch(entries: List[dict], output_root: Path, compute: bool) -> bool:
-        ensure_clean_dir(output_root)
-        if strut_solver is None:
-            raise SystemExit("Mojo solver not initialized.")
-        batch_manifest = _write_strut_batch_manifest(entries, output_root, compute)
         try:
-            cmd = [str(strut_solver), "--batch", str(batch_manifest)]
-            if compute:
-                cmd.append("--compute-only")
             run(
-                cmd,
+                [
+                    str(repo_root / "scripts" / "run_opensees_wine.sh"),
+                    "--script",
+                    str(batch_script),
+                    "--output",
+                    str(output_root),
+                ],
                 env=env,
                 verbose=verbose,
                 capture_on_error=True,
             )
         except subprocess.CalledProcessError as exc:
-            msg = f"strut batch aborted (exit {exc.returncode})"
+            message = _format_subprocess_failure("opensees batch aborted", exc)
             for entry in entries:
-                _write_case_error(output_root / entry["name"], msg)
+                _write_case_error(output_root / entry["name"], message)
             return False
         return True
 
-    def run_strut_batch_repeated(
+    def run_opensees_batch_repeated(
         entries: List[dict], output_root: Path, compute: bool, repeat: int, warmup: int
     ):
         if not entries:
@@ -2078,57 +2388,24 @@ def main() -> None:
         total_by_case = {name: [] for name in names}
         had_abort = False
 
-        def run_strut_case_fallback(entry: dict) -> None:
-            case_name = entry["name"]
-            target_dir = output_root / case_name
-            ensure_clean_dir(target_dir)
-            try:
-                cmd = [str(strut_solver)]
-                if "input_pickle" in entry:
-                    cmd += ["--input-pickle", str(entry["input_pickle"])]
-                else:
-                    cmd += ["--input", str(Path(entry["json"]))]
-                if compute:
-                    cmd.append("--compute-only")
-                cmd += ["--output", str(target_dir)]
-                if args.profile and not compute and profile_root is not None:
-                    cmd += [
-                        "--profile",
-                        str(profile_root / f"{case_name}.speedscope.json"),
-                    ]
-                run(
-                    cmd,
-                    env=env,
-                    verbose=verbose,
-                    capture_on_error=True,
-                )
-            except subprocess.CalledProcessError as exc:
-                _write_case_error(
-                    target_dir, f"strut case aborted (exit {exc.returncode})"
-                )
-
         for i in range(warmup):
-            log(f"Mojo batch {pass_label} warmup {i + 1}/{warmup}...")
+            log(f"OpenSees batch {pass_label} warmup {i + 1}/{warmup}...")
             offset = i % n
             rotated = entries[offset:] + entries[:offset]
-            ok = run_strut_batch(rotated, output_root, compute)
+            ok = run_opensees_batch(rotated, output_root, compute)
             if not ok:
                 had_abort = True
-                for entry in rotated:
-                    run_strut_case_fallback(entry)
 
         times = []
         for i in range(repeat):
-            log(f"Mojo batch {pass_label} repeat {i + 1}/{repeat}...")
+            log(f"OpenSees batch {pass_label} repeat {i + 1}/{repeat}...")
             offset = i % n
             rotated = entries[offset:] + entries[:offset]
             start = time.perf_counter()
-            ok = run_strut_batch(rotated, output_root, compute)
+            ok = run_opensees_batch(rotated, output_root, compute)
+            end = time.perf_counter()
             if not ok:
                 had_abort = True
-                for entry in rotated:
-                    run_strut_case_fallback(entry)
-            end = time.perf_counter()
             times.append(end - start)
 
             analysis_map = _load_case_metric(
@@ -2145,21 +2422,31 @@ def main() -> None:
 
         return times, analysis_by_case, total_by_case, had_abort
 
-    run_opensees_per_case = run_opensees and not batch_mode
-    run_strut_per_case = run_strut and not batch_mode
-    if run_opensees and batch_mode:
+    run_opensees_per_case = run_opensees and not opensees_batch_mode
+    run_strut_per_case = run_strut
+    if run_opensees and opensees_batch_mode and opensees_batch_entries:
         log("Running OpenSees in batch mode.")
-        opensees_times, batch_analysis_hist, batch_total_hist = (
+        (
+            opensees_times,
+            batch_analysis_hist,
+            batch_total_hist,
+            opensees_batch_had_abort,
+        ) = (
             run_opensees_batch_repeated(
-                case_entries,
+                opensees_batch_entries,
                 results_root / "opensees",
                 compute=False,
                 repeat=args.repeat,
                 warmup=args.warmup,
             )
         )
-        _normalize_opensees_output_root(case_entries, results_root / "opensees")
-        log_ok("OpenSees batch pass OK.")
+        _normalize_opensees_output_root(
+            opensees_batch_entries, results_root / "opensees"
+        )
+        if opensees_batch_had_abort:
+            log_err("OpenSees batch aborted for one or more cases.")
+        else:
+            log_ok("OpenSees batch pass OK.")
         batch_stats = {
             "times_s": opensees_times,
             "mean_s": mean(opensees_times),
@@ -2180,7 +2467,7 @@ def main() -> None:
                 "analysis_us": "",
             }
         )
-        for case_entry in case_entries:
+        for case_entry in opensees_batch_entries:
             case_name = case_entry["name"]
             analysis_hist = batch_analysis_hist.get(case_name, [])
             total_hist = batch_total_hist.get(case_name, [])
@@ -2225,15 +2512,24 @@ def main() -> None:
                 }
             )
         if not args.skip_compute_only:
-            opensees_compute = run_engine(
-                lambda out, last_run: run_opensees_batch(
-                    case_entries, out, compute=True
-                ),
+            (
+                opensees_compute,
+                _,
+                _,
+                opensees_compute_had_abort,
+            ) = run_opensees_batch_repeated(
+                opensees_batch_entries,
                 results_root / "opensees_compute",
-                args.repeat,
-                args.warmup,
+                compute=True,
+                repeat=args.repeat,
+                warmup=args.warmup,
             )
-            log_ok("OpenSees batch compute-only pass OK.")
+            if opensees_compute_had_abort:
+                log_err(
+                    "OpenSees batch compute-only aborted for one or more cases."
+                )
+            else:
+                log_ok("OpenSees batch compute-only pass OK.")
             compute_stats = {
                 "times_s": opensees_compute,
                 "mean_s": mean(opensees_compute),
@@ -2245,127 +2541,6 @@ def main() -> None:
                     "case": "opensees_batch",
                     "dofs": "",
                     "engine": "opensees",
-                    "mode": "compute_only_batch",
-                    "repeat": args.repeat,
-                    "warmup": args.warmup,
-                    "mean_s": f"{compute_stats['mean_s']:.6f}",
-                    "median_s": f"{compute_stats['median_s']:.6f}",
-                    "min_s": f"{compute_stats['min_s']:.6f}",
-                    "analysis_us": "",
-                }
-            )
-
-    if run_strut and batch_mode:
-        log("Running Mojo in batch mode.")
-        strut_times, batch_analysis_hist, batch_total_hist, strut_batch_had_abort = (
-            run_strut_batch_repeated(
-                case_entries,
-                results_root / "strut",
-                compute=False,
-                repeat=args.repeat,
-                warmup=args.warmup,
-            )
-        )
-        if strut_batch_had_abort:
-            log_err("Mojo batch aborted for one or more cases; used per-case fallback.")
-        else:
-            log_ok("Mojo batch pass OK.")
-        batch_stats = {
-            "times_s": strut_times,
-            "mean_s": mean(strut_times),
-            "median_s": median(strut_times),
-            "min_s": min(strut_times),
-        }
-        csv_rows.append(
-            {
-                "case": "strut_batch",
-                "dofs": "",
-                "engine": "strut",
-                "mode": "total_batch",
-                "repeat": args.repeat,
-                "warmup": args.warmup,
-                "mean_s": f"{batch_stats['mean_s']:.6f}",
-                "median_s": f"{batch_stats['median_s']:.6f}",
-                "min_s": f"{batch_stats['min_s']:.6f}",
-                "analysis_us": "",
-            }
-        )
-        for case_entry in case_entries:
-            case_name = case_entry["name"]
-            analysis_hist = batch_analysis_hist.get(case_name, [])
-            total_hist = batch_total_hist.get(case_name, [])
-            analysis_mean = int(mean(analysis_hist)) if analysis_hist else None
-            total_mean = int(mean(total_hist)) if total_hist else None
-            analysis_median = int(median(analysis_hist)) if analysis_hist else None
-            total_median = int(median(total_hist)) if total_hist else None
-            analysis_us = analysis_median
-            total_us = total_median
-            total_s = [value / 1e6 for value in total_hist]
-            stats = {
-                "times_s": total_s,
-                "mean_s": mean(total_s) if total_s else None,
-                "median_s": median(total_s) if total_s else None,
-                "min_s": min(total_s) if total_s else None,
-                "analysis_us": analysis_us,
-            }
-            case_entry["strut"] = stats
-            batch_entry = case_entry.setdefault("strut_batch", {})
-            batch_entry["analysis_us"] = analysis_us
-            batch_entry["total_us"] = total_us
-            batch_entry["analysis_mean_us"] = analysis_mean
-            batch_entry["total_mean_us"] = total_mean
-            batch_entry["analysis_median_us"] = analysis_median
-            batch_entry["total_median_us"] = total_median
-            batch_entry["repeats"] = len(analysis_hist)
-            csv_rows.append(
-                {
-                    "case": case_name,
-                    "dofs": case_entry.get("dofs", ""),
-                    "engine": "strut",
-                    "mode": "total_batch_case",
-                    "repeat": "",
-                    "warmup": "",
-                    "mean_s": (
-                        f"{(total_us or 0) / 1e6:.6f}" if total_us is not None else ""
-                    ),
-                    "median_s": (
-                        f"{(total_median or 0) / 1e6:.6f}"
-                        if total_median is not None
-                        else ""
-                    ),
-                    "min_s": (
-                        f"{(min(total_hist) if total_hist else 0) / 1e6:.6f}"
-                        if total_hist
-                        else ""
-                    ),
-                    "analysis_us": analysis_us,
-                }
-            )
-        if not args.skip_compute_only:
-            strut_compute, _, _, strut_compute_had_abort = run_strut_batch_repeated(
-                case_entries,
-                results_root / "strut_compute",
-                compute=True,
-                repeat=args.repeat,
-                warmup=args.warmup,
-            )
-            if strut_compute_had_abort:
-                log_err(
-                    "Mojo batch compute-only aborted for one or more cases; used per-case fallback."
-                )
-            else:
-                log_ok("Mojo batch compute-only pass OK.")
-            compute_stats = {
-                "times_s": strut_compute,
-                "mean_s": mean(strut_compute),
-                "median_s": median(strut_compute),
-                "min_s": min(strut_compute),
-            }
-            csv_rows.append(
-                {
-                    "case": "strut_batch",
-                    "dofs": "",
-                    "engine": "strut",
                     "mode": "compute_only_batch",
                     "repeat": args.repeat,
                     "warmup": args.warmup,
@@ -2398,6 +2573,7 @@ def main() -> None:
                 ],
                 env=env,
                 verbose=verbose,
+                capture_on_error=True,
             )
             if not last_run:
                 shutil.rmtree(target_dir, ignore_errors=True)
@@ -2421,6 +2597,7 @@ def main() -> None:
                 ],
                 env=env,
                 verbose=verbose,
+                capture_on_error=True,
             )
             if not last_run:
                 shutil.rmtree(target_dir, ignore_errors=True)
@@ -2478,81 +2655,103 @@ def main() -> None:
 
         if run_opensees_per_case:
             log(f"[{case_name}] OpenSees total pass...")
-            opensees_times = run_engine(
-                lambda out, last_run: opensees_cmd(out / case_name, last_run),
-                results_root / "opensees",
-                args.repeat,
-                args.warmup,
-            )
-            _normalize_opensees_benchmark_outputs(
-                case_entry["case_data"], results_root / "opensees" / case_name
-            )
-            log_ok(f"[{case_name}] OpenSees total pass OK.")
-            stats = {
-                "times_s": opensees_times,
-                "mean_s": mean(opensees_times),
-                "median_s": median(opensees_times),
-                "min_s": min(opensees_times),
-            }
-            case_entry["opensees"] = stats
-            analysis_file = (
-                results_root / "opensees" / case_name / "analysis_time_us.txt"
-            )
-            if analysis_file.exists():
-                try:
-                    case_entry["opensees"]["analysis_us"] = int(
-                        analysis_file.read_text().strip()
-                    )
-                except ValueError:
-                    case_entry["opensees"]["analysis_us"] = None
-            else:
-                case_entry["opensees"]["analysis_us"] = None
-            csv_rows.append(
-                {
-                    "case": case_name,
-                    "dofs": case_entry.get("dofs", ""),
-                    "engine": "opensees",
-                    "mode": "total",
-                    "repeat": args.repeat,
-                    "warmup": args.warmup,
-                    "mean_s": f"{stats['mean_s']:.6f}",
-                    "median_s": f"{stats['median_s']:.6f}",
-                    "min_s": f"{stats['min_s']:.6f}",
-                    "analysis_us": case_entry["opensees"]["analysis_us"],
-                }
-            )
-            if not args.skip_compute_only:
-                log(f"[{case_name}] OpenSees compute-only pass...")
-                opensees_compute = run_engine(
-                    lambda out, last_run: opensees_compute_cmd(
-                        out / case_name, last_run
-                    ),
-                    results_root / "opensees_compute",
+            try:
+                opensees_times = run_engine(
+                    lambda out, last_run: opensees_cmd(out / case_name, last_run),
+                    results_root / "opensees",
                     args.repeat,
                     args.warmup,
                 )
-                log_ok(f"[{case_name}] OpenSees compute-only pass OK.")
-                compute_stats = {
-                    "times_s": opensees_compute,
-                    "mean_s": mean(opensees_compute),
-                    "median_s": median(opensees_compute),
-                    "min_s": min(opensees_compute),
+            except subprocess.CalledProcessError as exc:
+                _write_case_error(
+                    results_root / "opensees" / case_name,
+                    _format_subprocess_failure("opensees total pass aborted", exc),
+                )
+                log_err(
+                    f"[{case_name}] OpenSees total pass aborted (exit {exc.returncode})."
+                )
+            else:
+                _normalize_opensees_benchmark_outputs(
+                    case_entry["case_data"], results_root / "opensees" / case_name
+                )
+                log_ok(f"[{case_name}] OpenSees total pass OK.")
+                stats = {
+                    "times_s": opensees_times,
+                    "mean_s": mean(opensees_times),
+                    "median_s": median(opensees_times),
+                    "min_s": min(opensees_times),
                 }
-                case_entry["opensees_compute_only"] = compute_stats
+                case_entry["opensees"] = stats
+                analysis_file = (
+                    results_root / "opensees" / case_name / "analysis_time_us.txt"
+                )
+                if analysis_file.exists():
+                    try:
+                        case_entry["opensees"]["analysis_us"] = int(
+                            analysis_file.read_text().strip()
+                        )
+                    except ValueError:
+                        case_entry["opensees"]["analysis_us"] = None
+                else:
+                    case_entry["opensees"]["analysis_us"] = None
                 csv_rows.append(
                     {
                         "case": case_name,
                         "dofs": case_entry.get("dofs", ""),
                         "engine": "opensees",
-                        "mode": "compute_only",
+                        "mode": "total",
                         "repeat": args.repeat,
                         "warmup": args.warmup,
-                        "mean_s": f"{compute_stats['mean_s']:.6f}",
-                        "median_s": f"{compute_stats['median_s']:.6f}",
-                        "min_s": f"{compute_stats['min_s']:.6f}",
-                        "analysis_us": "",
+                        "mean_s": f"{stats['mean_s']:.6f}",
+                        "median_s": f"{stats['median_s']:.6f}",
+                        "min_s": f"{stats['min_s']:.6f}",
+                        "analysis_us": case_entry["opensees"]["analysis_us"],
                     }
                 )
+            if not args.skip_compute_only:
+                log(f"[{case_name}] OpenSees compute-only pass...")
+                try:
+                    opensees_compute = run_engine(
+                        lambda out, last_run: opensees_compute_cmd(
+                            out / case_name, last_run
+                        ),
+                        results_root / "opensees_compute",
+                        args.repeat,
+                        args.warmup,
+                    )
+                except subprocess.CalledProcessError as exc:
+                    _write_case_error(
+                        results_root / "opensees_compute" / case_name,
+                        _format_subprocess_failure(
+                            "opensees compute-only pass aborted", exc
+                        ),
+                    )
+                    log_err(
+                        f"[{case_name}] OpenSees compute-only pass aborted (exit {exc.returncode})."
+                    )
+                else:
+                    log_ok(f"[{case_name}] OpenSees compute-only pass OK.")
+                    compute_stats = {
+                        "times_s": opensees_compute,
+                        "mean_s": mean(opensees_compute),
+                        "median_s": median(opensees_compute),
+                        "min_s": min(opensees_compute),
+                    }
+                    case_entry["opensees_compute_only"] = compute_stats
+                    csv_rows.append(
+                        {
+                            "case": case_name,
+                            "dofs": case_entry.get("dofs", ""),
+                            "engine": "opensees",
+                            "mode": "compute_only",
+                            "repeat": args.repeat,
+                            "warmup": args.warmup,
+                            "mean_s": f"{compute_stats['mean_s']:.6f}",
+                            "median_s": f"{compute_stats['median_s']:.6f}",
+                            "min_s": f"{compute_stats['min_s']:.6f}",
+                            "analysis_us": "",
+                        }
+                    )
 
         if run_strut_per_case:
             log(f"[{case_name}] Mojo total pass...")
@@ -2566,7 +2765,7 @@ def main() -> None:
             except subprocess.CalledProcessError as exc:
                 _write_case_error(
                     results_root / "strut" / case_name,
-                    f"strut total pass aborted (exit {exc.returncode})",
+                    _format_subprocess_failure("strut total pass aborted", exc),
                 )
                 log_err(
                     f"[{case_name}] Mojo total pass aborted (exit {exc.returncode})."
@@ -2612,7 +2811,9 @@ def main() -> None:
                 except subprocess.CalledProcessError as exc:
                     _write_case_error(
                         results_root / "strut_compute" / case_name,
-                        f"strut compute-only pass aborted (exit {exc.returncode})",
+                        _format_subprocess_failure(
+                            "strut compute-only pass aborted", exc
+                        ),
                     )
                     log_err(
                         f"[{case_name}] Mojo compute-only pass aborted (exit {exc.returncode})."
@@ -2648,7 +2849,12 @@ def main() -> None:
                         }
                     )
 
-        if run_opensees and run_strut:
+        if (
+            run_opensees
+            and run_strut
+            and "opensees" in case_entry
+            and "strut" in case_entry
+        ):
             case_data = case_entry["case_data"]
             case_parity_failures: List[str] = []
             recorders = case_data.get("recorders", [])
@@ -3250,9 +3456,19 @@ def main() -> None:
     print(f"Wrote {phase_summary_csv}")
     print(f"Wrote {phase_rollup_csv}")
     print(f"Wrote {plots_pdf}")
-    if parity_failures:
-        log_err("PARITY FAILED")
-        for failure in _summarize_parity_failures(parity_failures):
+    runtime_failures = setup_failures + _read_runtime_failures(
+        case_entries,
+        results_root,
+        run_opensees=run_opensees,
+        run_strut=run_strut,
+        include_compute_only=not args.skip_compute_only,
+    )
+    case_file_map = {entry["name"]: str(entry.get("case_file", "")) for entry in case_entries}
+    if runtime_failures or parity_failures:
+        log_err("BENCHMARK FAILED")
+        for failure in _summarize_benchmark_failures(
+            runtime_failures, parity_failures, case_file_map=case_file_map
+        ):
             log_err(failure)
         raise SystemExit(1)
     log_ok("PARITY OK")

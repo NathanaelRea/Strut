@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import pickle
+import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -26,14 +27,13 @@ def _load_run_benchmarks_module():
 run_benchmarks = _load_run_benchmarks_module()
 
 
-def _write_case(path: Path, enabled=True, status="active") -> None:
+def _write_case(path: Path, enabled=True) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps(
             {
                 "schema_version": "1.0",
                 "enabled": enabled,
-                "status": status,
                 "model": {"ndm": 2, "ndf": 3},
                 "nodes": [],
                 "elements": [],
@@ -49,7 +49,6 @@ def _write_direct_tcl_case(
     path: Path,
     entry_tcl: Path,
     enabled=True,
-    status="active",
     benchmark_size=None,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -57,7 +56,6 @@ def _write_direct_tcl_case(
         "name": path.parent.name,
         "entry_tcl": str(entry_tcl.resolve()),
         "enabled": enabled,
-        "status": status,
     }
     if benchmark_size is not None:
         payload["benchmark_size"] = benchmark_size
@@ -68,9 +66,9 @@ def test_load_case_enabled_uses_enabled_flag_only(tmp_path: Path):
     bench_case = tmp_path / "bench.json"
     normal_disabled_case = tmp_path / "disabled.json"
     enabled_bench_case = tmp_path / "enabled_bench.json"
-    _write_case(bench_case, enabled=False, status="benchmark")
-    _write_case(normal_disabled_case, enabled=False, status="active")
-    _write_case(enabled_bench_case, enabled=True, status="benchmark")
+    _write_case(bench_case, enabled=False)
+    _write_case(normal_disabled_case, enabled=False)
+    _write_case(enabled_bench_case, enabled=True)
 
     assert run_benchmarks.load_case_enabled(bench_case) is False
     assert run_benchmarks.load_case_enabled(normal_disabled_case) is False
@@ -84,17 +82,14 @@ def test_discover_default_cases_includes_all_cases_before_enabled_filter(
     _write_case(
         validation_root / "elastic_enabled_case" / "elastic_enabled_case.json",
         enabled=True,
-        status="active",
     )
     _write_case(
         validation_root / "bench_case" / "bench_case.json",
         enabled=False,
-        status="benchmark",
     )
     _write_case(
         validation_root / "disabled_case" / "disabled_case.json",
         enabled=False,
-        status="active",
     )
 
     monkeypatch.delenv("STRUT_RUN_ALL_CASES", raising=False)
@@ -113,7 +108,6 @@ def test_discover_default_cases_includes_enabled_direct_tcl_case(tmp_path: Path)
         validation_root / "opensees_example_2d_elastic_cantileaver_column" / "direct_tcl_case.json",
         entry_tcl=entry_tcl,
         enabled=True,
-        status="active",
     )
 
     cases = run_benchmarks.discover_default_cases(validation_root)
@@ -159,17 +153,14 @@ def test_discover_all_cases_includes_disabled_cases(tmp_path: Path):
     _write_case(
         validation_root / "enabled_case" / "enabled_case.json",
         enabled=True,
-        status="active",
     )
     _write_case(
         validation_root / "disabled_case" / "disabled_case.json",
         enabled=False,
-        status="active",
     )
     _write_case(
         validation_root / "bench_case" / "bench_case.json",
         enabled=False,
-        status="benchmark",
     )
 
     case_names = [
@@ -187,7 +178,6 @@ def test_discover_all_cases_includes_direct_tcl_cases(tmp_path: Path):
         validation_root / "direct_case" / "direct_tcl_case.json",
         entry_tcl=entry_tcl,
         enabled=False,
-        status="active",
     )
 
     cases = run_benchmarks.discover_all_cases(validation_root)
@@ -241,6 +231,92 @@ def test_write_solver_input_pickle_round_trips(tmp_path: Path):
     assert pickle.loads(out_path.read_bytes()) == payload
 
 
+def test_default_strut_solver_path_switches_with_profile_flag(tmp_path: Path):
+    assert run_benchmarks.default_strut_solver_path(tmp_path, profile=False) == (
+        tmp_path / "build" / "strut" / "strut"
+    )
+    assert run_benchmarks.default_strut_solver_path(tmp_path, profile=True) == (
+        tmp_path / "build" / "strut" / "strut_profile"
+    )
+
+
+def test_ensure_strut_solver_builds_profile_binary_without_overwriting_default(
+    monkeypatch, tmp_path: Path
+):
+    calls = []
+
+    def fake_run(cmd, env=None, verbose=False):
+        calls.append((cmd, dict(env) if env is not None else None, verbose))
+
+    monkeypatch.setattr(run_benchmarks.shutil, "which", lambda name: "/usr/bin/uv")
+    monkeypatch.setattr(run_benchmarks, "run", fake_run)
+    monkeypatch.setattr(run_benchmarks, "log", lambda *args, **kwargs: None)
+    monkeypatch.delenv("STRUT_MOJO_BIN", raising=False)
+
+    solver_path = run_benchmarks.ensure_strut_solver(
+        tmp_path, verbose=True, profile=True
+    )
+
+    assert solver_path == tmp_path / "build" / "strut" / "strut_profile"
+    assert calls[0][0] == [str(tmp_path / "scripts" / "build_mojo_solver.sh")]
+    assert calls[0][1] is not None
+    assert calls[0][1]["STRUT_PROFILE"] == "1"
+    assert calls[0][2] is True
+
+
+def test_direct_tcl_raw_output_paths_collects_unique_recorder_outputs():
+    case_data = {
+        "recorders": [
+            {"raw_path": "Data/Disp.out", "parity": True},
+            {"raw_path": "example.out"},
+            {"raw_path": "example.out"},
+            {"raw_path": "skip.out", "parity": False},
+        ]
+    }
+
+    assert run_benchmarks._direct_tcl_raw_output_paths(case_data) == [
+        "Data/Disp.out",
+        "example.out",
+    ]
+
+
+def test_write_direct_tcl_wrapper_copies_non_data_raw_outputs(tmp_path: Path):
+    wrapper_path = tmp_path / "wrapper.tcl"
+
+    run_benchmarks._write_direct_tcl_wrapper(
+        original_script_name="case.tcl",
+        wrapper_path=wrapper_path,
+        compute_only=False,
+        raw_output_paths=["Data/Disp.out", "example.out", "nested/out.dat"],
+    )
+
+    wrapper = wrapper_path.read_text(encoding="utf-8")
+
+    assert 'file copy -force {Data/Disp.out} [file join $__strut_out_dir {Data/Disp.out}]' in wrapper
+    assert 'file copy -force {example.out} [file join $__strut_out_dir {example.out}]' in wrapper
+    assert 'file copy -force {nested/out.dat} [file join $__strut_out_dir {nested/out.dat}]' in wrapper
+
+
+def test_write_direct_tcl_wrapper_compute_only_noops_display_commands(tmp_path: Path):
+    wrapper_path = tmp_path / "wrapper_compute.tcl"
+
+    run_benchmarks._write_direct_tcl_wrapper(
+        original_script_name="case.tcl",
+        wrapper_path=wrapper_path,
+        compute_only=True,
+        raw_output_paths=[],
+    )
+
+    wrapper = wrapper_path.read_text(encoding="utf-8")
+
+    assert "rename exit __strut_orig_exit" in wrapper
+    assert "proc exit args { return {} }" in wrapper
+    assert "rename quit __strut_orig_quit" in wrapper
+    assert "proc quit args { return {} }" in wrapper
+    assert "foreach __strut_display_cmd {prp vup vpn viewWindow display} {" in wrapper
+    assert 'proc $__strut_display_cmd args { return {} }' in wrapper
+
+
 def test_ensure_direct_tcl_case_artifacts_creates_canonical_reference(
     monkeypatch, tmp_path: Path
 ):
@@ -284,7 +360,12 @@ def test_ensure_direct_tcl_case_artifacts_creates_canonical_reference(
 
     def fake_run(cmd, env=None, verbose=False, capture_on_error=False):
         calls.append(cmd)
-        if "run_opensees_wine.sh" in cmd[0]:
+        if "json_to_tcl.py" in str(cmd[3]):
+            Path(cmd[-1]).write_text(
+                "recorder Node -file Data/Disp.out -time -node 1 disp\n",
+                encoding="utf-8",
+            )
+        elif "run_opensees_wine.sh" in cmd[0]:
             out_dir = Path(cmd[-1])
             out_dir.mkdir(parents=True, exist_ok=True)
             (out_dir / "Data").mkdir(parents=True, exist_ok=True)
@@ -305,8 +386,14 @@ def test_ensure_direct_tcl_case_artifacts_creates_canonical_reference(
     assert (case_root / "reference" / "disp_node1.out").read_text(encoding="utf-8") == (
         "1.0\n2.0\n"
     )
-    assert len(calls) == 1
-    assert "run_opensees_wine.sh" in calls[0][0]
+    assert (case_root / "reference-original" / "disp_node1.out").read_text(
+        encoding="utf-8"
+    ) == "1.0\n2.0\n"
+    assert (case_root / ".parser-check").read_text(encoding="utf-8") == "ok\n"
+    assert len(calls) == 3
+    assert "json_to_tcl.py" in str(calls[0][3])
+    assert "run_opensees_wine.sh" in calls[1][0]
+    assert "run_opensees_wine.sh" in calls[2][0]
 
 
 def test_ensure_direct_tcl_case_artifacts_reuses_existing_canonical_reference(
@@ -319,8 +406,14 @@ def test_ensure_direct_tcl_case_artifacts_reuses_existing_canonical_reference(
     entry_tcl.parent.mkdir(parents=True, exist_ok=True)
     entry_tcl.write_text("puts ok\n", encoding="utf-8")
     _write_direct_tcl_case(manifest, entry_tcl=entry_tcl)
+    (case_root / "generated").mkdir(parents=True, exist_ok=True)
+    (case_root / "generated" / "model.tcl").write_text("puts generated\n", encoding="utf-8")
+    (case_root / "generated" / "case.json").write_text("{}", encoding="utf-8")
+    (case_root / "reference-original").mkdir(parents=True, exist_ok=True)
+    (case_root / "reference-original" / "disp_node1.out").write_text("1.0\n", encoding="utf-8")
     (case_root / "reference").mkdir(parents=True, exist_ok=True)
     (case_root / "reference" / "disp_node1.out").write_text("1.0\n", encoding="utf-8")
+    (case_root / ".parser-check").write_text("ok\n", encoding="utf-8")
     case = run_benchmarks._direct_tcl_case_spec(manifest)
 
     calls = []
@@ -358,7 +451,57 @@ def test_ensure_direct_tcl_case_artifacts_reuses_existing_canonical_reference(
     )
 
     assert case_data["recorders"][0]["output"] == "disp"
-    assert calls == []
+    assert len(calls) == 1
+    assert "json_to_tcl.py" in str(calls[0][3])
+
+
+def test_ensure_direct_tcl_case_artifacts_falls_back_when_generated_tcl_fails(
+    monkeypatch, tmp_path: Path
+):
+    repo_root = tmp_path / "repo"
+    case_root = repo_root / "tests" / "validation" / "direct_case"
+    manifest = case_root / "direct_tcl_case.json"
+    entry_tcl = tmp_path / "examples" / "case.tcl"
+    entry_tcl.parent.mkdir(parents=True, exist_ok=True)
+    entry_tcl.write_text("puts ok\n", encoding="utf-8")
+    _write_direct_tcl_case(manifest, entry_tcl=entry_tcl)
+    case = run_benchmarks._direct_tcl_case_spec(manifest)
+
+    calls = []
+    monkeypatch.setitem(
+        sys.modules,
+        "tcl_to_strut",
+        SimpleNamespace(
+            convert_tcl_to_solver_input=lambda entry, repo_root, compute_only=False: {
+                "schema_version": "1.0",
+                "metadata": {"name": "generated", "units": "unknown"},
+                "model": {"ndm": 2, "ndf": 3},
+                "nodes": [],
+                "elements": [],
+                "recorders": [],
+            }
+        ),
+    )
+
+    def fake_run(cmd, env=None, verbose=False, capture_on_error=False):
+        calls.append(cmd)
+        if "json_to_tcl.py" in str(cmd[3]):
+            raise subprocess.CalledProcessError(1, cmd)
+
+    monkeypatch.setattr(run_benchmarks, "run", fake_run)
+
+    case_data = run_benchmarks._ensure_direct_tcl_case_artifacts(
+        case,
+        repo_root=repo_root,
+        env={},
+        verbose=False,
+    )
+
+    assert case_data["metadata"]["name"] == "generated"
+    assert (case_root / "generated" / "case.json").exists()
+    assert not (case_root / ".parser-check").exists()
+    assert len(calls) == 1
+    assert "json_to_tcl.py" in str(calls[0][3])
 
 
 def test_filter_cases_by_enabled_counts_disabled_and_skipped(tmp_path: Path):
@@ -368,9 +511,9 @@ def test_filter_cases_by_enabled_counts_disabled_and_skipped(tmp_path: Path):
         validation_root / "benchmark_disabled" / "benchmark_disabled.json"
     )
     disabled_case = validation_root / "disabled_case" / "disabled_case.json"
-    _write_case(enabled_case, enabled=True, status="active")
-    _write_case(benchmark_disabled_case, enabled=False, status="benchmark")
-    _write_case(disabled_case, enabled=False, status="active")
+    _write_case(enabled_case, enabled=True)
+    _write_case(benchmark_disabled_case, enabled=False)
+    _write_case(disabled_case, enabled=False)
 
     case_specs = [
         run_benchmarks.CaseSpec(name="enabled_case", json_path=enabled_case),
@@ -393,8 +536,8 @@ def test_filter_cases_by_enabled_include_disabled_keeps_all_cases(tmp_path: Path
     validation_root = tmp_path / "validation"
     enabled_case = validation_root / "enabled_case" / "enabled_case.json"
     disabled_case = validation_root / "disabled_case" / "disabled_case.json"
-    _write_case(enabled_case, enabled=True, status="active")
-    _write_case(disabled_case, enabled=False, status="active")
+    _write_case(enabled_case, enabled=True)
+    _write_case(disabled_case, enabled=False)
 
     case_specs = [
         run_benchmarks.CaseSpec(name="enabled_case", json_path=enabled_case),
@@ -561,6 +704,107 @@ def test_normalize_opensees_benchmark_outputs_writes_parity_filenames(tmp_path: 
     assert (output_dir / "disp_node1.out").read_text(encoding="utf-8") == "1.0\n2.0\n"
 
 
+def test_normalize_reference_outputs_splits_envelope_group_layout_with_time_pairs(
+    tmp_path: Path,
+):
+    reference_dir = tmp_path / "reference"
+    reference_dir.mkdir(parents=True, exist_ok=True)
+    (reference_dir / "ele32.out").write_text(
+        "\n".join(
+            [
+                "7.0 -1 7.0 2 1.0 3 1.0 4 1.0 5 1.0 6 7.0 -7 1.0 8 1.0 9 1.0 10 7.0 11 1.0 12",
+                "1.0 -13 1.0 14 7.0 15 7.0 16 7.0 17 7.0 18 1.0 -19 7.0 20 7.0 21 7.0 22 1.0 23 7.0 24",
+                "7.0 -25 1.0 26 7.0 27 7.0 28 1.0 29 7.0 30 7.0 -31 7.0 32 7.0 33 7.0 34 7.0 35 7.0 36",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    case_data = {
+        "recorders": [
+            {
+                "type": "envelope_element_force",
+                "elements": [1],
+                "output": "env",
+                "raw_path": "ele32.out",
+                "include_time": True,
+                "group_layout": {
+                    "type": "envelope_element_force",
+                    "elements": [1, 2],
+                    "values_per_element": [6, 6],
+                },
+            },
+            {
+                "type": "envelope_element_force",
+                "elements": [2],
+                "output": "env",
+                "raw_path": "ele32.out",
+                "include_time": True,
+                "group_layout": {
+                    "type": "envelope_element_force",
+                    "elements": [1, 2],
+                    "values_per_element": [6, 6],
+                },
+            },
+        ]
+    }
+
+    run_benchmarks._normalize_reference_outputs(case_data, reference_dir)
+
+    assert (reference_dir / "env_ele1.out").read_text(encoding="utf-8") == (
+        "-1 2 3 4 5 6 -13 14 15 16 17 18 -25 26 27 28 29 30\n"
+    )
+    assert (reference_dir / "env_ele2.out").read_text(encoding="utf-8") == (
+        "-7 8 9 10 11 12 -19 20 21 22 23 24 -31 32 33 34 35 36\n"
+    )
+
+
+def test_normalize_reference_outputs_preserves_existing_grouped_targets_on_mismatch(
+    tmp_path: Path,
+):
+    reference_dir = tmp_path / "reference"
+    reference_dir.mkdir(parents=True, exist_ok=True)
+    (reference_dir / "ele32.out").write_text(
+        "7.0 -1 7.0 2 1.0 3 1.0 4 1.0 5 1.0 6 7.0 -7 1.0 8 1.0 9 1.0 10 7.0 11 1.0\n",
+        encoding="utf-8",
+    )
+    (reference_dir / "env_ele1.out").write_text("keep1\n", encoding="utf-8")
+    (reference_dir / "env_ele2.out").write_text("keep2\n", encoding="utf-8")
+    case_data = {
+        "recorders": [
+            {
+                "type": "envelope_element_force",
+                "elements": [1],
+                "output": "env",
+                "raw_path": "ele32.out",
+                "include_time": True,
+                "group_layout": {
+                    "type": "envelope_element_force",
+                    "elements": [1, 2],
+                    "values_per_element": [6, 6],
+                },
+            },
+            {
+                "type": "envelope_element_force",
+                "elements": [2],
+                "output": "env",
+                "raw_path": "ele32.out",
+                "include_time": True,
+                "group_layout": {
+                    "type": "envelope_element_force",
+                    "elements": [1, 2],
+                    "values_per_element": [6, 6],
+                },
+            },
+        ]
+    }
+
+    run_benchmarks._normalize_reference_outputs(case_data, reference_dir)
+
+    assert (reference_dir / "env_ele1.out").read_text(encoding="utf-8") == "keep1\n"
+    assert (reference_dir / "env_ele2.out").read_text(encoding="utf-8") == "keep2\n"
+
+
 def test_compare_mode_shape_vectors_tolerates_sign_flip():
     ok, errors = run_benchmarks._compare_mode_shape_vectors([1.0, 2.0], [-2.0, -4.0])
     assert ok is True
@@ -623,6 +867,69 @@ def test_summarize_parity_failures_reports_all_missing_strut_outputs():
     assert summary == [
         "Error: frame_case",
         "Missing all Mojo Outputs",
+    ]
+
+
+def test_summarize_benchmark_failures_includes_runtime_context():
+    runtime_failures = [
+        run_benchmarks.RuntimeFailure(
+            case_name="beam_case",
+            case_file="/tmp/cases/beam_case.json",
+            engine="opensees",
+            phase="total",
+            detail="opensees total pass aborted (exit 1); stderr=bad recorder",
+            error_file="/tmp/results/opensees/beam_case/case_error.txt",
+        )
+    ]
+    parity_failures = [
+        "beam_case: node 1 mismatch at step 4",
+        "  dof 1: ref=1.000000e+00 got=2.000000e+00 abs=1.000e+00 rel=1.000e+00",
+    ]
+
+    summary = run_benchmarks._summarize_benchmark_failures(
+        runtime_failures, parity_failures
+    )
+
+    assert summary[0] == "FAILED beam_case"
+    assert summary[1] == "  Case File: /tmp/cases/beam_case.json"
+    assert (
+        '  Runtime Failures: ["opensees total: opensees total pass aborted (exit 1); stderr=bad recorder '
+        '[error_file=/tmp/results/opensees/beam_case/case_error.txt]"]'
+        in summary
+    )
+    assert (
+        '  Node Mismatch: ["node 1 mismatch at step 4", "dof 1: ref=1.000000e+00 got=2.000000e+00 abs=1.000e+00 rel=1.000e+00"]'
+        in summary
+    )
+
+
+def test_read_runtime_failures_collects_case_error_files(tmp_path: Path):
+    case_dir = tmp_path / "results" / "opensees" / "beam_case"
+    case_dir.mkdir(parents=True, exist_ok=True)
+    (case_dir / "case_error.txt").write_text(
+        "opensees total pass aborted (exit 1)\ncmd=run\nstderr=bad\n",
+        encoding="utf-8",
+    )
+
+    failures = run_benchmarks._read_runtime_failures(
+        case_entries=[
+            {"name": "beam_case", "case_file": "/tmp/cases/beam_case.json"},
+        ],
+        results_root=tmp_path / "results",
+        run_opensees=True,
+        run_strut=False,
+        include_compute_only=False,
+    )
+
+    assert failures == [
+        run_benchmarks.RuntimeFailure(
+            case_name="beam_case",
+            case_file="/tmp/cases/beam_case.json",
+            engine="opensees",
+            phase="total",
+            detail="opensees total pass aborted (exit 1) | cmd=run | stderr=bad",
+            error_file=str(case_dir / "case_error.txt"),
+        )
     ]
 
 
@@ -721,6 +1028,54 @@ def test_write_benchmark_plots_calls_plot_helper(monkeypatch, tmp_path: Path):
             "output_path": plots_pdf,
         }
     ]
+
+
+@pytest.mark.parametrize(
+    ("engine", "no_batch", "expected_batch", "expected_opensees_batch"),
+    [
+        ("strut", False, False, False),
+        ("both", False, True, True),
+        ("opensees", True, False, False),
+    ],
+)
+def test_collect_run_metadata_tracks_batch_mode_per_engine(
+    monkeypatch,
+    tmp_path: Path,
+    engine: str,
+    no_batch: bool,
+    expected_batch: bool,
+    expected_opensees_batch: bool,
+):
+    monkeypatch.setattr(run_benchmarks, "git_rev", lambda repo_root: "deadbeef")
+    monkeypatch.setattr(run_benchmarks, "_git_branch", lambda repo_root: "main")
+    monkeypatch.setattr(run_benchmarks, "_read_cpu_model", lambda: "cpu")
+    monkeypatch.setattr(
+        run_benchmarks,
+        "_safe_check_output",
+        lambda cmd, cwd=None: "stubbed",
+    )
+
+    args = SimpleNamespace(
+        benchmark_suite=None,
+        engine=engine,
+        no_batch=no_batch,
+        repeat=2,
+        warmup=1,
+        profile=None,
+    )
+
+    metadata = run_benchmarks.collect_run_metadata(
+        repo_root=tmp_path,
+        args=args,
+        results_root=tmp_path / "results",
+        profile_root=None,
+        strut_solver=tmp_path / "strut",
+    )
+
+    runner = metadata["runner"]
+    assert runner["batch_mode"] is expected_batch
+    assert runner["opensees_batch_mode"] is expected_opensees_batch
+    assert runner["strut_batch_mode"] is False
 
 
 def test_finalize_benchmark_outputs_skips_archive_when_disabled(

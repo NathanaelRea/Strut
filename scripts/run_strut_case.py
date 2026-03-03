@@ -21,6 +21,15 @@ def run(cmd, env=None, verbose=False):
     subprocess.check_call(cmd, env=env)
 
 
+def _profile_build_requested() -> bool:
+    return os.getenv("STRUT_PROFILE") == "1"
+
+
+def _default_solver_path(repo_root: Path) -> Path:
+    solver_name = "strut_profile" if _profile_build_requested() else "strut"
+    return repo_root / "build" / "strut" / solver_name
+
+
 def _resolve_optional_repo_path(path_text, repo_root: Path):
     if not isinstance(path_text, str) or not path_text:
         return None
@@ -178,7 +187,7 @@ def main():
     if solver_bin:
         solver_path = Path(solver_bin)
     else:
-        solver_path = repo_root / "build" / "strut" / "strut"
+        solver_path = _default_solver_path(repo_root)
 
     rebuild = not solver_path.exists()
     if not rebuild and not solver_bin:
@@ -192,16 +201,13 @@ def main():
 
     if rebuild and not solver_bin:
         solver_path.parent.mkdir(parents=True, exist_ok=True)
+        build_env = None
+        if _profile_build_requested():
+            build_env = os.environ.copy()
+            build_env["STRUT_PROFILE"] = "1"
         run(
-            [
-                uv,
-                "run",
-                "mojo",
-                "build",
-                str(repo_root / "src" / "mojo" / "strut.mojo"),
-                "-o",
-                str(solver_path),
-            ],
+            [str(repo_root / "scripts" / "build_mojo_solver.sh")],
+            env=build_env,
             verbose=verbose,
         )
 

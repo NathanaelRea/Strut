@@ -19,6 +19,12 @@ def run(cmd, env=None, verbose=False):
     subprocess.check_call(cmd, env=env)
 
 
+def ensure_clean_dir(path: Path) -> None:
+    if path.exists():
+        shutil.rmtree(path)
+    path.mkdir(parents=True, exist_ok=True)
+
+
 def _case_enabled(case_path: Path) -> bool:
     data = json.loads(case_path.read_text())
     return bool(data.get("enabled", True))
@@ -269,6 +275,123 @@ def _normalize_reference_outputs(case_data: dict | Path, reference_dir: Path):
             (reference_dir / rel_name).write_text(payload, encoding="utf-8")
 
 
+def _merge_direct_tcl_manifest_metadata(case_data: dict, manifest_path: Path | None) -> dict:
+    if manifest_path is None or not manifest_path.exists():
+        return case_data
+    manifest = _load_direct_tcl_manifest(manifest_path)
+    merged = dict(case_data)
+    for key in (
+        "enabled",
+        "status",
+        "benchmark_size",
+        "parity_tolerance",
+        "parity_tolerance_by_recorder",
+        "parity_mode",
+    ):
+        if key in manifest:
+            merged[key] = manifest[key]
+    return merged
+
+
+def _write_generated_direct_tcl_case(case_data: dict, case_root: Path) -> Path:
+    generated_case_json = case_root / "generated" / "case.json"
+    generated_case_json.parent.mkdir(parents=True, exist_ok=True)
+    generated_case_json.write_text(
+        json.dumps(case_data, indent=2) + "\n", encoding="utf-8"
+    )
+    return generated_case_json
+
+
+def _emit_case_tcl(
+    repo_root: Path, uv: str, case_json: Path, tcl_out: Path, env: dict, verbose: bool
+) -> Path:
+    tcl_out.parent.mkdir(parents=True, exist_ok=True)
+    run(
+        [
+            uv,
+            "run",
+            "python",
+            str(repo_root / "scripts" / "json_to_tcl.py"),
+            str(case_json),
+            str(tcl_out),
+        ],
+        env=env,
+        verbose=verbose,
+    )
+    return tcl_out
+
+
+def _write_parser_check(case_root: Path) -> None:
+    (case_root / ".parser-check").write_text("ok\n", encoding="utf-8")
+
+
+def _clear_parser_check(case_root: Path) -> None:
+    (case_root / ".parser-check").unlink(missing_ok=True)
+
+
+def _validate_generated_tcl_matches_original(
+    *,
+    repo_root: Path,
+    case_root: Path,
+    case_data: dict,
+    entry_tcl: Path,
+    generated_tcl: Path,
+    env: dict,
+    verbose: bool,
+    refresh_reference: bool,
+) -> None:
+    import compare_case
+
+    original_reference_dir = case_root / "reference-original"
+    generated_reference_dir = case_root / "reference"
+    parser_check_path = case_root / ".parser-check"
+    needs_original = refresh_reference or not original_reference_dir.exists()
+    needs_generated = refresh_reference or not generated_reference_dir.exists()
+    needs_compare = refresh_reference or not parser_check_path.exists()
+    if not needs_original and not needs_generated and not needs_compare:
+        return
+
+    if needs_original:
+        ensure_clean_dir(original_reference_dir)
+        run(
+            [
+                str(repo_root / "scripts" / "run_opensees_wine.sh"),
+                "--script",
+                str(entry_tcl),
+                "--output",
+                str(original_reference_dir),
+            ],
+            env=env,
+            verbose=verbose,
+        )
+        _normalize_reference_outputs(case_data, original_reference_dir)
+
+    if needs_generated:
+        ensure_clean_dir(generated_reference_dir)
+        run(
+            [
+                str(repo_root / "scripts" / "run_opensees_wine.sh"),
+                "--script",
+                str(generated_tcl),
+                "--output",
+                str(generated_reference_dir),
+            ],
+            env=env,
+            verbose=verbose,
+        )
+        _normalize_reference_outputs(case_data, generated_reference_dir)
+
+    failures = compare_case._compare_output_dirs(
+        case_data, original_reference_dir, generated_reference_dir
+    )
+    if failures:
+        _clear_parser_check(case_root)
+        raise SystemExit(
+            "generated Tcl does not match original Tcl:\n" + "\n".join(failures)
+        )
+    _write_parser_check(case_root)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("case_input")
@@ -314,13 +437,34 @@ def main():
     verbose = os.getenv("STRUT_VERBOSE") == "1"
     env = os.environ.copy()
     case_data = None
+    manifest_path = None
+    use_generated_direct_tcl = False
 
     if is_tcl:
         assert entry_tcl is not None
         import tcl_to_strut
 
-        case_data = tcl_to_strut.convert_tcl_to_solver_input(entry_tcl, repo_root)
-        tcl_out = entry_tcl
+        if case_input.suffix == ".json" and _is_direct_tcl_manifest(case_input):
+            manifest_path = case_input
+        case_data = _merge_direct_tcl_manifest_metadata(
+            tcl_to_strut.convert_tcl_to_solver_input(entry_tcl, repo_root),
+            manifest_path,
+        )
+        try:
+            case_json = _write_generated_direct_tcl_case(case_data, case_root)
+            tcl_out = _emit_case_tcl(
+                repo_root,
+                uv,
+                case_json,
+                case_root / "generated" / "model.tcl",
+                env,
+                verbose,
+            )
+            use_generated_direct_tcl = True
+        except (OSError, ValueError, subprocess.CalledProcessError, SystemExit) as exc:
+            if verbose:
+                print(f"direct Tcl fallback to original script: {exc}", file=sys.stderr)
+            tcl_out = entry_tcl
     else:
         tgt_json = case_root / f"{case_name}.json"
         if case_input != tgt_json:
@@ -329,18 +473,13 @@ def main():
         if not _case_enabled(case_json) and os.getenv("STRUT_FORCE_CASE") != "1":
             return
 
-        tcl_out = case_root / "generated" / "model.tcl"
-        run(
-            [
-                uv,
-                "run",
-                "python",
-                str(repo_root / "scripts" / "json_to_tcl.py"),
-                str(case_json),
-                str(tcl_out),
-            ],
-            env=env,
-            verbose=verbose,
+        tcl_out = _emit_case_tcl(
+            repo_root,
+            uv,
+            case_json,
+            case_root / "generated" / "model.tcl",
+            env,
+            verbose,
         )
         case_data = json.loads(case_json.read_text(encoding="utf-8"))
 
@@ -354,7 +493,53 @@ def main():
         if stored_hash != current_hash:
             refresh_reference = True
 
-    if refresh_reference:
+    if is_tcl and use_generated_direct_tcl:
+        assert entry_tcl is not None
+        try:
+            _validate_generated_tcl_matches_original(
+                repo_root=repo_root,
+                case_root=case_root,
+                case_data=case_data,
+                entry_tcl=entry_tcl,
+                generated_tcl=tcl_out,
+                env=env,
+                verbose=verbose,
+                refresh_reference=refresh_reference,
+            )
+        except (OSError, ValueError, subprocess.CalledProcessError, SystemExit) as exc:
+            use_generated_direct_tcl = False
+            _clear_parser_check(case_root)
+            if verbose:
+                print(
+                    f"direct Tcl fallback to original script after parser-check failure: {exc}",
+                    file=sys.stderr,
+                )
+            tcl_out = entry_tcl
+        else:
+            ref_hash_file.parent.mkdir(parents=True, exist_ok=True)
+            ref_hash_file.write_text(
+                _compute_combined_hash(hash_inputs) + "\n", encoding="utf-8"
+            )
+
+    if is_tcl and not use_generated_direct_tcl:
+        if refresh_reference:
+            run(
+                [
+                    str(repo_root / "scripts" / "run_opensees_wine.sh"),
+                    "--script",
+                    str(entry_tcl),
+                    "--output",
+                    str(case_root / "reference"),
+                ],
+                env=env,
+                verbose=verbose,
+            )
+            _normalize_reference_outputs(case_data, case_root / "reference")
+        ref_hash_file.parent.mkdir(parents=True, exist_ok=True)
+        ref_hash_file.write_text(
+            _compute_combined_hash(hash_inputs) + "\n", encoding="utf-8"
+        )
+    elif refresh_reference:
         run(
             [
                 str(repo_root / "scripts" / "run_opensees_wine.sh"),
@@ -366,14 +551,15 @@ def main():
             env=env,
             verbose=verbose,
         )
-        if is_tcl:
-            _normalize_reference_outputs(case_data, case_root / "reference")
         ref_hash_file.parent.mkdir(parents=True, exist_ok=True)
         ref_hash_file.write_text(
             _compute_combined_hash(hash_inputs) + "\n", encoding="utf-8"
         )
-    elif is_tcl:
-        _normalize_reference_outputs(case_data, case_root / "reference")
+    else:
+        ref_hash_file.parent.mkdir(parents=True, exist_ok=True)
+        ref_hash_file.write_text(
+            _compute_combined_hash(hash_inputs) + "\n", encoding="utf-8"
+        )
 
     strut_cmd = [
         uv,
@@ -383,7 +569,7 @@ def main():
         "--output",
         str(case_root / "strut"),
     ]
-    if is_tcl:
+    if is_tcl and not use_generated_direct_tcl:
         strut_cmd += ["--input-tcl", str(entry_tcl)]
     else:
         strut_cmd += ["--input", str(case_json)]
@@ -399,7 +585,7 @@ def main():
             str(case_root),
             *(
                 ["--input-tcl", str(entry_tcl)]
-                if is_tcl
+                if is_tcl and not use_generated_direct_tcl
                 else ["--case-json", str(case_json)]
             ),
         ],

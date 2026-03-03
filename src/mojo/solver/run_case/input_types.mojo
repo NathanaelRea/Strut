@@ -530,6 +530,8 @@ struct AnalysisInput(Movable, ImplicitlyCopyable):
     var fallback_max_iters: Int
     var fallback_tol: Float64
     var fallback_rel_tol: Float64
+    var step_retry_enabled: Bool
+    var step_retry_restore_primary_after_success: Bool
     var integrator_type: String
     var integrator_gamma: Float64
     var integrator_beta: Float64
@@ -564,6 +566,8 @@ struct AnalysisInput(Movable, ImplicitlyCopyable):
         self.fallback_max_iters = 20
         self.fallback_tol = 1.0e-10
         self.fallback_rel_tol = 1.0e-8
+        self.step_retry_enabled = False
+        self.step_retry_restore_primary_after_success = True
         self.integrator_type = ""
         self.integrator_gamma = 0.5
         self.integrator_beta = 0.25
@@ -915,6 +919,11 @@ fn parse_analysis_input_from_raw(
     analysis.fallback_tol = Float64(analysis_raw.get("fallback_tol", analysis.tol))
     analysis.fallback_rel_tol = Float64(
         analysis_raw.get("fallback_rel_tol", analysis.rel_tol)
+    )
+    var step_retry_raw = analysis_raw.get("step_retry", {})
+    analysis.step_retry_enabled = Bool(step_retry_raw.get("type", "") != "")
+    analysis.step_retry_restore_primary_after_success = Bool(
+        step_retry_raw.get("restore_primary_after_success", True)
     )
     if analysis_raw.__contains__("system"):
         analysis.solver = String(analysis_raw["system"])

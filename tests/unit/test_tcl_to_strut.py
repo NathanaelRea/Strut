@@ -148,6 +148,36 @@ def test_convert_ex9_2d_aggregator_moment_curvature_wrapper():
     assert recorders["node_displacement"]["raw_path"] == "data/Mphi.out"
 
 
+def test_convert_rcframepushover_preserves_explicit_step_retry():
+    entry = (
+        REPO_ROOT
+        / "docs/agent-reference/OpenSeesExamplesBasic"
+        / "reinforced_concrete_frame_pushover_analysis"
+        / "RCFramePushover.tcl"
+    )
+
+    case = tcl_to_strut.convert_tcl_to_case(entry, REPO_ROOT)
+
+    stages = case["analysis"]["stages"]
+    assert len(stages) == 2
+
+    gravity = stages[0]["analysis"]
+    assert "step_retry" not in gravity
+
+    pushover = stages[1]["analysis"]
+    assert pushover["type"] == "static_nonlinear"
+    assert pushover["integrator"]["type"] == "DisplacementControl"
+    assert pushover["algorithm"] == "Newton"
+    assert pushover["fallback_algorithm"] == "ModifiedNewtonInitial"
+    assert pushover["fallback_test_type"] == "NormDispIncr"
+    assert pushover["fallback_tol"] == pytest.approx(1.0e-12)
+    assert pushover["fallback_max_iters"] == 1000
+    assert pushover["step_retry"] == {
+        "type": "on_failure_retry_once",
+        "restore_primary_after_success": True,
+    }
+
+
 def test_solver_input_matches_json_adapter_for_tcl_case():
     entry = (
         REPO_ROOT

@@ -30,6 +30,10 @@ def load_summary(path: Path) -> dict:
     return json.loads(path.read_text())
 
 
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
 def parse_timestamp(path: Path, data: dict) -> datetime:
     ts = data.get("generated_at")
     if ts:
@@ -136,6 +140,47 @@ def _case_free_dofs(case: dict) -> Optional[int]:
     return total - constrained
 
 
+def _case_metadata_path(case: dict) -> Optional[Path]:
+    case_file = case.get("case_file")
+    if isinstance(case_file, str) and case_file:
+        return Path(case_file)
+
+    json_path = case.get("json")
+    if isinstance(json_path, str) and json_path:
+        path = Path(json_path)
+        if path.name != "case.json":
+            return path
+
+    name = case.get("name")
+    if not isinstance(name, str) or not name:
+        return None
+    validation_root = _repo_root() / "tests" / "validation" / name
+    direct_manifest = validation_root / "direct_tcl_case.json"
+    if direct_manifest.exists():
+        return direct_manifest
+    case_json = validation_root / f"{name}.json"
+    if case_json.exists():
+        return case_json
+    return None
+
+
+def _case_enabled(case: dict) -> bool:
+    metadata_path = _case_metadata_path(case)
+    if metadata_path is None or not metadata_path.exists():
+        return True
+    try:
+        data = json.loads(metadata_path.read_text())
+    except Exception:
+        return True
+    if not isinstance(data, dict):
+        return True
+    return bool(data.get("enabled", True))
+
+
+def _filter_enabled_cases(cases: List[dict]) -> List[dict]:
+    return [case for case in cases if _case_enabled(case)]
+
+
 def _case_size_override(case: dict) -> Optional[str]:
     label = case.get("size")
     if isinstance(label, str):
@@ -191,9 +236,10 @@ def collect_archive_trend(
     for path in files:
         data = load_summary(path)
         run_medians: Dict[str, float] = {}
+        cases = _filter_enabled_cases(data.get("cases", []))
         for engine in ("opensees", "strut"):
             values: List[float] = []
-            for case in data.get("cases", []):
+            for case in cases:
                 if size_filter:
                     override = _case_size_override(case)
                     if override is not None:
@@ -537,7 +583,7 @@ def write_plots_pdf(
         raise SystemExit(f"Missing results summary: {results_path}")
 
     summary = load_summary(results_path)
-    cases = summary.get("cases", [])
+    cases = _filter_enabled_cases(summary.get("cases", []))
     small_indices: List[int] = []
     medium_indices: List[int] = []
     large_indices: List[int] = []

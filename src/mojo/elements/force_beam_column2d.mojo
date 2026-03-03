@@ -576,6 +576,75 @@ fn _force_beam_column2d_exact_elastic_state(
     )
 
 
+fn _force_beam_column2d_initial_basic_tangent(
+    L: Float64,
+    xis: List[Float64],
+    weights: List[Float64],
+    sec_def: FiberSection2dDef,
+    fibers: List[FiberCell],
+    uniaxial_defs: List[UniMaterialDef],
+) -> (
+    Bool,
+    Float64,
+    Float64,
+    Float64,
+    Float64,
+    Float64,
+    Float64,
+    Float64,
+    Float64,
+):
+    var init_flex = _fiber_section2d_initial_flexibility(sec_def, fibers, uniaxial_defs)
+    if not init_flex[0]:
+        return (False, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+
+    var sec_f00 = init_flex[1]
+    var sec_f01 = init_flex[2]
+    var sec_f10 = sec_f01
+    var sec_f11 = init_flex[3]
+    var f00 = 0.0
+    var f01 = 0.0
+    var f02 = 0.0
+    var f10 = 0.0
+    var f11 = 0.0
+    var f12 = 0.0
+    var f20 = 0.0
+    var f21 = 0.0
+    var f22 = 0.0
+
+    for ip in range(len(xis)):
+        var xi = xis[ip]
+        var weight = weights[ip]
+        var wL = weight * L
+        var b_mi = xi - 1.0
+        var b_mj = xi
+
+        f00 += wL * sec_f00
+        f01 += wL * sec_f01 * b_mi
+        f02 += wL * sec_f01 * b_mj
+        f10 += wL * b_mi * sec_f10
+        f11 += wL * b_mi * sec_f11 * b_mi
+        f12 += wL * b_mi * sec_f11 * b_mj
+        f20 += wL * b_mj * sec_f10
+        f21 += wL * b_mj * sec_f11 * b_mi
+        f22 += wL * b_mj * sec_f11 * b_mj
+
+    var k_inv = _invert_3x3_values(f00, f01, f02, f10, f11, f12, f20, f21, f22)
+    if not k_inv[0]:
+        return (False, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    return (
+        True,
+        k_inv[1],
+        k_inv[2],
+        k_inv[3],
+        k_inv[4],
+        k_inv[5],
+        k_inv[6],
+        k_inv[8],
+        k_inv[9],
+    )
+
+
 fn _force_beam_column2d_try_increment(
     L: Float64,
     xis: List[Float64],
@@ -640,6 +709,84 @@ fn _force_beam_column2d_try_increment(
     )
     if not initial_sec_flex[0]:
         return (False, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+
+    # Start each local solve from the current tangent predictor, matching
+    # OpenSees' SeTrial = Se + kv * dvTrial initialization.
+    var predictor_f00 = 0.0
+    var predictor_f01 = 0.0
+    var predictor_f02 = 0.0
+    var predictor_f10 = 0.0
+    var predictor_f11 = 0.0
+    var predictor_f12 = 0.0
+    var predictor_f20 = 0.0
+    var predictor_f21 = 0.0
+    var predictor_f22 = 0.0
+    var predictor_ok = True
+    for ip in range(num_int_pts):
+        var xi = xis[ip]
+        var weight = weights[ip]
+        var wL = weight * L
+        var b_mi = xi - 1.0
+        var b_mj = xi
+        var ip_state_offset = elem_state_offset + ip * fibers_per_section
+        var eps0 = force_basic_q_state[eps0_offset + ip]
+        var kappa = force_basic_q_state[kappa_offset + ip]
+        var resp_trial = _fiber_section2d_set_trial_from_offset(
+            sec_def,
+            fibers,
+            uniaxial_defs,
+            uniaxial_states,
+            elem_state_ids,
+            ip_state_offset,
+            fibers_per_section,
+            eps0,
+            kappa,
+        )
+        var sec_flex = _fiber_section2d_response_flexibility(resp_trial)
+        if not sec_flex[0]:
+            predictor_ok = False
+            break
+        var sec_f00 = sec_flex[1]
+        var sec_f01 = sec_flex[2]
+        var sec_f10 = sec_f01
+        var sec_f11 = sec_flex[3]
+        predictor_f00 += wL * sec_f00
+        predictor_f01 += wL * sec_f01 * b_mi
+        predictor_f02 += wL * sec_f01 * b_mj
+        predictor_f10 += wL * b_mi * sec_f10
+        predictor_f11 += wL * b_mi * sec_f11 * b_mi
+        predictor_f12 += wL * b_mi * sec_f11 * b_mj
+        predictor_f20 += wL * b_mj * sec_f10
+        predictor_f21 += wL * b_mj * sec_f11 * b_mi
+        predictor_f22 += wL * b_mj * sec_f11 * b_mj
+    if predictor_ok:
+        var predictor_k = _invert_3x3_values(
+            predictor_f00,
+            predictor_f01,
+            predictor_f02,
+            predictor_f10,
+            predictor_f11,
+            predictor_f12,
+            predictor_f20,
+            predictor_f21,
+            predictor_f22,
+        )
+        if predictor_k[0]:
+            q0 += (
+                predictor_k[1] * dv_trial0
+                + predictor_k[2] * dv_trial1
+                + predictor_k[3] * dv_trial2
+            )
+            q1 += (
+                predictor_k[4] * dv_trial0
+                + predictor_k[5] * dv_trial1
+                + predictor_k[6] * dv_trial2
+            )
+            q2 += (
+                predictor_k[7] * dv_trial0
+                + predictor_k[8] * dv_trial1
+                + predictor_k[9] * dv_trial2
+            )
 
     for elem_iter in range(max_elem_iters):
         var f00 = 0.0
@@ -1061,31 +1208,46 @@ fn force_beam_column2d_global_tangent_and_internal(
     var all_materials_elastic = _fiber_section2d_all_materials_elastic(
         sec_def, fibers, uniaxial_defs
     )
-    var best_solved: (
-        Bool,
-        Float64,
-        Float64,
-        Float64,
-        Float64,
-        Float64,
-        Float64,
-        Float64,
-        Float64,
-        Float64,
-        Float64,
-    ) = (
-        False,
+    # Keep a recoverable tangent/internal state at the last compatible point so
+    # the global nonlinear solve can cut back instead of aborting the process.
+    var best_solved = _force_beam_column2d_try_increment(
+        L,
+        scratch.integration_cache.xis,
+        scratch.integration_cache.weights,
+        scratch.section_load_axial,
+        scratch.section_load_moment,
+        sec_def,
+        fibers,
+        uniaxial_defs,
+        uniaxial_states,
+        elem_state_ids,
+        elem_state_offset,
+        fibers_per_section,
+        num_int_pts,
+        force_basic_q_state,
+        force_basic_q_offset,
+        accepted_basic_0,
+        accepted_basic_1,
+        accepted_basic_2,
         0.0,
         0.0,
         0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
+        0,
     )
+    _copy_force_beam_column2d_basic_state(
+        force_basic_q_state,
+        basic_backup_offset,
+        force_basic_q_offset,
+        active_basic_count,
+    )
+    if elem_state_count > 0:
+        _copy_force_beam_column2d_states(
+            elem_state_ids,
+            elem_state_backup_offset,
+            elem_state_offset,
+            elem_state_count,
+            uniaxial_states,
+        )
 
     var tolerance = 1.0e-10
     var max_subdivisions = 12
@@ -1291,7 +1453,20 @@ fn force_beam_column2d_global_tangent_and_internal(
             subdivisions += 1
 
     if not converged:
-        abort("forceBeamColumn2d element compatibility did not converge")
+        _copy_force_beam_column2d_basic_state(
+            force_basic_q_state,
+            basic_backup_offset,
+            force_basic_q_offset,
+            active_basic_count,
+        )
+        if elem_state_count > 0:
+            _copy_force_beam_column2d_states(
+                elem_state_ids,
+                elem_state_backup_offset,
+                elem_state_offset,
+                elem_state_count,
+                uniaxial_states,
+            )
     _copy_force_beam_column2d_basic_state(
         force_basic_q_state,
         basic_backup_offset,
@@ -1307,7 +1482,29 @@ fn force_beam_column2d_global_tangent_and_internal(
             uniaxial_states,
         )
     if not best_solved[0]:
-        abort("forceBeamColumn2d final tangent recovery did not converge")
+        var fallback_tangent = _force_beam_column2d_initial_basic_tangent(
+            L,
+            scratch.integration_cache.xis,
+            scratch.integration_cache.weights,
+            sec_def,
+            fibers,
+            uniaxial_defs,
+        )
+        if not fallback_tangent[0]:
+            abort("forceBeamColumn2d final tangent recovery did not converge")
+        best_solved = (
+            True,
+            force_basic_q_state[force_basic_q_offset],
+            force_basic_q_state[force_basic_q_offset + 1],
+            force_basic_q_state[force_basic_q_offset + 2],
+            fallback_tangent[1],
+            fallback_tangent[2],
+            fallback_tangent[3],
+            fallback_tangent[4],
+            fallback_tangent[5],
+            fallback_tangent[6],
+            fallback_tangent[8],
+        )
     var q0 = best_solved[1]
     var q1 = best_solved[2]
     var q2 = best_solved[3]

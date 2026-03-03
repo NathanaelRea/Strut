@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import math
+import re
 import sys
 import tkinter
 from dataclasses import dataclass, field
@@ -265,6 +266,13 @@ class PendingFiberSection:
     layers: list[dict[str, Any]] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class StepRetryPolicy:
+    analyze_args: tuple[str, ...]
+    fallback: dict[str, Any]
+    restore_primary_after_success: bool
+
+
 def _analysis_stage_from_dict(stage: dict[str, Any]) -> AnalysisStage:
     extra = {
         key: value
@@ -341,6 +349,10 @@ class TclStrutBuilder:
         self.node_displacements: dict[tuple[int, int], float] = {}
         self.last_eigenvalues: list[float] = []
         self.last_error: Optional[TclToStrutError] = None
+        self.step_retry_policies_by_location: dict[tuple[Path, int], StepRetryPolicy] = {}
+        self.step_retry_policies_by_signature: dict[
+            tuple[Path, tuple[str, ...]], list[StepRetryPolicy]
+        ] = {}
 
         self._install_commands()
 
@@ -959,6 +971,284 @@ class TclStrutBuilder:
     def _cmd_noop(self, *args: str) -> str:
         return ""
 
+    def _split_tcl_commands(self, script: str) -> list[str]:
+        commands: list[str] = []
+        buf: list[str] = []
+        brace_depth = 0
+        bracket_depth = 0
+        in_quote = False
+        escape = False
+        command_start = True
+        idx = 0
+        while idx < len(script):
+            ch = script[idx]
+            if escape:
+                buf.append(ch)
+                escape = False
+                if command_start and not ch.isspace():
+                    command_start = False
+                idx += 1
+                continue
+            if ch == "\\":
+                buf.append(ch)
+                escape = True
+                idx += 1
+                continue
+            if (
+                not in_quote
+                and brace_depth == 0
+                and bracket_depth == 0
+                and command_start
+                and ch == "#"
+            ):
+                while idx < len(script) and script[idx] != "\n":
+                    idx += 1
+                continue
+            if ch == '"' and brace_depth == 0 and bracket_depth == 0:
+                in_quote = not in_quote
+                buf.append(ch)
+                command_start = False
+                idx += 1
+                continue
+            if not in_quote:
+                if ch == "{":
+                    brace_depth += 1
+                elif ch == "}" and brace_depth > 0:
+                    brace_depth -= 1
+                elif ch == "[":
+                    bracket_depth += 1
+                elif ch == "]" and bracket_depth > 0:
+                    bracket_depth -= 1
+            if (
+                not in_quote
+                and brace_depth == 0
+                and bracket_depth == 0
+                and ch in {"\n", ";"}
+            ):
+                command = "".join(buf).strip()
+                if command:
+                    commands.append(command)
+                buf = []
+                command_start = True
+                idx += 1
+                continue
+            if command_start:
+                if ch.isspace():
+                    idx += 1
+                    continue
+                command_start = False
+            buf.append(ch)
+            idx += 1
+        command = "".join(buf).strip()
+        if command:
+            commands.append(command)
+        return commands
+
+    def _command_words(self, command: str) -> tuple[str, ...]:
+        if not command:
+            return ()
+        return tuple(str(word) for word in self.interp.tk.splitlist(command))
+
+    def _parse_analyze_assignment(
+        self, command_words: tuple[str, ...]
+    ) -> Optional[tuple[str, tuple[str, ...]]]:
+        if len(command_words) < 3 or command_words[0] != "set":
+            return None
+        rhs = " ".join(command_words[2:]).strip()
+        if not (rhs.startswith("[") and rhs.endswith("]")):
+            return None
+        inner_words = self._command_words(rhs[1:-1].strip())
+        if not inner_words or inner_words[0] != "analyze":
+            return None
+        return command_words[1], inner_words[1:]
+
+    def _parse_retry_condition(self, condition: str) -> Optional[str]:
+        match = re.match(r"^\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*!=\s*0\s*$", condition)
+        if match is None:
+            return None
+        return match.group(1)
+
+    def _parse_test_settings(
+        self, command_words: tuple[str, ...]
+    ) -> Optional[dict[str, Any]]:
+        if not command_words or command_words[0] != "test" or len(command_words) < 4:
+            return None
+        try:
+            settings: dict[str, Any] = {
+                "fallback_test_type": command_words[1],
+                "fallback_tol": float(command_words[2]),
+                "fallback_max_iters": int(float(command_words[3])),
+            }
+        except ValueError:
+            return None
+        if len(command_words) >= 5:
+            try:
+                settings["fallback_test_print_flag"] = int(float(command_words[4]))
+            except ValueError:
+                return None
+        if len(command_words) > 5:
+            settings["fallback_test_extra_args"] = list(command_words[5:])
+        return settings
+
+    def _parse_algorithm_settings(
+        self, command_words: tuple[str, ...]
+    ) -> Optional[dict[str, Any]]:
+        if not command_words or command_words[0] != "algorithm" or len(command_words) < 2:
+            return None
+        algorithm_args = command_words[1:]
+        settings: dict[str, Any] = {
+            "fallback_algorithm": self._normalize_algorithm_name(algorithm_args)
+        }
+        if algorithm_args[0] == "Broyden" and len(algorithm_args) >= 2:
+            try:
+                settings["fallback_broyden_count"] = int(float(algorithm_args[1]))
+            except ValueError:
+                pass
+        if algorithm_args[0] == "NewtonLineSearch" and len(algorithm_args) >= 2:
+            try:
+                settings["fallback_line_search_eta"] = float(algorithm_args[1])
+            except ValueError:
+                pass
+        return settings
+
+    def _detect_step_retry_policy(self, script: str) -> Optional[StepRetryPolicy]:
+        commands = self._split_tcl_commands(script)
+        for idx, command in enumerate(commands):
+            assignment = self._parse_analyze_assignment(self._command_words(command))
+            if assignment is None:
+                continue
+            result_var, analyze_args = assignment
+            for follow_command in commands[idx + 1 :]:
+                follow_words = self._command_words(follow_command)
+                if not follow_words:
+                    continue
+                if self._parse_analyze_assignment(follow_words) is not None:
+                    break
+                if follow_words[0] != "if" or len(follow_words) < 3:
+                    continue
+                if self._parse_retry_condition(follow_words[1]) != result_var:
+                    continue
+                return self._build_step_retry_policy_from_if_body(
+                    result_var, analyze_args, follow_words[2]
+                )
+        return None
+
+    def _build_step_retry_policy_from_if_body(
+        self, result_var: str, analyze_args: tuple[str, ...], body_script: str
+    ) -> Optional[StepRetryPolicy]:
+        fallback: dict[str, Any] = {}
+        fallback_analyze_seen = False
+        restore_primary = False
+        for body_command in self._split_tcl_commands(body_script):
+            body_words = self._command_words(body_command)
+            if not body_words:
+                continue
+            test_settings = self._parse_test_settings(body_words)
+            if test_settings is not None:
+                if fallback_analyze_seen:
+                    restore_primary = True
+                else:
+                    fallback.update(test_settings)
+                continue
+            algorithm_settings = self._parse_algorithm_settings(body_words)
+            if algorithm_settings is not None:
+                if fallback_analyze_seen:
+                    restore_primary = True
+                else:
+                    fallback.update(algorithm_settings)
+                continue
+            body_assignment = self._parse_analyze_assignment(body_words)
+            if body_assignment == (result_var, analyze_args):
+                fallback_analyze_seen = True
+        if not fallback_analyze_seen or "fallback_algorithm" not in fallback:
+            return None
+        return StepRetryPolicy(
+            analyze_args=analyze_args,
+            fallback=fallback,
+            restore_primary_after_success=restore_primary,
+        )
+
+    def _register_source_step_retry_policies(self, path: Path) -> None:
+        resolved = path.resolve()
+        if any(policy_path == resolved for policy_path, _ in self.step_retry_policies_by_location):
+            return
+        lines = resolved.read_text(encoding="utf-8").splitlines()
+        idx = 0
+        while idx < len(lines):
+            line = lines[idx]
+            match = re.match(
+                r"^\s*set\s+([A-Za-z_][A-Za-z0-9_]*)\s+\[analyze\s+([^\]]+)\]\s*$",
+                line,
+            )
+            if match is None:
+                idx += 1
+                continue
+            result_var = match.group(1)
+            inner_words = self._command_words("analyze " + match.group(2))
+            analyze_args = inner_words[1:]
+            follow_idx = idx + 1
+            while follow_idx < len(lines):
+                stripped = lines[follow_idx].strip()
+                if stripped and not stripped.startswith("#"):
+                    break
+                follow_idx += 1
+            if follow_idx >= len(lines):
+                idx += 1
+                continue
+            condition_line = lines[follow_idx]
+            if (
+                re.match(
+                    rf"^\s*if\s+\{{\s*\${re.escape(result_var)}\s*!=\s*0\s*\}}\s*\{{",
+                    condition_line,
+                )
+                is None
+            ):
+                idx += 1
+                continue
+            body_start = condition_line.rsplit("{", 1)[1]
+            body_lines = [body_start]
+            brace_depth = 1 + body_start.count("{") - body_start.count("}")
+            scan_idx = follow_idx + 1
+            while scan_idx < len(lines) and brace_depth > 0:
+                body_lines.append(lines[scan_idx])
+                brace_depth += lines[scan_idx].count("{") - lines[scan_idx].count("}")
+                scan_idx += 1
+            if brace_depth > 0:
+                idx += 1
+                continue
+            body_script = "\n".join(body_lines)
+            if "}" in body_script:
+                body_script = body_script.rsplit("}", 1)[0]
+            policy = self._build_step_retry_policy_from_if_body(
+                result_var, analyze_args, body_script
+            )
+            if policy is not None:
+                self.step_retry_policies_by_location[(resolved, idx + 1)] = policy
+                signature = (resolved, analyze_args)
+                if signature not in self.step_retry_policies_by_signature:
+                    self.step_retry_policies_by_signature[signature] = []
+                self.step_retry_policies_by_signature[signature].append(policy)
+            idx = scan_idx
+
+    def _active_step_retry_policy(
+        self, analyze_args: tuple[str, ...]
+    ) -> Optional[StepRetryPolicy]:
+        location = self._current_location("analyze", list(analyze_args))
+        if location.file is None or location.line is None:
+            return None
+        policy = self.step_retry_policies_by_location.get(
+            (location.file.resolve(), location.line)
+        )
+        if policy is not None and policy.analyze_args == analyze_args:
+            return policy
+        fallback_policies = self.step_retry_policies_by_signature.get(
+            (location.file.resolve(), analyze_args),
+            [],
+        )
+        if len(fallback_policies) == 1:
+            return fallback_policies[0]
+        return None
+
     def _cmd_puts(self, *args: str) -> str:
         if not args:
             raise self._error("puts expects at least one argument", "puts", args)
@@ -1093,6 +1383,7 @@ class TclStrutBuilder:
             raise self._error(f"sourced file not found: {resolved}", "source", args)
         if resolved in self.source_stack:
             raise self._error(f"cyclic source detected for {resolved}", "source", args)
+        self._register_source_step_retry_policies(resolved)
 
         self.source_stack.append(resolved)
         try:
@@ -1143,6 +1434,8 @@ class TclStrutBuilder:
         self.analysis_type = None
         self.current_time = 0.0
         self.node_displacements.clear()
+        self.step_retry_policies_by_location.clear()
+        self.step_retry_policies_by_signature.clear()
         return ""
 
     def _normalize_alias(self, command: str, alias: str) -> str:
@@ -2124,6 +2417,7 @@ class TclStrutBuilder:
     def _cmd_analyze(self, *args: str) -> str:
         if self.analysis_type is None:
             raise self._error("analysis type must be set before analyze", "analyze", args)
+        step_retry = self._active_step_retry_policy(tuple(args))
         if self.analysis_type == "Static":
             if len(args) != 1:
                 raise self._error("static analyze expects `analyze steps`", "analyze", args)
@@ -2151,7 +2445,13 @@ class TclStrutBuilder:
                 analysis["system"] = self.system_handler
                 if self.system_options:
                     analysis["system_options"] = list(self.system_options)
-            if (
+            if step_retry is not None:
+                analysis.update(step_retry.fallback)
+                analysis["step_retry"] = {
+                    "type": "on_failure_retry_once",
+                    "restore_primary_after_success": step_retry.restore_primary_after_success,
+                }
+            elif (
                 analysis["type"] == "static_nonlinear"
                 and self.integrator["type"] == "DisplacementControl"
                 and self.algorithm_name in {"Newton", "ModifiedNewton"}
@@ -2237,7 +2537,13 @@ class TclStrutBuilder:
                     stage["analysis"]["test_print_flag"] = self.current_test["print_flag"]
                 if "extra_args" in self.current_test:
                     stage["analysis"]["test_extra_args"] = list(self.current_test["extra_args"])
-            if self.algorithm_name in {"ModifiedNewton", "Newton"}:
+            if step_retry is not None:
+                stage["analysis"].update(step_retry.fallback)
+                stage["analysis"]["step_retry"] = {
+                    "type": "on_failure_retry_once",
+                    "restore_primary_after_success": step_retry.restore_primary_after_success,
+                }
+            elif self.algorithm_name in {"ModifiedNewton", "Newton"}:
                 stage["analysis"]["fallback_algorithm"] = "ModifiedNewtonInitial"
                 stage["analysis"]["fallback_test_type"] = "NormDispIncr"
                 stage["analysis"]["fallback_tol"] = self.current_test["tol"] if self.current_test else 1.0e-8

@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -47,3 +48,87 @@ def test_write_plots_pdf_writes_output_for_recent_case_summary(tmp_path: Path):
     assert result == output_path
     assert output_path.exists()
     assert output_path.stat().st_size > 0
+
+
+def test_filter_enabled_cases_excludes_disabled_direct_tcl_case(
+    monkeypatch, tmp_path: Path
+):
+    validation_root = tmp_path / "tests" / "validation" / "disabled_direct_case"
+    validation_root.mkdir(parents=True, exist_ok=True)
+    (validation_root / "direct_tcl_case.json").write_text(
+        json.dumps(
+            {
+                "name": "disabled_direct_case",
+                "entry_tcl": "examples/case.tcl",
+                "enabled": False,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(plot_benchmarks, "_repo_root", lambda: tmp_path)
+
+    filtered = plot_benchmarks._filter_enabled_cases(
+        [
+            {
+                "name": "disabled_direct_case",
+                "strut": {"analysis_us": 10.0},
+            },
+            {
+                "name": "enabled_case",
+                "strut": {"analysis_us": 5.0},
+            },
+        ]
+    )
+
+    assert [case["name"] for case in filtered] == ["enabled_case"]
+
+
+def test_collect_archive_trend_skips_currently_disabled_cases(
+    monkeypatch, tmp_path: Path
+):
+    validation_root = tmp_path / "tests" / "validation" / "disabled_direct_case"
+    validation_root.mkdir(parents=True, exist_ok=True)
+    (validation_root / "direct_tcl_case.json").write_text(
+        json.dumps(
+            {
+                "name": "disabled_direct_case",
+                "entry_tcl": "examples/case.tcl",
+                "enabled": False,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    archive_dir = tmp_path / "archive"
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    (archive_dir / "20260303T000000Z-summary.json").write_text(
+        json.dumps(
+            {
+                "generated_at": "2026-03-03T00:00:00Z",
+                "cases": [
+                    {
+                        "name": "disabled_direct_case",
+                        "strut": {"analysis_us": 10.0},
+                    }
+                ],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(plot_benchmarks, "_repo_root", lambda: tmp_path)
+
+    timestamps, means, stds = plot_benchmarks.collect_archive_trend(
+        archive_dir,
+        size_filter=None,
+        medium_threshold=300,
+        large_threshold=1000,
+    )
+
+    assert len(timestamps) == 1
+    assert means["strut"][0] != means["strut"][0]
+    assert means["opensees"][0] != means["opensees"][0]
+    assert stds["strut"][0] != stds["strut"][0]

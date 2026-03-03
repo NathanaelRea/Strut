@@ -3,7 +3,7 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 out_dir="${repo_root}/build/strut"
-out_bin="${out_dir}/strut"
+out_name="strut"
 diag_file="$(mktemp)"
 
 cleanup() {
@@ -24,9 +24,11 @@ cmd=(
 )
 
 if [[ "${STRUT_PROFILE:-0}" == "1" ]]; then
+  out_name="strut_profile"
   cmd+=(-D STRUT_PROFILE=1)
 fi
 
+out_bin="${out_dir}/${out_name}"
 cmd+=(-o "${out_bin}")
 
 set +e

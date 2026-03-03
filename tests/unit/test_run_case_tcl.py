@@ -89,7 +89,12 @@ def test_run_case_accepts_direct_tcl_manifest_and_normalizes_reference_outputs(
 
     def fake_run(cmd, env=None, verbose=False):
         calls.append(cmd)
-        if "run_opensees_wine.sh" in cmd[0]:
+        if "json_to_tcl.py" in str(cmd[3]):
+            Path(cmd[-1]).write_text(
+                "recorder Node -file Data/DFree.out -time -node 2 disp\n",
+                encoding="utf-8",
+            )
+        elif "run_opensees_wine.sh" in cmd[0]:
             reference_dir = Path(cmd[-1])
             (reference_dir / "Data").mkdir(parents=True, exist_ok=True)
             (reference_dir / "Data" / "DFree.out").write_text(
@@ -110,20 +115,24 @@ def test_run_case_accepts_direct_tcl_manifest_and_normalizes_reference_outputs(
         cmd for cmd in calls if any("run_strut_case.py" in part for part in cmd)
     ]
     assert len(strut_calls) == 1
-    assert "--input-tcl" in strut_calls[0]
-    assert "--input" not in strut_calls[0]
+    assert "--input" in strut_calls[0]
+    assert "--input-tcl" not in strut_calls[0]
     assert len(compare_calls) == 1
     assert "--case-root" in compare_calls[0]
-    assert "--input-tcl" in compare_calls[0]
+    assert "--case-json" in compare_calls[0]
     case_root = Path(compare_calls[0][compare_calls[0].index("--case-root") + 1])
     assert case_root == canonical_case
     assert (
-        Path(compare_calls[0][compare_calls[0].index("--input-tcl") + 1])
-        == entry_tcl.resolve()
+        Path(compare_calls[0][compare_calls[0].index("--case-json") + 1])
+        == canonical_case / "generated" / "case.json"
     )
 
     normalized = canonical_case / "reference" / "DFree_node2.out"
     assert normalized.read_text(encoding="utf-8") == "1.0 2.0 3.0\n4.0 5.0 6.0\n"
+    assert (
+        canonical_case / "reference-original" / "DFree_node2.out"
+    ).read_text(encoding="utf-8") == "1.0 2.0 3.0\n4.0 5.0 6.0\n"
+    assert (canonical_case / ".parser-check").read_text(encoding="utf-8") == "ok\n"
 
 
 def test_run_case_tcl_without_canonical_mapping_uses_slug_case_root(
@@ -158,6 +167,10 @@ def test_run_case_tcl_without_canonical_mapping_uses_slug_case_root(
 
     def fake_run(cmd, env=None, verbose=False):
         calls.append(cmd)
+        if "json_to_tcl.py" in str(cmd[3]):
+            Path(cmd[-1]).write_text("puts generated\n", encoding="utf-8")
+        elif "run_opensees_wine.sh" in cmd[0]:
+            Path(cmd[-1]).mkdir(parents=True, exist_ok=True)
 
     monkeypatch.setattr(run_case, "run", fake_run)
     monkeypatch.setattr(sys, "argv", ["run_case.py", str(entry_tcl)])
@@ -171,7 +184,7 @@ def test_run_case_tcl_without_canonical_mapping_uses_slug_case_root(
         cmd for cmd in calls if any("run_strut_case.py" in part for part in cmd)
     ]
     assert len(strut_calls) == 1
-    assert "--input-tcl" in strut_calls[0]
+    assert "--input" in strut_calls[0]
     assert len(compare_calls) == 1
     generated_dirs = list((tmp_repo / "tests" / "validation").glob("tcl_example_*"))
     assert len(generated_dirs) == 1
