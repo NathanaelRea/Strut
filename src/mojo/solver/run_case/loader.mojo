@@ -123,6 +123,7 @@ struct RunCaseState(Movable):
     var use_banded_linear: Bool
     var use_banded_nonlinear: Bool
     var has_transformation_mpc: Bool
+    var supports_linear_transient_fast_path: Bool
 
     var free: List[Int]
     var free_index: List[Int]
@@ -223,6 +224,7 @@ struct RunCaseState(Movable):
         self.use_banded_linear = False
         self.use_banded_nonlinear = False
         self.has_transformation_mpc = False
+        self.supports_linear_transient_fast_path = False
         self.free = []
         self.free_index = []
         self.rep_dof = []
@@ -315,6 +317,27 @@ fn _set_elem_dir(mut elem: ElementInput, idx: Int, value: Int):
         elem.dir_5 = value
     else:
         elem.dir_6 = value
+
+
+fn _element_supports_linear_transient_fast_path(
+    elem: ElementInput, sections_by_id: List[SectionInput]
+) -> Bool:
+    if (
+        elem.type_tag == ElementTypeTag.ElasticBeamColumn2d
+        or elem.type_tag == ElementTypeTag.ElasticBeamColumn3d
+        or elem.type_tag == ElementTypeTag.Truss
+        or elem.type_tag == ElementTypeTag.ZeroLength
+        or elem.type_tag == ElementTypeTag.TwoNodeLink
+        or elem.type_tag == ElementTypeTag.FourNodeQuad
+        or elem.type_tag == ElementTypeTag.Shell
+    ):
+        return True
+    if elem.type_tag == ElementTypeTag.ZeroLengthSection:
+        if elem.section < 0 or elem.section >= len(sections_by_id):
+            return False
+        var sec = sections_by_id[elem.section]
+        return sec.type == "ElasticSection2d" or sec.type == "ElasticSection3d"
+    return False
 
 
 fn _node_constraint(node: NodeInput, idx: Int) -> Int:
@@ -1983,6 +2006,14 @@ fn load_case_state_from_input(input: CaseInput) raises -> RunCaseState:
     var pattern_type = "Plain"
     var uniform_excitation_direction = 0
     var uniform_accel_ts_index = -1
+    var supports_linear_transient_fast_path = not used_nonelastic_uniaxial
+    if supports_linear_transient_fast_path:
+        for i in range(len(typed_elements)):
+            if not _element_supports_linear_transient_fast_path(
+                typed_elements[i], typed_sections_by_id
+            ):
+                supports_linear_transient_fast_path = False
+                break
     if pattern_input.has_pattern:
         pattern_type = pattern_input.type
         if pattern_type != "Plain" and pattern_type != "UniformExcitation":
@@ -2108,6 +2139,7 @@ fn load_case_state_from_input(input: CaseInput) raises -> RunCaseState:
     state.use_banded_linear = use_banded_linear
     state.use_banded_nonlinear = use_banded_nonlinear
     state.has_transformation_mpc = has_transformation_mpc
+    state.supports_linear_transient_fast_path = supports_linear_transient_fast_path
     state.free = free^
     state.free_index = free_index^
     state.rep_dof = rep_dof^

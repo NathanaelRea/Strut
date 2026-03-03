@@ -189,6 +189,9 @@ def run_case_input(
     var use_banded_linear = state.use_banded_linear
     var use_banded_nonlinear = state.use_banded_nonlinear
     var has_transformation_mpc = state.has_transformation_mpc
+    var supports_linear_transient_fast_path = (
+        state.supports_linear_transient_fast_path
+    )
     var time_series = state.time_series.copy()
     var time_series_values = state.time_series_values.copy()
     var time_series_times = state.time_series_times.copy()
@@ -545,7 +548,13 @@ def run_case_input(
             )
         else:
             abort("unsupported static_nonlinear integrator: " + integrator_type)
-    elif analysis_type == "transient_linear":
+    elif (
+        analysis_type == "transient_linear"
+        or (
+            analysis_type == "transient_nonlinear"
+            and supports_linear_transient_fast_path
+        )
+    ):
         run_transient_linear(
             analysis,
             steps,
@@ -1134,7 +1143,13 @@ def run_case_input(
                         "unsupported static_nonlinear integrator: "
                         + stage_integrator_type
                     )
-            elif stage_type == "transient_linear":
+            elif (
+                stage_type == "transient_linear"
+                or (
+                    stage_type == "transient_nonlinear"
+                    and supports_linear_transient_fast_path
+                )
+            ):
                 run_transient_linear(
                     stage_analysis,
                     stage_analysis.steps,
