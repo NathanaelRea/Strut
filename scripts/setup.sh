@@ -3,5 +3,9 @@ curl -L https://docs.modular.com/llms-mojo.txt -o docs/agent-reference/llms-mojo
 curl -L https://docs.modular.com/llms.txt -o docs/agent-reference/llms.txt
 
 git clone https://github.com/OpenSees/OpenSees docs/agent-reference/OpenSees
-git clone https://github.com/modular/mojo-gpu-puzzles docs/agent-reference/mojo-gpu-puzzles
 git clone https://github.com/modular/modular/ docs/agent-reference/modular
+
+rm -rf docs/agent-reference/OpenSees/.git
+rm -rf docs/agent-reference/modular/.git
+
+python3 setup-opensees-docs.py
