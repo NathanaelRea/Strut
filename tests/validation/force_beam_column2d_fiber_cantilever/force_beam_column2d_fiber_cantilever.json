@@ -1,7 +1,6 @@
 {
   "schema_version": "1.0",
   "enabled": true,
-  "status": "wip",
   "metadata": {
     "name": "force_beam_column2d_fiber_cantilever",
     "units": "SI"

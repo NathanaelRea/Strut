@@ -1,7 +1,6 @@
 {
   "schema_version": "1.0",
   "enabled": true,
-  "status": "active",
   "metadata": {
     "name": "elastic_two_node_link_2d_pdelta",
     "units": "SI"

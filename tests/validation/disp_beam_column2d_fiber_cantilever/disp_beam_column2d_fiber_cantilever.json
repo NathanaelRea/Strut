@@ -1,7 +1,6 @@
 {
   "schema_version": "1.0",
   "enabled": true,
-  "status": "ready",
   "parity_tolerance_by_recorder": {
     "node_displacement": { "rtol": 2.0e-6, "atol": 1.0e-6 }
   },
@@ -53,7 +52,11 @@
     }
   ],
   "loads": [{ "node": 2, "dof": 2, "value": 1.0 }],
-  "analysis": { "type": "static_linear", "steps": 1, "force_beam_mode": "linear_if_elastic" },
+  "analysis": {
+    "type": "static_linear",
+    "steps": 1,
+    "force_beam_mode": "linear_if_elastic"
+  },
   "recorders": [
     {
       "type": "node_displacement",

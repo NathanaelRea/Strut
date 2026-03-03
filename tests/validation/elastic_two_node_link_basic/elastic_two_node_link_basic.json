@@ -1,7 +1,7 @@
 {
   "schema_version": "1.0",
   "enabled": true,
-  "status": "active",
+
   "metadata": {
     "name": "elastic_two_node_link_basic",
     "units": "SI"
@@ -40,18 +40,13 @@
       "id": 1,
       "x": 0.0,
       "y": 0.0,
-      "constraints": [
-        1,
-        2
-      ]
+      "constraints": [1, 2]
     },
     {
       "id": 2,
       "x": 10.0,
       "y": 0.0,
-      "constraints": [
-        2
-      ]
+      "constraints": [2]
     }
   ],
   "materials": [
@@ -68,16 +63,9 @@
     {
       "id": 1,
       "type": "twoNodeLink",
-      "nodes": [
-        1,
-        2
-      ],
-      "materials": [
-        1
-      ],
-      "dirs": [
-        1
-      ]
+      "nodes": [1, 2],
+      "materials": [1],
+      "dirs": [1]
     }
   ],
   "loads": [
@@ -94,13 +82,8 @@
   "recorders": [
     {
       "type": "node_displacement",
-      "nodes": [
-        2
-      ],
-      "dofs": [
-        1,
-        2
-      ],
+      "nodes": [2],
+      "dofs": [1, 2],
       "output": "node_disp"
     }
   ]

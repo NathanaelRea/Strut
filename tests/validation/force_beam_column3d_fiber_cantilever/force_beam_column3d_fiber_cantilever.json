@@ -1,7 +1,6 @@
 {
   "schema_version": "1.0",
   "enabled": true,
-  "status": "parity",
   "benchmark_size": "small",
   "metadata": {
     "name": "force_beam_column3d_fiber_cantilever",

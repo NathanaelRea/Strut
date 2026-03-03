@@ -1,6 +1,5 @@
 {
   "name": "opensees_example_rc_frame_gravity",
   "entry_tcl": "docs/agent-reference/OpenSeesExamplesBasic/reinforced_concrete_frame_gravity_analysis/RCFrameGravity.tcl",
-  "enabled": true,
-  "status": "active"
+  "enabled": true
 }

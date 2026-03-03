@@ -1,6 +1,5 @@
 {
   "name": "opensees_example_moment_curvature",
   "entry_tcl": "docs/agent-reference/OpenSeesExamplesBasic/moment_curvature_example/MomentCurvature.tcl",
-  "enabled": true,
-  "status": "active"
+  "enabled": true
 }

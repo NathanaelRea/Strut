@@ -1,7 +1,6 @@
 {
   "schema_version": "1.0",
   "enabled": true,
-  "status": "active",
   "metadata": {
     "name": "elastic_corotational_cantilever",
     "units": "SI"
@@ -39,11 +38,7 @@
       "id": 1,
       "x": 0.0,
       "y": 0.0,
-      "constraints": [
-        1,
-        2,
-        3
-      ]
+      "constraints": [1, 2, 3]
     },
     {
       "id": 2,
@@ -67,7 +62,7 @@
       "params": {
         "E": 200000000000.0,
         "A": 0.02,
-        "I": 8e-05
+        "I": 8e-5
       }
     }
   ],
@@ -75,10 +70,7 @@
     {
       "id": 1,
       "type": "elasticBeamColumn2d",
-      "nodes": [
-        1,
-        2
-      ],
+      "nodes": [1, 2],
       "section": 1,
       "geomTransf": "Corotational"
     }
@@ -99,34 +91,24 @@
     "type": "static_nonlinear",
     "steps": 20,
     "max_iters": 100,
-    "tol": 1e-06,
-    "rel_tol": 1e-06
+    "tol": 1e-6,
+    "rel_tol": 1e-6
   },
   "recorders": [
     {
       "type": "node_displacement",
-      "nodes": [
-        2
-      ],
-      "dofs": [
-        1,
-        2,
-        3
-      ],
+      "nodes": [2],
+      "dofs": [1, 2, 3],
       "output": "node_disp"
     },
     {
       "type": "element_force",
-      "elements": [
-        1
-      ],
+      "elements": [1],
       "output": "element_force"
     },
     {
       "type": "envelope_element_force",
-      "elements": [
-        1
-      ],
+      "elements": [1],
       "output": "envelope_force"
     }
   ]

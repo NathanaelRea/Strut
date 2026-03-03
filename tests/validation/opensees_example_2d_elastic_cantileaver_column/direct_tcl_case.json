@@ -2,6 +2,6 @@
   "name": "opensees_example_2d_elastic_cantileaver_column",
   "entry_tcl": "docs/agent-reference/OpenSeesExamplesBasic/time_history_analysis_of_a_2d_elastic_cantilever_column/Ex1a.Canti2D.EQ.modif.tcl",
   "enabled": true,
-  "status": "active",
+
   "benchmark_size": "medium"
 }

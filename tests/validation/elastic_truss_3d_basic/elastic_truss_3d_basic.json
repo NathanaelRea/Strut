@@ -1,7 +1,6 @@
 {
   "schema_version": "1.0",
   "enabled": true,
-  "status": "active",
   "metadata": {
     "name": "elastic_truss_3d_basic",
     "units": "SI"
@@ -41,21 +40,14 @@
       "x": 0.0,
       "y": 0.0,
       "z": 0.0,
-      "constraints": [
-        1,
-        2,
-        3
-      ]
+      "constraints": [1, 2, 3]
     },
     {
       "id": 2,
       "x": 3.0,
       "y": 0.0,
       "z": 0.0,
-      "constraints": [
-        2,
-        3
-      ]
+      "constraints": [2, 3]
     }
   ],
   "materials": [
@@ -72,10 +64,7 @@
     {
       "id": 1,
       "type": "truss",
-      "nodes": [
-        1,
-        2
-      ],
+      "nodes": [1, 2],
       "area": 0.01,
       "material": 1
     }
@@ -94,14 +83,8 @@
   "recorders": [
     {
       "type": "node_displacement",
-      "nodes": [
-        2
-      ],
-      "dofs": [
-        1,
-        2,
-        3
-      ],
+      "nodes": [2],
+      "dofs": [1, 2, 3],
       "output": "node_disp"
     }
   ]

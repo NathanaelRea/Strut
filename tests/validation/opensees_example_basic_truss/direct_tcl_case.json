@@ -1,6 +1,5 @@
 {
   "name": "opensees_example_basic_truss",
   "entry_tcl": "docs/agent-reference/OpenSeesExamplesBasic/basic_truss_example/Truss.tcl",
-  "enabled": true,
-  "status": "active"
+  "enabled": true
 }

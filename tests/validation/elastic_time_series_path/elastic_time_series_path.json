@@ -1,7 +1,6 @@
 {
   "schema_version": "1.0",
   "enabled": true,
-  "status": "active",
   "metadata": {
     "name": "elastic_time_series_path",
     "units": "SI"
@@ -14,16 +13,8 @@
     {
       "type": "Path",
       "tag": 1,
-      "time": [
-        0.0,
-        0.5,
-        1.0
-      ],
-      "values": [
-        0.0,
-        1.0,
-        2.0
-      ],
+      "time": [0.0, 0.5, 1.0],
+      "values": [0.0, 1.0, 2.0],
       "factor": 1.0
     }
   ],
@@ -37,11 +28,7 @@
       "id": 1,
       "x": 0.0,
       "y": 0.0,
-      "constraints": [
-        1,
-        2,
-        3
-      ]
+      "constraints": [1, 2, 3]
     },
     {
       "id": 2,
@@ -73,10 +60,7 @@
     {
       "id": 1,
       "type": "elasticBeamColumn2d",
-      "nodes": [
-        1,
-        2
-      ],
+      "nodes": [1, 2],
       "section": 1,
       "geomTransf": "Linear"
     }
@@ -95,15 +79,8 @@
   "recorders": [
     {
       "type": "node_displacement",
-      "nodes": [
-        1,
-        2
-      ],
-      "dofs": [
-        1,
-        2,
-        3
-      ],
+      "nodes": [1, 2],
+      "dofs": [1, 2, 3],
       "output": "node_disp"
     }
   ]

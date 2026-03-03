@@ -1,7 +1,6 @@
 {
   "schema_version": "1.0",
   "enabled": true,
-  "status": "implemented",
   "metadata": {
     "name": "elastic_shell_basic",
     "units": "SI"
@@ -32,28 +31,14 @@
       "x": 0.0,
       "y": 0.0,
       "z": 0.0,
-      "constraints": [
-        1,
-        2,
-        3,
-        4,
-        5,
-        6
-      ]
+      "constraints": [1, 2, 3, 4, 5, 6]
     },
     {
       "id": 2,
       "x": 1.0,
       "y": 0.0,
       "z": 0.0,
-      "constraints": [
-        1,
-        2,
-        3,
-        4,
-        5,
-        6
-      ]
+      "constraints": [1, 2, 3, 4, 5, 6]
     },
     {
       "id": 3,
@@ -66,13 +51,7 @@
       "x": 0.0,
       "y": 1.0,
       "z": 0.0,
-      "constraints": [
-        2,
-        3,
-        4,
-        5,
-        6
-      ]
+      "constraints": [2, 3, 4, 5, 6]
     }
   ],
   "materials": [],
@@ -92,12 +71,7 @@
     {
       "id": 1,
       "type": "shell",
-      "nodes": [
-        1,
-        2,
-        3,
-        4
-      ],
+      "nodes": [1, 2, 3, 4],
       "section": 1
     }
   ],
@@ -124,17 +98,8 @@
   "recorders": [
     {
       "type": "node_displacement",
-      "nodes": [
-        3
-      ],
-      "dofs": [
-        1,
-        2,
-        3,
-        4,
-        5,
-        6
-      ],
+      "nodes": [3],
+      "dofs": [1, 2, 3, 4, 5, 6],
       "output": "node_disp"
     }
   ]
