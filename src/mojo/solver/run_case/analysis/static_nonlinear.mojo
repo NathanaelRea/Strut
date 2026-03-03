@@ -1343,6 +1343,7 @@ fn run_static_nonlinear_displacement_control(
     var cutback = analysis.integrator_cutback
     var max_cutbacks = analysis.integrator_max_cutbacks
     var min_du = analysis.integrator_min_du
+    var target_tol = 1.0e-14
     if cutback <= 0.0 or cutback >= 1.0:
         abort("DisplacementControl cutback must be in (0, 1)")
     if max_cutbacks < 0:
@@ -1506,7 +1507,10 @@ fn run_static_nonlinear_displacement_control(
         var target = target_disps[step]
         while True:
             var remaining = target - u[control_idx]
-            if abs(remaining) <= min_du:
+            # `min_du` is the cutback floor, not the target-reached tolerance.
+            # Using it here skips exact-size displacement steps whenever
+            # `remaining == min_du`, which is common for fixed-increment pushover.
+            if abs(remaining) <= target_tol:
                 break
 
             var u_base = u.copy()

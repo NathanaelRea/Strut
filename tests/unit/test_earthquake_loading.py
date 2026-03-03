@@ -664,3 +664,36 @@ def test_staged_displacement_control_load_const_freezes_actual_load_factor():
 
     assert len(disp_rows) == 1
     assert disp_rows[0][0] == pytest.approx(0.2, abs=1.0e-9)
+
+
+def test_staged_displacement_control_does_not_skip_exact_min_du_step():
+    case_data = _base_truss_dynamic_case(
+        {"id": 1, "type": "Elastic", "params": {"E": 100.0}}
+    )
+    case_data["time_series"] = [{"type": "Linear", "tag": 1, "factor": 1.0}]
+    case_data["pattern"] = {"type": "Plain", "tag": 1, "time_series": 1}
+    case_data["loads"] = [{"node": 2, "dof": 1, "value": 1.0}]
+    case_data["analysis"] = {
+        "type": "static_nonlinear",
+        "constraints": "Plain",
+        "steps": 2,
+        "algorithm": "Newton",
+        "test_type": "NormDispIncr",
+        "tol": 1.0e-12,
+        "max_iters": 10,
+        "integrator": {
+            "type": "DisplacementControl",
+            "node": 2,
+            "dof": 1,
+            "du": 0.1,
+            "min_du": 0.1,
+            "max_du": 0.1,
+        },
+    }
+
+    with tempfile.TemporaryDirectory() as tmp:
+        out_dir = Path(tmp)
+        _run_strut_case(case_data, out_dir)
+        disp_rows = _read_rows(out_dir / "node_disp_node2.out")
+
+    assert [row[0] for row in disp_rows] == pytest.approx([0.1, 0.2], abs=1.0e-9)
