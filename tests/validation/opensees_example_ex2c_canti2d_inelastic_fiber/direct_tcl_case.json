@@ -3,5 +3,5 @@
   "entry_tcl": "docs/agent-reference/OpenSeesExamplesAdvanced/Ex2cCanti2DInelasticFiber/Ex2c.Canti2D.InelasticFiberSection.EQ.tcl",
   "enabled": true,
   "status": "active",
-  "benchmark_size": "large"
+  "benchmark_size": "medium"
 }

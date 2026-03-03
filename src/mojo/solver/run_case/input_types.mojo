@@ -81,6 +81,13 @@ struct SectionInput(Movable, ImplicitlyCopyable):
     var J: Float64
     var nu: Float64
     var h: Float64
+    var axial_material: Int
+    var flexural_material: Int
+    var moment_y_material: Int
+    var torsion_material: Int
+    var shear_y_material: Int
+    var shear_z_material: Int
+    var base_section: Int
     var fiber_patch_offset: Int
     var fiber_patch_count: Int
     var fiber_layer_offset: Int
@@ -98,6 +105,13 @@ struct SectionInput(Movable, ImplicitlyCopyable):
         self.J = 0.0
         self.nu = 0.0
         self.h = 0.0
+        self.axial_material = -1
+        self.flexural_material = -1
+        self.moment_y_material = -1
+        self.torsion_material = -1
+        self.shear_y_material = -1
+        self.shear_z_material = -1
+        self.base_section = -1
         self.fiber_patch_offset = 0
         self.fiber_patch_count = 0
         self.fiber_layer_offset = 0
@@ -115,6 +129,13 @@ struct SectionInput(Movable, ImplicitlyCopyable):
         self.J = 0.0
         self.nu = 0.0
         self.h = 0.0
+        self.axial_material = -1
+        self.flexural_material = -1
+        self.moment_y_material = -1
+        self.torsion_material = -1
+        self.shear_y_material = -1
+        self.shear_z_material = -1
+        self.base_section = -1
         self.fiber_patch_offset = 0
         self.fiber_patch_count = 0
         self.fiber_layer_offset = 0
@@ -1144,6 +1165,20 @@ fn parse_case_input(data: PythonObject) raises -> CaseInput:
             parsed.nu = Float64(params["nu"])
         if params.__contains__("h"):
             parsed.h = Float64(params["h"])
+        if params.__contains__("axial_material"):
+            parsed.axial_material = Int(params["axial_material"])
+        if params.__contains__("flexural_material"):
+            parsed.flexural_material = Int(params["flexural_material"])
+        if params.__contains__("moment_y_material"):
+            parsed.moment_y_material = Int(params["moment_y_material"])
+        if params.__contains__("torsion_material"):
+            parsed.torsion_material = Int(params["torsion_material"])
+        if params.__contains__("shear_y_material"):
+            parsed.shear_y_material = Int(params["shear_y_material"])
+        if params.__contains__("shear_z_material"):
+            parsed.shear_z_material = Int(params["shear_z_material"])
+        if params.__contains__("base_section"):
+            parsed.base_section = Int(params["base_section"])
         if parsed.type == "FiberSection2d" or parsed.type == "FiberSection3d":
             var patches_raw = params.get("patches", [])
             parsed.fiber_patch_offset = len(case_input.fiber_patches)

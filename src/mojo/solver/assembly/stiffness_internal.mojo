@@ -45,6 +45,7 @@ from solver.assembly.stiffness_internal_surface import (
     _assemble_surface_soa_indices,
 )
 from solver.dof import node_dof_index
+from solver.run_case.helpers import aggregator_section2d_set_trial_from_offset
 from solver.run_case.input_types import (
     ElementInput,
     ElementLoadInput,
@@ -1492,6 +1493,8 @@ fn assemble_global_stiffness_and_internal_soa(
         var delta_axial = u[u2] - u[u1]
         var delta_curv = u[r2] - u[r1]
         var sec = sections_by_id[elem_section_ids[e]]
+        var elem_offset = elem_uniaxial_offsets[e]
+        var elem_state_count = elem_uniaxial_counts[e]
         var axial_force = 0.0
         var moment_z = 0.0
         var k11 = 0.0
@@ -1502,6 +1505,18 @@ fn assemble_global_stiffness_and_internal_soa(
             k22 = sec.E * sec.I
             axial_force = k11 * delta_axial
             moment_z = k22 * delta_curv
+        elif sec.type == "AggregatorSection2d":
+            (axial_force, moment_z, k11, k12, k22) = aggregator_section2d_set_trial_from_offset(
+                sec,
+                uniaxial_defs,
+                uniaxial_state_defs,
+                uniaxial_states,
+                elem_uniaxial_state_ids,
+                elem_offset,
+                elem_state_count,
+                delta_axial,
+                delta_curv,
+            )
         elif sec.type == "FiberSection2d":
             var sec_index = fiber_section_index_by_id[elem_section_ids[e]]
             if sec_index < 0 or sec_index >= len(fiber_section_defs):
@@ -1542,7 +1557,9 @@ fn assemble_global_stiffness_and_internal_soa(
             k12 = resp.k12
             k22 = resp.k22
         else:
-            abort("zeroLengthSection requires FiberSection2d or ElasticSection2d")
+            abort(
+                "zeroLengthSection requires FiberSection2d, ElasticSection2d, or AggregatorSection2d"
+            )
         K[u1][u1] += k11
         K[u1][r1] += k12
         K[u1][u2] -= k11
@@ -2146,6 +2163,8 @@ fn _assemble_global_stiffness_and_internal_filtered(
             var delta_curv = u[dof_map[5]] - u[dof_map[2]]
 
             var sec = sections_by_id[elem.section]
+            var elem_offset = elem_uniaxial_offsets[e]
+            var elem_state_count = elem_uniaxial_counts[e]
             var axial_force = 0.0
             var moment_z = 0.0
             var k11 = 0.0
@@ -2156,6 +2175,18 @@ fn _assemble_global_stiffness_and_internal_filtered(
                 k22 = sec.E * sec.I
                 axial_force = k11 * delta_axial
                 moment_z = k22 * delta_curv
+            elif sec.type == "AggregatorSection2d":
+                (axial_force, moment_z, k11, k12, k22) = aggregator_section2d_set_trial_from_offset(
+                    sec,
+                    uniaxial_defs,
+                    uniaxial_state_defs,
+                    uniaxial_states,
+                    elem_uniaxial_state_ids,
+                    elem_offset,
+                    elem_state_count,
+                    delta_axial,
+                    delta_curv,
+                )
             elif sec.type == "FiberSection2d":
                 var sec_index = fiber_section_index_by_id[elem.section]
                 if sec_index < 0 or sec_index >= len(fiber_section_defs):
@@ -2186,7 +2217,9 @@ fn _assemble_global_stiffness_and_internal_filtered(
                 k12 = resp.k12
                 k22 = resp.k22
             else:
-                abort("zeroLengthSection requires FiberSection2d or ElasticSection2d")
+                abort(
+                    "zeroLengthSection requires FiberSection2d, ElasticSection2d, or AggregatorSection2d"
+                )
 
             var u1 = dof_map[0]
             var r1 = dof_map[2]

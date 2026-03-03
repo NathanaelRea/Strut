@@ -130,6 +130,24 @@ def test_convert_ex5_disables_transient_force_beam_local_force_parity():
     assert recorders[("section_deformation", "DefoEle1sec5")].get("parity", True) is True
 
 
+def test_convert_ex9_2d_aggregator_moment_curvature_wrapper():
+    entry = (
+        REPO_ROOT
+        / "docs/agent-reference/OpenSeesExamplesAdvanced"
+        / "opensees_example_9_build_analyze_a_section_example"
+        / "Ex9.complete.Ex9AnalyzeMomentCurvature2D.tcl"
+    )
+
+    case = tcl_to_strut.convert_tcl_to_case(entry, REPO_ROOT)
+
+    assert case["model"] == {"ndm": 2, "ndf": 3}
+    assert any(section["type"] == "AggregatorSection2d" for section in case["sections"])
+    assert any(element["type"] == "zeroLengthSection" for element in case["elements"])
+    assert case["analysis"]["type"] == "staged"
+    recorders = {rec["type"]: rec for rec in case["recorders"]}
+    assert recorders["node_displacement"]["raw_path"] == "data/Mphi.out"
+
+
 def test_solver_input_matches_json_adapter_for_tcl_case():
     entry = (
         REPO_ROOT

@@ -92,6 +92,8 @@ BENCHMARK_SUITES: Dict[str, List[str]] = {
         "opensees_example_2d_elastic_cantileaver_column",
         "opensees_example_rc_frame_earthquake",
         "opensees_example_ex5_frame2d_eq_uniform_rc_fiber",
+        "opensees_example_ex9_moment_curvature_2d",
+        "opensees_example_ex9_analyze_moment_curvature_2d",
         "elastic_transient_newmark_path",
         "steel01_truss_transient_modified_newton_benchmark",
     ],

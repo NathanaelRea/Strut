@@ -12,6 +12,7 @@ from python import Python, PythonObject
 from materials import UniMaterialDef, UniMaterialState, uni_mat_is_elastic
 from solver.dof import node_dof_index, require_dof_in_range
 from solver.reorder import build_node_adjacency_typed, rcm_order
+from solver.run_case.helpers import _aggregator_section2d_expected_state_count
 from solver.run_case.input_types import (
     AnalysisInput,
     CaseInput,
@@ -1111,8 +1112,14 @@ fn load_case_state_from_input(input: CaseInput) raises -> RunCaseState:
             var sec = typed_sections_by_id[elem.section]
             if sec.id < 0:
                 abort("zeroLengthSection section not found")
-            if sec.type != "FiberSection2d" and sec.type != "ElasticSection2d":
-                abort("zeroLengthSection requires FiberSection2d or ElasticSection2d")
+            if (
+                sec.type != "FiberSection2d"
+                and sec.type != "ElasticSection2d"
+                and sec.type != "AggregatorSection2d"
+            ):
+                abort(
+                    "zeroLengthSection requires FiberSection2d, ElasticSection2d, or AggregatorSection2d"
+                )
             elem.dof_count = 6
             _set_elem_dof(elem, 0, node_dof_index(elem.node_index_1, 1, ndf))
             _set_elem_dof(elem, 1, node_dof_index(elem.node_index_1, 2, ndf))
@@ -1559,10 +1566,43 @@ fn load_case_state_from_input(input: CaseInput) raises -> RunCaseState:
                     elem_uniaxial_state_ids.append(state_index)
                     if not uni_mat_is_elastic(mat_def):
                         used_nonelastic_uniaxial = True
+            elif sec.type == "AggregatorSection2d":
+                var expected_state_count = _aggregator_section2d_expected_state_count(sec)
+                elem_uniaxial_counts[e] = expected_state_count
+                if sec.axial_material >= 0:
+                    if (
+                        sec.axial_material >= len(uniaxial_def_by_id)
+                        or uniaxial_def_by_id[sec.axial_material] < 0
+                    ):
+                        abort("AggregatorSection2d axial material must be uniaxial")
+                    var def_index = uniaxial_def_by_id[sec.axial_material]
+                    var mat_def = uniaxial_defs[def_index]
+                    var state_index = len(uniaxial_states)
+                    uniaxial_states.append(UniMaterialState(mat_def))
+                    uniaxial_state_defs.append(def_index)
+                    elem_uniaxial_state_ids.append(state_index)
+                    if not uni_mat_is_elastic(mat_def):
+                        used_nonelastic_uniaxial = True
+                if sec.flexural_material >= 0:
+                    if (
+                        sec.flexural_material >= len(uniaxial_def_by_id)
+                        or uniaxial_def_by_id[sec.flexural_material] < 0
+                    ):
+                        abort("AggregatorSection2d flexural material must be uniaxial")
+                    var def_index = uniaxial_def_by_id[sec.flexural_material]
+                    var mat_def = uniaxial_defs[def_index]
+                    var state_index = len(uniaxial_states)
+                    uniaxial_states.append(UniMaterialState(mat_def))
+                    uniaxial_state_defs.append(def_index)
+                    elem_uniaxial_state_ids.append(state_index)
+                    if not uni_mat_is_elastic(mat_def):
+                        used_nonelastic_uniaxial = True
             elif sec.type == "ElasticSection2d":
                 elem_uniaxial_counts[e] = 0
             else:
-                abort("zeroLengthSection requires FiberSection2d or ElasticSection2d")
+                abort(
+                    "zeroLengthSection requires FiberSection2d, ElasticSection2d, or AggregatorSection2d"
+                )
         else:
             elem_uniaxial_offsets[e] = len(elem_uniaxial_state_ids)
             elem_uniaxial_counts[e] = 0

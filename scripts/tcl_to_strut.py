@@ -42,6 +42,7 @@ SUPPORTED_TCL_BUILTINS = frozenset(
         "for",
         "foreach",
         "format",
+        "global",
         "if",
         "incr",
         "lappend",
@@ -697,6 +698,26 @@ class TclStrutBuilder:
             params = section["params"]
             e_value = float(params["E"])
             return e_value * float(params["A"]), e_value * float(params["I"])
+        if section["type"] == "AggregatorSection2d":
+            params = section["params"]
+            if int(params.get("base_section", -1)) >= 0:
+                raise self._error(
+                    "AggregatorSection2d with -section is not supported for stiffness recovery",
+                    "section",
+                    (),
+                )
+            axial_mat = int(params.get("axial_material", -1))
+            flexural_mat = int(params.get("flexural_material", -1))
+            if axial_mat < 0 or flexural_mat < 0:
+                raise self._error(
+                    "AggregatorSection2d requires axial_material and flexural_material",
+                    "section",
+                    (),
+                )
+            return (
+                self._material_modulus(axial_mat),
+                self._material_modulus(flexural_mat),
+            )
         if section["type"] != "FiberSection2d":
             raise self._error(
                 f"unsupported section type `{section['type']}` for stiffness recovery",
@@ -1315,6 +1336,69 @@ class TclStrutBuilder:
                         }
                     )
                 self.current_section = None
+            return ""
+        if section_type == "Aggregator":
+            if len(args) < 4:
+                raise self._error(
+                    "Aggregator expects `section Aggregator tag mat response ... ?-section base?`",
+                    "section",
+                    args,
+                )
+            tag = int(args[1])
+            params: dict[str, Any] = {
+                "axial_material": -1,
+                "flexural_material": -1,
+                "moment_y_material": -1,
+                "torsion_material": -1,
+                "shear_y_material": -1,
+                "shear_z_material": -1,
+                "base_section": -1,
+            }
+            response_key_by_name = {
+                "P": "axial_material",
+                "Mz": "flexural_material",
+                "My": "moment_y_material",
+                "T": "torsion_material",
+                "Vy": "shear_y_material",
+                "Vz": "shear_z_material",
+            }
+            idx = 2
+            while idx < len(args):
+                token = args[idx]
+                if token == "-section":
+                    if idx + 1 >= len(args):
+                        raise self._error(
+                            "Aggregator -section expects a base section tag",
+                            "section",
+                            args,
+                        )
+                    params["base_section"] = int(args[idx + 1])
+                    idx += 2
+                    continue
+                if idx + 1 >= len(args):
+                    raise self._error(
+                        "Aggregator response pair is incomplete",
+                        "section",
+                        args,
+                    )
+                material_id = int(token)
+                response_name = args[idx + 1]
+                response_key = response_key_by_name.get(response_name)
+                if response_key is None:
+                    raise self._error(
+                        f"unsupported Aggregator response `{response_name}`",
+                        "section",
+                        args,
+                    )
+                if int(params[response_key]) >= 0:
+                    raise self._error(
+                        f"duplicate Aggregator response `{response_name}`",
+                        "section",
+                        args,
+                    )
+                params[response_key] = material_id
+                idx += 2
+            self._upsert_section({"id": tag, "type": "AggregatorSection2d", "params": params})
             return ""
         raise self._error(
             f"unsupported section type `{section_type}`",

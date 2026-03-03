@@ -221,6 +221,13 @@ def test_resolve_case_from_name_supports_direct_tcl_manifest(tmp_path: Path):
     assert case.benchmark_size == "medium"
 
 
+def test_opt_full_suite_includes_new_ex9_direct_tcl_benchmarks():
+    suite = run_benchmarks.BENCHMARK_SUITES["opt_full_v1"]
+
+    assert "opensees_example_ex9_moment_curvature_2d" in suite
+    assert "opensees_example_ex9_analyze_moment_curvature_2d" in suite
+
+
 def test_write_solver_input_pickle_round_trips(tmp_path: Path):
     payload = {"model": {"ndm": 2, "ndf": 3}, "recorders": []}
     out_path = tmp_path / "solver.pkl"

@@ -119,6 +119,81 @@ fn _elem_dof_map(elem: ElementInput) -> List[Int]:
     return dof_map^
 
 
+fn _aggregator_section2d_expected_state_count(sec: SectionInput) -> Int:
+    if sec.base_section >= 0:
+        abort("AggregatorSection2d with -section is not yet supported")
+    var count = 0
+    if sec.axial_material >= 0:
+        count += 1
+    if sec.flexural_material >= 0:
+        count += 1
+    if sec.moment_y_material >= 0 or sec.torsion_material >= 0:
+        abort("AggregatorSection2d only supports P and Mz")
+    if sec.shear_y_material >= 0 or sec.shear_z_material >= 0:
+        abort("AggregatorSection2d shear responses are not yet supported")
+    if count == 0:
+        abort("AggregatorSection2d requires at least one uniaxial response")
+    return count
+
+
+fn aggregator_section2d_set_trial_from_offset(
+    sec: SectionInput,
+    uniaxial_defs: List[UniMaterialDef],
+    uniaxial_state_defs: List[Int],
+    mut uniaxial_states: List[UniMaterialState],
+    elem_uniaxial_state_ids: List[Int],
+    elem_offset: Int,
+    elem_state_count: Int,
+    delta_axial: Float64,
+    delta_curv: Float64,
+) raises -> (Float64, Float64, Float64, Float64, Float64):
+    var expected = _aggregator_section2d_expected_state_count(sec)
+    if elem_state_count != expected:
+        abort("AggregatorSection2d state count mismatch")
+    var axial_force = 0.0
+    var moment_z = 0.0
+    var k11 = 0.0
+    var k12 = 0.0
+    var k22 = 0.0
+    var offset = elem_offset
+    if sec.axial_material >= 0:
+        if offset < 0 or offset >= len(elem_uniaxial_state_ids):
+            abort("AggregatorSection2d axial state out of range")
+        var state_id = elem_uniaxial_state_ids[offset]
+        if state_id < 0 or state_id >= len(uniaxial_states):
+            abort("AggregatorSection2d axial state id out of range")
+        if state_id < 0 or state_id >= len(uniaxial_state_defs):
+            abort("AggregatorSection2d axial state def out of range")
+        var state = uniaxial_states[state_id]
+        var def_index = uniaxial_state_defs[state_id]
+        if def_index < 0 or def_index >= len(uniaxial_defs):
+            abort("AggregatorSection2d axial material definition out of range")
+        var mat_def = uniaxial_defs[def_index]
+        uniaxial_set_trial_strain(mat_def, state, delta_axial)
+        axial_force = state.sig_t
+        k11 = state.tangent_t
+        uniaxial_states[state_id] = state
+        offset += 1
+    if sec.flexural_material >= 0:
+        if offset < 0 or offset >= len(elem_uniaxial_state_ids):
+            abort("AggregatorSection2d flexural state out of range")
+        var state_id = elem_uniaxial_state_ids[offset]
+        if state_id < 0 or state_id >= len(uniaxial_states):
+            abort("AggregatorSection2d flexural state id out of range")
+        if state_id < 0 or state_id >= len(uniaxial_state_defs):
+            abort("AggregatorSection2d flexural state def out of range")
+        var state = uniaxial_states[state_id]
+        var def_index = uniaxial_state_defs[state_id]
+        if def_index < 0 or def_index >= len(uniaxial_defs):
+            abort("AggregatorSection2d flexural material definition out of range")
+        var mat_def = uniaxial_defs[def_index]
+        uniaxial_set_trial_strain(mat_def, state, delta_curv)
+        moment_z = state.sig_t
+        k22 = state.tangent_t
+        uniaxial_states[state_id] = state
+    return (axial_force, moment_z, k11, k12, k22)
+
+
 fn _gather_element_u(dof_map: List[Int], u: List[Float64]) -> List[Float64]:
     var out: List[Float64] = []
     out.resize(len(dof_map), 0.0)
