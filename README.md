@@ -1,73 +1,68 @@
 # 🔥 Strut 🔥
 
-Performance-first finite element analysis (FEA) research sandbox written in Mojo. The project focuses on structural mechanics workloads and aims to squeeze as much performance as possible from modern accelerators while remaining easy to validate against analytical solutions and other state of the art solvers.
+Performance-first finite element analysis (FEA) engine written in Mojo. The project focuses on structural engineering transient analysis (Buildings/Earthquakes), and aims to squeeze out as much performance as possible. Benchmarks and validation is run against OpenSees.
 
 ## Background
 
-This is a test project for now, primarily just to see how far I can push the vibes. The setup is a bit specific for my environment, and not very general right now.
-
-- AMD GPU
-- On Linux (using wine to run OpenSees)
+This is a test project for now, primarily just to see how far I can push the vibes. The setup is a bit specific for my environment, and I haven't put much effort into making the best DX for other developers.
 
 ## Quick Start
 
 1. Fetch the dependencies `uv sync`
-2. Download `OpenSees.exe` and necessary `tcl` files, put into [OpenSees](./benchmark/OpenSees/)
-3. Run the [setup script](./scripts/setup.sh) to download docs and repos that can be used by the agent
+2. Download `OpenSees.exe` and necessary `tcl` files, copy into [benchmark/OpenSees/](./benchmark/OpenSees/)
+3. Run the [setup script](./scripts/setup.sh) to clone reference repos, download modular docs, and download OpenSees examples.
 
 ## OpenSees Coverage Checklist
 
 Element families below are based on the local OpenSees reference tree (`docs/agent-reference/OpenSees/SRC/element`) and current Strut implementation status. This is a family-level view (not the full command/alias list from `OpenSeesElementCommands.cpp`).
 
-Legend: `✅` implemented in Strut, `❌` available in OpenSees but not implemented in Strut, blank cell = not available/not-applicable for that 2D/3D slot at family level. `Full` is full family coverage (`✅` only when all applicable 2D/3D variants are implemented; for non-2D/3D families it is the direct full-family status).
-
-| Element family              | 2D  | 3D  | Full |
-| --------------------------- | --- | --- | ---- |
-| CEqElement                  | ❌  | ❌  | ❌   |
-| HUelements                  |     | ❌  | ❌   |
-| IGA                         |     |     | ❌   |
-| LHMYS                       | ❌  |     | ❌   |
-| PFEMElement                 | ❌  | ❌  | ❌   |
-| PML                         | ❌  | ❌  | ❌   |
-| RockingBC                   |     |     | ❌   |
-| UP-ucsd                     | ❌  | ❌  | ❌   |
-| UWelements                  | ❌  | ❌  | ❌   |
-| XMUelements                 |     | ❌  | ❌   |
-| absorbentBoundaries         | ❌  | ❌  | ❌   |
-| adapter                     |     |     | ❌   |
-| beam2d                      | ❌  |     | ❌   |
-| beam3d                      |     | ❌  | ❌   |
-| beamWithHinges              | ❌  | ❌  | ❌   |
-| brick                       |     | ❌  | ❌   |
-| catenaryCable               |     |     | ❌   |
-| componentElement            | ❌  | ❌  | ❌   |
-| dispBeamColumn              | ✅  | ✅  | ✅   |
-| dispBeamColumnInt           | ❌  |     | ❌   |
-| dmglib                      |     |     | ❌   |
-| elasticBeamColumn           | ✅  | ✅  | ✅   |
-| elastomericBearing          | ❌  | ❌  | ❌   |
-| feap                        |     |     | ❌   |
-| fmkPlanarTruss              | ❌  |     | ❌   |
-| forceBeamColumn             | ✅  | ✅  | ✅   |
-| fourNodeQuad                | ✅  |     | ✅   |
-| frictionBearing             | ❌  | ❌  | ❌   |
-| generic                     |     |     | ❌   |
-| gradientInelasticBeamColumn | ❌  | ❌  | ❌   |
-| joint                       | ❌  | ❌  | ❌   |
-| masonry                     | ❌  | ❌  | ❌   |
-| mefi                        |     |     | ❌   |
-| mixedBeamColumn             | ❌  | ❌  | ❌   |
-| mvlem                       | ❌  | ❌  | ❌   |
-| pipe                        |     |     | ❌   |
-| pyMacro                     | ❌  |     | ❌   |
-| shell                       |     | ✅  | ✅   |
-| surfaceLoad                 |     |     | ❌   |
-| tetrahedron                 |     | ❌  | ❌   |
-| triangle                    | ❌  |     | ❌   |
-| truss                       | ✅  | ✅  | ✅   |
-| twoNodeLink                 | ✅  | ✅  | ✅   |
-| updatedLagrangianBeamColumn | ❌  |     | ❌   |
-| zeroLength                  | ✅  | ✅  | ✅   |
+| Element family              | 2D  | 3D  |     |
+| --------------------------- | --- | --- | --- |
+| CEqElement                  | ❌  | ❌  |     |
+| HUelements                  |     | ❌  |     |
+| IGA                         |     |     | ❌  |
+| LHMYS                       | ❌  |     |     |
+| PFEMElement                 | ❌  | ❌  |     |
+| PML                         | ❌  | ❌  |     |
+| RockingBC                   |     |     | ❌  |
+| UP-ucsd                     | ❌  | ❌  |     |
+| UWelements                  | ❌  | ❌  |     |
+| XMUelements                 |     | ❌  |     |
+| absorbentBoundaries         | ❌  | ❌  |     |
+| adapter                     |     |     | ❌  |
+| beam2d                      | ❌  |     |     |
+| beam3d                      |     | ❌  |     |
+| beamWithHinges              | ❌  | ❌  |     |
+| brick                       |     | ❌  |     |
+| catenaryCable               |     |     | ❌  |
+| componentElement            | ❌  | ❌  |     |
+| dispBeamColumn              | ✅  | ✅  |     |
+| dispBeamColumnInt           | ❌  |     |     |
+| dmglib                      |     |     |     |
+| elasticBeamColumn           | ✅  | ✅  |     |
+| elastomericBearing          | ❌  | ❌  |     |
+| feap                        |     |     |     |
+| fmkPlanarTruss              | ❌  |     |     |
+| forceBeamColumn             | ✅  | ✅  |     |
+| fourNodeQuad                | ✅  |     |     |
+| frictionBearing             | ❌  | ❌  |     |
+| generic                     |     |     | ❌  |
+| gradientInelasticBeamColumn | ❌  | ❌  |     |
+| joint                       | ❌  | ❌  |     |
+| masonry                     | ❌  | ❌  |     |
+| mefi                        |     |     | ❌  |
+| mixedBeamColumn             | ❌  | ❌  |     |
+| mvlem                       | ❌  | ❌  |     |
+| pipe                        |     |     | ❌  |
+| pyMacro                     | ❌  |     |     |
+| shell                       |     | ✅  |     |
+| surfaceLoad                 |     |     | ❌  |
+| tetrahedron                 |     | ❌  |     |
+| triangle                    | ❌  |     |     |
+| truss                       | ✅  | ✅  |     |
+| twoNodeLink                 | ✅  | ✅  |     |
+| updatedLagrangianBeamColumn | ❌  |     |     |
+| zeroLength                  | ✅  | ✅  |     |
 
 ### Uniaxial Materials (`uniaxialMaterial`)
 
