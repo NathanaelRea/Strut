@@ -23,3 +23,27 @@ def _load_plot_benchmarks_module():
 
 plot_benchmarks = _load_plot_benchmarks_module()
 
+
+def test_write_plots_pdf_writes_output_for_recent_case_summary(tmp_path: Path):
+    results_path = tmp_path / "summary.json"
+    archive_dir = tmp_path / "archive"
+    output_path = tmp_path / "plots.pdf"
+    results_path.write_text(
+        (
+            '{"generated_at":"2026-03-03T00:00:00Z","cases":['
+            '{"name":"elastic_beam_cantilever","dofs":6,'
+            '"opensees":{"analysis_us":20.0},"strut":{"analysis_us":10.0}}'
+            "]}\n"
+        ),
+        encoding="utf-8",
+    )
+
+    result = plot_benchmarks.write_plots_pdf(
+        results_path=results_path,
+        archive_dir=archive_dir,
+        output_path=output_path,
+    )
+
+    assert result == output_path
+    assert output_path.exists()
+    assert output_path.stat().st_size > 0

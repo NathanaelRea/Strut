@@ -1,7 +1,6 @@
 {
   "schema_version": "1.0",
   "enabled": true,
-  "status": "benchmark",
   "benchmark_size": "small",
   "metadata": {
     "name": "force_beam_column3d_portal_benchmark",

@@ -114,7 +114,6 @@ def build_frame_case(
     data = {
         "schema_version": "1.0",
         "enabled": enabled,
-        "status": "benchmark",
         "metadata": {"name": name, "units": "SI"},
         "opensees": {
             "model_builder": {"type": "BasicBuilder", "ndm": 2, "ndf": 3},

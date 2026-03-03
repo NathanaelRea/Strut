@@ -77,7 +77,9 @@ def test_load_case_enabled_uses_enabled_flag_only(tmp_path: Path):
     assert run_benchmarks.load_case_enabled(enabled_bench_case) is True
 
 
-def test_discover_default_cases_excludes_disabled_cases(monkeypatch, tmp_path: Path):
+def test_discover_default_cases_includes_all_cases_before_enabled_filter(
+    monkeypatch, tmp_path: Path
+):
     validation_root = tmp_path / "validation"
     _write_case(
         validation_root / "elastic_enabled_case" / "elastic_enabled_case.json",
@@ -99,7 +101,7 @@ def test_discover_default_cases_excludes_disabled_cases(monkeypatch, tmp_path: P
     case_names = [
         case.name for case in run_benchmarks.discover_default_cases(validation_root)
     ]
-    assert case_names == ["elastic_enabled_case"]
+    assert case_names == ["bench_case", "disabled_case", "elastic_enabled_case"]
 
 
 def test_discover_default_cases_includes_enabled_direct_tcl_case(tmp_path: Path):
@@ -678,3 +680,188 @@ def test_resolve_recorder_tolerance_prefers_per_recorder_override():
 
     assert rtol == pytest.approx(0.3)
     assert atol == pytest.approx(0.01)
+
+
+def test_write_benchmark_plots_calls_plot_helper(monkeypatch, tmp_path: Path):
+    calls = []
+
+    class FakePlotBenchmarksModule:
+        @staticmethod
+        def write_plots_pdf(**kwargs):
+            calls.append(kwargs)
+            kwargs["output_path"].write_text("pdf", encoding="utf-8")
+            return kwargs["output_path"]
+
+    monkeypatch.setattr(
+        run_benchmarks.importlib,
+        "import_module",
+        lambda name: (
+            FakePlotBenchmarksModule
+            if name == "plot_benchmarks"
+            else (_ for _ in ()).throw(AssertionError(f"unexpected import {name}"))
+        ),
+    )
+
+    summary_json = tmp_path / "summary.json"
+    archive_dir = tmp_path / "archive"
+    plots_pdf = tmp_path / "plots.pdf"
+    summary_json.write_text('{"cases": []}\n', encoding="utf-8")
+
+    result = run_benchmarks._write_benchmark_plots(
+        results_path=summary_json,
+        archive_dir=archive_dir,
+        output_path=plots_pdf,
+    )
+
+    assert result == plots_pdf
+    assert calls == [
+        {
+            "results_path": summary_json,
+            "archive_dir": archive_dir,
+            "output_path": plots_pdf,
+        }
+    ]
+
+
+def test_finalize_benchmark_outputs_skips_archive_when_disabled(
+    monkeypatch, tmp_path: Path
+):
+    results_root = tmp_path / "results"
+    archive_root = tmp_path / "archive"
+    results_root.mkdir(parents=True, exist_ok=True)
+
+    summary_json = results_root / "summary.json"
+    summary_csv = results_root / "summary.csv"
+    metadata_json = results_root / "metadata.json"
+    phase_summary_csv = results_root / "phase_summary.csv"
+    phase_rollup_csv = results_root / "phase_rollup.csv"
+    for path in (
+        summary_json,
+        summary_csv,
+        metadata_json,
+        phase_summary_csv,
+        phase_rollup_csv,
+    ):
+        path.write_text("data\n", encoding="utf-8")
+
+    archive_calls = []
+    plot_calls = []
+
+    monkeypatch.setattr(
+        run_benchmarks,
+        "_archive_benchmark_artifacts",
+        lambda *args, **kwargs: archive_calls.append((args, kwargs)) or [],
+    )
+    monkeypatch.setattr(
+        run_benchmarks,
+        "_write_benchmark_plots",
+        lambda **kwargs: plot_calls.append(kwargs) or kwargs["output_path"],
+    )
+
+    result = run_benchmarks._finalize_benchmark_outputs(
+        no_archive=True,
+        archive_root=archive_root,
+        results_root=results_root,
+        summary_json=summary_json,
+        summary_csv=summary_csv,
+        metadata_json=metadata_json,
+        phase_summary_csv=phase_summary_csv,
+        phase_rollup_csv=phase_rollup_csv,
+    )
+
+    assert result == results_root / "plots.pdf"
+    assert archive_calls == []
+    assert plot_calls == [
+        {
+            "results_path": summary_json,
+            "archive_dir": archive_root,
+            "output_path": results_root / "plots.pdf",
+        }
+    ]
+
+
+def test_finalize_benchmark_outputs_archives_summary_and_plot(
+    monkeypatch, tmp_path: Path
+):
+    results_root = tmp_path / "results"
+    archive_root = tmp_path / "archive"
+    results_root.mkdir(parents=True, exist_ok=True)
+
+    summary_json = results_root / "summary.json"
+    summary_csv = results_root / "summary.csv"
+    metadata_json = results_root / "metadata.json"
+    phase_summary_csv = results_root / "phase_summary.csv"
+    phase_rollup_csv = results_root / "phase_rollup.csv"
+    for path in (
+        summary_json,
+        summary_csv,
+        metadata_json,
+        phase_summary_csv,
+        phase_rollup_csv,
+    ):
+        path.write_text("data\n", encoding="utf-8")
+
+    archive_calls = []
+    plot_calls = []
+    plots_pdf = results_root / "plots.pdf"
+
+    monkeypatch.setattr(
+        run_benchmarks,
+        "_archive_benchmark_artifacts",
+        lambda archive_root, stamp, artifacts: archive_calls.append(
+            (archive_root, stamp, list(artifacts))
+        )
+        or [],
+    )
+    monkeypatch.setattr(
+        run_benchmarks,
+        "_write_benchmark_plots",
+        lambda **kwargs: plot_calls.append(kwargs) or plots_pdf,
+    )
+
+    fixed_now = SimpleNamespace(
+        strftime=lambda fmt: "20260303T120000Z",
+    )
+    monkeypatch.setattr(
+        run_benchmarks,
+        "datetime",
+        SimpleNamespace(now=lambda tz: fixed_now),
+    )
+
+    result = run_benchmarks._finalize_benchmark_outputs(
+        no_archive=False,
+        archive_root=archive_root,
+        results_root=results_root,
+        summary_json=summary_json,
+        summary_csv=summary_csv,
+        metadata_json=metadata_json,
+        phase_summary_csv=phase_summary_csv,
+        phase_rollup_csv=phase_rollup_csv,
+    )
+
+    assert result == plots_pdf
+    assert plot_calls == [
+        {
+            "results_path": summary_json,
+            "archive_dir": archive_root,
+            "output_path": plots_pdf,
+        }
+    ]
+    assert archive_calls == [
+        (
+            archive_root,
+            "20260303T120000Z",
+            [
+                summary_json,
+                summary_csv,
+                metadata_json,
+                phase_summary_csv,
+                phase_rollup_csv,
+            ],
+        ),
+        (
+            archive_root,
+            "20260303T120000Z",
+            [plots_pdf],
+        ),
+    ]

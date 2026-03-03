@@ -4,8 +4,8 @@ Tools for comparing OpenSees (Wine) and Strut (Mojo) runtime performance.
 
 ## Runner
 
-Use `scripts/run_benchmarks.py` to run the default elastic cases or a custom
-case list from `tests/validation/`. The Mojo solver is precompiled before
+Use `scripts/run_benchmarks.py` to run the default enabled validation cases on
+both engines, or a custom case list from `tests/validation/`. The Mojo solver is precompiled before
 timing (cached at `build/strut/strut`).
 
 Examples:
@@ -63,7 +63,10 @@ uv run scripts/run_benchmarks.py --cases elastic_truss_basic,elastic_four_node_q
 - `analysis_time_us.txt` is solve-only for both engines (OpenSees `analyze/eigen`, Mojo solve phase).
 - Batch mode is enabled for both engines by default; use `--no-batch` for single-case process timings.
 - OpenSees batch mode prewarms `eigen` once outside case timers to remove first-call initialization skew.
-- Default batch runs (without `--cases` or `--gen-frame-*`) auto-include generated medium-size frame benchmarks.
+- Default runs benchmark all enabled cases in `tests/validation/` on both engines.
+- `--include-disabled` adds disabled validation cases to the default run.
+- Benchmark participation is controlled by case selection plus `enabled`, not by a separate `status` flag.
+- Default batch runs (without `--cases` or `--gen-frame-*`) also auto-include generated medium-size frame benchmarks.
 
 Both directories are ignored by git.
 

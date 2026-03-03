@@ -178,6 +178,6 @@ Per-case overrides:
 - For static analyses with time series, Strut uses normalized pseudoTime `t = (step + 1) / steps` (static_linear uses `t = 1.0`).
 - Validation parity tests run only cases with `"enabled": true` by default (`STRUT_RUN_ALL_CASES=1` includes disabled cases). `STRUT_FORCE_CASE=1` forces a disabled case in `scripts/run_case.py`.
 - Recorder entries may set `"parity": false` to generate outputs but exclude that recorder from parity checks.
-- Benchmarks include `"enabled": true` cases and also disabled cases tagged with `"status": "benchmark"`.
+- Benchmarks run all `"enabled": true` validation cases by default; `--include-disabled` adds disabled cases too.
 - OpenSees reference outputs are cached by JSON content hash in `tests/validation/<case>/reference/.ref_hash`. Set `STRUT_REFRESH_REFERENCE=1` to regenerate.
 - Benchmarks use `scripts/run_benchmarks.py`. The latest run is written to `benchmark/results/` (`benchmark/results-profile/` when `--profile`), and summary snapshots are archived in `benchmark/archive/` (both ignored by git). Runs with `--profile` default to `--no-archive`.

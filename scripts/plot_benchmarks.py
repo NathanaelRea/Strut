@@ -522,6 +522,145 @@ def plot_archive_trend(
     return fig
 
 
+def write_plots_pdf(
+    *,
+    results_path: Path,
+    archive_dir: Path,
+    output_path: Path,
+    group_by: str = "prefix",
+    group_config: Optional[Path] = None,
+    group_gap: float = 0.6,
+    large_threshold: int = 1000,
+    medium_threshold: int = 300,
+) -> Path:
+    if not results_path.exists():
+        raise SystemExit(f"Missing results summary: {results_path}")
+
+    summary = load_summary(results_path)
+    cases = summary.get("cases", [])
+    small_indices: List[int] = []
+    medium_indices: List[int] = []
+    large_indices: List[int] = []
+    for idx, case in enumerate(cases):
+        override = _case_size_override(case)
+        if override == "large":
+            large_indices.append(idx)
+            continue
+        if override == "medium":
+            medium_indices.append(idx)
+            continue
+        if override == "small":
+            small_indices.append(idx)
+            continue
+        free_dofs = _case_free_dofs(case)
+        if free_dofs is not None:
+            if free_dofs >= large_threshold:
+                large_indices.append(idx)
+            elif free_dofs >= medium_threshold:
+                medium_indices.append(idx)
+            else:
+                small_indices.append(idx)
+        else:
+            small_indices.append(idx)
+
+    def _prepare(indices: List[int]):
+        names, engines, errors = collect_recent_cases(summary, indices)
+        names, engines, errors, group_spans = group_cases(
+            names,
+            engines,
+            errors,
+            group_by,
+            group_config,
+        )
+        for engine, values in engines.items():
+            if values and all(isinstance(v, float) and v != v for v in values):
+                print(
+                    f"warning: no analysis timings for {engine} in {results_path}; "
+                    "rebuild and rerun benchmarks to populate analysis_us"
+                )
+        return names, engines, errors, group_spans
+
+    small_names, small_engines, small_errors, small_spans = _prepare(small_indices)
+    medium_names, medium_engines, medium_errors, medium_spans = _prepare(medium_indices)
+    large_names, large_engines, large_errors, large_spans = _prepare(large_indices)
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with PdfPages(output_path) as pdf:
+        if archive_dir.exists():
+            archive_min_ts = archive_min_timestamp(archive_dir)
+            archive_specs = [
+                ("small", "Archive trend (small cases)", "us", 1e6),
+                ("medium", "Archive trend (medium cases)", "ms", 1e3),
+                ("large", "Archive trend (large cases)", "s", 1.0),
+            ]
+            for size_label, title, unit_label, scale in archive_specs:
+                timestamps, means, stds = collect_archive_trend(
+                    archive_dir,
+                    size_label,
+                    medium_threshold,
+                    large_threshold,
+                )
+                if timestamps and any(
+                    isinstance(v, float) and math.isfinite(v)
+                    for vals in means.values()
+                    for v in vals
+                ):
+                    fig = plot_archive_trend(
+                        timestamps,
+                        means,
+                        stds,
+                        title,
+                        unit_label,
+                        scale,
+                        min_timestamp=archive_min_ts,
+                    )
+                    pdf.savefig(fig)
+                    plt.close(fig)
+
+        if small_names:
+            fig = plot_recent_bar(
+                small_names,
+                small_engines,
+                small_errors,
+                small_spans,
+                group_gap=group_gap,
+                title="Recent benchmark (small cases)",
+            )
+            pdf.savefig(fig)
+            plt.close(fig)
+
+        if medium_names:
+            fig = plot_recent_bar(
+                medium_names,
+                medium_engines,
+                medium_errors,
+                medium_spans,
+                group_gap=group_gap,
+                title="Recent benchmark (medium cases)",
+                unit_label="ms",
+                scale=1.0 / 1e3,
+            )
+            pdf.savefig(fig)
+            plt.close(fig)
+
+        if large_names:
+            fig = plot_recent_bar(
+                large_names,
+                large_engines,
+                large_errors,
+                large_spans,
+                group_gap=group_gap,
+                title="Recent benchmark (large cases)",
+                unit_label="s",
+                scale=1.0 / 1e6,
+            )
+            pdf.savefig(fig)
+            plt.close(fig)
+
+    print(f"Wrote {output_path}")
+    return output_path
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Plot benchmark summaries")
     parser.add_argument(
@@ -590,128 +729,16 @@ def main() -> None:
         else repo_root / "benchmark" / "results" / "plots.pdf"
     )
 
-    if not results_path.exists():
-        raise SystemExit(f"Missing results summary: {results_path}")
-
-    summary = load_summary(results_path)
-    cases = summary.get("cases", [])
-    small_indices: List[int] = []
-    medium_indices: List[int] = []
-    large_indices: List[int] = []
-    for idx, case in enumerate(cases):
-        override = _case_size_override(case)
-        if override == "large":
-            large_indices.append(idx)
-            continue
-        if override == "medium":
-            medium_indices.append(idx)
-            continue
-        if override == "small":
-            small_indices.append(idx)
-            continue
-        free_dofs = _case_free_dofs(case)
-        if free_dofs is not None:
-            if free_dofs >= args.large_threshold:
-                large_indices.append(idx)
-            elif free_dofs >= args.medium_threshold:
-                medium_indices.append(idx)
-            else:
-                small_indices.append(idx)
-        else:
-            small_indices.append(idx)
-
-    def _prepare(indices: List[int]):
-        names, engines, errors = collect_recent_cases(summary, indices)
-        names, engines, errors, group_spans = group_cases(
-            names,
-            engines,
-            errors,
-            args.group_by,
-            Path(args.group_config) if args.group_config else None,
-        )
-        for engine, values in engines.items():
-            if values and all(isinstance(v, float) and v != v for v in values):
-                print(
-                    f"warning: no analysis timings for {engine} in {results_path}; "
-                    "rebuild and rerun benchmarks to populate analysis_us"
-                )
-        return names, engines, errors, group_spans
-
-    small_names, small_engines, small_errors, small_spans = _prepare(small_indices)
-    medium_names, medium_engines, medium_errors, medium_spans = _prepare(medium_indices)
-    large_names, large_engines, large_errors, large_spans = _prepare(large_indices)
-
-    with PdfPages(output_path) as pdf:
-        if archive_dir.exists():
-            archive_min_ts = archive_min_timestamp(archive_dir)
-            archive_specs = [
-                ("small", "Archive trend (small cases)", "us", 1e6),
-                ("medium", "Archive trend (medium cases)", "ms", 1e3),
-                ("large", "Archive trend (large cases)", "s", 1.0),
-            ]
-            for size_label, title, unit_label, scale in archive_specs:
-                timestamps, means, stds = collect_archive_trend(
-                    archive_dir,
-                    size_label,
-                    args.medium_threshold,
-                    args.large_threshold,
-                )
-                if timestamps and any(
-                    isinstance(v, float) and math.isfinite(v)
-                    for vals in means.values()
-                    for v in vals
-                ):
-                    fig = plot_archive_trend(
-                        timestamps,
-                        means,
-                        stds,
-                        title,
-                        unit_label,
-                        scale,
-                        min_timestamp=archive_min_ts,
-                    )
-                    pdf.savefig(fig)
-                    plt.close(fig)
-
-        if small_names:
-            fig = plot_recent_bar(
-                small_names,
-                small_engines,
-                small_errors,
-                small_spans,
-                group_gap=args.group_gap,
-                title="Recent benchmark (small cases)",
-            )
-            pdf.savefig(fig)
-            plt.close(fig)
-
-        if medium_names:
-            fig = plot_recent_bar(
-                medium_names,
-                medium_engines,
-                medium_errors,
-                medium_spans,
-                group_gap=args.group_gap,
-                title="Recent benchmark (medium cases)",
-                unit_label="ms",
-                scale=1.0 / 1e3,
-            )
-            pdf.savefig(fig)
-            plt.close(fig)
-
-        if large_names:
-            fig = plot_recent_bar(
-                large_names,
-                large_engines,
-                large_errors,
-                large_spans,
-                group_gap=args.group_gap,
-                title="Recent benchmark (large cases)",
-            )
-            pdf.savefig(fig)
-            plt.close(fig)
-
-    print(f"Wrote {output_path}")
+    write_plots_pdf(
+        results_path=results_path,
+        archive_dir=archive_dir,
+        output_path=output_path,
+        group_by=args.group_by,
+        group_config=Path(args.group_config) if args.group_config else None,
+        group_gap=args.group_gap,
+        large_threshold=args.large_threshold,
+        medium_threshold=args.medium_threshold,
+    )
 
     if args.open:
         try:

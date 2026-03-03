@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import csv
+import importlib
 import json
 import os
 import platform
@@ -228,6 +229,72 @@ def _resolve_repo_relative_path(raw_path: str) -> Path:
     if path.is_absolute():
         return path.resolve()
     return (_repo_root() / path).resolve()
+
+
+def _write_benchmark_plots(
+    *,
+    results_path: Path,
+    archive_dir: Path,
+    output_path: Path,
+) -> Path:
+    plot_benchmarks = importlib.import_module("plot_benchmarks")
+    return plot_benchmarks.write_plots_pdf(
+        results_path=results_path,
+        archive_dir=archive_dir,
+        output_path=output_path,
+    )
+
+
+def _archive_benchmark_artifacts(
+    archive_root: Path,
+    stamp: str,
+    artifacts: Iterable[Path],
+) -> List[Path]:
+    archive_root.mkdir(parents=True, exist_ok=True)
+    archived_paths: List[Path] = []
+    for path in artifacts:
+        dest = archive_root / f"{stamp}-{path.name}"
+        shutil.copy2(path, dest)
+        archived_paths.append(dest)
+    return archived_paths
+
+
+def _finalize_benchmark_outputs(
+    *,
+    no_archive: bool,
+    archive_root: Path,
+    results_root: Path,
+    summary_json: Path,
+    summary_csv: Path,
+    metadata_json: Path,
+    phase_summary_csv: Path,
+    phase_rollup_csv: Path,
+) -> Path:
+    plots_pdf = results_root / "plots.pdf"
+    archive_stamp: Optional[str] = None
+    if not no_archive:
+        archive_stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        _archive_benchmark_artifacts(
+            archive_root,
+            archive_stamp,
+            [
+                summary_json,
+                summary_csv,
+                metadata_json,
+                phase_summary_csv,
+                phase_rollup_csv,
+            ],
+        )
+
+    _write_benchmark_plots(
+        results_path=summary_json,
+        archive_dir=archive_root,
+        output_path=plots_pdf,
+    )
+
+    if archive_stamp is not None:
+        _archive_benchmark_artifacts(archive_root, archive_stamp, [plots_pdf])
+    return plots_pdf
 
 
 def _is_direct_tcl_manifest(path: Path) -> bool:
@@ -650,22 +717,6 @@ def _is_case_json(path: Path) -> bool:
     return all(key in data for key in required)
 
 
-def _include_in_default_benchmarks(path: Path) -> bool:
-    data = _load_case_metadata(path)
-    if not bool(data.get("enabled", True)):
-        return False
-    status = str(data.get("status", "")).strip().lower()
-    if status == "benchmark":
-        return True
-    # Keep the default path focused on the lightweight elastic benchmark set.
-    if path.name == "direct_tcl_case.json":
-        stem = str(data.get("name") or path.parent.name)
-    else:
-        stem = path.stem
-    stem_tokens = [token for token in stem.lower().split("_") if token]
-    return "elastic" in stem_tokens
-
-
 def load_case_enabled(path: Path) -> bool:
     _, runnable = _load_case_flags(path)
     return runnable
@@ -808,22 +859,7 @@ def expand_case_patterns(
 
 
 def discover_default_cases(validation_root: Path) -> List[CaseSpec]:
-    cases = []
-    for match in validation_root.glob("*/*.json"):
-        if _is_direct_tcl_manifest(match):
-            continue
-        if not _is_case_json(match):
-            continue
-        if not _include_in_default_benchmarks(match):
-            continue
-        cases.append(CaseSpec(name=match.stem, json_path=match, metadata_path=match))
-    for match in validation_root.glob("*/direct_tcl_case.json"):
-        if not _is_direct_tcl_manifest(match):
-            continue
-        if not _include_in_default_benchmarks(match):
-            continue
-        cases.append(_direct_tcl_case_spec(match))
-    return sorted(cases, key=lambda c: c.name)
+    return discover_all_cases(validation_root)
 
 
 def discover_all_cases(validation_root: Path) -> List[CaseSpec]:
@@ -1754,7 +1790,6 @@ def main() -> None:
     summary_cases = []
     csv_rows = []
     parity_failures = []
-    benchmark_parity_failures = []
 
     log(f"Running {len(case_specs)} benchmark case(s).")
     log(
@@ -1797,11 +1832,6 @@ def main() -> None:
             "name": case_name,
             "case_data": case_data,
             "dofs": _case_free_dofs(case_data),
-            "status": str(
-                _load_case_metadata(_case_metadata_path(case)).get("status", "")
-            )
-            .strip()
-            .lower(),
         }
         if case.json_path is not None:
             case_entry["json"] = str(_case_json_path(case))
@@ -3154,10 +3184,7 @@ def main() -> None:
                     )
 
             if case_parity_failures:
-                if case_entry.get("status") == "benchmark":
-                    benchmark_parity_failures.extend(case_parity_failures)
-                else:
-                    parity_failures.extend(case_parity_failures)
+                parity_failures.extend(case_parity_failures)
 
         summary_cases.append(case_entry)
 
@@ -3206,24 +3233,23 @@ def main() -> None:
     write_phase_rollup_csv(phase_rollup_csv, phase_rows)
     log_phase_table(phase_rows)
 
-    if not args.no_archive:
-        archive_root.mkdir(parents=True, exist_ok=True)
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        shutil.copy2(summary_json, archive_root / f"{stamp}-summary.json")
-        shutil.copy2(summary_csv, archive_root / f"{stamp}-summary.csv")
-        shutil.copy2(metadata_json, archive_root / f"{stamp}-metadata.json")
-        shutil.copy2(phase_summary_csv, archive_root / f"{stamp}-phase-summary.csv")
-        shutil.copy2(phase_rollup_csv, archive_root / f"{stamp}-phase-rollup.csv")
+    plots_pdf = _finalize_benchmark_outputs(
+        no_archive=args.no_archive,
+        archive_root=archive_root,
+        results_root=results_root,
+        summary_json=summary_json,
+        summary_csv=summary_csv,
+        metadata_json=metadata_json,
+        phase_summary_csv=phase_summary_csv,
+        phase_rollup_csv=phase_rollup_csv,
+    )
 
     print(f"Wrote {summary_json}")
     print(f"Wrote {summary_csv}")
     print(f"Wrote {metadata_json}")
     print(f"Wrote {phase_summary_csv}")
     print(f"Wrote {phase_rollup_csv}")
-    if benchmark_parity_failures:
-        log("PARITY WARN (benchmark-only cases)")
-        for failure in _summarize_parity_failures(benchmark_parity_failures):
-            log(failure)
+    print(f"Wrote {plots_pdf}")
     if parity_failures:
         log_err("PARITY FAILED")
         for failure in _summarize_parity_failures(parity_failures):
