@@ -36,7 +36,7 @@ from solver.assembly.stiffness_internal_shared import (
     _profile_scope_close,
     _profile_scope_open,
     _scatter_add_and_dot_row_simd,
-    _scatter_add_row_unrolled4,
+    _scatter_add_row,
     _zero_matrix,
     _zero_vector,
 )

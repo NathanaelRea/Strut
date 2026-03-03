@@ -96,28 +96,16 @@ fn _beam_integration_name_from_tag(integration_tag: Int) -> String:
 
 
 @always_inline
-fn _scatter_add_row_unrolled4(
+fn _scatter_add_row[count: Int](
     mut K: List[List[Float64]],
     row_index: Int,
     k_row: List[Float64],
     dof_map: List[Int],
-    count: Int,
 ):
-    var b = 0
-    while b + 3 < count:
-        var b0 = dof_map[b]
-        var b1 = dof_map[b + 1]
-        var b2 = dof_map[b + 2]
-        var b3 = dof_map[b + 3]
-        K[row_index][b0] += k_row[b]
-        K[row_index][b1] += k_row[b + 1]
-        K[row_index][b2] += k_row[b + 2]
-        K[row_index][b3] += k_row[b + 3]
-        b += 4
-    while b < count:
+    @parameter
+    for b in range(count):
         var bidx = dof_map[b]
         K[row_index][bidx] += k_row[b]
-        b += 1
 
 
 @always_inline
@@ -134,6 +122,7 @@ fn _scatter_add_and_dot_row_simd_impl[width: Int](
     while b + width <= count:
         var k_vec = SIMD[DType.float64, width](0.0)
         var u_vec = SIMD[DType.float64, width](0.0)
+        @parameter
         for lane in range(width):
             var bidx = dof_map[b + lane]
             var kval = k_row[b + lane]

@@ -10,6 +10,7 @@ fn gather_float64_by_index_simd[width: Int](
     indices: List[Int], start: Int, src: List[Float64]
 ) -> SIMD[DType.float64, width]:
     var vec = SIMD[DType.float64, width](0.0)
+    @parameter
     for lane in range(width):
         vec[lane] = src[indices[start + lane]]
     return vec
@@ -29,6 +30,7 @@ fn scatter_float64_by_index_simd[width: Int](
     mut dst: List[Float64],
     vec: SIMD[DType.float64, width],
 ):
+    @parameter
     for lane in range(width):
         dst[indices[start + lane]] = vec[lane]
 
@@ -50,6 +52,7 @@ fn scatter_add_float64_by_index_simd[width: Int](
     mut dst: List[Float64],
     vec: SIMD[DType.float64, width],
 ):
+    @parameter
     for lane in range(width):
         dst[indices[start + lane]] += vec[lane]
 

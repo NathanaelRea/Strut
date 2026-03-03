@@ -18,7 +18,7 @@ from solver.assembly.stiffness_internal_shared import (
     _profile_scope_close,
     _profile_scope_open,
     _scatter_add_and_dot_row_simd,
-    _scatter_add_row_unrolled4,
+    _scatter_add_row,
 )
 from solver.run_case.input_types import (
     ElementInput,
@@ -119,7 +119,7 @@ fn _assemble_frame2d_soa_indices(
             if elem_geom_tags[e] == GeomTransfTag.Corotational:
                 for a in range(6):
                     var Aidx = dof_map6[a]
-                    _scatter_add_row_unrolled4(K, Aidx, k_global[a], dof_map6, 6)
+                    _scatter_add_row[6](K, Aidx, k_global[a], dof_map6)
                     F_int[Aidx] += f_elem[a] - f_load_global[a]
             else:
                 for a in range(6):
@@ -152,7 +152,7 @@ fn _assemble_frame2d_soa_indices(
                 f_global[a] = sum
             for a in range(6):
                 var Aidx = dof_map6[a]
-                _scatter_add_row_unrolled4(K, Aidx, k_global[a], dof_map6, 6)
+                _scatter_add_row[6](K, Aidx, k_global[a], dof_map6)
                 F_int[Aidx] += f_global[a]
             continue
 
@@ -234,7 +234,7 @@ fn _assemble_frame2d_soa_indices(
         )
         for a in range(6):
             var Aidx = dof_map6[a]
-            _scatter_add_row_unrolled4(K, Aidx, k_elem6[a], dof_map6, 6)
+            _scatter_add_row[6](K, Aidx, k_elem6[a], dof_map6)
             F_int[Aidx] += f_elem6[a]
 
 
@@ -341,7 +341,7 @@ fn _assemble_frame2d_element(
         if geom == "Corotational":
             for a in range(6):
                 var Aidx = dof_map6[a]
-                _scatter_add_row_unrolled4(K, Aidx, k_global[a], dof_map6, 6)
+                _scatter_add_row[6](K, Aidx, k_global[a], dof_map6)
                 F_int[Aidx] += f_elem[a] - f_load_global[a]
         else:
             for a in range(6):
@@ -391,7 +391,7 @@ fn _assemble_frame2d_element(
             f_global[a] = sum
         for a in range(6):
             var Aidx = dof_map6[a]
-            _scatter_add_row_unrolled4(K, Aidx, k_global[a], dof_map6, 6)
+            _scatter_add_row[6](K, Aidx, k_global[a], dof_map6)
             F_int[Aidx] += f_global[a]
         return
 
@@ -457,5 +457,5 @@ fn _assemble_frame2d_element(
         )
     for a in range(6):
         var Aidx = dof_map6[a]
-        _scatter_add_row_unrolled4(K, Aidx, k_elem6[a], dof_map6, 6)
+        _scatter_add_row[6](K, Aidx, k_elem6[a], dof_map6)
         F_int[Aidx] += f_elem6[a]

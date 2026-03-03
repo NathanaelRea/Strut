@@ -14,7 +14,7 @@ from solver.assembly.stiffness_internal_shared import (
     _geom_transf_name_from_tag,
     _profile_scope_close,
     _profile_scope_open,
-    _scatter_add_row_unrolled4,
+    _scatter_add_row,
 )
 from solver.run_case.input_types import (
     ElementInput,
@@ -254,7 +254,7 @@ fn _assemble_frame3d_soa_indices(
                 abort("3d beam requires ElasticSection3d or FiberSection3d")
         for a in range(12):
             var Aidx = dof_map12[a]
-            _scatter_add_row_unrolled4(K, Aidx, k_elem12[a], dof_map12, 12)
+            _scatter_add_row[12](K, Aidx, k_elem12[a], dof_map12)
             F_int[Aidx] += f_elem12[a]
 
 
@@ -453,5 +453,5 @@ fn _assemble_frame3d_element(
             abort(elem.type + " requires ElasticSection3d or FiberSection3d")
     for a in range(12):
         var Aidx = dof_map12[a]
-        _scatter_add_row_unrolled4(K, Aidx, k_elem12[a], dof_map12, 12)
+        _scatter_add_row[12](K, Aidx, k_elem12[a], dof_map12)
         F_int[Aidx] += f_elem12[a]
