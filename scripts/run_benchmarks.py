@@ -1675,6 +1675,41 @@ def _read_analysis_us(path: Path) -> Optional[float]:
         return None
 
 
+def _strut_slower_than_opensees_lines(case_entries: List[dict]) -> List[str]:
+    slower: List[Tuple[str, int, int]] = []
+    for case_entry in case_entries:
+        opensees = case_entry.get("opensees")
+        if not isinstance(opensees, dict):
+            opensees = case_entry.get("opensees_batch")
+        strut = case_entry.get("strut")
+        if not isinstance(opensees, dict) or not isinstance(strut, dict):
+            continue
+        opensees_us = opensees.get("analysis_us")
+        strut_us = strut.get("analysis_us")
+        if not isinstance(opensees_us, (int, float)) or not isinstance(
+            strut_us, (int, float)
+        ):
+            continue
+        opensees_us_int = int(opensees_us)
+        strut_us_int = int(strut_us)
+        if strut_us_int <= opensees_us_int:
+            continue
+        slower.append((str(case_entry.get("name", "")), opensees_us_int, strut_us_int))
+
+    if not slower:
+        return []
+
+    slower.sort(key=lambda row: (row[2] - row[1], row[0]), reverse=True)
+    lines = ["Strut slower than OpenSees (analysis_us):"]
+    for case_name, opensees_us, strut_us in slower:
+        slowdown = strut_us / opensees_us if opensees_us > 0 else math.inf
+        lines.append(
+            f"- {case_name}: strut={strut_us} us opensees={opensees_us} us "
+            f"(x{slowdown:.1f} slower)"
+        )
+    return lines
+
+
 def _read_runtime_failures(
     case_entries: List[dict],
     results_root: Path,
@@ -3489,6 +3524,8 @@ def main() -> None:
     print(f"Wrote {phase_summary_csv}")
     print(f"Wrote {phase_rollup_csv}")
     print(f"Wrote {plots_pdf}")
+    for line in _strut_slower_than_opensees_lines(case_entries):
+        print(line)
     runtime_failures = setup_failures + _read_runtime_failures(
         case_entries,
         results_root,

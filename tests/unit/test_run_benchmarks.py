@@ -220,6 +220,50 @@ def test_opt_full_suite_includes_new_ex9_direct_tcl_benchmarks():
     assert "opensees_example_ex9_analyze_moment_curvature_2d" in suite
 
 
+def test_strut_slower_than_opensees_lines_only_reports_slower_cases():
+    lines = run_benchmarks._strut_slower_than_opensees_lines(
+        [
+            {
+                "name": "faster_case",
+                "opensees": {"analysis_us": 200},
+                "strut": {"analysis_us": 100},
+            },
+            {
+                "name": "slower_case",
+                "opensees": {"analysis_us": 120},
+                "strut": {"analysis_us": 150},
+            },
+            {
+                "name": "tie_case",
+                "opensees": {"analysis_us": 50},
+                "strut": {"analysis_us": 50},
+            },
+        ]
+    )
+
+    assert lines == [
+        "Strut slower than OpenSees (analysis_us):",
+        "- slower_case: strut=150 us opensees=120 us (x1.2 slower)",
+    ]
+
+
+def test_strut_slower_than_opensees_lines_uses_batch_metrics_by_default():
+    lines = run_benchmarks._strut_slower_than_opensees_lines(
+        [
+            {
+                "name": "batch_case",
+                "opensees_batch": {"analysis_us": 80},
+                "strut": {"analysis_us": 120},
+            }
+        ]
+    )
+
+    assert lines == [
+        "Strut slower than OpenSees (analysis_us):",
+        "- batch_case: strut=120 us opensees=80 us (x1.5 slower)",
+    ]
+
+
 def test_write_solver_input_pickle_round_trips(tmp_path: Path):
     payload = {"model": {"ndm": 2, "ndf": 3}, "recorders": []}
     out_path = tmp_path / "solver.pkl"
