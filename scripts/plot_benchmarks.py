@@ -206,16 +206,30 @@ def _case_size_override(case: dict) -> Optional[str]:
     return None
 
 
-def _case_size_label(
-    free_dofs: Optional[int], medium_threshold: int, large_threshold: int
+def _case_size_from_timings(
+    case: dict, medium_threshold_us: float, large_threshold_us: float
 ) -> str:
-    if free_dofs is None:
-        return "small"
-    if free_dofs >= large_threshold:
+    max_analysis_us = 0.0
+    for engine in ("opensees", "strut"):
+        stats = case.get(engine)
+        if isinstance(stats, dict):
+            analysis_us = stats.get("analysis_us")
+            if isinstance(analysis_us, (int, float)):
+                max_analysis_us = max(max_analysis_us, float(analysis_us))
+    if max_analysis_us > large_threshold_us:
         return "large"
-    if free_dofs >= medium_threshold:
+    if max_analysis_us > medium_threshold_us:
         return "medium"
     return "small"
+
+
+def _case_size_bucket(
+    case: dict, medium_threshold_us: float = 1e3, large_threshold_us: float = 1e6
+) -> str:
+    override = _case_size_override(case)
+    if override is not None:
+        return override
+    return _case_size_from_timings(case, medium_threshold_us, large_threshold_us)
 
 
 def collect_archive_trend(
@@ -241,14 +255,7 @@ def collect_archive_trend(
             values: List[float] = []
             for case in cases:
                 if size_filter:
-                    override = _case_size_override(case)
-                    if override is not None:
-                        label = override
-                    else:
-                        free_dofs = _case_free_dofs(case)
-                        label = _case_size_label(
-                            free_dofs, medium_threshold, large_threshold
-                        )
+                    label = _case_size_bucket(case, medium_threshold, large_threshold)
                     if label != size_filter:
                         continue
                 value = _case_time_seconds(case, engine)
@@ -576,8 +583,8 @@ def write_plots_pdf(
     group_by: str = "prefix",
     group_config: Optional[Path] = None,
     group_gap: float = 0.6,
-    large_threshold: int = 1000,
-    medium_threshold: int = 300,
+    large_threshold: int = 1_000_000,
+    medium_threshold: int = 1_000,
 ) -> Path:
     if not results_path.exists():
         raise SystemExit(f"Missing results summary: {results_path}")
@@ -588,26 +595,14 @@ def write_plots_pdf(
     medium_indices: List[int] = []
     large_indices: List[int] = []
     for idx, case in enumerate(cases):
-        override = _case_size_override(case)
-        if override == "large":
+        label = _case_size_bucket(case, medium_threshold, large_threshold)
+        if label == "large":
             large_indices.append(idx)
             continue
-        if override == "medium":
+        if label == "medium":
             medium_indices.append(idx)
             continue
-        if override == "small":
-            small_indices.append(idx)
-            continue
-        free_dofs = _case_free_dofs(case)
-        if free_dofs is not None:
-            if free_dofs >= large_threshold:
-                large_indices.append(idx)
-            elif free_dofs >= medium_threshold:
-                medium_indices.append(idx)
-            else:
-                small_indices.append(idx)
-        else:
-            small_indices.append(idx)
+        small_indices.append(idx)
 
     def _prepare(indices: List[int]):
         names, engines, errors = collect_recent_cases(summary, indices)
@@ -744,14 +739,14 @@ def main() -> None:
     parser.add_argument(
         "--large-threshold",
         type=int,
-        default=1000,
-        help="Free-DOF threshold to split large benchmarks (default: 1000).",
+        default=1_000_000,
+        help="Analysis-time threshold in microseconds to split large benchmarks (default: 1000000).",
     )
     parser.add_argument(
         "--medium-threshold",
         type=int,
-        default=300,
-        help="Free-DOF threshold to split medium benchmarks (default: 300).",
+        default=1_000,
+        help="Analysis-time threshold in microseconds to split medium benchmarks (default: 1000).",
     )
     parser.add_argument(
         "--open",

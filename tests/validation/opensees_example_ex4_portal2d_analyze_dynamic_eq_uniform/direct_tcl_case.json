@@ -1,7 +1,7 @@
 {
   "name": "opensees_example_ex4_portal2d_analyze_dynamic_eq_uniform",
   "entry_tcl": "docs/agent-reference/OpenSeesExamplesAdvanced/opensees_example_4_portal_frame/Ex4.Portal2D.analyze.Dynamic.EQ.Uniform.tcl",
-  "enabled": false,
+  "enabled": true,
   "source_files": [
     "Ex4.Portal2D.build.InelasticFiberSection.tcl",
     "Ex4.Portal2D.analyze.Dynamic.EQ.Uniform.tcl"

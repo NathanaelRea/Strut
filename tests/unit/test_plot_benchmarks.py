@@ -132,3 +132,50 @@ def test_collect_archive_trend_skips_currently_disabled_cases(
     assert means["strut"][0] != means["strut"][0]
     assert means["opensees"][0] != means["opensees"][0]
     assert stds["strut"][0] != stds["strut"][0]
+
+
+def test_case_size_bucket_defaults_to_small_and_promotes_from_timings():
+    assert (
+        plot_benchmarks._case_size_bucket(
+            {
+                "name": "fast_case",
+                "opensees": {"analysis_us": 1000.0},
+                "strut": {"analysis_us": 999.0},
+            }
+        )
+        == "small"
+    )
+    assert (
+        plot_benchmarks._case_size_bucket(
+            {
+                "name": "medium_case",
+                "opensees": {"analysis_us": 1000.1},
+                "strut": {"analysis_us": 400.0},
+            }
+        )
+        == "medium"
+    )
+    assert (
+        plot_benchmarks._case_size_bucket(
+            {
+                "name": "large_case",
+                "opensees": {"analysis_us": 500.0},
+                "strut": {"analysis_us": 1000000.1},
+            }
+        )
+        == "large"
+    )
+
+
+def test_case_size_bucket_preserves_explicit_override():
+    assert (
+        plot_benchmarks._case_size_bucket(
+            {
+                "name": "forced_medium",
+                "size": "medium",
+                "opensees": {"analysis_us": 10.0},
+                "strut": {"analysis_us": 10.0},
+            }
+        )
+        == "medium"
+    )
