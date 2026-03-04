@@ -39,6 +39,20 @@ def _resolve_optional_repo_path(path_text, repo_root: Path):
     return (repo_root / path_obj).resolve()
 
 
+def _iter_relative_path_candidates(base_dir: Path, rel_path: Path, stop_dir: Path | None = None):
+    current = base_dir.resolve()
+    stop = stop_dir.resolve() if stop_dir is not None else None
+    seen = set()
+    while True:
+        candidate = (current / rel_path).resolve()
+        if candidate not in seen:
+            seen.add(candidate)
+            yield candidate
+        if current.parent == current or (stop is not None and current == stop):
+            break
+        current = current.parent
+
+
 def _resolve_values_path(
     values_path: str, case_json_path: Path, case_data: dict, repo_root: Path
 ):
@@ -48,18 +62,22 @@ def _resolve_values_path(
         candidates.append(src)
     else:
         case_dir = case_json_path.parent
-        candidates.append((case_dir / src).resolve())
+        candidates.extend(_iter_relative_path_candidates(case_dir, src, repo_root))
         candidates.append((repo_root / src).resolve())
 
         source_example = _resolve_optional_repo_path(
             case_data.get("source_example"), repo_root
         )
         if source_example is not None:
-            candidates.append((source_example.parent / src).resolve())
+            candidates.extend(
+                _iter_relative_path_candidates(source_example.parent, src, repo_root)
+            )
 
         source_doc = _resolve_optional_repo_path(case_data.get("source_doc"), repo_root)
         if source_doc is not None:
-            candidates.append((source_doc.parent / src).resolve())
+            candidates.extend(
+                _iter_relative_path_candidates(source_doc.parent, src, repo_root)
+            )
 
         migration = case_data.get("migration", {})
         ground_motion = (
@@ -69,7 +87,9 @@ def _resolve_values_path(
             ground_motion.get("source_file"), repo_root
         )
         if source_file is not None:
-            candidates.append((source_file.parent / src).resolve())
+            candidates.extend(
+                _iter_relative_path_candidates(source_file.parent, src, repo_root)
+            )
 
         candidates.append(src)
 

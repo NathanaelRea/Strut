@@ -9,7 +9,12 @@ from math import sqrt
 from os import abort
 from python import Python, PythonObject
 
-from materials import UniMaterialDef, UniMaterialState, uni_mat_is_elastic
+from materials import (
+    UniMaterialDef,
+    UniMaterialState,
+    uni_mat_initial_tangent,
+    uni_mat_is_elastic,
+)
 from solver.dof import node_dof_index, require_dof_in_range
 from solver.reorder import build_node_adjacency_typed, rcm_order
 from solver.run_case.helpers import _aggregator_section2d_expected_state_count
@@ -340,6 +345,41 @@ fn _element_supports_linear_transient_fast_path(
         var sec = sections_by_id[elem.section]
         return sec.type == "ElasticSection2d" or sec.type == "ElasticSection3d"
     return False
+
+
+fn _coerce_aggregator_section2d_for_beam_column(
+    mut sec: SectionInput,
+    uniaxial_defs: List[UniMaterialDef],
+    uniaxial_def_by_id: List[Int],
+    beam_col_type: String,
+) raises -> SectionInput:
+    if sec.type != "AggregatorSection2d":
+        return sec
+    if sec.base_section >= 0:
+        abort(beam_col_type + " does not support AggregatorSection2d with -section")
+    if sec.axial_material < 0 or sec.flexural_material < 0:
+        abort(beam_col_type + " requires AggregatorSection2d with P and Mz responses")
+    if (
+        sec.axial_material >= len(uniaxial_def_by_id)
+        or uniaxial_def_by_id[sec.axial_material] < 0
+    ):
+        abort(beam_col_type + " AggregatorSection2d axial material must be uniaxial")
+    if (
+        sec.flexural_material >= len(uniaxial_def_by_id)
+        or uniaxial_def_by_id[sec.flexural_material] < 0
+    ):
+        abort(
+            beam_col_type + " AggregatorSection2d flexural material must be uniaxial"
+        )
+    var axial_def = uniaxial_defs[uniaxial_def_by_id[sec.axial_material]]
+    var flexural_def = uniaxial_defs[uniaxial_def_by_id[sec.flexural_material]]
+    sec.type = "ElasticSection2d"
+    sec.E = 1.0
+    sec.A = uni_mat_initial_tangent(axial_def)
+    sec.I = uni_mat_initial_tangent(flexural_def)
+    if sec.A <= 0.0 or sec.I <= 0.0:
+        abort(beam_col_type + " AggregatorSection2d surrogate stiffness must be positive")
+    return sec
 
 
 fn _node_constraint(node: NodeInput, idx: Int) -> Int:
@@ -950,6 +990,10 @@ fn load_case_state_from_input(input: CaseInput) raises -> RunCaseState:
             var sec = typed_sections_by_id[elem.section]
             if sec.id < 0:
                 abort(beam_col_type + " section not found")
+            sec = _coerce_aggregator_section2d_for_beam_column(
+                sec, uniaxial_defs, uniaxial_def_by_id, beam_col_type
+            )
+            typed_sections_by_id[elem.section] = sec
             if sec.type != "FiberSection2d" and sec.type != "ElasticSection2d":
                 abort(beam_col_type + " requires FiberSection2d or ElasticSection2d")
             elem.dof_count = 6
@@ -978,6 +1022,10 @@ fn load_case_state_from_input(input: CaseInput) raises -> RunCaseState:
             var sec = typed_sections_by_id[elem.section]
             if sec.id < 0:
                 abort("dispBeamColumn2d section not found")
+            sec = _coerce_aggregator_section2d_for_beam_column(
+                sec, uniaxial_defs, uniaxial_def_by_id, "dispBeamColumn2d"
+            )
+            typed_sections_by_id[elem.section] = sec
             if sec.type != "FiberSection2d" and sec.type != "ElasticSection2d":
                 abort("dispBeamColumn2d requires FiberSection2d or ElasticSection2d")
             elem.dof_count = 6

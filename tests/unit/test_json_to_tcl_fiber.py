@@ -131,6 +131,65 @@ def test_json_to_tcl_emits_fiber_section_quadr_patch():
     assert "patch quadr 1 2 2 -0.2 -0.1 -0.2 0.1 0.2 0.1 0.2 -0.1\n" in text
 
 
+def test_json_to_tcl_emits_aggregator_section_2d():
+    case_data = _base_case()
+    case_data["sections"] = [
+        {
+            "id": 11,
+            "type": "AggregatorSection2d",
+            "params": {
+                "axial_material": 1,
+                "flexural_material": 2,
+                "moment_y_material": -1,
+                "torsion_material": -1,
+                "shear_y_material": -1,
+                "shear_z_material": -1,
+                "base_section": -1,
+            },
+        }
+    ]
+
+    proc, text = _run_json_to_tcl(case_data)
+    assert proc.returncode == 0, proc.stderr
+    assert "section Aggregator 11 1 P 2 Mz\n" in text
+
+
+def test_json_to_tcl_allows_force_beam_column_with_aggregator_section():
+    case_data = _base_case()
+    case_data["sections"] = [
+        {
+            "id": 11,
+            "type": "AggregatorSection2d",
+            "params": {
+                "axial_material": 1,
+                "flexural_material": 2,
+                "moment_y_material": -1,
+                "torsion_material": -1,
+                "shear_y_material": -1,
+                "shear_z_material": -1,
+                "base_section": -1,
+            },
+        }
+    ]
+    case_data["elements"] = [
+        {
+            "id": 4,
+            "type": "forceBeamColumn2d",
+            "nodes": [1, 2],
+            "section": 11,
+            "geomTransf": "Linear",
+            "integration": "Lobatto",
+            "num_int_pts": 3,
+        }
+    ]
+    case_data["analysis"] = {"type": "static_nonlinear", "steps": 1}
+
+    proc, text = _run_json_to_tcl(case_data)
+    assert proc.returncode == 0, proc.stderr
+    assert "beamIntegration Lobatto 1 11 3\n" in text
+    assert "element forceBeamColumn 4 1 2 1 1\n" in text
+
+
 def test_json_to_tcl_rejects_unsupported_fiber_patch_type():
     case_data = _base_case()
     case_data["sections"] = [

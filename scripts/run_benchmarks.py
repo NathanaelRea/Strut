@@ -976,6 +976,18 @@ def _absolutize_time_series_paths(case_data: dict, case_json_path: Path) -> None
             return path_obj
         return (repo_root / path_obj).resolve()
 
+    def _iter_relative_path_candidates(base_dir: Path, rel_path: Path):
+        current = base_dir.resolve()
+        seen = set()
+        while True:
+            candidate = (current / rel_path).resolve()
+            if candidate not in seen:
+                seen.add(candidate)
+                yield candidate
+            if current.parent == current or current == repo_root:
+                break
+            current = current.parent
+
     time_series = case_data.get("time_series")
     if isinstance(time_series, dict):
         entries = [time_series]
@@ -999,9 +1011,12 @@ def _absolutize_time_series_paths(case_data: dict, case_json_path: Path) -> None
         raw_path = Path(raw)
         if raw_path.is_absolute():
             continue
-        from_case_dir = case_json_path.parent / raw_path
-        if from_case_dir.exists():
-            ts[key] = str(from_case_dir.resolve())
+        from_case_dir = next(
+            (candidate for candidate in _iter_relative_path_candidates(case_json_path.parent, raw_path) if candidate.exists()),
+            None,
+        )
+        if from_case_dir is not None:
+            ts[key] = str(from_case_dir)
             continue
         from_repo_root = repo_root / raw_path
         if from_repo_root.exists():
@@ -1009,17 +1024,35 @@ def _absolutize_time_series_paths(case_data: dict, case_json_path: Path) -> None
             continue
         source_example = _resolve_optional_repo_path(case_data.get("source_example"))
         if source_example is not None:
-            from_source_example = (source_example.parent / raw_path).resolve()
-            if from_source_example.exists():
+            from_source_example = next(
+                (
+                    candidate
+                    for candidate in _iter_relative_path_candidates(
+                        source_example.parent, raw_path
+                    )
+                    if candidate.exists()
+                ),
+                None,
+            )
+            if from_source_example is not None:
                 ts[key] = str(from_source_example)
                 continue
         source_doc = _resolve_optional_repo_path(case_data.get("source_doc"))
         if source_doc is not None:
-            from_source_doc = (source_doc.parent / raw_path).resolve()
-            if from_source_doc.exists():
+            from_source_doc = next(
+                (
+                    candidate
+                    for candidate in _iter_relative_path_candidates(
+                        source_doc.parent, raw_path
+                    )
+                    if candidate.exists()
+                ),
+                None,
+            )
+            if from_source_doc is not None:
                 ts[key] = str(from_source_doc)
                 continue
-        ts[key] = str(from_case_dir.resolve())
+        ts[key] = str((case_json_path.parent / raw_path).resolve())
 
 
 def filter_cases_by_enabled(

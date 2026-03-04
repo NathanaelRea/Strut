@@ -165,6 +165,20 @@ def _resolve_optional_repo_path(path_text, repo_root: Path):
     return (repo_root / path_obj).resolve()
 
 
+def _iter_relative_path_candidates(base_dir: Path, rel_path: Path, stop_dir: Path | None = None):
+    current = base_dir.resolve()
+    stop = stop_dir.resolve() if stop_dir is not None else None
+    seen = set()
+    while True:
+        candidate = (current / rel_path).resolve()
+        if candidate not in seen:
+            seen.add(candidate)
+            yield candidate
+        if current.parent == current or (stop is not None and current == stop):
+            break
+        current = current.parent
+
+
 def _load_path_time_series_values(ts, case_dir: Path, case_data: dict):
     values_path = ts.get("values_path", ts.get("path"))
     if values_path is None:
@@ -176,22 +190,28 @@ def _load_path_time_series_values(ts, case_dir: Path, case_data: dict):
         candidates.append(src)
     else:
         repo_root = Path(__file__).resolve().parents[1]
-        candidates.append((case_dir / src).resolve())
+        candidates.extend(_iter_relative_path_candidates(case_dir, src, repo_root))
         candidates.append((repo_root / src).resolve())
 
         source_example = _resolve_optional_repo_path(case_data.get("source_example"), repo_root)
         if source_example is not None:
-            candidates.append((source_example.parent / src).resolve())
+            candidates.extend(
+                _iter_relative_path_candidates(source_example.parent, src, repo_root)
+            )
 
         source_doc = _resolve_optional_repo_path(case_data.get("source_doc"), repo_root)
         if source_doc is not None:
-            candidates.append((source_doc.parent / src).resolve())
+            candidates.extend(
+                _iter_relative_path_candidates(source_doc.parent, src, repo_root)
+            )
 
         migration = case_data.get("migration", {})
         ground_motion = migration.get("ground_motion", {}) if isinstance(migration, dict) else {}
         source_file = _resolve_optional_repo_path(ground_motion.get("source_file"), repo_root)
         if source_file is not None:
-            candidates.append((source_file.parent / src).resolve())
+            candidates.extend(
+                _iter_relative_path_candidates(source_file.parent, src, repo_root)
+            )
 
         # Keep backward compatibility with callers that rely on current working directory.
         candidates.append(Path(values_path))
@@ -726,6 +746,37 @@ def main():
                 f.write(
                     f"section ElasticMembranePlateSection {sec['id']} {E} {nu} {h} {rho}\n"
                 )
+            elif sec["type"] == "AggregatorSection2d":
+                response_order = (
+                    ("axial_material", "P"),
+                    ("flexural_material", "Mz"),
+                    ("moment_y_material", "My"),
+                    ("torsion_material", "T"),
+                    ("shear_y_material", "Vy"),
+                    ("shear_z_material", "Vz"),
+                )
+                tokens = []
+                for material_key, response_name in response_order:
+                    material_id = int(params.get(material_key, -1))
+                    if material_id < 0:
+                        continue
+                    if material_id not in materials:
+                        raise ValueError(
+                            f"AggregatorSection2d material {material_id} not found"
+                        )
+                    if materials[material_id]["type"] == "ElasticIsotropic":
+                        raise ValueError(
+                            "AggregatorSection2d requires uniaxial materials"
+                        )
+                    tokens.extend((str(material_id), response_name))
+                base_section = int(params.get("base_section", -1))
+                if base_section >= 0:
+                    tokens.extend(("-section", str(base_section)))
+                if not tokens:
+                    raise ValueError(
+                        "AggregatorSection2d requires at least one uniaxial response"
+                    )
+                f.write(f"section Aggregator {sec['id']} {' '.join(tokens)}\n")
             elif sec["type"] in ("FiberSection2d", "FiberSection3d"):
                 sec_type = sec["type"]
                 patches = params.get("patches", [])
@@ -874,8 +925,14 @@ def main():
                         raise ValueError(
                             f"{elem_type} with FiberSection3d requires positive G and J"
                         )
-            elif sec["type"] not in ("FiberSection2d", "ElasticSection2d"):
-                raise ValueError(f"{elem_type} requires FiberSection2d or ElasticSection2d")
+            elif sec["type"] not in (
+                "FiberSection2d",
+                "ElasticSection2d",
+                "AggregatorSection2d",
+            ):
+                raise ValueError(
+                    f"{elem_type} requires FiberSection2d, ElasticSection2d, or AggregatorSection2d"
+                )
             geom = elem.get("geomTransf", "Linear")
             if is_3d:
                 if geom not in ("Linear", "PDelta", "Corotational"):
@@ -942,8 +999,14 @@ def main():
                             raise ValueError(
                                 f"{elem_type} with FiberSection3d requires positive G and J"
                             )
-                elif sec["type"] not in ("FiberSection2d", "ElasticSection2d"):
-                    raise ValueError(f"{elem_type} requires FiberSection2d or ElasticSection2d")
+                elif sec["type"] not in (
+                    "FiberSection2d",
+                    "ElasticSection2d",
+                    "AggregatorSection2d",
+                ):
+                    raise ValueError(
+                        f"{elem_type} requires FiberSection2d, ElasticSection2d, or AggregatorSection2d"
+                    )
                 integration = elem.get("integration", "Lobatto")
                 num_int_pts = int(elem.get("num_int_pts", 3))
                 key = (integration, elem["section"], num_int_pts)

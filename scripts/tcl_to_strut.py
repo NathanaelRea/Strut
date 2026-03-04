@@ -882,10 +882,15 @@ class TclStrutBuilder:
             resolved = self._resolve_case_insensitive_path(path)
             return str(resolved)
         base_dir = self._current_base_dir()
-        resolved = self._resolve_case_insensitive_path((base_dir / path).resolve())
-        if not resolved.exists():
-            return values_path
-        return str(resolved)
+        current = base_dir.resolve()
+        while True:
+            resolved = self._resolve_case_insensitive_path((current / path).resolve())
+            if resolved.exists():
+                return str(resolved)
+            if current == self.repo_root or current.parent == current:
+                break
+            current = current.parent
+        return values_path
 
     def _envelope_element_force_width(
         self, element: dict[str, Any], include_time: bool
@@ -2335,10 +2340,26 @@ class TclStrutBuilder:
         model = self._require_model("load", args)
         if self.current_plain_pattern is None:
             raise self._error("load is only supported inside `pattern Plain`", "load", args)
-        if len(args) != model["ndf"] + 1:
+        if len(args) < model["ndf"] + 1:
             raise self._error("load argument count does not match ndf", "load", args)
+        extra_args = args[model["ndf"] + 1 :]
+        if extra_args:
+            malformed_numeric_tail = True
+            for token in extra_args:
+                try:
+                    float(token)
+                except ValueError:
+                    malformed_numeric_tail = False
+                    break
+            if malformed_numeric_tail:
+                # The benchmarked OpenSees executable builds a load vector from all
+                # numeric arguments here. When that oversized vector reaches a node
+                # with fewer DOFs, the load is rejected during application and the
+                # pattern has no effect. Mirror that runtime behavior by dropping
+                # the malformed nodal load altogether.
+                return ""
         node_id = int(args[0])
-        for dof, value_text in enumerate(args[1:], start=1):
+        for dof, value_text in enumerate(args[1 : model["ndf"] + 1], start=1):
             value = float(value_text)
             if abs(value) <= 0.0:
                 continue

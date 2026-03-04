@@ -1777,6 +1777,8 @@ fn _force_beam_column2d_section_response(
 
     if want_deformation:
         return [eps0, kappa]
+    if sec.type == "ElasticSection2d":
+        axial_force = -axial_force
     return [axial_force, moment_z]
 
 
@@ -1862,7 +1864,10 @@ fn _disp_beam_column2d_section_response(
     if sec.type == "ElasticSection2d":
         if sec.E <= 0.0 or sec.A <= 0.0 or sec.I <= 0.0:
             abort("section recorder ElasticSection2d requires positive E/A/I")
-        return [sec.E * sec.A * eps0 + load_response[0], sec.E * sec.I * kappa + load_response[1]]
+        return [
+            -(sec.E * sec.A * eps0 + load_response[0]),
+            sec.E * sec.I * kappa + load_response[1],
+        ]
 
     var sec_id = elem.section
     if sec_id >= len(fiber_section_index_by_id):

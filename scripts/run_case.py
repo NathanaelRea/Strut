@@ -452,6 +452,7 @@ def main():
         )
         try:
             case_json = _write_generated_direct_tcl_case(case_data, case_root)
+            hash_inputs.append(case_json)
             tcl_out = _emit_case_tcl(
                 repo_root,
                 uv,

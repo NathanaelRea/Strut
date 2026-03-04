@@ -110,6 +110,54 @@ def test_convert_advanced_ex1b_eq_expands_grouped_drift_nodes():
     assert all(rec["include_time"] is True for rec in drifts)
 
 
+def test_convert_load_drops_oversized_numeric_tail_like_benchmarked_opensees(tmp_path: Path):
+    script = tmp_path / "oversized_load.tcl"
+    script.write_text(
+        "\n".join(
+            (
+                "model BasicBuilder -ndm 2 -ndf 3",
+                "node 1 0 0",
+                "node 2 0 1",
+                "fix 1 1 1 1",
+                "timeSeries Linear 1",
+                "pattern Plain 1 1 {",
+                "  load 2 5.0 0.0 0.0 0.0 0.0 0.0",
+                "}",
+                "constraints Plain",
+                "numberer Plain",
+                "system BandGeneral",
+                "integrator LoadControl 1.0",
+                "analysis Static",
+                "analyze 1",
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    case = tcl_to_strut.convert_tcl_to_case(script, REPO_ROOT)
+
+    assert case.get("loads", []) == []
+
+
+def test_convert_ex2a_eq_resolves_ground_motion_from_parent_example_root():
+    entry = (
+        REPO_ROOT
+        / "docs/agent-reference/OpenSeesExamplesAdvanced"
+        / "opensees_example_2a_elastic_cantilever_column_with_variables"
+        / "Ex2a.Canti2D.ElasticElement.EQ.tcl"
+    )
+
+    case = tcl_to_strut.convert_tcl_to_case(entry, REPO_ROOT)
+
+    assert case["time_series"][1]["values_path"] == str(
+        (
+            REPO_ROOT
+            / "docs/agent-reference/OpenSeesExamplesAdvanced/BM68elc.acc"
+        ).resolve()
+    )
+
+
 def test_convert_reports_unknown_command_with_location(tmp_path: Path):
     script = tmp_path / "case.tcl"
     script.write_text("wipe\nbogusCommand 1 2\n", encoding="utf-8")

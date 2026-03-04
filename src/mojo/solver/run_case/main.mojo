@@ -79,6 +79,12 @@ fn _build_stage_nodal_force_vector(
     return F_stage^
 
 
+fn _zero_nodal_force_vector(total_dofs: Int) -> List[Float64]:
+    var F_stage: List[Float64] = []
+    F_stage.resize(total_dofs, 0.0)
+    return F_stage^
+
+
 fn _append_stage_time_series(
     stage: StageInput,
     mut time_series: List[TimeSeriesInput],
@@ -809,7 +815,7 @@ def run_case_input(
                             stage.loads, id_to_index, ndf, total_dofs
                         )
                     elif stage_idx > 0:
-                        stage_F.resize(total_dofs, 0.0)
+                        stage_F = _zero_nodal_force_vector(total_dofs)
                     if has_stage_element_loads:
                         stage_element_loads = stage.element_loads.copy()
                     elif stage_idx > 0:
@@ -840,14 +846,14 @@ def run_case_input(
                     )
                     if stage_uniform_accel_ts_index < 0:
                         abort("UniformExcitation accel time_series tag not found")
-                    stage_F.resize(total_dofs, 0.0)
+                    stage_F = _zero_nodal_force_vector(total_dofs)
                     stage_element_loads = []
                     stage_pattern_type = "UniformExcitation"
                     stage_ts_index = -1
                 elif stage_pattern_type_next == "None":
                     if has_stage_loads or has_stage_element_loads:
                         abort("None pattern does not support nodal/element loads")
-                    stage_F.resize(total_dofs, 0.0)
+                    stage_F = _zero_nodal_force_vector(total_dofs)
                     stage_element_loads = []
                     stage_pattern_type = "Plain"
                     stage_ts_index = -1
@@ -1417,7 +1423,7 @@ def run_case_input(
                         stage_element_loads,
                         stage_final_pattern_scale,
                     )
-                stage_F.resize(total_dofs, 0.0)
+                stage_F = _zero_nodal_force_vector(total_dofs)
                 stage_element_loads = []
                 stage_pattern_type = "Plain"
                 stage_ts_index = -1

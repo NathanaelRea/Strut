@@ -1244,10 +1244,25 @@ fn run_static_nonlinear_displacement_control(
     var tol = analysis.tol
     var rel_tol = analysis.rel_tol
     var has_force_beam_column2d = False
+    var has_fiber_beam_column2d = False
     for i in range(len(typed_elements)):
         if typed_elements[i].type_tag == ElementTypeTag.ForceBeamColumn2d:
             has_force_beam_column2d = True
-            break
+            var sec_id = typed_elements[i].section
+            if (
+                sec_id >= 0
+                and sec_id < len(typed_sections_by_id)
+                and typed_sections_by_id[sec_id].type == "FiberSection2d"
+            ):
+                has_fiber_beam_column2d = True
+        elif typed_elements[i].type_tag == ElementTypeTag.DispBeamColumn2d:
+            var sec_id = typed_elements[i].section
+            if (
+                sec_id >= 0
+                and sec_id < len(typed_sections_by_id)
+                and typed_sections_by_id[sec_id].type == "FiberSection2d"
+            ):
+                has_fiber_beam_column2d = True
     var primary_algorithm_mode = _static_nonlinear_algorithm_mode(analysis.algorithm, "static_nonlinear")
     var fallback_algorithm = analysis.fallback_algorithm
     var has_fallback = False
@@ -1370,6 +1385,17 @@ fn run_static_nonlinear_displacement_control(
             target_disps.append(du_step * Float64(i + 1))
 
     var load_factor = 0.0
+    var has_pattern_reference_load = False
+    for i in range(free_count):
+        if abs(F_pattern_free[i]) > 0.0:
+            has_pattern_reference_load = True
+            break
+    if (
+        not has_pattern_reference_load
+        and len(pattern_element_loads) == 0
+        and not has_fiber_beam_column2d
+    ):
+        return load_factor
     var R_f: List[Float64] = []
     R_f.resize(free_count, 0.0)
     var aug_size = free_count + 1
