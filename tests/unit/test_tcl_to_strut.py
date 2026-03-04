@@ -140,7 +140,52 @@ def test_convert_load_drops_oversized_numeric_tail_like_benchmarked_opensees(tmp
     assert case.get("loads", []) == []
 
 
-def test_convert_ex2a_eq_resolves_ground_motion_from_parent_example_root():
+def test_convert_displacement_control_with_empty_plain_pattern_is_noop(tmp_path: Path):
+    script = tmp_path / "disp_control_empty_pattern.tcl"
+    script.write_text(
+        "\n".join(
+            (
+                "model BasicBuilder -ndm 2 -ndf 3",
+                "node 1 0 0",
+                "node 2 0 1",
+                "fix 1 1 1 1",
+                "timeSeries Linear 1",
+                "pattern Plain 10 1 {",
+                "  load 2 0.0 -1.0 0.0",
+                "}",
+                "constraints Plain",
+                "numberer Plain",
+                "system BandGeneral",
+                "algorithm Newton",
+                "integrator LoadControl 1.0",
+                "analysis Static",
+                "analyze 1",
+                "loadConst -time 0.0",
+                "pattern Plain 1 1 {",
+                "  load 2 5.0 0.0 0.0 1.0 0.0 0.0",
+                "}",
+                "constraints Plain",
+                "numberer Plain",
+                "system BandGeneral",
+                "algorithm Newton",
+                "integrator DisplacementControl 2 1 0.1",
+                "analysis Static",
+                "analyze 5",
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    case = tcl_to_strut.convert_tcl_to_case(script, REPO_ROOT)
+
+    assert len(case["analysis"]["stages"]) == 1
+    assert case["analysis"]["stages"][0]["loads"] == [
+        {"node": 2, "dof": 2, "value": -1.0}
+    ]
+
+
+def test_convert_ex2a_eq_resolves_ground_motion_from_example_root_when_available():
     entry = (
         REPO_ROOT
         / "docs/agent-reference/OpenSeesExamplesAdvanced"
@@ -153,7 +198,9 @@ def test_convert_ex2a_eq_resolves_ground_motion_from_parent_example_root():
     assert case["time_series"][1]["values_path"] == str(
         (
             REPO_ROOT
-            / "docs/agent-reference/OpenSeesExamplesAdvanced/BM68elc.acc"
+            / "docs/agent-reference/OpenSeesExamplesAdvanced"
+            / "opensees_example_2a_elastic_cantilever_column_with_variables"
+            / "BM68elc.acc"
         ).resolve()
     )
 
@@ -212,12 +259,22 @@ def test_convert_ex5_disables_transient_force_beam_local_force_parity():
     assert recorders[("section_deformation", "DefoEle1sec5")].get("parity", True) is True
 
 
-def test_convert_ex9_2d_aggregator_moment_curvature_wrapper():
-    entry = (
+def test_convert_ex9_2d_aggregator_moment_curvature_wrapper(tmp_path: Path):
+    example_dir = (
         REPO_ROOT
         / "docs/agent-reference/OpenSeesExamplesAdvanced"
         / "opensees_example_9_build_analyze_a_section_example"
-        / "Ex9.complete.Ex9AnalyzeMomentCurvature2D.tcl"
+    )
+    entry = tmp_path / "Ex9.complete.Ex9AnalyzeMomentCurvature2D.tcl"
+    entry.write_text(
+        "\n".join(
+            [
+                f"source {{{example_dir / 'Ex9a.build.UniaxialSection2D.tcl'}}}",
+                f"source {{{example_dir / 'Ex9.analyze.MomentCurvature2D.tcl'}}}",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
     )
 
     case = tcl_to_strut.convert_tcl_to_case(entry, REPO_ROOT)
@@ -858,6 +915,36 @@ def test_convert_adds_envelope_element_group_layout_with_time_without_doubling(
         layout = recorder.get("group_layout")
         assert layout is not None
         assert layout["values_per_element"] == [6, 6]
+
+
+def test_convert_accepts_xml_plastic_rotation_recorder_and_skips_it(tmp_path: Path):
+    script = tmp_path / "case.tcl"
+    script.write_text(
+        "\n".join(
+            [
+                "wipe",
+                "model basic -ndm 2 -ndf 3",
+                "node 1 0.0 0.0",
+                "node 2 0.0 144.0",
+                "fix 1 1 1 1",
+                "geomTransf Linear 1",
+                "element elasticBeamColumn 1 1 2 3600 3225 1080000 1",
+                "recorder Element -xml Data/PlasticRotation.out -time -ele 1 plasticRotation",
+                "constraints Plain",
+                "numberer Plain",
+                "system BandGeneral",
+                "algorithm Linear",
+                "integrator LoadControl 1.0",
+                "analysis Static",
+                "analyze 1",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    case = tcl_to_strut.convert_tcl_to_case(script, REPO_ROOT)
+
+    assert case["recorders"] == []
 
 
 def test_convert_uniform_excitation_inline_series_resolves_values_path_case(tmp_path: Path):

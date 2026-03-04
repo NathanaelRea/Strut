@@ -190,6 +190,165 @@ def test_run_case_tcl_without_canonical_mapping_uses_slug_case_root(
     assert len(generated_dirs) == 1
 
 
+def test_prepare_direct_tcl_entry_uses_explicit_source_files_order(
+    tmp_path: Path,
+):
+    case_root = tmp_path / "case"
+    script_dir = tmp_path / "examples"
+    script_dir.mkdir(parents=True, exist_ok=True)
+    analyze = script_dir / "Ex3.Canti2D.analyze.Static.Push.tcl"
+    analyze.write_text('puts "analyze"\n', encoding="utf-8")
+    elastic = script_dir / "Ex3.Canti2D.build.ElasticElement.tcl"
+    elastic.write_text('puts "elastic"\n', encoding="utf-8")
+    inelastic = script_dir / "Ex3.Canti2D.build.InelasticSection.tcl"
+    inelastic.write_text('puts "inelastic"\n', encoding="utf-8")
+    fiber = script_dir / "Ex3.Canti2D.build.InelasticFiberSection.tcl"
+    fiber.write_text('puts "fiber"\n', encoding="utf-8")
+
+    wrapper_path, hash_inputs = run_case._prepare_direct_tcl_entry(
+        analyze, case_root, [fiber, analyze]
+    )
+
+    assert wrapper_path.exists()
+    assert hash_inputs == [fiber.resolve(), analyze.resolve()]
+    assert wrapper_path.read_text(encoding="utf-8").splitlines() == [
+        "source {Ex3.Canti2D.build.InelasticFiberSection.tcl}",
+        "source {Ex3.Canti2D.analyze.Static.Push.tcl}",
+    ]
+
+
+def test_prepare_direct_tcl_entry_mirrors_shared_parent_assets(tmp_path: Path):
+    case_root = tmp_path / "case"
+    bundle_root = tmp_path / "OpenSeesExamplesAdvanced"
+    script_dir = bundle_root / "example"
+    script_dir.mkdir(parents=True, exist_ok=True)
+    analyze = script_dir / "Ex1.Canti2D.analyze.Dynamic.EQ.Uniform.tcl"
+    analyze.write_text('puts "analyze"\n', encoding="utf-8")
+    build = script_dir / "Ex1.Canti2D.build.ElasticElement.tcl"
+    build.write_text('puts "build"\n', encoding="utf-8")
+    shared_file = bundle_root / "BM68elc.acc"
+    shared_file.write_text("0.0\n", encoding="utf-8")
+    shared_dir = bundle_root / "GMfiles"
+    shared_dir.mkdir()
+    shared_nested = shared_dir / "gm.dat"
+    shared_nested.write_text("1.0\n", encoding="utf-8")
+    sibling_example = bundle_root / "other_example"
+    sibling_example.mkdir()
+    (sibling_example / "other.tcl").write_text('puts "other"\n', encoding="utf-8")
+
+    wrapper_path, hash_inputs = run_case._prepare_direct_tcl_entry(
+        analyze, case_root, [build, analyze]
+    )
+
+    mirrored_script_dir = wrapper_path.parent
+    assert (mirrored_script_dir / "BM68elc.acc").read_text(encoding="utf-8") == "0.0\n"
+    assert (mirrored_script_dir / "GMfiles" / "gm.dat").read_text(encoding="utf-8") == "1.0\n"
+    assert not (mirrored_script_dir / "other_example").exists()
+    assert hash_inputs == [
+        build.resolve(),
+        analyze.resolve(),
+        shared_file.resolve(),
+        shared_nested.resolve(),
+    ]
+
+
+def test_prepare_direct_tcl_entry_wraps_standalone_script_with_shared_assets(
+    tmp_path: Path,
+):
+    case_root = tmp_path / "case"
+    bundle_root = tmp_path / "OpenSeesExamplesAdvanced"
+    script_dir = bundle_root / "example"
+    script_dir.mkdir(parents=True, exist_ok=True)
+    entry_tcl = script_dir / "Ex1.Canti2D.EQ.tcl"
+    entry_tcl.write_text('puts "eq"\n', encoding="utf-8")
+    shared_file = bundle_root / "BM68elc.acc"
+    shared_file.write_text("0.0\n", encoding="utf-8")
+    shared_dir = bundle_root / "GMfiles"
+    shared_dir.mkdir()
+    shared_nested = shared_dir / "gm.dat"
+    shared_nested.write_text("1.0\n", encoding="utf-8")
+
+    wrapper_path, hash_inputs = run_case._prepare_direct_tcl_entry(entry_tcl, case_root)
+
+    assert wrapper_path.name.startswith("__strut_")
+    assert wrapper_path.read_text(encoding="utf-8").splitlines() == [
+        "source {Ex1.Canti2D.EQ.tcl}"
+    ]
+    mirrored_script_dir = wrapper_path.parent
+    assert (mirrored_script_dir / "BM68elc.acc").read_text(encoding="utf-8") == "0.0\n"
+    assert (mirrored_script_dir / "GMfiles" / "gm.dat").read_text(encoding="utf-8") == "1.0\n"
+    assert hash_inputs == [
+        entry_tcl.resolve(),
+        shared_file.resolve(),
+        shared_nested.resolve(),
+    ]
+
+
+def test_run_case_direct_tcl_fallback_uses_wrapped_entry_tcl(
+    monkeypatch, tmp_path: Path
+):
+    tmp_repo = tmp_path / "repo"
+    (tmp_repo / "scripts").mkdir(parents=True, exist_ok=True)
+    (tmp_repo / "tests" / "validation").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(run_case, "__file__", str(tmp_repo / "scripts" / "run_case.py"))
+    monkeypatch.setattr(run_case.shutil, "which", lambda name: "/usr/bin/uv")
+
+    entry_dir = tmp_repo / "docs" / "examples"
+    entry_dir.mkdir(parents=True, exist_ok=True)
+    analyze = entry_dir / "Ex3.Canti2D.analyze.Static.Push.tcl"
+    analyze.write_text('puts "analyze"\n', encoding="utf-8")
+    build = entry_dir / "Ex3.Canti2D.build.InelasticFiberSection.tcl"
+    build.write_text('puts "build"\n', encoding="utf-8")
+    manifest = tmp_repo / "tests" / "validation" / "direct_case" / "direct_tcl_case.json"
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.write_text(
+        json.dumps(
+            {
+                "name": "direct_case",
+                "entry_tcl": "docs/examples/Ex3.Canti2D.analyze.Static.Push.tcl",
+                "source_files": [
+                    "Ex3.Canti2D.build.InelasticFiberSection.tcl",
+                    "Ex3.Canti2D.analyze.Static.Push.tcl",
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    calls = []
+    seen_entry = {}
+    monkeypatch.setitem(
+        sys.modules,
+        "tcl_to_strut",
+        SimpleNamespace(
+            convert_tcl_to_solver_input=lambda entry, repo_root, compute_only=False: (
+                seen_entry.setdefault("path", Path(entry)),
+                (_ for _ in ()).throw(SystemExit("force fallback")),
+            )[1]
+        ),
+    )
+
+    def fake_run(cmd, env=None, verbose=False):
+        calls.append(cmd)
+        if "run_opensees_wine.sh" in cmd[0]:
+            out_dir = Path(cmd[-1])
+            out_dir.mkdir(parents=True, exist_ok=True)
+        return None
+
+    monkeypatch.setattr(run_case, "run", fake_run)
+    monkeypatch.setattr(sys, "argv", ["run_case.py", str(analyze)])
+
+    with pytest.raises(SystemExit, match="force fallback"):
+        run_case.main()
+
+    assert seen_entry["path"].name.startswith("__strut_")
+    assert seen_entry["path"].read_text(encoding="utf-8").splitlines() == [
+        "source {Ex3.Canti2D.build.InelasticFiberSection.tcl}",
+        "source {Ex3.Canti2D.analyze.Static.Push.tcl}",
+    ]
+    assert calls == []
+
+
 def test_selected_case_paths_accepts_repo_relative_tcl(monkeypatch):
     monkeypatch.setenv(
         "STRUT_PARITY_CASES",

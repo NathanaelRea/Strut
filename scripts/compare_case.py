@@ -10,6 +10,8 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
+import direct_tcl_support
+
 ABS_TOL = 1e-8
 REL_TOL = 1e-5
 
@@ -177,28 +179,43 @@ def _resolve_direct_manifest(case_root: Path) -> Path:
 
 
 def _resolve_entry_tcl_from_manifest(manifest_path: Path, repo_root: Path) -> Path:
-    data = json.loads(manifest_path.read_text())
-    raw_path = data.get("entry_tcl")
-    if not isinstance(raw_path, str) or not raw_path:
-        raise SystemExit(f"direct Tcl manifest missing entry_tcl: {manifest_path}")
-    path = Path(raw_path)
-    if path.is_absolute():
-        return path.resolve()
-    return (repo_root / path).resolve()
+    return direct_tcl_support.resolve_entry_tcl_from_manifest(manifest_path, repo_root)
 
 
 def _load_direct_tcl_case_data(
     entry_tcl: Path,
     repo_root: Path,
+    case_root: Path,
     manifest_path: Path | None = None,
 ) -> dict:
     import tcl_to_strut
 
-    data = tcl_to_strut.convert_tcl_to_solver_input(entry_tcl, repo_root)
+    mirror_root = case_root / "generated" / "_direct_tcl_context"
+    parser_source = entry_tcl.resolve()
+    if manifest_path is not None and manifest_path.exists():
+        parser_source = direct_tcl_support.resolve_entry_tcl_from_manifest(
+            manifest_path, repo_root
+        )
+
+    try:
+        parser_source.relative_to(mirror_root.resolve())
+    except ValueError:
+        parser_entry, _ = direct_tcl_support.prepare_direct_tcl_entry(
+            parser_source,
+            direct_tcl_support.resolve_direct_tcl_source_files(
+                parser_source, manifest_path
+            ),
+            mirror_root,
+            excluded_roots=[case_root],
+        )
+    else:
+        parser_entry = parser_source
+
+    data = tcl_to_strut.convert_tcl_to_solver_input(parser_entry, repo_root)
     if manifest_path is None or not manifest_path.exists():
         return data
 
-    manifest = json.loads(manifest_path.read_text())
+    manifest = direct_tcl_support.load_direct_tcl_manifest(manifest_path)
     for key in (
         "parity_tolerance",
         "parity_tolerance_by_recorder",
@@ -558,7 +575,7 @@ def main():
         else:
             case_root = repo_root / "tests" / "validation" / entry_tcl.stem
             manifest_path = None
-        data = _load_direct_tcl_case_data(entry_tcl, repo_root, manifest_path)
+        data = _load_direct_tcl_case_data(entry_tcl, repo_root, case_root, manifest_path)
     elif args.case:
         case_root = repo_root / "tests" / "validation" / args.case
         case_json = case_root / f"{args.case}.json"
@@ -571,7 +588,9 @@ def main():
                     f"missing case JSON or direct Tcl manifest in: {case_root}"
                 )
             entry_tcl = _resolve_entry_tcl_from_manifest(manifest_path, repo_root)
-            data = _load_direct_tcl_case_data(entry_tcl, repo_root, manifest_path)
+            data = _load_direct_tcl_case_data(
+                entry_tcl, repo_root, case_root, manifest_path
+            )
     else:
         raise SystemExit("either --case, --case-json, or --input-tcl is required")
 

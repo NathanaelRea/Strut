@@ -1987,6 +1987,11 @@ class TclStrutBuilder:
                 idx += 1
             elif token == "-file":
                 options["file"] = args[idx + 1]
+                options["format"] = "file"
+                idx += 2
+            elif token == "-xml":
+                options["file"] = args[idx + 1]
+                options["format"] = "xml"
                 idx += 2
             elif token == "-node":
                 values = []
@@ -2155,6 +2160,8 @@ class TclStrutBuilder:
                 "chordDeformation",
             }:
                 rec_type = "element_deformation"
+            elif kind == "plasticRotation":
+                return ""
             elif kind == "section":
                 section_idx = int(remainder[1])
                 response = remainder[2]
@@ -2569,6 +2576,17 @@ class TclStrutBuilder:
                 stage["pattern"] = {"type": "None"}
                 stage["loads"] = []
                 stage["element_loads"] = []
+            if (
+                self.integrator["type"] == "DisplacementControl"
+                and stage.get("pattern", {}).get("type") == "Plain"
+                and not stage.get("loads")
+                and not stage.get("element_loads")
+            ):
+                # Benchmarked OpenSees treats displacement-control stages with an
+                # empty reference load vector as ineffective; preserve the
+                # existing state instead of synthesizing a spurious displacement.
+                self.pattern_removed = False
+                return "0"
             if self.current_rayleigh is not None:
                 stage["rayleigh"] = dict(self.current_rayleigh)
             steps = int(args[0])

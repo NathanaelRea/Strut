@@ -101,8 +101,16 @@ def test_compare_case_accepts_direct_tcl_manifest(monkeypatch, tmp_path: Path):
     entry_tcl = repo_root / "docs" / "examples" / "case.tcl"
     entry_tcl.parent.mkdir(parents=True, exist_ok=True)
     entry_tcl.write_text("puts ok\n", encoding="utf-8")
+    build_tcl = entry_tcl.parent / "build.tcl"
+    build_tcl.write_text("puts build\n", encoding="utf-8")
     manifest.write_text(
-        json.dumps({"name": "direct_case", "entry_tcl": "docs/examples/case.tcl"}),
+        json.dumps(
+            {
+                "name": "direct_case",
+                "entry_tcl": "docs/examples/case.tcl",
+                "source_files": ["build.tcl", "case.tcl"],
+            }
+        ),
         encoding="utf-8",
     )
     (case_root / "reference").mkdir(parents=True, exist_ok=True)
@@ -110,14 +118,20 @@ def test_compare_case_accepts_direct_tcl_manifest(monkeypatch, tmp_path: Path):
     (case_root / "reference" / "disp_node1.out").write_text("1.0\n", encoding="utf-8")
     (case_root / "strut" / "disp_node1.out").write_text("1.0\n", encoding="utf-8")
 
+    seen_entry = {}
     monkeypatch.setitem(
         sys.modules,
         "tcl_to_strut",
         SimpleNamespace(
-            convert_tcl_to_solver_input=lambda entry, repo_root, compute_only=False: {
-                "analysis": {"type": "static_linear"},
-                "recorders": [{"type": "node_displacement", "nodes": [1], "output": "disp"}],
-            }
+            convert_tcl_to_solver_input=lambda entry, repo_root, compute_only=False: (
+                seen_entry.setdefault("path", Path(entry)),
+                {
+                    "analysis": {"type": "static_linear"},
+                    "recorders": [
+                        {"type": "node_displacement", "nodes": [1], "output": "disp"}
+                    ],
+                },
+            )[1]
         ),
     )
     monkeypatch.setattr(
@@ -127,3 +141,69 @@ def test_compare_case_accepts_direct_tcl_manifest(monkeypatch, tmp_path: Path):
     )
 
     compare_case.main()
+    assert seen_entry["path"].name.startswith("__strut_")
+    assert seen_entry["path"].read_text(encoding="utf-8").splitlines() == [
+        "source {build.tcl}",
+        "source {case.tcl}",
+    ]
+
+
+def test_load_direct_tcl_case_data_reuses_wrapped_input_without_self_deleting(
+    monkeypatch, tmp_path: Path
+):
+    repo_root = tmp_path / "repo"
+    scripts_dir = repo_root / "scripts"
+    scripts_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(compare_case, "__file__", str(scripts_dir / "compare_case.py"))
+
+    case_root = repo_root / "tests" / "validation" / "direct_case"
+    manifest = case_root / "direct_tcl_case.json"
+    entry_dir = repo_root / "docs" / "examples"
+    entry_dir.mkdir(parents=True, exist_ok=True)
+    build_tcl = entry_dir / "build.tcl"
+    build_tcl.write_text("puts build\n", encoding="utf-8")
+    entry_tcl = entry_dir / "case.tcl"
+    entry_tcl.write_text("puts ok\n", encoding="utf-8")
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.write_text(
+        json.dumps(
+            {
+                "name": "direct_case",
+                "entry_tcl": "docs/examples/case.tcl",
+                "source_files": ["build.tcl", "case.tcl"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    wrapped_input = (
+        case_root
+        / "generated"
+        / "_direct_tcl_context"
+        / "examples"
+        / "__strut_case_entry.tcl"
+    )
+    wrapped_input.parent.mkdir(parents=True, exist_ok=True)
+    wrapped_input.write_text("source {build.tcl}\nsource {case.tcl}\n", encoding="utf-8")
+
+    seen_entry = {}
+    monkeypatch.setitem(
+        sys.modules,
+        "tcl_to_strut",
+        SimpleNamespace(
+            convert_tcl_to_solver_input=lambda entry, repo_root, compute_only=False: (
+                seen_entry.setdefault("path", Path(entry)),
+                {"analysis": {"type": "static_linear"}, "recorders": []},
+            )[1]
+        ),
+    )
+
+    compare_case._load_direct_tcl_case_data(
+        wrapped_input,
+        repo_root,
+        case_root,
+        manifest,
+    )
+
+    assert seen_entry["path"].name.startswith("__strut_")
+    assert seen_entry["path"].resolve() != wrapped_input.resolve()

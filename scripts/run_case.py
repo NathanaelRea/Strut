@@ -12,6 +12,8 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
+import direct_tcl_support
+
 
 def run(cmd, env=None, verbose=False):
     if verbose:
@@ -54,42 +56,24 @@ def _slugify_tcl_path(path: Path, repo_root: Path) -> str:
 
 
 def _direct_tcl_manifest_paths(repo_root: Path) -> list[Path]:
-    return sorted(
-        (repo_root / "tests" / "validation").glob("*/direct_tcl_case.json")
-    )
+    return direct_tcl_support.direct_tcl_manifest_paths(repo_root)
 
 
 def _load_direct_tcl_manifest(manifest_path: Path) -> dict:
-    data = json.loads(manifest_path.read_text(encoding="utf-8"))
-    if not isinstance(data, dict):
-        raise SystemExit(f"invalid direct Tcl manifest: {manifest_path}")
-    return data
+    return direct_tcl_support.load_direct_tcl_manifest(manifest_path)
 
 
 def _resolve_entry_tcl_from_manifest(manifest_path: Path, repo_root: Path) -> Path:
-    data = _load_direct_tcl_manifest(manifest_path)
-    raw_path = data.get("entry_tcl")
-    if not isinstance(raw_path, str) or not raw_path:
-        raise SystemExit(f"direct Tcl manifest missing entry_tcl: {manifest_path}")
-    path = Path(raw_path)
-    if path.is_absolute():
-        return path.resolve()
-    return (repo_root / path).resolve()
+    return direct_tcl_support.resolve_entry_tcl_from_manifest(manifest_path, repo_root)
 
 
 def _resolve_canonical_tcl_case(entry_tcl: Path, repo_root: Path):
-    entry_path = entry_tcl.resolve()
-    matches = []
-    for manifest_path in _direct_tcl_manifest_paths(repo_root):
-        if _resolve_entry_tcl_from_manifest(manifest_path, repo_root) != entry_path:
-            continue
-        matches.append((manifest_path.parent.name, manifest_path.parent))
-
-    if not matches:
+    manifest_path = direct_tcl_support.find_direct_tcl_manifest_for_entry(
+        entry_tcl, repo_root
+    )
+    if manifest_path is None:
         return None
-    if len(matches) > 1:
-        return None
-    return matches[0]
+    return manifest_path.parent.name, manifest_path.parent, manifest_path
 
 
 def _is_direct_tcl_manifest(path: Path) -> bool:
@@ -98,6 +82,23 @@ def _is_direct_tcl_manifest(path: Path) -> bool:
     data = _load_direct_tcl_manifest(path)
     raw_path = data.get("entry_tcl")
     return isinstance(raw_path, str) and bool(raw_path)
+
+
+def _resolve_direct_tcl_source_files(
+    entry_tcl: Path, manifest_path: Path | None = None
+) -> list[Path]:
+    return direct_tcl_support.resolve_direct_tcl_source_files(entry_tcl, manifest_path)
+
+
+def _prepare_direct_tcl_entry(
+    entry_tcl: Path, case_root: Path, source_files: list[Path] | None = None
+) -> tuple[Path, list[Path]]:
+    return direct_tcl_support.prepare_direct_tcl_entry(
+        entry_tcl,
+        source_files or [entry_tcl],
+        case_root / "generated" / "_direct_tcl_context",
+        excluded_roots=[case_root],
+    )
 
 
 def _reference_output_path(reference_dir: Path, raw_path: str):
@@ -404,12 +405,14 @@ def main():
 
     case_input = Path(args.case_input).resolve()
     entry_tcl = None
+    manifest_path = None
     hash_inputs = [case_input]
     if case_input.suffix == ".json":
         if _is_direct_tcl_manifest(case_input):
             data = _load_direct_tcl_manifest(case_input)
             case_name = str(data.get("name") or case_input.parent.name)
             case_root = case_input.parent
+            manifest_path = case_input
             entry_tcl = _resolve_entry_tcl_from_manifest(case_input, repo_root)
             hash_inputs.append(entry_tcl)
             is_tcl = True
@@ -424,30 +427,38 @@ def main():
             case_name = _slugify_tcl_path(case_input, repo_root)
             case_root = repo_root / "tests" / "validation" / case_name
         else:
-            case_name, case_root = canonical_case
+            case_name, case_root, manifest_path = canonical_case
         entry_tcl = case_input
         is_tcl = True
     else:
         raise SystemExit(f"unsupported case input: {case_input}")
 
+    if manifest_path is not None and manifest_path != case_input:
+        hash_inputs.append(manifest_path)
+
     case_root.mkdir(parents=True, exist_ok=True)
     (case_root / "reference").mkdir(parents=True, exist_ok=True)
     (case_root / "strut").mkdir(parents=True, exist_ok=True)
+    runtime_entry_tcl = entry_tcl
+    if is_tcl:
+        assert entry_tcl is not None
+        source_files = _resolve_direct_tcl_source_files(entry_tcl, manifest_path)
+        runtime_entry_tcl, runtime_hash_inputs = _prepare_direct_tcl_entry(
+            entry_tcl, case_root, source_files
+        )
+        hash_inputs.extend(runtime_hash_inputs)
 
     verbose = os.getenv("STRUT_VERBOSE") == "1"
     env = os.environ.copy()
     case_data = None
-    manifest_path = None
     use_generated_direct_tcl = False
 
     if is_tcl:
-        assert entry_tcl is not None
+        assert runtime_entry_tcl is not None
         import tcl_to_strut
 
-        if case_input.suffix == ".json" and _is_direct_tcl_manifest(case_input):
-            manifest_path = case_input
         case_data = _merge_direct_tcl_manifest_metadata(
-            tcl_to_strut.convert_tcl_to_solver_input(entry_tcl, repo_root),
+            tcl_to_strut.convert_tcl_to_solver_input(runtime_entry_tcl, repo_root),
             manifest_path,
         )
         try:
@@ -465,7 +476,7 @@ def main():
         except (OSError, ValueError, subprocess.CalledProcessError, SystemExit) as exc:
             if verbose:
                 print(f"direct Tcl fallback to original script: {exc}", file=sys.stderr)
-            tcl_out = entry_tcl
+            tcl_out = runtime_entry_tcl
     else:
         tgt_json = case_root / f"{case_name}.json"
         if case_input != tgt_json:
@@ -495,13 +506,13 @@ def main():
             refresh_reference = True
 
     if is_tcl and use_generated_direct_tcl:
-        assert entry_tcl is not None
+        assert runtime_entry_tcl is not None
         try:
             _validate_generated_tcl_matches_original(
                 repo_root=repo_root,
                 case_root=case_root,
                 case_data=case_data,
-                entry_tcl=entry_tcl,
+                entry_tcl=runtime_entry_tcl,
                 generated_tcl=tcl_out,
                 env=env,
                 verbose=verbose,
@@ -515,7 +526,7 @@ def main():
                     f"direct Tcl fallback to original script after parser-check failure: {exc}",
                     file=sys.stderr,
                 )
-            tcl_out = entry_tcl
+            tcl_out = runtime_entry_tcl
         else:
             ref_hash_file.parent.mkdir(parents=True, exist_ok=True)
             ref_hash_file.write_text(
@@ -528,7 +539,7 @@ def main():
                 [
                     str(repo_root / "scripts" / "run_opensees_wine.sh"),
                     "--script",
-                    str(entry_tcl),
+                    str(runtime_entry_tcl),
                     "--output",
                     str(case_root / "reference"),
                 ],
@@ -571,7 +582,7 @@ def main():
         str(case_root / "strut"),
     ]
     if is_tcl and not use_generated_direct_tcl:
-        strut_cmd += ["--input-tcl", str(entry_tcl)]
+        strut_cmd += ["--input-tcl", str(runtime_entry_tcl)]
     else:
         strut_cmd += ["--input", str(case_json)]
     run(strut_cmd, env=env, verbose=verbose)
@@ -585,7 +596,7 @@ def main():
             "--case-root",
             str(case_root),
             *(
-                ["--input-tcl", str(entry_tcl)]
+                ["--input-tcl", str(runtime_entry_tcl)]
                 if is_tcl and not use_generated_direct_tcl
                 else ["--case-json", str(case_json)]
             ),

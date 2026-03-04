@@ -1,6 +1,10 @@
 {
   "name": "opensees_example_ex9_moment_curvature_2d",
-  "entry_tcl": "docs/agent-reference/OpenSeesExamplesAdvanced/opensees_example_9_build_analyze_a_section_example/Ex9.complete.MomentCurvature2D.tcl",
+  "entry_tcl": "docs/agent-reference/OpenSeesExamplesAdvanced/opensees_example_9_build_analyze_a_section_example/Ex9.analyze.MomentCurvature2D.tcl",
   "enabled": false,
-  "benchmark_size": "small"
+  "benchmark_size": "small",
+  "source_files": [
+    "Ex9a.build.UniaxialSection2D.tcl",
+    "Ex9.analyze.MomentCurvature2D.tcl"
+  ]
 }

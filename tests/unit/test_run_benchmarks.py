@@ -50,6 +50,7 @@ def _write_direct_tcl_case(
     entry_tcl: Path,
     enabled=True,
     benchmark_size=None,
+    source_files=None,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
@@ -59,6 +60,8 @@ def _write_direct_tcl_case(
     }
     if benchmark_size is not None:
         payload["benchmark_size"] = benchmark_size
+    if source_files is not None:
+        payload["source_files"] = list(source_files)
     path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
 
 
@@ -359,6 +362,166 @@ def test_write_direct_tcl_wrapper_compute_only_noops_display_commands(tmp_path: 
     assert "proc quit args { return {} }" in wrapper
     assert "foreach __strut_display_cmd {prp vup vpn viewWindow display} {" in wrapper
     assert 'proc $__strut_display_cmd args { return {} }' in wrapper
+
+
+def test_prepare_direct_tcl_wrappers_mirror_shared_parent_assets(tmp_path: Path):
+    bundle_root = tmp_path / "OpenSeesExamplesAdvanced"
+    script_dir = bundle_root / "example"
+    script_dir.mkdir(parents=True, exist_ok=True)
+    entry_tcl = script_dir / "Ex1.Canti2D.EQ.tcl"
+    entry_tcl.write_text("puts ok\n", encoding="utf-8")
+    (bundle_root / "BM68elc.acc").write_text("0.0\n", encoding="utf-8")
+    gmfiles = bundle_root / "GMfiles"
+    gmfiles.mkdir()
+    (gmfiles / "gm.dat").write_text("1.0\n", encoding="utf-8")
+    sibling_example = bundle_root / "other_example"
+    sibling_example.mkdir()
+    (sibling_example / "other.tcl").write_text('puts "other"\n', encoding="utf-8")
+
+    case = run_benchmarks.CaseSpec(name="direct_case", tcl_path=entry_tcl)
+    timed_wrapper, compute_wrapper = run_benchmarks._prepare_direct_tcl_wrappers(
+        case,
+        {"recorders": []},
+        tmp_path / "validation_root",
+    )
+
+    mirrored_script_dir = timed_wrapper.parent
+    assert compute_wrapper.parent == mirrored_script_dir
+    assert (mirrored_script_dir / "BM68elc.acc").read_text(encoding="utf-8") == "0.0\n"
+    assert (mirrored_script_dir / "GMfiles" / "gm.dat").read_text(encoding="utf-8") == "1.0\n"
+    assert not (mirrored_script_dir / "other_example").exists()
+
+
+def test_prepare_direct_tcl_wrappers_use_manifest_source_files_order(
+    tmp_path: Path,
+):
+    bundle_root = tmp_path / "OpenSeesExamplesAdvanced"
+    script_dir = bundle_root / "example"
+    script_dir.mkdir(parents=True, exist_ok=True)
+    analyze = script_dir / "Ex3.Canti2D.analyze.Dynamic.EQ.Uniform.tcl"
+    analyze.write_text("puts analyze\n", encoding="utf-8")
+    elastic = script_dir / "Ex3.Canti2D.build.ElasticElement.tcl"
+    elastic.write_text("puts elastic\n", encoding="utf-8")
+    inelastic = script_dir / "Ex3.Canti2D.build.InelasticSection.tcl"
+    inelastic.write_text("puts inelastic\n", encoding="utf-8")
+    fiber = script_dir / "Ex3.Canti2D.build.InelasticFiberSection.tcl"
+    fiber.write_text("puts fiber\n", encoding="utf-8")
+
+    manifest = tmp_path / "validation" / "direct_case" / "direct_tcl_case.json"
+    _write_direct_tcl_case(
+        manifest,
+        entry_tcl=analyze,
+        source_files=[
+            "Ex3.Canti2D.build.InelasticFiberSection.tcl",
+            "Ex3.Canti2D.analyze.Dynamic.EQ.Uniform.tcl",
+        ],
+    )
+    case = run_benchmarks._direct_tcl_case_spec(manifest)
+    timed_wrapper, compute_wrapper = run_benchmarks._prepare_direct_tcl_wrappers(
+        case,
+        {"recorders": []},
+        tmp_path / "validation_root",
+    )
+
+    mirrored_script_dir = timed_wrapper.parent
+    entry_wrapper = next(mirrored_script_dir.glob("__strut_*_entry.tcl"))
+    assert entry_wrapper.read_text(encoding="utf-8").splitlines() == [
+        "source {Ex3.Canti2D.build.InelasticFiberSection.tcl}",
+        "source {Ex3.Canti2D.analyze.Dynamic.EQ.Uniform.tcl}",
+    ]
+    timed_text = timed_wrapper.read_text(encoding="utf-8")
+    compute_text = compute_wrapper.read_text(encoding="utf-8")
+    assert f"source {{{entry_wrapper.name}}}" in timed_text
+    assert f"source {{{entry_wrapper.name}}}" in compute_text
+
+
+def test_prepare_direct_tcl_entry_uses_explicit_source_files_order(
+    tmp_path: Path,
+):
+    bundle_root = tmp_path / "OpenSeesExamplesAdvanced"
+    script_dir = bundle_root / "example"
+    script_dir.mkdir(parents=True, exist_ok=True)
+    analyze = script_dir / "Ex3.Canti2D.analyze.Dynamic.EQ.Uniform.tcl"
+    analyze.write_text("puts analyze\n", encoding="utf-8")
+    elastic = script_dir / "Ex3.Canti2D.build.ElasticElement.tcl"
+    elastic.write_text("puts elastic\n", encoding="utf-8")
+    fiber = script_dir / "Ex3.Canti2D.build.InelasticFiberSection.tcl"
+    fiber.write_text("puts fiber\n", encoding="utf-8")
+    (bundle_root / "BM68elc.acc").write_text("0.0\n", encoding="utf-8")
+
+    entry_wrapper = run_benchmarks._prepare_direct_tcl_entry(
+        analyze,
+        tmp_path / "mirror_root",
+        source_files=[fiber, analyze],
+    )
+
+    assert entry_wrapper.read_text(encoding="utf-8").splitlines() == [
+        "source {Ex3.Canti2D.build.InelasticFiberSection.tcl}",
+        "source {Ex3.Canti2D.analyze.Dynamic.EQ.Uniform.tcl}",
+    ]
+    assert (entry_wrapper.parent / "BM68elc.acc").read_text(encoding="utf-8") == "0.0\n"
+
+
+def test_ensure_direct_tcl_case_artifacts_parses_wrapped_entry_tcl(
+    monkeypatch, tmp_path: Path
+):
+    repo_root = tmp_path / "repo"
+    case_root = repo_root / "tests" / "validation" / "direct_case"
+    manifest = case_root / "direct_tcl_case.json"
+    entry_dir = repo_root / "docs" / "examples"
+    entry_dir.mkdir(parents=True, exist_ok=True)
+    analyze = entry_dir / "Ex3.Canti2D.analyze.Dynamic.EQ.Uniform.tcl"
+    analyze.write_text("puts analyze\n", encoding="utf-8")
+    build = entry_dir / "Ex3.Canti2D.build.InelasticFiberSection.tcl"
+    build.write_text("puts build\n", encoding="utf-8")
+    _write_direct_tcl_case(
+        manifest,
+        entry_tcl=analyze,
+        source_files=[
+            "Ex3.Canti2D.build.InelasticFiberSection.tcl",
+            "Ex3.Canti2D.analyze.Dynamic.EQ.Uniform.tcl",
+        ],
+    )
+    case = run_benchmarks._direct_tcl_case_spec(manifest)
+
+    seen_entry = {}
+    monkeypatch.setitem(
+        sys.modules,
+        "tcl_to_strut",
+        SimpleNamespace(
+            convert_tcl_to_solver_input=lambda entry, repo_root, compute_only=False: (
+                seen_entry.setdefault("path", Path(entry)),
+                {
+                    "schema_version": "1.0",
+                    "metadata": {"name": "generated", "units": "unknown"},
+                    "model": {"ndm": 2, "ndf": 3},
+                    "nodes": [],
+                    "elements": [],
+                    "recorders": [],
+                },
+            )[1]
+        ),
+    )
+
+    def fake_run(cmd, env=None, verbose=False, capture_on_error=False):
+        if "json_to_tcl.py" in str(cmd[3]):
+            raise subprocess.CalledProcessError(1, cmd)
+
+    monkeypatch.setattr(run_benchmarks, "run", fake_run)
+
+    case_data = run_benchmarks._ensure_direct_tcl_case_artifacts(
+        case,
+        repo_root=repo_root,
+        env={},
+        verbose=False,
+    )
+
+    assert case_data["metadata"]["name"] == "generated"
+    assert seen_entry["path"].name.startswith("__strut_")
+    assert seen_entry["path"].read_text(encoding="utf-8").splitlines() == [
+        "source {Ex3.Canti2D.build.InelasticFiberSection.tcl}",
+        "source {Ex3.Canti2D.analyze.Dynamic.EQ.Uniform.tcl}",
+    ]
 
 
 def test_ensure_direct_tcl_case_artifacts_creates_canonical_reference(

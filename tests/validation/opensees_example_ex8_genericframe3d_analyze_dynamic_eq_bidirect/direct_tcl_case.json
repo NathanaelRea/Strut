@@ -1,5 +1,9 @@
 {
   "name": "opensees_example_ex8_genericframe3d_analyze_dynamic_eq_bidirect",
   "entry_tcl": "docs/agent-reference/OpenSeesExamplesAdvanced/opensees_example_8_generic_3d_frame_nstory_nbayx_nbayz_reinforced_concrete_section_steel_w_section/Ex8.genericFrame3D.analyze.Dynamic.EQ.bidirect.tcl",
-  "enabled": false
+  "enabled": false,
+  "source_files": [
+    "Ex8.genericFrame3D.build.RCsec.tcl",
+    "Ex8.genericFrame3D.analyze.Dynamic.EQ.bidirect.tcl"
+  ]
 }

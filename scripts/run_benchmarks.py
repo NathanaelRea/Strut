@@ -22,6 +22,8 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
+import direct_tcl_support
+
 ABS_TOL = 1e-8
 REL_TOL = 1e-5
 DEFAULT_RECORDER_TOLERANCES = {
@@ -43,7 +45,6 @@ ELEMENT_RESPONSE_RECORDER_TYPES = (
     "element_basic_force",
     "element_deformation",
 )
-
 
 @dataclass(frozen=True)
 class CaseSpec:
@@ -586,7 +587,13 @@ def _load_direct_tcl_case_data(case: CaseSpec, repo_root: Path) -> dict:
 
     if case.tcl_path is None:
         raise SystemExit(f"direct Tcl case `{case.name}` is missing tcl_path")
-    case_data = tcl_to_strut.convert_tcl_to_solver_input(case.tcl_path, repo_root)
+    source_files = _resolve_direct_tcl_source_files(case)
+    parser_entry = _prepare_direct_tcl_entry(
+        case.tcl_path,
+        _direct_case_root(case) / "generated" / "_direct_tcl_context",
+        source_files=source_files,
+    )
+    case_data = tcl_to_strut.convert_tcl_to_solver_input(parser_entry, repo_root)
     metadata = _load_case_metadata(_case_metadata_path(case))
     for key in ("parity_tolerance", "parity_tolerance_by_recorder", "parity_mode"):
         if key in metadata:
@@ -783,6 +790,25 @@ def _write_direct_tcl_wrapper(
     return wrapper_path
 
 
+def _resolve_direct_tcl_source_files(case: CaseSpec) -> list[Path]:
+    if case.tcl_path is None:
+        raise SystemExit(f"direct Tcl case `{case.name}` is missing tcl_path")
+    return direct_tcl_support.resolve_direct_tcl_source_files(
+        case.tcl_path, case.metadata_path
+    )
+
+
+def _prepare_direct_tcl_entry(
+    entry_tcl: Path, mirror_root: Path, source_files: list[Path] | None = None
+) -> Path:
+    entry_wrapper, _ = direct_tcl_support.prepare_direct_tcl_entry(
+        entry_tcl,
+        source_files or [entry_tcl],
+        mirror_root,
+    )
+    return entry_wrapper
+
+
 def _prepare_direct_tcl_wrappers(
     case: CaseSpec, case_data: dict, tcl_root: Path
 ) -> tuple[Path, Path]:
@@ -790,23 +816,22 @@ def _prepare_direct_tcl_wrappers(
         raise SystemExit(f"direct Tcl case `{case.name}` is missing tcl_path")
 
     script_path = case.tcl_path.resolve()
-    script_dir = script_path.parent
-    script_parent = script_dir.parent
+    source_files = _resolve_direct_tcl_source_files(case)
     mirror_root = tcl_root / "_direct_tcl_mirror" / case.name
-    ensure_clean_dir(mirror_root)
-    mirrored_parent = mirror_root / script_parent.name
-    shutil.copytree(script_parent, mirrored_parent, dirs_exist_ok=True)
-    mirrored_script_dir = mirrored_parent / script_dir.name
+    entry_wrapper = _prepare_direct_tcl_entry(
+        script_path, mirror_root, source_files=source_files
+    )
+    mirrored_script_dir = entry_wrapper.parent
     raw_output_paths = _direct_tcl_raw_output_paths(case_data)
 
     timed_wrapper = _write_direct_tcl_wrapper(
-        original_script_name=script_path.name,
+        original_script_name=entry_wrapper.name,
         wrapper_path=mirrored_script_dir / f"__strut_{case.name}_timed.tcl",
         compute_only=False,
         raw_output_paths=raw_output_paths,
     )
     compute_wrapper = _write_direct_tcl_wrapper(
-        original_script_name=script_path.name,
+        original_script_name=entry_wrapper.name,
         wrapper_path=mirrored_script_dir / f"__strut_{case.name}_compute.tcl",
         compute_only=True,
         raw_output_paths=raw_output_paths,
