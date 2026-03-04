@@ -1,0 +1,5 @@
+{
+  "name": "opensees_example_ex2b_canti2d_inelasticsection_push",
+  "entry_tcl": "docs/agent-reference/OpenSeesExamplesAdvanced/opensees_example_2b_nonlinear_cantilever_column_uniaxial_inelastic_section/Ex2b.Canti2D.InelasticSection.Push.tcl",
+  "enabled": false
+}

@@ -1,0 +1,5 @@
+{
+  "name": "opensees_example_ex2c_canti2d_inelasticfibersection_push",
+  "entry_tcl": "docs/agent-reference/OpenSeesExamplesAdvanced/opensees_example_2c_nonlinear_cantilever_column_inelastic_uniaxial_materials_in_fiber_section/Ex2c.Canti2D.InelasticFiberSection.Push.tcl",
+  "enabled": false
+}

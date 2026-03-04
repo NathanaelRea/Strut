@@ -1,0 +1,5 @@
+{
+  "name": "opensees_example_ex3_canti2d_analyze_static_push",
+  "entry_tcl": "docs/agent-reference/OpenSeesExamplesAdvanced/opensees_example_3_cantilever_column_with_units/Ex3.Canti2D.analyze.Static.Push.tcl",
+  "enabled": false
+}

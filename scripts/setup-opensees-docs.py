@@ -4,13 +4,15 @@ from __future__ import annotations
 import argparse
 import io
 import re
+import shutil
 import sys
 import time
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable
-from urllib.parse import parse_qs, urljoin, urlparse
+from urllib.error import HTTPError
+from urllib.parse import parse_qs, unquote, urlencode, urljoin, urlparse
 from urllib.request import Request, urlopen
 
 from bs4 import BeautifulSoup
@@ -18,6 +20,7 @@ from bs4 import BeautifulSoup
 BASE_URL = "https://opensees.berkeley.edu"
 BASIC_MANUAL_URL = f"{BASE_URL}/wiki/index.php?title=Basic_Examples_Manual"
 ADVANCED_MANUAL_URL = f"{BASE_URL}/wiki/index.php?title=Examples_Manual"
+REQUEST_INTERVAL_S = 1.0
 
 DOCS_DIR = Path("docs/agent-reference/OpenSeesDocs")
 BASIC_EXAMPLES_DIR = Path("docs/agent-reference/OpenSeesExamplesBasic")
@@ -34,6 +37,20 @@ DIRECT_FILE_SUFFIXES = {
     ".tcl",
     ".txt",
     ".zip",
+}
+
+SHARED_EXAMPLE_FILE_SUFFIXES = {
+    ".acc",
+    ".at2",
+    ".dat",
+    ".dt2",
+    ".g3",
+    ".out",
+    ".txt",
+}
+
+KNOWN_TITLE_REWRITES = {
+    "OpenSees_Example_3._Cantilever_Column_with_unit": "OpenSees_Example_3._Cantilever_Column_with_units",
 }
 
 
@@ -73,9 +90,36 @@ class Logger:
             self.info(message)
 
 
+class RequestThrottle:
+    def __init__(self, min_interval_s: float = REQUEST_INTERVAL_S) -> None:
+        self.min_interval_s = min_interval_s
+        self._last_request_started_at: float | None = None
+
+    def wait(self, logger: Logger | None = None) -> None:
+        if self.min_interval_s <= 0:
+            self._last_request_started_at = time.monotonic()
+            return
+        now = time.monotonic()
+        if self._last_request_started_at is None:
+            self._last_request_started_at = now
+            return
+        elapsed = now - self._last_request_started_at
+        remaining = self.min_interval_s - elapsed
+        if remaining > 0:
+            if logger is not None and logger.verbose:
+                logger.detail(f"Throttling requests for {remaining:.2f}s")
+            time.sleep(remaining)
+            now = time.monotonic()
+        self._last_request_started_at = now
+
+
+REQUEST_THROTTLE = RequestThrottle()
+
+
 def fetch_html(url: str, logger: Logger | None = None) -> Page:
     if logger is not None:
         logger.detail(f"Fetching HTML: {url}")
+    REQUEST_THROTTLE.wait(logger=logger)
     request = Request(url, headers={"User-Agent": USER_AGENT})
     with urlopen(request) as response:
         final_url = response.geturl()
@@ -101,9 +145,16 @@ def extract_title(url: str) -> str | None:
         title = params.get("title", [None])[0]
         if title:
             return title
+    if parsed.path.startswith("/wiki/"):
+        tail = parsed.path.split("/wiki/", 1)[1]
+        if tail.startswith("index.php/"):
+            title = tail.split("index.php/", 1)[1]
+            return unquote(title) or None
+        if tail and "/" not in tail:
+            return unquote(tail) or None
     if parsed.path.startswith("/wiki/index.php/"):
         tail = parsed.path.split("/wiki/index.php/", 1)[1]
-        return tail or None
+        return unquote(tail) or None
     return None
 
 
@@ -164,12 +215,65 @@ def safe_extract_zip(
 def download_file(url: str, logger: Logger | None = None) -> bytes:
     if logger is not None:
         logger.detail(f"Downloading file: {url}")
+    REQUEST_THROTTLE.wait(logger=logger)
     request = Request(url, headers={"User-Agent": USER_AGENT})
     with urlopen(request) as response:
         data = response.read()
     if logger is not None:
         logger.detail(f"Downloaded file: {url} ({len(data)} bytes)")
     return data
+
+
+def _iter_shared_file_reference_texts(text: str) -> Iterable[str]:
+    pattern = r'["\']([^"\']+\.(?:acc|at2|dat|dt2|g3|out|txt))["\']'
+    for match in re.finditer(pattern, text, flags=re.IGNORECASE):
+        yield match.group(1).strip()
+
+
+def _resolve_shared_example_source(
+    reference: str, example_dir: Path, shared_root: Path
+) -> tuple[Path | None, Path]:
+    ref_path = Path(reference)
+    target = example_dir / ref_path
+    candidates: list[Path] = []
+    if ref_path.parts:
+        candidates.append(shared_root / ref_path)
+    candidates.append(shared_root / ref_path.name)
+    candidates.append(shared_root / "GMfiles" / ref_path.name)
+
+    seen: set[Path] = set()
+    for candidate in candidates:
+        resolved = candidate.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        if resolved.exists():
+            return resolved, target
+    return None, target
+
+
+def copy_referenced_shared_files(
+    example_dir: Path, shared_root: Path, logger: Logger | None = None
+) -> int:
+    copied = 0
+    seen_targets: set[Path] = set()
+    for tcl_path in sorted(example_dir.glob("*.tcl")):
+        text = tcl_path.read_text(encoding="utf-8", errors="replace")
+        for reference in _iter_shared_file_reference_texts(text):
+            source, target = _resolve_shared_example_source(reference, example_dir, shared_root)
+            if source is None:
+                continue
+            target_resolved = target.resolve()
+            if target_resolved in seen_targets or target_resolved.exists():
+                seen_targets.add(target_resolved)
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
+            seen_targets.add(target_resolved)
+            copied += 1
+            if logger is not None:
+                logger.detail(f"Copied shared file {source.name} -> {target}")
+    return copied
 
 
 def unique_links(links: Iterable[str]) -> list[str]:
@@ -181,6 +285,30 @@ def unique_links(links: Iterable[str]) -> list[str]:
         seen.add(link)
         ordered.append(link)
     return ordered
+
+
+def rewrite_known_title(link: str) -> str:
+    parsed = urlparse(link)
+    title = extract_title(link)
+    if not title:
+        return link
+    rewritten_title = KNOWN_TITLE_REWRITES.get(title)
+    if not rewritten_title:
+        return link
+
+    if parsed.query:
+        params = parse_qs(parsed.query)
+        if "title" in params:
+            params["title"] = [rewritten_title]
+            return parsed._replace(query=urlencode(params, doseq=True)).geturl()
+
+    if parsed.path.startswith("/wiki/index.php/"):
+        return parsed._replace(
+            path=f"/wiki/index.php/{rewritten_title}"
+        ).geturl()
+    if parsed.path.startswith("/wiki/"):
+        return parsed._replace(path=f"/wiki/{rewritten_title}").geturl()
+    return link
 
 
 def collect_basic_example_links(root: BeautifulSoup) -> list[str]:
@@ -199,16 +327,29 @@ def collect_basic_example_links(root: BeautifulSoup) -> list[str]:
 
 def collect_advanced_example_links(root: BeautifulSoup) -> list[str]:
     links: list[str] = []
-    for anchor in root.select("h2 span.mw-headline > a[href]"):
-        href = anchor["href"].strip()
-        if not href:
-            continue
-        link = urljoin(BASE_URL, href)
+    for link in iter_wiki_links(root):
+        link = rewrite_known_title(link)
         title = extract_title(link)
         if not title or not title.startswith("OpenSees_Example_"):
             continue
         links.append(link)
     return unique_links(links)
+
+
+def link_filename(url: str) -> str | None:
+    title = extract_title(url)
+    if title:
+        title_name = title.removeprefix("File:").removeprefix("Image:")
+        title_filename = Path(title_name).name
+        if Path(title_filename).suffix:
+            return unquote(title_filename)
+
+    path_name = unquote(Path(urlparse(url).path).name)
+    if path_name.startswith("File:") or path_name.startswith("Image:"):
+        path_name = path_name.split(":", 1)[1]
+    if Path(path_name).suffix:
+        return path_name
+    return None
 
 
 def collect_manual_example_links(
@@ -229,7 +370,10 @@ def direct_file_links(root: BeautifulSoup) -> tuple[list[str], list[str]]:
     zip_links: list[str] = []
     file_links: list[str] = []
     for link in iter_wiki_links(root):
-        suffix = Path(urlparse(link).path).suffix.lower()
+        filename = link_filename(link)
+        if not filename:
+            continue
+        suffix = Path(filename).suffix.lower()
         if suffix not in DIRECT_FILE_SUFFIXES:
             continue
         if suffix == ".zip":
@@ -278,11 +422,12 @@ def download_example(
                 )
             data = download_file(link, logger=logger)
             extracted_count += safe_extract_zip(data, zip_target_dir, logger=logger)
-    else:
+
+    if file_links:
         example_dir = spec.output_dir / slugify(title)
         example_dir.mkdir(parents=True, exist_ok=True)
         for file_index, link in enumerate(file_links, start=1):
-            filename = Path(urlparse(link).path).name or "example.tcl"
+            filename = link_filename(link) or "example.tcl"
             if logger is not None:
                 logger.info(
                     f"{prefix}Downloading file {file_index}/{len(file_links)} for {title}: {filename}"
@@ -292,6 +437,7 @@ def download_example(
             extracted_count += 1
             if logger is not None:
                 logger.detail(f"Wrote {example_dir / filename}")
+        copy_referenced_shared_files(example_dir, spec.output_dir, logger=logger)
     if logger is not None:
         logger.info(
             f"{prefix}Completed {title}: {extracted_count} file(s) materialized"
@@ -356,13 +502,19 @@ def main(argv: list[str] | None = None) -> int:
         any_links = True
         total = len(links)
         for index, link in enumerate(links, start=1):
-            summary = download_example(
-                link,
-                spec,
-                logger=logger,
-                example_index=index,
-                example_total=total,
-            )
+            try:
+                summary = download_example(
+                    link,
+                    spec,
+                    logger=logger,
+                    example_index=index,
+                    example_total=total,
+                )
+            except HTTPError as exc:
+                logger.info(
+                    f"[{index}/{total}] Skipping {spec.name} example due to HTTP {exc.code}: {link}"
+                )
+                continue
             logger.info(
                 f"[{index}/{total}] Fetched {spec.name} {summary.title} from {link}"
             )

@@ -1,0 +1,5 @@
+{
+  "name": "opensees_example_ex8_genericframe3d_analyze_static_push",
+  "entry_tcl": "docs/agent-reference/OpenSeesExamplesAdvanced/opensees_example_8_generic_3d_frame_nstory_nbayx_nbayz_reinforced_concrete_section_steel_w_section/Ex8.genericFrame3D.analyze.Static.Push.tcl",
+  "enabled": false
+}

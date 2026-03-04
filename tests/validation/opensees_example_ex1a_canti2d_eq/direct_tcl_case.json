@@ -1,0 +1,5 @@
+{
+  "name": "opensees_example_ex1a_canti2d_eq",
+  "entry_tcl": "docs/agent-reference/OpenSeesExamplesAdvanced/opensees_example_1a_2d_elastic_cantilever_column/Ex1a.Canti2D.EQ.tcl",
+  "enabled": false
+}

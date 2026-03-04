@@ -1,0 +1,5 @@
+{
+  "name": "opensees_example_ex5_frame2d_analyze_dynamic_eq_bidirect",
+  "entry_tcl": "docs/agent-reference/OpenSeesExamplesAdvanced/opensees_example_5_2d_frame_3_story_3_bay_reinforced_concrete_section_steel_w_section/Ex5.Frame2D.analyze.Dynamic.EQ.bidirect.tcl",
+  "enabled": false
+}

@@ -1,0 +1,5 @@
+{
+  "name": "opensees_example_ex9_analyze_momentcurvature3d",
+  "entry_tcl": "docs/agent-reference/OpenSeesExamplesAdvanced/opensees_example_9_build_analyze_a_section_example/Ex9.analyze.MomentCurvature3D.tcl",
+  "enabled": false
+}

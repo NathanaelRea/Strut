@@ -1,0 +1,5 @@
+{
+  "name": "opensees_example_ex9b_build_wsection2d",
+  "entry_tcl": "docs/agent-reference/OpenSeesExamplesAdvanced/opensees_example_9_build_analyze_a_section_example/Ex9b.build.WSection2D.tcl",
+  "enabled": false
+}

@@ -1,0 +1,5 @@
+{
+  "name": "opensees_example_ex9a_build_uniaxialsection3d",
+  "entry_tcl": "docs/agent-reference/OpenSeesExamplesAdvanced/opensees_example_9_build_analyze_a_section_example/Ex9a.build.UniaxialSection3D.tcl",
+  "enabled": false
+}

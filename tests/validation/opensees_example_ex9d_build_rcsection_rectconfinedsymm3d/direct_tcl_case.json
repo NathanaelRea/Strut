@@ -1,0 +1,5 @@
+{
+  "name": "opensees_example_ex9d_build_rcsection_rectconfinedsymm3d",
+  "entry_tcl": "docs/agent-reference/OpenSeesExamplesAdvanced/opensees_example_9_build_analyze_a_section_example/Ex9d.build.RCSection.RectConfinedSymm3D.tcl",
+  "enabled": false
+}

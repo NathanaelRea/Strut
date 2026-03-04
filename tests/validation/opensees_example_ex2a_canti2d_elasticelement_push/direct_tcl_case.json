@@ -1,0 +1,5 @@
+{
+  "name": "opensees_example_ex2a_canti2d_elasticelement_push",
+  "entry_tcl": "docs/agent-reference/OpenSeesExamplesAdvanced/opensees_example_2a_elastic_cantilever_column_with_variables/Ex2a.Canti2D.ElasticElement.Push.tcl",
+  "enabled": false
+}

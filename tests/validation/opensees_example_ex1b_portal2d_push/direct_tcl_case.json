@@ -1,0 +1,5 @@
+{
+  "name": "opensees_example_ex1b_portal2d_push",
+  "entry_tcl": "docs/agent-reference/OpenSeesExamplesAdvanced/opensees_example_1b_elastic_portal_frame/Ex1b.Portal2D.Push.tcl",
+  "enabled": false
+}
