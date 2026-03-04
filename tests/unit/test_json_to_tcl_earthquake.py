@@ -161,6 +161,26 @@ def test_json_to_tcl_emits_energy_incr_and_advanced_fallback_algorithms():
     assert "algorithm Broyden 6\n" in text
 
 
+def test_json_to_tcl_preserves_numberer_system_and_print_commands():
+    case = _base_uniform_case()
+    case["pattern"] = {"type": "Plain", "tag": 1, "time_series": 2}
+    case["loads"] = [{"node": 2, "dof": 1, "value": 1.0}]
+    case["analysis"] = {
+        "type": "static_linear",
+        "steps": 1,
+        "numberer": "Plain",
+        "system": "BandSPD",
+        "print_commands": [{"args": ["node", "2"]}, {"args": ["ele"]}],
+    }
+
+    text = _run_json_to_tcl(case)
+
+    assert "numberer Plain\n" in text
+    assert "system BandSPD\n" in text
+    assert "print node 2\n" in text
+    assert "print ele\n" in text
+
+
 def test_json_to_tcl_emits_staged_analysis_with_load_const_and_pattern_override():
     case = _base_uniform_case()
     case["time_series"] = [
@@ -249,6 +269,41 @@ def test_json_to_tcl_emits_staged_plain_element_beam_point_load():
 
     text = _run_json_to_tcl(case)
     assert "eleLoad -ele 1 -type -beamPoint -3.0 0.25\n" in text
+
+
+def test_json_to_tcl_treats_empty_constraints_list_as_free_node():
+    case = {
+        "schema_version": "1.0",
+        "metadata": {"name": "empty_constraints_tcl_unit", "units": "SI"},
+        "model": {"ndm": 2, "ndf": 3},
+        "nodes": [
+            {"id": 1, "x": 0.0, "y": 0.0, "constraints": [1, 2, 3]},
+            {"id": 2, "x": 1.0, "y": 0.0, "constraints": []},
+        ],
+        "materials": [{"id": 1, "type": "Elastic", "params": {"E": 100.0}}],
+        "sections": [
+            {
+                "id": 1,
+                "type": "ElasticSection2d",
+                "params": {"E": 100.0, "A": 1.0, "I": 1.0},
+            }
+        ],
+        "elements": [
+            {
+                "id": 1,
+                "type": "elasticBeamColumn2d",
+                "nodes": [1, 2],
+                "section": 1,
+                "geomTransf": "Linear",
+            }
+        ],
+        "analysis": {"type": "static_linear", "steps": 1},
+        "recorders": [{"type": "node_displacement", "nodes": [2], "dofs": [1], "output": "disp"}],
+    }
+
+    text = _run_json_to_tcl(case)
+
+    assert "fix 2 0 0 0\n" in text
 
 
 def test_json_to_tcl_staged_transient_fallback_does_not_emit_extra_analyze():

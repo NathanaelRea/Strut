@@ -34,6 +34,19 @@ struct BeamIntegrationTag:
     alias Radau = 3
 
 
+struct NumbererTag:
+    alias Unknown = 0
+    alias RCM = 1
+    alias Plain = 2
+
+
+struct AnalysisSystemTag:
+    alias Unknown = 0
+    alias Auto = 1
+    alias Dense = 2
+    alias Banded = 3
+
+
 struct RecorderTypeTag:
     alias Unknown = 0
     alias NodeDisplacement = 1

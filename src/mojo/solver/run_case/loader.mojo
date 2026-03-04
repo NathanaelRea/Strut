@@ -37,11 +37,13 @@ from sections import (
 )
 from strut_io import py_len
 from tag_types import (
+    AnalysisSystemTag,
     BeamIntegrationTag,
     ElementLoadTypeTag,
     ElementTypeTag,
     GeomTransfTag,
     LinkDirectionTag,
+    NumbererTag,
     UniMaterialTypeTag,
 )
 
@@ -1769,6 +1771,11 @@ fn load_case_state_from_input(input: CaseInput) raises -> RunCaseState:
     var constraints_handler = analysis_input.constraints
     if constraints_handler != "Plain" and constraints_handler != "Transformation":
         abort("unsupported constraints handler: " + constraints_handler)
+    var numberer_tag = analysis_input.numberer_tag
+    if numberer_tag == NumbererTag.Unknown:
+        numberer_tag = NumbererTag.RCM
+    if numberer_tag != NumbererTag.RCM and numberer_tag != NumbererTag.Plain:
+        abort("unsupported analysis numberer tag")
     var steps = analysis_input.steps
     var modal_num_modes = 0
     if analysis_type == "modal_eigen":
@@ -1843,11 +1850,9 @@ fn load_case_state_from_input(input: CaseInput) raises -> RunCaseState:
     ):
         abort("nonlinear uniaxial materials require static_nonlinear or transient_nonlinear analysis")
 
-    var solver_pref = analysis_input.solver
-    if solver_pref == "":
-        solver_pref = "auto"
-    if solver_pref != "auto" and solver_pref != "dense" and solver_pref != "banded":
-        abort("unsupported analysis system: " + solver_pref)
+    var system_tag = analysis_input.system_tag
+    if system_tag == AnalysisSystemTag.Unknown:
+        abort("unsupported analysis system tag")
     var band_threshold = analysis_input.band_threshold
     if band_threshold < 0:
         band_threshold = 0
@@ -1953,17 +1958,29 @@ fn load_case_state_from_input(input: CaseInput) raises -> RunCaseState:
         use_banded_linear = False
         use_banded_nonlinear = False
     elif analysis_type == "static_linear":
-        if solver_pref == "banded" or (solver_pref == "auto" and free_count > band_threshold):
+        if (
+            system_tag == AnalysisSystemTag.Banded
+            or (system_tag == AnalysisSystemTag.Auto and free_count > band_threshold)
+        ):
             use_banded_linear = True
     elif analysis_type == "static_nonlinear":
-        if solver_pref == "banded" or (solver_pref == "auto" and free_count > band_threshold):
+        if (
+            system_tag == AnalysisSystemTag.Banded
+            or (system_tag == AnalysisSystemTag.Auto and free_count > band_threshold)
+        ):
             use_banded_nonlinear = True
 
     var free: List[Int] = []
     var free_index: List[Int] = []
     if use_banded_linear or use_banded_nonlinear:
-        var adjacency = build_node_adjacency_typed(typed_elements, node_count)
-        var node_order = rcm_order(adjacency)
+        var node_order: List[Int] = []
+        if numberer_tag == NumbererTag.RCM:
+            var adjacency = build_node_adjacency_typed(typed_elements, node_count)
+            node_order = rcm_order(adjacency)
+        else:
+            node_order.resize(node_count, 0)
+            for i in range(node_count):
+                node_order[i] = i
         free_index.resize(total_dofs, -1)
         for i in range(len(node_order)):
             var node_idx = node_order[i]

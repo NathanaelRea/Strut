@@ -625,6 +625,92 @@ def test_staged_analysis_gravity_load_const_then_uniform_excitation_smoke():
     assert all(math.isfinite(v) for row in force_rows for v in row)
 
 
+def test_staged_transient_linear_load_const_preserves_element_gravity_state():
+    case_data = {
+        "schema_version": "1.0",
+        "metadata": {"name": "staged_beam_gravity_hold_unit", "units": "SI"},
+        "model": {"ndm": 2, "ndf": 3},
+        "nodes": [
+            {"id": 1, "x": 0.0, "y": 0.0, "constraints": [1, 2, 3]},
+            {"id": 2, "x": 5.0, "y": 0.0},
+        ],
+        "materials": [{"id": 1, "type": "Elastic", "params": {"E": 1000.0}}],
+        "sections": [
+            {
+                "id": 1,
+                "type": "ElasticSection2d",
+                "params": {"E": 1000.0, "A": 100.0, "I": 10.0},
+            }
+        ],
+        "elements": [
+            {
+                "id": 1,
+                "type": "elasticBeamColumn2d",
+                "nodes": [1, 2],
+                "section": 1,
+                "geomTransf": "Linear",
+            }
+        ],
+        "masses": [{"node": 2, "dof": 1, "value": 1.0}],
+        "time_series": [
+            {"type": "Linear", "tag": 1, "factor": 1.0},
+            {"type": "Path", "tag": 2, "dt": 0.1, "values": [0.0, 0.0, 0.0]},
+        ],
+        "pattern": {"type": "Plain", "tag": 1, "time_series": 1},
+        "element_loads": [{"element": 1, "type": "beamUniform", "wy": -2.0}],
+        "analysis": {
+            "type": "staged",
+            "constraints": "Plain",
+            "stages": [
+                {
+                    "analysis": {
+                        "type": "static_nonlinear",
+                        "steps": 1,
+                        "algorithm": "Newton",
+                        "integrator": {"type": "LoadControl", "step": 1.0},
+                    },
+                    "load_const": {"time": 0.0},
+                },
+                {
+                    "pattern": {
+                        "type": "UniformExcitation",
+                        "tag": 2,
+                        "direction": 1,
+                        "accel": 2,
+                    },
+                    "analysis": {
+                        "type": "transient_linear",
+                        "steps": 3,
+                        "dt": 0.1,
+                        "integrator": {"type": "Newmark", "gamma": 0.5, "beta": 0.25},
+                    },
+                },
+            ],
+        },
+        "recorders": [
+            {
+                "type": "node_displacement",
+                "nodes": [2],
+                "dofs": [2, 3],
+                "output": "node_disp",
+            }
+        ],
+    }
+
+    with tempfile.TemporaryDirectory() as tmp:
+        out_dir = Path(tmp)
+        _run_strut_case(case_data, out_dir)
+        disp_rows = _read_rows(out_dir / "node_disp_node2.out")
+
+    assert len(disp_rows) == 4
+    gravity_row = disp_rows[0]
+    assert gravity_row[0] < 0.0
+    assert gravity_row[1] < 0.0
+    for row in disp_rows[1:]:
+        assert row[0] == pytest.approx(gravity_row[0], abs=1.0e-9)
+        assert row[1] == pytest.approx(gravity_row[1], abs=1.0e-9)
+
+
 def test_staged_displacement_control_load_const_freezes_actual_load_factor():
     case_data = _base_truss_dynamic_case(
         {"id": 1, "type": "Elastic", "params": {"E": 100.0}}

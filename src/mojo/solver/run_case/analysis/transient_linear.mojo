@@ -2,6 +2,7 @@ from collections import List
 from elements import (
     ForceBeamColumn2dScratch,
     ForceBeamColumn3dScratch,
+    beam2d_element_load_global,
     reset_force_beam_column2d_scratch,
     reset_force_beam_column3d_scratch,
 )
@@ -95,6 +96,46 @@ fn _has_zero_length_dampers(elements: List[ElementInput]) -> Bool:
         if elem.type_tag == ElementTypeTag.ZeroLength and elem.damping_tag >= 0:
             return True
     return False
+
+
+fn _build_solver_load_vector_with_element_loads(
+    typed_nodes: List[NodeInput],
+    typed_elements: List[ElementInput],
+    elem_dof_offsets: List[Int],
+    elem_dof_pool: List[Int],
+    active_element_loads: List[ElementLoadInput],
+    elem_load_offsets: List[Int],
+    elem_load_pool: List[Int],
+    source: List[Float64],
+    mut dst: List[Float64],
+):
+    copy_float64_contiguous(dst, source, len(dst))
+    for elem_index in range(len(typed_elements)):
+        if elem_load_offsets[elem_index] == elem_load_offsets[elem_index + 1]:
+            continue
+        var elem = typed_elements[elem_index]
+        if elem.type_tag != ElementTypeTag.ElasticBeamColumn2d:
+            abort(
+                "transient_linear solver load assembly supports active element loads "
+                "on elasticBeamColumn2d only"
+            )
+        var node1 = typed_nodes[elem.node_index_1]
+        var node2 = typed_nodes[elem.node_index_2]
+        var f_load = beam2d_element_load_global(
+            active_element_loads,
+            elem_load_offsets,
+            elem_load_pool,
+            elem_index,
+            1.0,
+            node1.x,
+            node1.y,
+            node2.x,
+            node2.y,
+        )
+        var dof_offset = elem_dof_offsets[elem_index]
+        for a in range(6):
+            dst[elem_dof_pool[dof_offset + a]] += f_load[a]
+
 
 
 @always_inline
@@ -724,6 +765,8 @@ fn run_transient_linear(
 
     var F_ext_step: List[Float64] = []
     F_ext_step.resize(total_dofs, 0.0)
+    var F_solve_step: List[Float64] = []
+    F_solve_step.resize(total_dofs, 0.0)
     var P_ext_f: List[Float64] = []
     P_ext_f.resize(free_count, 0.0)
     var P_eff: List[Float64] = []
@@ -888,12 +931,23 @@ fn run_transient_linear(
                 )
                 reset_force_beam_column2d_scratch(force_beam_column2d_scratch)
                 reset_force_beam_column3d_scratch(force_beam_column3d_scratch)
+        _build_solver_load_vector_with_element_loads(
+            typed_nodes,
+            typed_elements,
+            elem_dof_offsets,
+            elem_dof_pool,
+            active_element_load_state.element_loads,
+            active_element_load_state.elem_load_offsets,
+            active_element_load_state.elem_load_pool,
+            F_ext_step,
+            F_solve_step,
+        )
         _build_effective_rhs_newmark_simd(
             free,
             u_f,
             v_f,
             a_f,
-            F_ext_step,
+            F_solve_step,
             M_f,
             a0,
             a1,

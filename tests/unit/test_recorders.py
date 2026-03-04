@@ -100,3 +100,44 @@ def test_reaction_drift_and_envelope_recorders_static_linear():
     assert len(env_rows) == 3
     assert all(len(row) == len(env_rows[0]) for row in env_rows)
     assert all(math.isfinite(v) for row in env_rows for v in row)
+
+
+def test_elastic_beam_column_2d_element_deformation_recorder():
+    case_data = {
+        "schema_version": "1.0",
+        "metadata": {"name": "elastic_beam_column_2d_deformation_unit", "units": "SI"},
+        "model": {"ndm": 2, "ndf": 3},
+        "nodes": [
+            {"id": 1, "x": 0.0, "y": 0.0, "constraints": [1, 2, 3]},
+            {"id": 2, "x": 0.0, "y": 5.0},
+        ],
+        "materials": [{"id": 1, "type": "Elastic", "params": {"E": 1000.0}}],
+        "sections": [
+            {
+                "id": 1,
+                "type": "ElasticSection2d",
+                "params": {"E": 1000.0, "A": 2.0, "I": 1.0},
+            }
+        ],
+        "elements": [
+            {
+                "id": 1,
+                "type": "elasticBeamColumn2d",
+                "nodes": [1, 2],
+                "section": 1,
+                "geomTransf": "Linear",
+            }
+        ],
+        "loads": [{"node": 2, "dof": 2, "value": 4.0}],
+        "analysis": {"type": "static_linear", "steps": 1},
+        "recorders": [
+            {"type": "element_deformation", "elements": [1], "output": "beam_defo"}
+        ],
+    }
+
+    with tempfile.TemporaryDirectory() as tmp:
+        out_dir = Path(tmp)
+        _run_strut_case(case_data, out_dir)
+        defo_rows = _read_rows(out_dir / "beam_defo_ele1.out")
+
+    assert defo_rows == [[0.01, 0.0, 0.0]]

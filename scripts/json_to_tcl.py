@@ -9,7 +9,7 @@ def _constraints_to_fix(ndf, constraints):
     if constraints is None:
         return None
     if isinstance(constraints, list):
-        if all(isinstance(v, bool) for v in constraints):
+        if constraints and all(isinstance(v, bool) for v in constraints):
             if len(constraints) != ndf:
                 raise ValueError(f"constraints bool list length {len(constraints)} != ndf {ndf}")
             return [1 if v else 0 for v in constraints]
@@ -120,6 +120,40 @@ def _normalize_time_series(ts):
 
 def _format_list(values):
     return " ".join(str(v) for v in values)
+
+
+def _analysis_numberer(analysis, default="RCM"):
+    numberer = analysis.get("numberer", default)
+    if numberer not in ("RCM", "Plain"):
+        raise ValueError(f"unsupported numberer: {numberer}")
+    return numberer
+
+
+def _analysis_system_line(analysis, default="BandGeneral", default_options=None):
+    system = analysis.get("system", default)
+    options = analysis.get("system_options", default_options or [])
+    if not isinstance(system, str) or not system:
+        raise ValueError("analysis system must be a non-empty string")
+    if not isinstance(options, list) or not all(isinstance(opt, str) for opt in options):
+        raise ValueError("analysis system_options must be a list of strings")
+    words = ["system", system, *options]
+    return " ".join(words)
+
+
+def _emit_print_commands(f, command_owner):
+    commands = command_owner.get("print_commands", [])
+    if not isinstance(commands, list):
+        raise ValueError("print_commands must be a list")
+    for command in commands:
+        if not isinstance(command, dict):
+            raise ValueError("print_commands entries must be objects")
+        args = command.get("args", [])
+        if not isinstance(args, list):
+            raise ValueError("print command args must be a list")
+        if args:
+            f.write("print " + " ".join(str(arg) for arg in args) + "\n")
+        else:
+            f.write("print\n")
 
 
 def _resolve_optional_repo_path(path_text, repo_root: Path):
@@ -1207,9 +1241,18 @@ def main():
                     raise ValueError(
                         f"unsupported constraints handler: {stage_constraints}"
                     )
+                stage_numberer = _analysis_numberer(
+                    stage_analysis,
+                    analysis.get("numberer", "RCM"),
+                )
+                stage_system_line = _analysis_system_line(
+                    stage_analysis,
+                    analysis.get("system", "BandGeneral"),
+                    analysis.get("system_options", []),
+                )
                 f.write(f"constraints {stage_constraints}\n")
-                f.write("numberer RCM\n")
-                f.write("system BandGeneral\n")
+                f.write(f"numberer {stage_numberer}\n")
+                f.write(stage_system_line + "\n")
 
                 stage_steps = int(stage_analysis.get("steps", 1))
                 if stage_steps < 1:
@@ -1484,6 +1527,8 @@ def main():
                 else:
                     f.write(f"analyze {stage_steps}\n")
 
+                _emit_print_commands(f, stage)
+
                 load_const = stage.get("load_const")
                 if load_const is not None and load_const is not False:
                     if isinstance(load_const, dict):
@@ -1501,9 +1546,11 @@ def main():
             raise ValueError(f"unsupported constraints handler: {constraints_handler}")
         if mp_constraints and constraints_handler != "Transformation":
             raise ValueError("mp_constraints require analysis.constraints=Transformation")
+        numberer = _analysis_numberer(analysis)
+        system_line = _analysis_system_line(analysis)
         f.write(f"constraints {constraints_handler}\n")
-        f.write("numberer RCM\n")
-        f.write("system BandGeneral\n")
+        f.write(f"numberer {numberer}\n")
+        f.write(system_line + "\n")
         if analysis_type == "static_linear":
             f.write("test NormUnbalance 1.0e-12 10\n")
             f.write("algorithm Linear\n")
@@ -1778,6 +1825,8 @@ def main():
                 f.write("}\n")
         else:
             f.write(f"analyze {steps}\n")
+
+        _emit_print_commands(f, analysis)
 
 
 if __name__ == "__main__":

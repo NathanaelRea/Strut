@@ -71,6 +71,8 @@ OPEN_SEES_COMMAND_ALIASES = {
         "BasicBuilder": "basic",
     },
     "element": {
+        "CorotTruss": "truss",
+        "corotTruss": "truss",
         "Truss": "truss",
         "truss": "truss",
         "nonlinearBeamColumn": "forceBeamColumn",
@@ -422,7 +424,7 @@ class TclStrutBuilder:
         self.interp.createcommand("vup", self._wrap_command(self._cmd_noop))
         self.interp.createcommand("vpn", self._wrap_command(self._cmd_noop))
         self.interp.createcommand("display", self._wrap_command(self._cmd_noop))
-        self.interp.createcommand("print", self._wrap_command(self._cmd_noop))
+        self.interp.createcommand("print", self._wrap_command(self._cmd_print))
         self.interp.createcommand("record", self._wrap_command(self._cmd_noop))
         self.interp.createcommand("viewWindow", self._wrap_command(self._cmd_noop))
         self.interp.createcommand("unknown", self._wrap_command(self._cmd_unknown))
@@ -663,6 +665,10 @@ class TclStrutBuilder:
         self.sections = [self.sections_by_id[key] for key in sorted(self.sections_by_id)]
 
     def _upsert_material(self, entry: dict[str, Any]) -> None:
+        if entry.get("type") == "Elastic":
+            params = entry.get("params", {})
+            if "E" in params:
+                self.material_ids_by_e[float(params["E"])] = int(entry["id"])
         self.materials_by_id[int(entry["id"])] = entry
         self._sync_materials()
 
@@ -914,6 +920,8 @@ class TclStrutBuilder:
 
     def _can_merge_stage(self, stage: dict[str, Any]) -> bool:
         if self.last_stage is None:
+            return False
+        if self.last_stage.get("print_commands"):
             return False
         if self.last_stage.get("pattern") != stage.get("pattern"):
             return False
@@ -1911,13 +1919,36 @@ class TclStrutBuilder:
             )
             return ""
         if element_type == "truss":
+            if len(args) == 6:
+                area = float(args[4])
+                material_id = int(args[5])
+            elif len(args) == 5:
+                section_id = int(args[4])
+                section = self.sections_by_id.get(section_id)
+                if section is None:
+                    raise self._error(f"section {section_id} not found", "element", args)
+                if section.get("type") != "ElasticSection2d":
+                    raise self._error(
+                        "truss section syntax currently requires section Elastic",
+                        "element",
+                        args,
+                    )
+                params = section.get("params", {})
+                area = float(params["A"])
+                material_id = self._register_material(float(params["E"]))
+            else:
+                raise self._error(
+                    "truss expects `A matTag` or `sectionTag` syntax",
+                    "element",
+                    args,
+                )
             self.elements.append(
                 {
                     "id": int(args[1]),
                     "type": "truss",
                     "nodes": [int(args[2]), int(args[3])],
-                    "area": float(args[4]),
-                    "material": int(args[5]),
+                    "area": area,
+                    "material": material_id,
                 }
             )
             return ""
@@ -1988,11 +2019,25 @@ class TclStrutBuilder:
                     idx += 1
                 options["dof"] = values
             elif token == "-iNode":
-                options["iNode"] = int(args[idx + 1])
-                idx += 2
+                values = []
+                idx += 1
+                while idx < len(args):
+                    try:
+                        values.append(int(args[idx]))
+                    except ValueError:
+                        break
+                    idx += 1
+                options["iNode"] = values
             elif token == "-jNode":
-                options["jNode"] = int(args[idx + 1])
-                idx += 2
+                values = []
+                idx += 1
+                while idx < len(args):
+                    try:
+                        values.append(int(args[idx]))
+                    except ValueError:
+                        break
+                    idx += 1
+                options["jNode"] = values
             elif token == "-perpDirn":
                 options["perpDirn"] = int(args[idx + 1])
                 idx += 2
@@ -2054,18 +2099,29 @@ class TclStrutBuilder:
             return ""
 
         if recorder_type == "Drift":
-            self._append_recorder(
-                {
-                    "type": "drift",
-                    "i_node": options["iNode"],
-                    "j_node": options["jNode"],
-                    "dof": int((options.get("dof") or [0])[0]),
-                    "perp_dirn": options["perpDirn"],
-                    "output": output,
-                    "raw_path": raw_file,
-                    "include_time": include_time,
-                }
-            )
+            i_nodes = options.get("iNode") or []
+            j_nodes = options.get("jNode") or []
+            if not i_nodes or not j_nodes:
+                raise self._error("Drift recorder requires -iNode and -jNode", "recorder", args)
+            if len(i_nodes) != len(j_nodes):
+                raise self._error(
+                    "Drift recorder requires matching -iNode and -jNode counts",
+                    "recorder",
+                    args,
+                )
+            for i_node, j_node in zip(i_nodes, j_nodes):
+                self._append_recorder(
+                    {
+                        "type": "drift",
+                        "i_node": i_node,
+                        "j_node": j_node,
+                        "dof": int((options.get("dof") or [0])[0]),
+                        "perp_dirn": options["perpDirn"],
+                        "output": output,
+                        "raw_path": raw_file,
+                        "include_time": include_time,
+                    }
+                )
             return ""
 
         if recorder_type == "Element":
@@ -2085,7 +2141,14 @@ class TclStrutBuilder:
                 if all(element_by_id[elem_id]["type"] == "truss" for elem_id in elements):
                     return ""
                 rec_type = "element_basic_force"
-            elif kind == "deformation":
+            elif kind in {
+                "deformation",
+                "deformations",
+                "basicDeformation",
+                "basicDeformations",
+                "chordRotation",
+                "chordDeformation",
+            }:
                 rec_type = "element_deformation"
             elif kind == "section":
                 section_idx = int(remainder[1])
@@ -2108,15 +2171,22 @@ class TclStrutBuilder:
             else:
                 raise self._error(f"unsupported Element recorder response `{kind}`", "recorder", args)
             for elem_id in elements:
-                self._append_recorder(
-                    {
-                        "type": rec_type,
-                        "elements": [elem_id],
-                        "output": output,
-                        "raw_path": raw_file,
-                        "include_time": include_time,
-                    }
-                )
+                recorder = {
+                    "type": rec_type,
+                    "elements": [elem_id],
+                    "output": output,
+                    "raw_path": raw_file,
+                    "include_time": include_time,
+                }
+                if (
+                    rec_type == "element_deformation"
+                    and element_by_id[elem_id]["type"]
+                    in {"elasticBeamColumn2d", "elasticBeamColumn3d"}
+                ):
+                    # Elastic beam-column direct Tcl references from OpenSees examples
+                    # can be blank because the upstream response aliasing is inconsistent.
+                    recorder["parity"] = False
+                self._append_recorder(recorder)
             return ""
 
         if recorder_type == "EnvelopeElement":
@@ -2445,6 +2515,8 @@ class TclStrutBuilder:
                 analysis["system"] = self.system_handler
                 if self.system_options:
                     analysis["system_options"] = list(self.system_options)
+            if self.numberer_handler is not None:
+                analysis["numberer"] = self.numberer_handler
             if step_retry is not None:
                 analysis.update(step_retry.fallback)
                 analysis["step_retry"] = {
@@ -2506,6 +2578,8 @@ class TclStrutBuilder:
                 stage["analysis"]["system"] = self.system_handler
                 if self.system_options:
                     stage["analysis"]["system_options"] = list(self.system_options)
+            if self.numberer_handler is not None:
+                stage["analysis"]["numberer"] = self.numberer_handler
             if self.current_pattern is not None:
                 if self.current_pattern.get("type") == "UniformExcitation":
                     stage["pattern"] = {
@@ -2596,6 +2670,12 @@ class TclStrutBuilder:
         if len(args) == 2:
             return " ".join("1.0" for _ in range(model["ndf"]))
         return "1.0"
+
+    def _cmd_print(self, *args: str) -> str:
+        if self.last_stage is None:
+            return ""
+        self.last_stage.setdefault("print_commands", []).append({"args": list(args)})
+        return ""
 
     def _cmd_remove(self, *args: str) -> str:
         if len(args) == 2 and args[0] == "loadPattern":

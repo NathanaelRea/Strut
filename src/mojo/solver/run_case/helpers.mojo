@@ -1,5 +1,5 @@
 from collections import List
-from math import sqrt
+from math import atan2, sqrt
 from os import abort
 
 from elements import (
@@ -2721,6 +2721,55 @@ fn _element_basic_force_for_recorder(
     return []
 
 
+fn _beam2d_deformation_for_recorder(
+    elem: ElementInput, nodes: List[NodeInput], ndf: Int, u: List[Float64]
+) raises -> List[Float64]:
+    if ndf != 3:
+        abort("element_deformation recorder for beam-column 2d requires ndf=3")
+    var i1 = elem.node_index_1
+    var i2 = elem.node_index_2
+    var node1 = nodes[i1]
+    var node2 = nodes[i2]
+    var dx = node2.x - node1.x
+    var dy = node2.y - node1.y
+    var L = sqrt(dx * dx + dy * dy)
+    if L == 0.0:
+        abort("zero-length element")
+    var c = dx / L
+    var s = dy / L
+    var dof_map = [
+        node_dof_index(i1, 1, ndf),
+        node_dof_index(i1, 2, ndf),
+        node_dof_index(i1, 3, ndf),
+        node_dof_index(i2, 1, ndf),
+        node_dof_index(i2, 2, ndf),
+        node_dof_index(i2, 3, ndf),
+    ]
+    var u_global: List[Float64] = []
+    u_global.resize(6, 0.0)
+    for i in range(6):
+        u_global[i] = u[dof_map[i]]
+    var u_local: List[Float64] = []
+    u_local.resize(6, 0.0)
+    _beam2d_transform_u_global_to_local(c, s, u_global, u_local)
+    if elem.geom_transf == "Corotational":
+        var dulx = u_local[3] - u_local[0]
+        var duly = u_local[4] - u_local[1]
+        var Lx = L + dulx
+        var Ly = duly
+        var Ln = sqrt(Lx * Lx + Ly * Ly)
+        if Ln == 0.0:
+            abort("zero-length element")
+        var alpha = atan2(Ly, Lx)
+        return [Ln - L, u_local[2] - alpha, u_local[5] - alpha]
+    var chord_rotation = (u_local[4] - u_local[1]) / L
+    return [
+        u_local[3] - u_local[0],
+        u_local[2] - chord_rotation,
+        u_local[5] - chord_rotation,
+    ]
+
+
 fn _element_deformation_for_recorder(
     elem_index: Int,
     elem: ElementInput,
@@ -2739,7 +2788,16 @@ fn _element_deformation_for_recorder(
         return _two_node_link_deformation_for_recorder(
             elem, nodes, ndf, elem_ndm, u
         )
-    abort("element_deformation recorder supports zeroLength and twoNodeLink only")
+    if (
+        elem.type_tag == ElementTypeTag.ElasticBeamColumn2d
+        or elem.type_tag == ElementTypeTag.ForceBeamColumn2d
+        or elem.type_tag == ElementTypeTag.DispBeamColumn2d
+    ):
+        return _beam2d_deformation_for_recorder(elem, nodes, ndf, u)
+    abort(
+        "element_deformation recorder supports zeroLength, twoNodeLink, "
+        "or beam-column 2d elements only"
+    )
     return []
 
 

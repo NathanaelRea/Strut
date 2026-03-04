@@ -76,6 +76,40 @@ def test_convert_ex1a_builds_staged_case():
     assert recorders["element_force"]["raw_path"] == "Data/FCol.out"
 
 
+def test_convert_advanced_ex1a_eq_accepts_plural_element_deformations():
+    entry = (
+        REPO_ROOT
+        / "docs/agent-reference/OpenSeesExamplesAdvanced"
+        / "opensees_example_1a_2d_elastic_cantilever_column"
+        / "Ex1a.Canti2D.EQ.tcl"
+    )
+
+    case = tcl_to_strut.convert_tcl_to_case(entry, REPO_ROOT)
+
+    recorders = {rec["output"]: rec for rec in case["recorders"]}
+    assert recorders["DCol"]["type"] == "element_deformation"
+    assert recorders["DCol"]["raw_path"] == "Data/DCol.out"
+    assert recorders["DCol"]["include_time"] is True
+    assert recorders["DCol"]["parity"] is False
+
+
+def test_convert_advanced_ex1b_eq_expands_grouped_drift_nodes():
+    entry = (
+        REPO_ROOT
+        / "docs/agent-reference/OpenSeesExamplesAdvanced"
+        / "opensees_example_1b_elastic_portal_frame"
+        / "Ex1b.Portal2D.EQ.tcl"
+    )
+
+    case = tcl_to_strut.convert_tcl_to_case(entry, REPO_ROOT)
+
+    drifts = [rec for rec in case["recorders"] if rec["type"] == "drift"]
+    assert len(drifts) == 2
+    assert {(rec["i_node"], rec["j_node"]) for rec in drifts} == {(1, 3), (2, 4)}
+    assert all(rec["raw_path"] == "Data/Drift.out" for rec in drifts)
+    assert all(rec["include_time"] is True for rec in drifts)
+
+
 def test_convert_reports_unknown_command_with_location(tmp_path: Path):
     script = tmp_path / "case.tcl"
     script.write_text("wipe\nbogusCommand 1 2\n", encoding="utf-8")
@@ -634,6 +668,7 @@ def test_convert_preserves_algorithm_integrator_test_and_system_options(tmp_path
     assert first["test_type"] == "NormDispIncr"
     assert first["test_print_flag"] == 3
     assert first["test_extra_args"] == ["7", "extraA", "extraB"]
+    assert first["numberer"] == "Plain"
     assert first["system"] == "SparseGeneral"
     assert first["system_options"] == ["-piv"]
 
@@ -648,6 +683,57 @@ def test_convert_preserves_algorithm_integrator_test_and_system_options(tmp_path
     assert second["integrator"]["min_du"] == pytest.approx(1.0e-6)
     assert second["integrator"]["max_du"] == pytest.approx(0.1)
     assert second["integrator"]["extra_args"] == ["extraDC"]
+    assert second["numberer"] == "Plain"
+
+
+def test_convert_maps_corot_truss_section_syntax_and_preserves_print_commands(
+    tmp_path: Path,
+):
+    script = tmp_path / "case.tcl"
+    script.write_text(
+        "\n".join(
+            [
+                "wipe",
+                "model BasicBuilder -ndm 2 -ndf 2",
+                "node 1 0.0 0.0",
+                "node 2 144.0 0.0",
+                "fix 1 1 1",
+                "fix 2 0 0",
+                "uniaxialMaterial Elastic 1 3000.0",
+                "section Elastic 1 3000.0 5.0 10000.0",
+                "element corotTruss 1 1 2 1",
+                "timeSeries Linear 1",
+                "pattern Plain 1 1 {",
+                "    load 2 1.0 0.0",
+                "}",
+                "constraints Plain",
+                "numberer RCM",
+                "system BandSPD",
+                "algorithm Newton",
+                "integrator LoadControl 1.0",
+                "analysis Static",
+                "analyze 1",
+                "print node 2",
+                "print ele",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    case = tcl_to_strut.convert_tcl_to_case(script, REPO_ROOT)
+
+    assert case["materials"] == [{"id": 1, "type": "Elastic", "params": {"E": 3000.0}}]
+    assert case["elements"] == [
+        {"id": 1, "type": "truss", "nodes": [1, 2], "area": 5.0, "material": 1}
+    ]
+    stage = case["analysis"]["stages"][0]
+    assert stage["analysis"]["numberer"] == "RCM"
+    assert stage["analysis"]["system"] == "BandSPD"
+    assert stage["print_commands"] == [
+        {"args": ["node", "2"]},
+        {"args": ["ele"]},
+    ]
 
 
 def test_convert_adds_envelope_element_group_layout(tmp_path: Path):

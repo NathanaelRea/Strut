@@ -9,10 +9,12 @@ from solver.time_series import (
     parse_time_series_inputs,
 )
 from tag_types import (
+    AnalysisSystemTag,
     BeamIntegrationTag,
     ElementLoadTypeTag,
     ElementTypeTag,
     GeomTransfTag,
+    NumbererTag,
     RecorderTypeTag,
 )
 
@@ -514,10 +516,11 @@ struct MassInput(Movable, ImplicitlyCopyable):
 struct AnalysisInput(Movable, ImplicitlyCopyable):
     var type: String
     var constraints: String
+    var numberer_tag: Int
     var steps: Int
     var num_modes: Int
     var force_beam_mode: String
-    var solver: String
+    var system_tag: Int
     var band_threshold: Int
     var dt: Float64
     var algorithm: String
@@ -550,10 +553,11 @@ struct AnalysisInput(Movable, ImplicitlyCopyable):
     fn __init__(out self):
         self.type = "static_linear"
         self.constraints = "Plain"
+        self.numberer_tag = NumbererTag.Unknown
         self.steps = 1
         self.num_modes = 0
         self.force_beam_mode = "auto"
-        self.solver = "auto"
+        self.system_tag = AnalysisSystemTag.Auto
         self.band_threshold = 128
         self.dt = 0.0
         self.algorithm = "Newton"
@@ -860,6 +864,38 @@ fn beam_integration_tag(integration_name: String) -> Int:
     return BeamIntegrationTag.Unknown
 
 
+fn numberer_tag(numberer_name: String) -> Int:
+    if len(numberer_name) == 0:
+        return NumbererTag.Unknown
+    if numberer_name == "RCM":
+        return NumbererTag.RCM
+    if numberer_name == "Plain":
+        return NumbererTag.Plain
+    return NumbererTag.Unknown
+
+
+fn analysis_system_tag(system_name: String) -> Int:
+    if len(system_name) == 0 or system_name == "auto":
+        return AnalysisSystemTag.Auto
+    if system_name == "dense":
+        return AnalysisSystemTag.Dense
+    if system_name == "banded":
+        return AnalysisSystemTag.Banded
+    if (
+        system_name == "BandSPD"
+        or system_name == "BandGeneral"
+        or system_name == "ProfileSPD"
+    ):
+        return AnalysisSystemTag.Banded
+    if (
+        system_name == "SparseGeneral"
+        or system_name == "UmfPack"
+        or system_name == "Mumps"
+    ):
+        return AnalysisSystemTag.Dense
+    return AnalysisSystemTag.Unknown
+
+
 fn recorder_type_tag(type_name: String) -> Int:
     if type_name == "node_displacement":
         return RecorderTypeTag.NodeDisplacement
@@ -900,6 +936,7 @@ fn parse_analysis_input_from_raw(
     var analysis = AnalysisInput()
     analysis.type = String(analysis_raw.get("type", "static_linear"))
     analysis.constraints = String(analysis_raw.get("constraints", "Plain"))
+    analysis.numberer_tag = numberer_tag(String(analysis_raw.get("numberer", "")))
     analysis.steps = Int(analysis_raw.get("steps", 1))
     analysis.num_modes = Int(analysis_raw.get("num_modes", 0))
     analysis.force_beam_mode = String(analysis_raw.get("force_beam_mode", "auto"))
@@ -926,11 +963,11 @@ fn parse_analysis_input_from_raw(
         step_retry_raw.get("restore_primary_after_success", True)
     )
     if analysis_raw.__contains__("system"):
-        analysis.solver = String(analysis_raw["system"])
+        analysis.system_tag = analysis_system_tag(String(analysis_raw["system"]))
     elif analysis_raw.__contains__("solver"):
-        analysis.solver = String(analysis_raw["solver"])
+        analysis.system_tag = analysis_system_tag(String(analysis_raw["solver"]))
     else:
-        analysis.solver = "auto"
+        analysis.system_tag = AnalysisSystemTag.Auto
     analysis.band_threshold = Int(analysis_raw.get("band_threshold", 128))
     var integrator_raw = analysis_raw.get("integrator", {})
     var default_integrator_type = ""
