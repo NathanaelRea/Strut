@@ -47,6 +47,7 @@ from solver.run_case.input_types import (
     NodeInput,
     RecorderInput,
     SectionInput,
+    SolverAttemptInput,
 )
 from solver.run_case.load_state import (
     build_active_element_load_state,
@@ -319,6 +320,172 @@ fn _update_post_step_newmark_simd(
     )
 
 
+fn _transient_nonlinear_algorithm_mode(
+    algorithm_tag: Int, algorithm: String, label: String
+) -> Int:
+    if algorithm_tag == AnalysisAlgorithmTag.Newton:
+        return NonlinearAlgorithmMode.Newton
+    if algorithm_tag == AnalysisAlgorithmTag.ModifiedNewton:
+        return NonlinearAlgorithmMode.ModifiedNewton
+    if algorithm_tag == AnalysisAlgorithmTag.ModifiedNewtonInitial:
+        return NonlinearAlgorithmMode.ModifiedNewtonInitial
+    if (
+        algorithm_tag == AnalysisAlgorithmTag.Broyden
+        or algorithm_tag == AnalysisAlgorithmTag.NewtonLineSearch
+    ):
+        # Mapped alternative: currently follows Newton tangent refresh behavior.
+        return NonlinearAlgorithmMode.Newton
+    abort("unsupported " + label + " algorithm: " + algorithm)
+    return NonlinearAlgorithmMode.Unknown
+
+
+fn _transient_nonlinear_test_mode(
+    test_type_tag: Int, test_type: String, label: String
+) -> Int:
+    if test_type_tag == NonlinearTestTypeTag.MaxDispIncr:
+        return 0
+    if test_type_tag == NonlinearTestTypeTag.NormDispIncr:
+        return 1
+    if test_type_tag == NonlinearTestTypeTag.NormUnbalance:
+        return 2
+    if test_type_tag == NonlinearTestTypeTag.EnergyIncr:
+        return 3
+    abort("unsupported " + label + " test_type: " + test_type)
+    return -1
+
+
+fn _append_transient_solver_attempt(
+    algorithm: String,
+    algorithm_tag: Int,
+    line_search_eta: Float64,
+    test_type: String,
+    test_type_tag: Int,
+    max_iters: Int,
+    tol: Float64,
+    rel_tol: Float64,
+    label: String,
+    mut retry_algorithm_tags: List[Int],
+    mut retry_algorithm_modes: List[Int],
+    mut retry_test_modes: List[Int],
+    mut retry_max_iters: List[Int],
+    mut retry_tols: List[Float64],
+    mut retry_rel_tols: List[Float64],
+    mut retry_line_search_etas: List[Float64],
+):
+    if len(algorithm) == 0:
+        return
+    retry_algorithm_tags.append(algorithm_tag)
+    retry_algorithm_modes.append(
+        _transient_nonlinear_algorithm_mode(algorithm_tag, algorithm, label)
+    )
+    retry_test_modes.append(
+        _transient_nonlinear_test_mode(test_type_tag, test_type, label)
+    )
+    if max_iters < 1:
+        abort(label + "_max_iters must be >= 1")
+    retry_max_iters.append(max_iters)
+    retry_tols.append(tol)
+    retry_rel_tols.append(rel_tol)
+    retry_line_search_etas.append(line_search_eta)
+
+
+fn _append_transient_solver_attempt_from_input(
+    attempt: SolverAttemptInput,
+    label: String,
+    mut retry_algorithm_tags: List[Int],
+    mut retry_algorithm_modes: List[Int],
+    mut retry_test_modes: List[Int],
+    mut retry_max_iters: List[Int],
+    mut retry_tols: List[Float64],
+    mut retry_rel_tols: List[Float64],
+    mut retry_line_search_etas: List[Float64],
+):
+    _append_transient_solver_attempt(
+        attempt.algorithm,
+        attempt.algorithm_tag,
+        attempt.line_search_eta,
+        attempt.test_type,
+        attempt.test_type_tag,
+        attempt.max_iters,
+        attempt.tol,
+        attempt.rel_tol,
+        label,
+        retry_algorithm_tags,
+        retry_algorithm_modes,
+        retry_test_modes,
+        retry_max_iters,
+        retry_tols,
+        retry_rel_tols,
+        retry_line_search_etas,
+    )
+
+
+fn _collect_transient_solver_chain(
+    analysis: AnalysisInput,
+    analysis_solver_chain_pool: List[SolverAttemptInput],
+    mut retry_algorithm_tags: List[Int],
+    mut retry_algorithm_modes: List[Int],
+    mut retry_test_modes: List[Int],
+    mut retry_max_iters: List[Int],
+    mut retry_tols: List[Float64],
+    mut retry_rel_tols: List[Float64],
+    mut retry_line_search_etas: List[Float64],
+):
+    for i in range(analysis.solver_chain_count):
+        _append_transient_solver_attempt_from_input(
+            analysis_solver_chain_pool[analysis.solver_chain_offset + i],
+            "transient_nonlinear solver_chain",
+            retry_algorithm_tags,
+            retry_algorithm_modes,
+            retry_test_modes,
+            retry_max_iters,
+            retry_tols,
+            retry_rel_tols,
+            retry_line_search_etas,
+        )
+    if len(retry_algorithm_modes) == 0:
+        _append_transient_solver_attempt(
+            analysis.algorithm,
+            analysis.algorithm_tag,
+            1.0,
+            analysis.test_type,
+            analysis.test_type_tag,
+            analysis.max_iters,
+            analysis.tol,
+            analysis.rel_tol,
+            "transient_nonlinear primary",
+            retry_algorithm_tags,
+            retry_algorithm_modes,
+            retry_test_modes,
+            retry_max_iters,
+            retry_tols,
+            retry_rel_tols,
+            retry_line_search_etas,
+        )
+    if analysis.has_solver_chain_override or len(retry_algorithm_modes) != 1:
+        return
+    if retry_algorithm_modes[0] == NonlinearAlgorithmMode.Newton:
+        return
+    _append_transient_solver_attempt(
+        "Newton",
+        AnalysisAlgorithmTag.Newton,
+        1.0,
+        analysis.test_type,
+        analysis.test_type_tag,
+        retry_max_iters[0],
+        retry_tols[0],
+        retry_rel_tols[0],
+        "transient_nonlinear auto_fallback",
+        retry_algorithm_tags,
+        retry_algorithm_modes,
+        retry_test_modes,
+        retry_max_iters,
+        retry_tols,
+        retry_rel_tols,
+        retry_line_search_etas,
+    )
+
+
 fn run_transient_nonlinear(
     analysis: AnalysisInput,
     steps: Int,
@@ -326,6 +493,7 @@ fn run_transient_nonlinear(
     time_series: List[TimeSeriesInput],
     time_series_values: List[Float64],
     time_series_times: List[Float64],
+    analysis_solver_chain_pool: List[SolverAttemptInput],
     dampings: List[DampingInput],
     pattern_type: String,
     pattern_type_tag: Int,
@@ -445,53 +613,34 @@ fn run_transient_nonlinear(
             if (i % ndf) + 1 == uniform_excitation_direction:
                 uniform_excitation_dofs.append(i)
 
-    var algorithm = analysis.algorithm
-    var primary_algorithm_mode = NonlinearAlgorithmMode.Unknown
-    if analysis.algorithm_tag == AnalysisAlgorithmTag.Newton:
-        primary_algorithm_mode = NonlinearAlgorithmMode.Newton
-    elif analysis.algorithm_tag == AnalysisAlgorithmTag.ModifiedNewton:
-        primary_algorithm_mode = NonlinearAlgorithmMode.ModifiedNewton
-    elif analysis.algorithm_tag == AnalysisAlgorithmTag.ModifiedNewtonInitial:
-        primary_algorithm_mode = NonlinearAlgorithmMode.ModifiedNewtonInitial
-    elif (
-        analysis.algorithm_tag == AnalysisAlgorithmTag.Broyden
-        or analysis.algorithm_tag == AnalysisAlgorithmTag.NewtonLineSearch
-    ):
-        # Mapped alternative: currently follows Newton tangent refresh behavior.
-        primary_algorithm_mode = NonlinearAlgorithmMode.Newton
-    else:
-        abort("unsupported transient_nonlinear algorithm: " + algorithm)
-
-    var fallback_algorithm = analysis.fallback_algorithm
-    var has_fallback = False
-    var fallback_algorithm_mode = NonlinearAlgorithmMode.Unknown
-    if len(fallback_algorithm) > 0:
-        if analysis.fallback_algorithm_tag == AnalysisAlgorithmTag.Newton:
-            fallback_algorithm_mode = NonlinearAlgorithmMode.Newton
-        elif analysis.fallback_algorithm_tag == AnalysisAlgorithmTag.ModifiedNewton:
-            fallback_algorithm_mode = NonlinearAlgorithmMode.ModifiedNewton
-        elif (
-            analysis.fallback_algorithm_tag
-            == AnalysisAlgorithmTag.ModifiedNewtonInitial
-        ):
-            fallback_algorithm_mode = NonlinearAlgorithmMode.ModifiedNewtonInitial
-        elif (
-            analysis.fallback_algorithm_tag == AnalysisAlgorithmTag.Broyden
-            or analysis.fallback_algorithm_tag
-            == AnalysisAlgorithmTag.NewtonLineSearch
-        ):
-            # Mapped alternative: currently follows Newton tangent refresh behavior.
-            fallback_algorithm_mode = NonlinearAlgorithmMode.Newton
-        else:
-            abort(
-                "unsupported transient_nonlinear fallback_algorithm: "
-                + fallback_algorithm
-            )
-        has_fallback = True
-    elif primary_algorithm_mode != NonlinearAlgorithmMode.Newton:
-        # Preserve legacy fallback behavior for ModifiedNewton* primary modes.
-        fallback_algorithm_mode = NonlinearAlgorithmMode.Newton
-        has_fallback = True
+    var retry_algorithm_tags: List[Int] = []
+    var retry_algorithm_modes: List[Int] = []
+    var retry_test_modes: List[Int] = []
+    var retry_max_iters: List[Int] = []
+    var retry_tols: List[Float64] = []
+    var retry_rel_tols: List[Float64] = []
+    var retry_line_search_etas: List[Float64] = []
+    _collect_transient_solver_chain(
+        analysis,
+        analysis_solver_chain_pool,
+        retry_algorithm_tags,
+        retry_algorithm_modes,
+        retry_test_modes,
+        retry_max_iters,
+        retry_tols,
+        retry_rel_tols,
+        retry_line_search_etas,
+    )
+    if len(retry_algorithm_modes) == 0:
+        abort("transient_nonlinear solver_chain must contain at least one attempt")
+    var retry_attempt_count = len(retry_algorithm_modes)
+    var primary_algorithm_tag = retry_algorithm_tags[0]
+    var primary_algorithm_mode = retry_algorithm_modes[0]
+    var primary_test_mode = retry_test_modes[0]
+    var max_iters = retry_max_iters[0]
+    var tol = retry_tols[0]
+    var rel_tol = retry_rel_tols[0]
+    var primary_line_search_eta = retry_line_search_etas[0]
 
     var integrator_tag = analysis.integrator_tag
     if integrator_tag == IntegratorTypeTag.Unknown:
@@ -502,45 +651,6 @@ fn run_transient_nonlinear(
     var beta = analysis.integrator_beta
     if beta <= 0.0:
         abort("Newmark beta must be > 0")
-
-    var primary_test_mode = -1
-    var test_type = analysis.test_type
-    if analysis.test_type_tag == NonlinearTestTypeTag.MaxDispIncr:
-        primary_test_mode = 0
-    elif analysis.test_type_tag == NonlinearTestTypeTag.NormDispIncr:
-        primary_test_mode = 1
-    elif analysis.test_type_tag == NonlinearTestTypeTag.NormUnbalance:
-        primary_test_mode = 2
-    elif analysis.test_type_tag == NonlinearTestTypeTag.EnergyIncr:
-        primary_test_mode = 3
-    else:
-        abort("unsupported transient_nonlinear test_type: " + test_type)
-    var fallback_test_mode = -1
-    var fallback_test_type = analysis.fallback_test_type
-    if analysis.fallback_test_type_tag == NonlinearTestTypeTag.MaxDispIncr:
-        fallback_test_mode = 0
-    elif analysis.fallback_test_type_tag == NonlinearTestTypeTag.NormDispIncr:
-        fallback_test_mode = 1
-    elif analysis.fallback_test_type_tag == NonlinearTestTypeTag.NormUnbalance:
-        fallback_test_mode = 2
-    elif analysis.fallback_test_type_tag == NonlinearTestTypeTag.EnergyIncr:
-        fallback_test_mode = 3
-    else:
-        abort(
-            "unsupported transient_nonlinear fallback_test_type: "
-            + fallback_test_type
-        )
-
-    var max_iters = analysis.max_iters
-    var tol = analysis.tol
-    var rel_tol = analysis.rel_tol
-    var fallback_max_iters = analysis.fallback_max_iters
-    var fallback_tol = analysis.fallback_tol
-    var fallback_rel_tol = analysis.fallback_rel_tol
-    if max_iters < 1:
-        abort("transient_nonlinear max_iters must be >= 1")
-    if fallback_max_iters < 1:
-        abort("transient_nonlinear fallback_max_iters must be >= 1")
 
     var free_count = len(free)
     var M_f: List[Float64] = []
@@ -1122,23 +1232,25 @@ fn run_transient_nonlinear(
         _gather_from_free_simd(free, F_ext_step, P_ext_f)
 
         var converged = False
+        var attempt_algorithm_tag = primary_algorithm_tag
         var attempt_algorithm_mode = primary_algorithm_mode
+        var attempt_line_search_eta = primary_line_search_eta
         var attempt_test_mode = primary_test_mode
         var attempt_max_iters = max_iters
         var attempt_tol = tol
         var attempt_rel_tol = rel_tol
-        for attempt in range(2):
-            if attempt == 1 and not has_fallback:
-                break
-            if attempt == 1:
+        for attempt in range(retry_attempt_count):
+            if attempt > 0:
                 copy_float64_contiguous(u_f, u_step_base_f, free_count)
                 _scatter_free_vector_to_full(free, u_f, u)
                 force_basic_q = force_basic_q_base.copy()
-                attempt_algorithm_mode = fallback_algorithm_mode
-                attempt_test_mode = fallback_test_mode
-                attempt_max_iters = fallback_max_iters
-                attempt_tol = fallback_tol
-                attempt_rel_tol = fallback_rel_tol
+                attempt_algorithm_tag = retry_algorithm_tags[attempt]
+                attempt_algorithm_mode = retry_algorithm_modes[attempt]
+                attempt_line_search_eta = retry_line_search_etas[attempt]
+                attempt_test_mode = retry_test_modes[attempt]
+                attempt_max_iters = retry_max_iters[attempt]
+                attempt_tol = retry_tols[attempt]
+                attempt_rel_tol = retry_rel_tols[attempt]
 
             var tangent_initialized = False
             var damping_initialized = False
@@ -1606,6 +1718,12 @@ fn run_transient_nonlinear(
 
                 var max_diff = 0.0
                 var max_u = 0.0
+                if attempt_algorithm_tag == AnalysisAlgorithmTag.NewtonLineSearch:
+                    var line_search_eta = attempt_line_search_eta
+                    if line_search_eta <= 0.0:
+                        line_search_eta = 0.8
+                    for i in range(free_count):
+                        du_f[i] *= line_search_eta
                 for i in range(free_count):
                     var idx = free[i]
                     var du = du_f[i]

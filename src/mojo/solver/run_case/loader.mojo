@@ -28,6 +28,7 @@ from solver.run_case.input_types import (
     NodeInput,
     RecorderInput,
     SectionInput,
+    SolverAttemptInput,
     StageInput,
     beam_integration_tag,
     parse_case_input,
@@ -147,6 +148,7 @@ struct RunCaseState(Movable):
     var M_total: List[Float64]
     var M_rayleigh_total: List[Float64]
     var analysis_integrator_targets_pool: List[Float64]
+    var analysis_solver_chain_pool: List[SolverAttemptInput]
     var time_series: List[TimeSeriesInput]
     var time_series_values: List[Float64]
     var time_series_times: List[Float64]
@@ -249,6 +251,7 @@ struct RunCaseState(Movable):
         self.M_total = []
         self.M_rayleigh_total = []
         self.analysis_integrator_targets_pool = []
+        self.analysis_solver_chain_pool = []
         self.time_series = []
         self.time_series_values = []
         self.time_series_times = []
@@ -2238,6 +2241,7 @@ fn load_case_state_from_input(input: CaseInput) raises -> RunCaseState:
     state.analysis_integrator_targets_pool = (
         input.analysis_integrator_targets_pool.copy()
     )
+    state.analysis_solver_chain_pool = input.analysis_solver_chain_pool.copy()
     state.time_series = time_series^
     state.time_series_values = time_series_values^
     state.time_series_times = time_series_times^

@@ -134,6 +134,17 @@ fn _assemble_frame2d_soa_indices(
         var k_global: List[List[Float64]] = []
         var f_global: List[Float64] = []
         if sec.type == "ElasticSection2d":
+            var f_load_global = beam2d_element_load_global(
+                element_loads,
+                elem_load_offsets,
+                elem_load_pool,
+                e,
+                load_scale,
+                x1,
+                y1,
+                x2,
+                y2,
+            )
             if elem_geom_tags[e] == GeomTransfTag.Linear:
                 k_global = beam_global_stiffness(sec.E, sec.A, sec.I, x1, y1, x2, y2)
             elif elem_geom_tags[e] == GeomTransfTag.PDelta:
@@ -153,7 +164,7 @@ fn _assemble_frame2d_soa_indices(
             for a in range(6):
                 var Aidx = dof_map6[a]
                 _scatter_add_row[6](K, Aidx, k_global[a], dof_map6)
-                F_int[Aidx] += f_global[a]
+                F_int[Aidx] += f_global[a] - f_load_global[a]
             continue
 
         var sec_index = fiber_section_index_by_id[elem_section_ids[e]]
@@ -357,6 +368,17 @@ fn _assemble_frame2d_element(
     var k_global: List[List[Float64]] = []
     var f_global: List[Float64] = []
     if sec.type == "ElasticSection2d":
+        var f_load_global = beam2d_element_load_global(
+            element_loads,
+            elem_load_offsets,
+            elem_load_pool,
+            e,
+            load_scale,
+            node1.x,
+            node1.y,
+            node2.x,
+            node2.y,
+        )
         var geom = elem.geom_transf
         if geom == "Linear":
             k_global = beam_global_stiffness(
@@ -392,7 +414,7 @@ fn _assemble_frame2d_element(
         for a in range(6):
             var Aidx = dof_map6[a]
             _scatter_add_row[6](K, Aidx, k_global[a], dof_map6)
-            F_int[Aidx] += f_global[a]
+            F_int[Aidx] += f_global[a] - f_load_global[a]
         return
 
     var sec_index = fiber_section_index_by_id[elem.section]

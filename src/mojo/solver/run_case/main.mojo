@@ -281,6 +281,7 @@ def run_case_input(
     var analysis_integrator_targets_pool = (
         state.analysis_integrator_targets_pool.copy()
     )
+    var analysis_solver_chain_pool = state.analysis_solver_chain_pool.copy()
     var F_const: List[Float64] = []
     F_const.resize(total_dofs, 0.0)
     var const_element_loads: List[ElementLoadInput] = []
@@ -397,6 +398,7 @@ def run_case_input(
                 time_series,
                 time_series_values,
                 time_series_times,
+                analysis_solver_chain_pool,
                 typed_nodes,
                 typed_elements,
                 node_x,
@@ -484,6 +486,7 @@ def run_case_input(
                 ts_index,
                 time_series,
                 analysis_integrator_targets_pool,
+                analysis_solver_chain_pool,
                 typed_nodes,
                 typed_elements,
                 node_x,
@@ -674,6 +677,7 @@ def run_case_input(
             time_series,
             time_series_values,
             time_series_times,
+            analysis_solver_chain_pool,
             dampings,
             pattern_type,
             pattern_type_tag,
@@ -784,6 +788,9 @@ def run_case_input(
             var stage = stages[stage_idx]
             var stage_analysis_targets_pool = (
                 stage.analysis_integrator_targets_pool.copy()
+            )
+            var stage_analysis_solver_chain_pool = (
+                stage.analysis_solver_chain_pool.copy()
             )
             var stage_analysis = stage.analysis
             var stage_type = stage_analysis.type
@@ -990,6 +997,7 @@ def run_case_input(
                         time_series,
                         time_series_values,
                         time_series_times,
+                        stage_analysis_solver_chain_pool,
                         typed_nodes,
                         typed_elements,
                         node_x,
@@ -1086,6 +1094,7 @@ def run_case_input(
                         stage_ts_index,
                         time_series,
                         stage_analysis_targets_pool,
+                        stage_analysis_solver_chain_pool,
                         typed_nodes,
                         typed_elements,
                         node_x,
@@ -1288,6 +1297,7 @@ def run_case_input(
                     time_series,
                     time_series_values,
                     time_series_times,
+                    stage_analysis_solver_chain_pool,
                     dampings,
                     stage_pattern_type,
                     stage_pattern_type_tag,

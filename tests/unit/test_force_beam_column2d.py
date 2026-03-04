@@ -234,13 +234,20 @@ def test_force_beam_column2d_displacement_control_uses_static_fallback_controls(
     case_data["analysis"] = {
         "type": "static_nonlinear",
         "steps": 3,
-        "algorithm": "Newton",
-        "max_iters": 1,
-        "tol": 1e-9,
-        "fallback_algorithm": "ModifiedNewtonInitial",
-        "fallback_test_type": "NormDispIncr",
-        "fallback_max_iters": 40,
-        "fallback_tol": 1e-9,
+        "solver_chain": [
+            {
+                "algorithm": "Newton",
+                "test_type": "MaxDispIncr",
+                "tol": 1e-9,
+                "max_iters": 1,
+            },
+            {
+                "algorithm": "ModifiedNewtonInitial",
+                "test_type": "NormDispIncr",
+                "tol": 1e-9,
+                "max_iters": 40,
+            },
+        ],
         "integrator": {
             "type": "DisplacementControl",
             "node": 2,
@@ -331,6 +338,80 @@ def test_force_beam_column2d_displacement_control_cyclic_sign_reversal():
     assert len(rows) == 3
     # Global Fy at node i should reverse sign when control displacement reverses.
     assert rows[0][1] * rows[1][1] < 0.0
+
+
+def test_force_beam_column2d_staged_displacement_control_commits_final_force_state():
+    case_data = _base_force_beam_case(
+        {"id": 1, "type": "Elastic", "params": {"E": 30000000000.0}}
+    )
+    case_data["time_series"] = [{"type": "Linear", "tag": 1, "factor": 1.0}]
+    case_data["loads"] = []
+    case_data["analysis"] = {
+        "type": "staged",
+        "stages": [
+            {
+                "analysis": {
+                    "type": "static_nonlinear",
+                    "steps": 1,
+                    "solver_chain": [
+                        {
+                            "algorithm": "Newton",
+                            "test_type": "MaxDispIncr",
+                            "tol": 1e-10,
+                            "max_iters": 20,
+                        }
+                    ],
+                    "integrator": {"type": "LoadControl"},
+                },
+                "pattern": {"type": "Plain", "tag": 1, "time_series": 1},
+                "loads": [{"node": 2, "dof": 2, "value": 1.0}],
+                "load_const": {"time": 0.0},
+            },
+            {
+                "analysis": {
+                    "type": "static_nonlinear",
+                    "steps": 1,
+                    "solver_chain": [
+                        {
+                            "algorithm": "Newton",
+                            "test_type": "MaxDispIncr",
+                            "tol": 1e-10,
+                            "max_iters": 20,
+                        },
+                        {
+                            "algorithm": "ModifiedNewtonInitial",
+                            "test_type": "NormDispIncr",
+                            "tol": 1e-10,
+                            "max_iters": 50,
+                        },
+                    ],
+                    "integrator": {
+                        "type": "DisplacementControl",
+                        "node": 2,
+                        "dof": 1,
+                        "du": 0.01,
+                    },
+                },
+                "pattern": {"type": "Plain", "tag": 2, "time_series": 1},
+                "loads": [{"node": 2, "dof": 1, "value": 1.0}],
+            },
+        ],
+    }
+    case_data["recorders"] = [
+        {"type": "element_force", "elements": [1], "output": "element_force"},
+        {"type": "node_displacement", "nodes": [2], "dofs": [1], "output": "disp"},
+    ]
+
+    with tempfile.TemporaryDirectory() as tmp:
+        out_dir = Path(tmp)
+        _run_strut_case(case_data, out_dir)
+        force_rows = _read_rows(out_dir / "element_force_ele1.out")
+        disp_rows = _read_rows(out_dir / "disp_node2.out")
+
+    assert len(force_rows) == 2
+    assert len(disp_rows) == 2
+    assert disp_rows[-1][0] > disp_rows[0][0]
+    assert force_rows[-1] != pytest.approx(force_rows[0], abs=1e-9, rel=1e-9)
 
 
 def test_force_beam_column2d_static_linear_elastic_runs():
@@ -489,6 +570,61 @@ def test_force_beam_column2d_beam_uniform_reports_zero_free_end_forces():
     assert row[3] == pytest.approx(0.0, abs=1e-8)
     assert row[4] == pytest.approx(0.0, abs=1e-8)
     assert row[5] == pytest.approx(0.0, abs=1e-8)
+
+
+def test_force_beam_column2d_elastic_section_static_nonlinear_applies_beam_uniform_load():
+    case_data = {
+        "schema_version": "1.0",
+        "metadata": {
+            "name": "force_beam_column2d_elastic_section_gravity_unit",
+            "units": "SI",
+        },
+        "model": {"ndm": 2, "ndf": 3},
+        "nodes": [
+            {"id": 1, "x": 0.0, "y": 0.0, "constraints": [1, 2, 3]},
+            {"id": 2, "x": 5.0, "y": 0.0},
+        ],
+        "sections": [
+            {
+                "id": 1,
+                "type": "ElasticSection2d",
+                "params": {"E": 30000.0, "A": 100.0, "I": 1000.0},
+            }
+        ],
+        "elements": [
+            {
+                "id": 1,
+                "type": "forceBeamColumn2d",
+                "nodes": [1, 2],
+                "section": 1,
+                "geomTransf": "Linear",
+                "integration": "Lobatto",
+                "num_int_pts": 5,
+            }
+        ],
+        "element_loads": [{"element": 1, "type": "beamUniform", "wy": -2.0}],
+        "analysis": {
+            "type": "static_nonlinear",
+            "steps": 1,
+            "algorithm": "Newton",
+            "integrator": {"type": "LoadControl", "step": 1.0},
+        },
+        "recorders": [
+            {"type": "node_displacement", "nodes": [2], "dofs": [2], "output": "disp"},
+            {"type": "element_force", "elements": [1], "output": "element_force"},
+        ],
+    }
+
+    with tempfile.TemporaryDirectory() as tmp:
+        out_dir = Path(tmp)
+        _run_strut_case(case_data, out_dir)
+        disp_rows = _read_rows(out_dir / "disp_node2.out")
+        force_rows = _read_rows(out_dir / "element_force_ele1.out")
+
+    assert len(disp_rows) == 1
+    assert len(force_rows) == 1
+    assert disp_rows[0][0] < 0.0
+    assert any(abs(value) > 1.0e-9 for value in force_rows[0])
 
 
 def test_force_beam_column2d_accepts_corotational_geom_transf():

@@ -359,27 +359,53 @@ def _emit_element_load(f, elem_load, ndm):
     raise ValueError(f"unsupported element load type: {load_type}")
 
 
-def _algorithm_cmd(algorithm_name, cfg, prefix=""):
+def _algorithm_cmd(algorithm_name, cfg):
+    algorithm_options = {}
+    algorithm_options = cfg.get("algorithm_options", {})
+    if algorithm_options is None:
+        algorithm_options = {}
+    if not isinstance(algorithm_options, dict):
+        raise ValueError("algorithm_options must be an object")
     if algorithm_name == "ModifiedNewtonInitial":
         return "ModifiedNewton -initial"
     if algorithm_name == "Broyden":
-        count = int(cfg.get(f"{prefix}broyden_count", 8))
+        count = int(cfg.get("broyden_count", algorithm_options.get("max_iters", 8)))
         return f"Broyden {count}"
     if algorithm_name == "NewtonLineSearch":
-        eta = float(cfg.get(f"{prefix}line_search_eta", 0.8))
+        eta = float(cfg.get("line_search_eta", algorithm_options.get("alpha", 0.8)))
         return f"NewtonLineSearch {eta}"
     return algorithm_name
 
 
-def _validate_static_nonlinear_algorithm(algorithm_name, label):
-    if algorithm_name not in ("Newton", "ModifiedNewton", "ModifiedNewtonInitial"):
+_NONLINEAR_ALGORITHMS = (
+    "Newton",
+    "ModifiedNewton",
+    "ModifiedNewtonInitial",
+    "Broyden",
+    "NewtonLineSearch",
+)
+
+
+def _validate_nonlinear_algorithm(algorithm_name, label):
+    if algorithm_name not in _NONLINEAR_ALGORITHMS:
         raise ValueError(f"unsupported {label} algorithm: {algorithm_name}")
+
+
+def _validate_static_nonlinear_algorithm(algorithm_name, label):
+    _validate_nonlinear_algorithm(algorithm_name, label)
 
 
 def _validate_static_nonlinear_test_type(test_type, label):
     if test_type not in ("MaxDispIncr", "NormDispIncr", "NormUnbalance", "EnergyIncr"):
         raise ValueError(
             f"{label} test_type must be MaxDispIncr, NormDispIncr, NormUnbalance, or EnergyIncr"
+        )
+
+
+def _validate_transient_nonlinear_test_type(test_type, label):
+    if test_type not in ("NormUnbalance", "NormDispIncr", "EnergyIncr"):
+        raise ValueError(
+            f"{label} test_type must be NormUnbalance, NormDispIncr, or EnergyIncr"
         )
 
 
@@ -403,6 +429,95 @@ def _tcl_static_nonlinear_test_type(test_type):
     return test_type
 
 
+def _normalize_nonlinear_solver_chain(
+    analysis,
+    *,
+    analysis_label,
+    default_algorithm,
+    default_test_type,
+    default_tol,
+    default_max_iters,
+    validate_test_type,
+    tcl_test_type,
+):
+    base_algorithm = analysis.get("algorithm", default_algorithm)
+    base_test_type = analysis.get("test_type", default_test_type)
+    base_tol = analysis.get("tol", default_tol)
+    base_max_iters = analysis.get("max_iters", default_max_iters)
+    solver_chain = analysis.get("solver_chain")
+    attempts = []
+
+    if solver_chain is not None:
+        if not isinstance(solver_chain, list) or len(solver_chain) == 0:
+            raise ValueError(f"{analysis_label} solver_chain must be a non-empty list")
+        for index, attempt in enumerate(solver_chain):
+            if not isinstance(attempt, dict):
+                raise ValueError(
+                    f"{analysis_label} solver_chain[{index}] must be an object"
+                )
+            algorithm = attempt.get("algorithm", base_algorithm)
+            _validate_nonlinear_algorithm(
+                algorithm, f"{analysis_label} solver_chain[{index}]"
+            )
+            test_type = attempt.get("test_type", base_test_type)
+            validate_test_type(test_type, f"{analysis_label} solver_chain[{index}]")
+            tol = attempt.get("tol", base_tol)
+            max_iters = attempt.get("max_iters", base_max_iters)
+            attempts.append(
+                {
+                    "algorithm": algorithm,
+                    "algorithm_cmd": _algorithm_cmd(algorithm, attempt),
+                    "test_type": test_type,
+                    "tcl_test_type": tcl_test_type(test_type),
+                    "tol": tol,
+                    "max_iters": max_iters,
+                }
+            )
+        return attempts
+
+    _validate_nonlinear_algorithm(base_algorithm, analysis_label)
+    validate_test_type(base_test_type, analysis_label)
+    attempts.append(
+        {
+            "algorithm": base_algorithm,
+            "algorithm_cmd": _algorithm_cmd(base_algorithm, analysis),
+            "test_type": base_test_type,
+            "tcl_test_type": tcl_test_type(base_test_type),
+            "tol": base_tol,
+            "max_iters": base_max_iters,
+        }
+    )
+    return attempts
+
+
+def _append_solver_chain_retry_lines(
+    lines,
+    ok_var,
+    analyze_cmd,
+    solver_chain,
+    *,
+    indent,
+    retry_integrator_line=None,
+):
+    primary_attempt = solver_chain[0]
+    if len(solver_chain) == 1:
+        return
+    for attempt in solver_chain[1:]:
+        lines.append(f"{indent}if {{{ok_var} != 0}} {{")
+        lines.append(
+            f"{indent}  test {attempt['tcl_test_type']} {attempt['tol']} {attempt['max_iters']}"
+        )
+        lines.append(f"{indent}  algorithm {attempt['algorithm_cmd']}")
+        if retry_integrator_line is not None:
+            lines.append(f"{indent}  {retry_integrator_line}")
+        lines.append(f"{indent}  set {ok_var} [{analyze_cmd}]")
+        lines.append(f"{indent}}}")
+    lines.append(
+        f"{indent}test {primary_attempt['tcl_test_type']} {primary_attempt['tol']} {primary_attempt['max_iters']}"
+    )
+    lines.append(f"{indent}algorithm {primary_attempt['algorithm_cmd']}")
+
+
 def _static_nonlinear_displacement_control_post_lines(
     node,
     dof,
@@ -410,14 +525,7 @@ def _static_nonlinear_displacement_control_post_lines(
     cutback,
     max_cutbacks,
     min_du,
-    primary_test_type,
-    primary_tol,
-    primary_max_iters,
-    primary_algorithm,
-    fallback_test_type,
-    fallback_tol,
-    fallback_max_iters,
-    fallback_algorithm_cmd,
+    solver_chain,
 ):
     lines = [
         "set strut_dc_targets {" + " ".join(str(float(val)) for val in targets) + "}",
@@ -437,19 +545,16 @@ def _static_nonlinear_displacement_control_post_lines(
         f"      integrator DisplacementControl {int(node)} {int(dof)} $strut_dc_try_du",
         "      set strut_dc_ok [analyze 1]",
     ]
-    if fallback_algorithm_cmd is not None:
-        lines.extend(
-            [
-                "      if {$strut_dc_ok != 0} {",
-                f"        test {fallback_test_type} {fallback_tol} {fallback_max_iters}",
-                f"        algorithm {fallback_algorithm_cmd}",
-                f"        integrator DisplacementControl {int(node)} {int(dof)} $strut_dc_try_du",
-                "        set strut_dc_ok [analyze 1]",
-                f"        test {primary_test_type} {primary_tol} {primary_max_iters}",
-                f"        algorithm {primary_algorithm}",
-                "      }",
-            ]
-        )
+    _append_solver_chain_retry_lines(
+        lines,
+        "strut_dc_ok",
+        "analyze 1",
+        solver_chain,
+        indent="      ",
+        retry_integrator_line=(
+            f"integrator DisplacementControl {int(node)} {int(dof)} $strut_dc_try_du"
+        ),
+    )
     lines.extend(
         [
             "      if {$strut_dc_ok == 0} {",
@@ -1363,70 +1468,47 @@ def main():
                     f.write("integrator LoadControl 1.0\n")
                     f.write("analysis Static\n")
                 elif stage_type == "static_nonlinear":
-                    tol = stage_analysis.get("tol", 1.0e-10)
-                    max_iters = stage_analysis.get("max_iters", 20)
-                    algorithm = stage_analysis.get("algorithm", "Newton")
-                    _validate_static_nonlinear_algorithm(
-                        algorithm, "static_nonlinear"
+                    solver_chain = _normalize_nonlinear_solver_chain(
+                        stage_analysis,
+                        analysis_label="static_nonlinear",
+                        default_algorithm="Newton",
+                        default_test_type="MaxDispIncr",
+                        default_tol=1.0e-10,
+                        default_max_iters=20,
+                        validate_test_type=_validate_static_nonlinear_test_type,
+                        tcl_test_type=_tcl_static_nonlinear_test_type,
                     )
-                    test_type = stage_analysis.get("test_type", "MaxDispIncr")
-                    _validate_static_nonlinear_test_type(
-                        test_type, "static_nonlinear"
+                    primary_attempt = solver_chain[0]
+                    f.write(
+                        f"test {primary_attempt['tcl_test_type']} {primary_attempt['tol']} {primary_attempt['max_iters']}\n"
                     )
-                    primary_algorithm = _algorithm_cmd(algorithm, stage_analysis)
-                    fallback_algorithm = stage_analysis.get("fallback_algorithm")
-                    fallback_test_type = test_type
-                    fallback_tol = tol
-                    fallback_max_iters = max_iters
-                    fallback_algorithm_cmd = None
-                    tcl_test_type = _tcl_static_nonlinear_test_type(test_type)
-                    tcl_fallback_test_type = tcl_test_type
-                    if fallback_algorithm is not None:
-                        _validate_static_nonlinear_algorithm(
-                            fallback_algorithm, "static_nonlinear fallback"
-                        )
-                        fallback_test_type = stage_analysis.get(
-                            "fallback_test_type", test_type
-                        )
-                        _validate_static_nonlinear_test_type(
-                            fallback_test_type, "static_nonlinear fallback"
-                        )
-                        fallback_tol = stage_analysis.get("fallback_tol", tol)
-                        fallback_max_iters = stage_analysis.get(
-                            "fallback_max_iters", max_iters
-                        )
-                        tcl_fallback_test_type = _tcl_static_nonlinear_test_type(
-                            fallback_test_type
-                        )
-                        fallback_algorithm_cmd = _algorithm_cmd(
-                            fallback_algorithm,
-                            stage_analysis,
-                            prefix="fallback_",
-                        )
-                    f.write(f"test {tcl_test_type} {tol} {max_iters}\n")
-                    f.write(f"algorithm {primary_algorithm}\n")
+                    f.write(f"algorithm {primary_attempt['algorithm_cmd']}\n")
                     integrator = stage_analysis.get("integrator", {"type": "LoadControl"})
                     integrator_type = integrator.get("type", "LoadControl")
                     if integrator_type == "LoadControl":
                         f.write(f"integrator LoadControl {1.0/stage_steps}\n")
                         f.write("analysis Static\n")
-                        if fallback_algorithm_cmd is not None:
+                        if len(solver_chain) > 1:
                             stage_static_nl_post_lines = [
                                 "set strut_nl_ok 0",
                                 f"for {{set strut_nl_step 0}} {{$strut_nl_step < {stage_steps} && $strut_nl_ok == 0}} {{incr strut_nl_step}} {{",
                                 "  set strut_nl_ok [analyze 1]",
-                                "  if {$strut_nl_ok != 0} {",
-                                f"    test {fallback_test_type} {fallback_tol} {fallback_max_iters}",
-                                f"    algorithm {fallback_algorithm_cmd}",
-                                "    set strut_nl_ok [analyze 1]",
-                                f"    test {test_type} {tol} {max_iters}",
-                                f"    algorithm {primary_algorithm}",
-                                "  }",
-                                "}",
-                                "if {$strut_nl_ok != 0} {",
-                                "  error \"analysis failed\"",
-                                "}",
                             ]
+                            _append_solver_chain_retry_lines(
+                                stage_static_nl_post_lines,
+                                "strut_nl_ok",
+                                "analyze 1",
+                                solver_chain,
+                                indent="  ",
+                            )
+                            stage_static_nl_post_lines.extend(
+                                [
+                                    "}",
+                                    "if {$strut_nl_ok != 0} {",
+                                    "  error \"analysis failed\"",
+                                    "}",
+                                ]
+                            )
                     elif integrator_type == "DisplacementControl":
                         node = integrator.get("node")
                         dof = integrator.get("dof")
@@ -1450,14 +1532,7 @@ def main():
                                     cutback,
                                     max_cutbacks,
                                     min_du,
-                                    tcl_test_type,
-                                    tol,
-                                    max_iters,
-                                    primary_algorithm,
-                                    tcl_fallback_test_type,
-                                    fallback_tol,
-                                    fallback_max_iters,
-                                    fallback_algorithm_cmd,
+                                    solver_chain,
                                 )
                             )
                         else:
@@ -1477,14 +1552,7 @@ def main():
                                     cutback,
                                     max_cutbacks,
                                     min_du,
-                                    tcl_test_type,
-                                    tol,
-                                    max_iters,
-                                    primary_algorithm,
-                                    tcl_fallback_test_type,
-                                    fallback_tol,
-                                    fallback_max_iters,
-                                    fallback_algorithm_cmd,
+                                    solver_chain,
                                 )
                             )
                     else:
@@ -1508,83 +1576,46 @@ def main():
                     stage_dt = stage_analysis.get("dt")
                     if stage_dt is None or stage_dt <= 0.0:
                         raise ValueError("transient_nonlinear requires dt > 0")
-                    algorithm = stage_analysis.get("algorithm", "Newton")
-                    if algorithm not in (
-                        "Newton",
-                        "ModifiedNewton",
-                        "ModifiedNewtonInitial",
-                        "Broyden",
-                        "NewtonLineSearch",
-                    ):
-                        raise ValueError(
-                            f"unsupported transient_nonlinear algorithm: {algorithm}"
-                        )
-                    fallback_algorithm = stage_analysis.get("fallback_algorithm")
-                    if fallback_algorithm is not None and fallback_algorithm not in (
-                        "Newton",
-                        "ModifiedNewton",
-                        "ModifiedNewtonInitial",
-                        "Broyden",
-                        "NewtonLineSearch",
-                    ):
-                        raise ValueError(
-                            "unsupported transient_nonlinear fallback_algorithm: "
-                            f"{fallback_algorithm}"
-                        )
+                    solver_chain = _normalize_nonlinear_solver_chain(
+                        stage_analysis,
+                        analysis_label="transient_nonlinear",
+                        default_algorithm="Newton",
+                        default_test_type="NormUnbalance",
+                        default_tol=1.0e-10,
+                        default_max_iters=20,
+                        validate_test_type=_validate_transient_nonlinear_test_type,
+                        tcl_test_type=lambda test_type: test_type,
+                    )
                     integrator = stage_analysis.get("integrator", {"type": "Newmark"})
                     if integrator.get("type", "Newmark") != "Newmark":
                         raise ValueError(
                             "transient_nonlinear only supports Newmark integrator"
-                        )
+                    )
                     gamma = integrator.get("gamma", 0.5)
                     beta = integrator.get("beta", 0.25)
-                    test_type = stage_analysis.get("test_type", "NormUnbalance")
-                    if test_type not in ("NormUnbalance", "NormDispIncr", "EnergyIncr"):
-                        raise ValueError(
-                            "transient_nonlinear test_type must be NormUnbalance, NormDispIncr, or EnergyIncr"
-                        )
-                    tol = stage_analysis.get("tol", 1.0e-10)
-                    max_iters = stage_analysis.get("max_iters", 20)
-                    primary_algorithm = _algorithm_cmd(algorithm, stage_analysis)
-                    f.write(f"test {test_type} {tol} {max_iters}\n")
-                    f.write(f"algorithm {primary_algorithm}\n")
+                    primary_attempt = solver_chain[0]
+                    f.write(
+                        f"test {primary_attempt['tcl_test_type']} {primary_attempt['tol']} {primary_attempt['max_iters']}\n"
+                    )
+                    f.write(f"algorithm {primary_attempt['algorithm_cmd']}\n")
                     f.write(f"integrator Newmark {gamma} {beta}\n")
                     f.write("analysis Transient\n")
-                    if fallback_algorithm is not None:
-                        fallback_test_type = stage_analysis.get(
-                            "fallback_test_type", test_type
-                        )
-                        if fallback_test_type not in (
-                            "NormUnbalance",
-                            "NormDispIncr",
-                            "EnergyIncr",
-                        ):
-                            raise ValueError(
-                                "transient_nonlinear fallback_test_type must be NormUnbalance, NormDispIncr, or EnergyIncr"
-                            )
-                        fallback_tol = stage_analysis.get("fallback_tol", tol)
-                        fallback_max_iters = stage_analysis.get(
-                            "fallback_max_iters", max_iters
-                        )
-                        fallback_algorithm_cmd = _algorithm_cmd(
-                            fallback_algorithm,
-                            stage_analysis,
-                            prefix="fallback_",
-                        )
+                    if len(solver_chain) > 1:
                         f.write("set strut_tr_ok 0\n")
                         f.write(
                             f"for {{set strut_tr_step 0}} {{$strut_tr_step < {stage_steps} && $strut_tr_ok == 0}} {{incr strut_tr_step}} {{\n"
                         )
                         f.write(f"  set strut_tr_ok [analyze 1 {stage_dt}]\n")
-                        f.write("  if {$strut_tr_ok != 0} {\n")
-                        f.write(
-                            f"    test {fallback_test_type} {fallback_tol} {fallback_max_iters}\n"
+                        transient_retry_lines = []
+                        _append_solver_chain_retry_lines(
+                            transient_retry_lines,
+                            "strut_tr_ok",
+                            f"analyze 1 {stage_dt}",
+                            solver_chain,
+                            indent="  ",
                         )
-                        f.write(f"    algorithm {fallback_algorithm_cmd}\n")
-                        f.write(f"    set strut_tr_ok [analyze 1 {stage_dt}]\n")
-                        f.write(f"    test {test_type} {tol} {max_iters}\n")
-                        f.write(f"    algorithm {primary_algorithm}\n")
-                        f.write("  }\n")
+                        for line in transient_retry_lines:
+                            f.write(line + "\n")
                         f.write("}\n")
                         f.write("if {$strut_tr_ok != 0} {\n")
                         f.write("  error \"analysis failed\"\n")
@@ -1656,62 +1687,47 @@ def main():
             f.write("integrator LoadControl 1.0\n")
             f.write("analysis Static\n")
         elif analysis_type == "static_nonlinear":
-            tol = analysis.get("tol", 1.0e-10)
-            max_iters = analysis.get("max_iters", 20)
-            algorithm = analysis.get("algorithm", "Newton")
-            _validate_static_nonlinear_algorithm(algorithm, "static_nonlinear")
-            test_type = analysis.get("test_type", "MaxDispIncr")
-            _validate_static_nonlinear_test_type(test_type, "static_nonlinear")
-            primary_algorithm = _algorithm_cmd(algorithm, analysis)
-            fallback_algorithm = analysis.get("fallback_algorithm")
-            fallback_test_type = test_type
-            fallback_tol = tol
-            fallback_max_iters = max_iters
-            fallback_algorithm_cmd = None
-            tcl_test_type = _tcl_static_nonlinear_test_type(test_type)
-            tcl_fallback_test_type = tcl_test_type
-            if fallback_algorithm is not None:
-                _validate_static_nonlinear_algorithm(
-                    fallback_algorithm, "static_nonlinear fallback"
-                )
-                fallback_test_type = analysis.get("fallback_test_type", test_type)
-                _validate_static_nonlinear_test_type(
-                    fallback_test_type, "static_nonlinear fallback"
-                )
-                fallback_tol = analysis.get("fallback_tol", tol)
-                fallback_max_iters = analysis.get("fallback_max_iters", max_iters)
-                tcl_fallback_test_type = _tcl_static_nonlinear_test_type(
-                    fallback_test_type
-                )
-                fallback_algorithm_cmd = _algorithm_cmd(
-                    fallback_algorithm,
-                    analysis,
-                    prefix="fallback_",
-                )
-            f.write(f"test {tcl_test_type} {tol} {max_iters}\n")
-            f.write(f"algorithm {primary_algorithm}\n")
+            solver_chain = _normalize_nonlinear_solver_chain(
+                analysis,
+                analysis_label="static_nonlinear",
+                default_algorithm="Newton",
+                default_test_type="MaxDispIncr",
+                default_tol=1.0e-10,
+                default_max_iters=20,
+                validate_test_type=_validate_static_nonlinear_test_type,
+                tcl_test_type=_tcl_static_nonlinear_test_type,
+            )
+            primary_attempt = solver_chain[0]
+            f.write(
+                f"test {primary_attempt['tcl_test_type']} {primary_attempt['tol']} {primary_attempt['max_iters']}\n"
+            )
+            f.write(f"algorithm {primary_attempt['algorithm_cmd']}\n")
             integrator = analysis.get("integrator", {"type": "LoadControl"})
             integrator_type = integrator.get("type", "LoadControl")
             if integrator_type == "LoadControl":
                 f.write(f"integrator LoadControl {1.0/steps}\n")
                 f.write("analysis Static\n")
-                if fallback_algorithm_cmd is not None:
+                if len(solver_chain) > 1:
                     static_nl_post_lines = [
                         "set strut_nl_ok 0",
                         f"for {{set strut_nl_step 0}} {{$strut_nl_step < {int(steps)} && $strut_nl_ok == 0}} {{incr strut_nl_step}} {{",
                         "  set strut_nl_ok [analyze 1]",
-                        "  if {$strut_nl_ok != 0} {",
-                        f"    test {fallback_test_type} {fallback_tol} {fallback_max_iters}",
-                        f"    algorithm {fallback_algorithm_cmd}",
-                        "    set strut_nl_ok [analyze 1]",
-                        f"    test {test_type} {tol} {max_iters}",
-                        f"    algorithm {primary_algorithm}",
-                        "  }",
-                        "}",
-                        "if {$strut_nl_ok != 0} {",
-                        "  error \"analysis failed\"",
-                        "}",
                     ]
+                    _append_solver_chain_retry_lines(
+                        static_nl_post_lines,
+                        "strut_nl_ok",
+                        "analyze 1",
+                        solver_chain,
+                        indent="  ",
+                    )
+                    static_nl_post_lines.extend(
+                        [
+                            "}",
+                            "if {$strut_nl_ok != 0} {",
+                            "  error \"analysis failed\"",
+                            "}",
+                        ]
+                    )
             elif integrator_type == "DisplacementControl":
                 node = integrator.get("node")
                 dof = integrator.get("dof")
@@ -1732,14 +1748,7 @@ def main():
                         cutback,
                         max_cutbacks,
                         min_du,
-                        tcl_test_type,
-                        tol,
-                        max_iters,
-                        primary_algorithm,
-                        tcl_fallback_test_type,
-                        fallback_tol,
-                        fallback_max_iters,
-                        fallback_algorithm_cmd,
+                        solver_chain,
                     )
                 else:
                     du = integrator.get("du")
@@ -1753,14 +1762,7 @@ def main():
                         cutback,
                         max_cutbacks,
                         min_du,
-                        tcl_test_type,
-                        tol,
-                        max_iters,
-                        primary_algorithm,
-                        tcl_fallback_test_type,
-                        fallback_tol,
-                        fallback_max_iters,
-                        fallback_algorithm_cmd,
+                        solver_chain,
                     )
             else:
                 raise ValueError(f"unsupported static_nonlinear integrator: {integrator_type}")
@@ -1781,74 +1783,44 @@ def main():
             dt = analysis.get("dt")
             if dt is None or dt <= 0.0:
                 raise ValueError("transient_nonlinear requires dt > 0")
-            algorithm = analysis.get("algorithm", "Newton")
-            if algorithm not in (
-                "Newton",
-                "ModifiedNewton",
-                "ModifiedNewtonInitial",
-                "Broyden",
-                "NewtonLineSearch",
-            ):
-                raise ValueError(
-                    f"unsupported transient_nonlinear algorithm: {algorithm}"
-                )
-            fallback_algorithm = analysis.get("fallback_algorithm")
-            if fallback_algorithm is not None and fallback_algorithm not in (
-                "Newton",
-                "ModifiedNewton",
-                "ModifiedNewtonInitial",
-                "Broyden",
-                "NewtonLineSearch",
-            ):
-                raise ValueError(
-                    f"unsupported transient_nonlinear fallback_algorithm: {fallback_algorithm}"
-                )
+            solver_chain = _normalize_nonlinear_solver_chain(
+                analysis,
+                analysis_label="transient_nonlinear",
+                default_algorithm="Newton",
+                default_test_type="NormUnbalance",
+                default_tol=1.0e-10,
+                default_max_iters=20,
+                validate_test_type=_validate_transient_nonlinear_test_type,
+                tcl_test_type=lambda test_type: test_type,
+            )
             integrator = analysis.get("integrator", {"type": "Newmark"})
             if integrator.get("type", "Newmark") != "Newmark":
                 raise ValueError("transient_nonlinear only supports Newmark integrator")
             gamma = integrator.get("gamma", 0.5)
             beta = integrator.get("beta", 0.25)
-            test_type = analysis.get("test_type", "NormUnbalance")
-            if test_type not in ("NormUnbalance", "NormDispIncr", "EnergyIncr"):
-                raise ValueError(
-                    "transient_nonlinear test_type must be NormUnbalance, NormDispIncr, or EnergyIncr"
-                )
-            tol = analysis.get("tol", 1.0e-10)
-            max_iters = analysis.get("max_iters", 20)
-            primary_algorithm = _algorithm_cmd(algorithm, analysis)
-            f.write(f"test {test_type} {tol} {max_iters}\n")
-            f.write(f"algorithm {primary_algorithm}\n")
+            primary_attempt = solver_chain[0]
+            f.write(
+                f"test {primary_attempt['tcl_test_type']} {primary_attempt['tol']} {primary_attempt['max_iters']}\n"
+            )
+            f.write(f"algorithm {primary_attempt['algorithm_cmd']}\n")
             f.write(f"integrator Newmark {gamma} {beta}\n")
             f.write("analysis Transient\n")
-            if fallback_algorithm is not None:
-                fallback_test_type = analysis.get("fallback_test_type", test_type)
-                if fallback_test_type not in (
-                    "NormUnbalance",
-                    "NormDispIncr",
-                    "EnergyIncr",
-                ):
-                    raise ValueError(
-                        "transient_nonlinear fallback_test_type must be NormUnbalance, NormDispIncr, or EnergyIncr"
-                    )
-                fallback_tol = analysis.get("fallback_tol", tol)
-                fallback_max_iters = analysis.get("fallback_max_iters", max_iters)
-                fallback_algorithm_cmd = _algorithm_cmd(
-                    fallback_algorithm,
-                    analysis,
-                    prefix="fallback_",
-                )
+            if len(solver_chain) > 1:
                 f.write("set strut_tr_ok 0\n")
                 f.write(
                     f"for {{set strut_tr_step 0}} {{$strut_tr_step < {int(steps)} && $strut_tr_ok == 0}} {{incr strut_tr_step}} {{\n"
                 )
                 f.write(f"  set strut_tr_ok [analyze 1 {dt}]\n")
-                f.write("  if {$strut_tr_ok != 0} {\n")
-                f.write(f"    test {fallback_test_type} {fallback_tol} {fallback_max_iters}\n")
-                f.write(f"    algorithm {fallback_algorithm_cmd}\n")
-                f.write(f"    set strut_tr_ok [analyze 1 {dt}]\n")
-                f.write(f"    test {test_type} {tol} {max_iters}\n")
-                f.write(f"    algorithm {primary_algorithm}\n")
-                f.write("  }\n")
+                transient_retry_lines = []
+                _append_solver_chain_retry_lines(
+                    transient_retry_lines,
+                    "strut_tr_ok",
+                    f"analyze 1 {dt}",
+                    solver_chain,
+                    indent="  ",
+                )
+                for line in transient_retry_lines:
+                    f.write(line + "\n")
                 f.write("}\n")
                 f.write("if {$strut_tr_ok != 0} {\n")
                 f.write("  error \"analysis failed\"\n")

@@ -538,17 +538,16 @@ struct AnalysisInput(Movable, ImplicitlyCopyable):
     var max_iters: Int
     var tol: Float64
     var rel_tol: Float64
-    var fallback_algorithm: String
-    var fallback_algorithm_tag: Int
     var test_type: String
     var test_type_tag: Int
-    var fallback_test_type: String
-    var fallback_test_type_tag: Int
-    var fallback_max_iters: Int
-    var fallback_tol: Float64
-    var fallback_rel_tol: Float64
     var step_retry_enabled: Bool
     var step_retry_restore_primary_after_success: Bool
+    var step_retry_continue_after_failure: Bool
+    var step_retry_continue_target_disp: Float64
+    var step_retry_continue_max_steps: Int
+    var has_solver_chain_override: Bool
+    var solver_chain_offset: Int
+    var solver_chain_count: Int
     var integrator_type: String
     var integrator_tag: Int
     var integrator_gamma: Float64
@@ -583,17 +582,16 @@ struct AnalysisInput(Movable, ImplicitlyCopyable):
         self.max_iters = 20
         self.tol = 1.0e-10
         self.rel_tol = 1.0e-8
-        self.fallback_algorithm = ""
-        self.fallback_algorithm_tag = AnalysisAlgorithmTag.Unknown
         self.test_type = "MaxDispIncr"
         self.test_type_tag = NonlinearTestTypeTag.MaxDispIncr
-        self.fallback_test_type = "MaxDispIncr"
-        self.fallback_test_type_tag = NonlinearTestTypeTag.MaxDispIncr
-        self.fallback_max_iters = 20
-        self.fallback_tol = 1.0e-10
-        self.fallback_rel_tol = 1.0e-8
         self.step_retry_enabled = False
         self.step_retry_restore_primary_after_success = True
+        self.step_retry_continue_after_failure = False
+        self.step_retry_continue_target_disp = 0.0
+        self.step_retry_continue_max_steps = 0
+        self.has_solver_chain_override = False
+        self.solver_chain_offset = 0
+        self.solver_chain_count = 0
         self.integrator_type = ""
         self.integrator_tag = IntegratorTypeTag.Unknown
         self.integrator_gamma = 0.5
@@ -609,6 +607,29 @@ struct AnalysisInput(Movable, ImplicitlyCopyable):
         self.integrator_du = 0.0
         self.integrator_targets_offset = 0
         self.integrator_targets_count = 0
+
+
+struct SolverAttemptInput(Movable, ImplicitlyCopyable):
+    var algorithm: String
+    var algorithm_tag: Int
+    var broyden_count: Int
+    var line_search_eta: Float64
+    var test_type: String
+    var test_type_tag: Int
+    var max_iters: Int
+    var tol: Float64
+    var rel_tol: Float64
+
+    fn __init__(out self):
+        self.algorithm = ""
+        self.algorithm_tag = AnalysisAlgorithmTag.Unknown
+        self.broyden_count = 0
+        self.line_search_eta = 1.0
+        self.test_type = "MaxDispIncr"
+        self.test_type_tag = NonlinearTestTypeTag.MaxDispIncr
+        self.max_iters = 20
+        self.tol = 1.0e-10
+        self.rel_tol = 1.0e-8
 
 
 struct MPConstraintInput(Movable, ImplicitlyCopyable):
@@ -708,6 +729,7 @@ struct DampingInput(Movable, ImplicitlyCopyable):
 struct StageInput(Movable, ImplicitlyCopyable):
     var analysis: AnalysisInput
     var analysis_integrator_targets_pool: List[Float64]
+    var analysis_solver_chain_pool: List[SolverAttemptInput]
     var pattern: PatternInput
     var rayleigh: RayleighInput
     var loads: List[NodalLoadInput]
@@ -721,6 +743,7 @@ struct StageInput(Movable, ImplicitlyCopyable):
     fn __init__(out self):
         self.analysis = AnalysisInput()
         self.analysis_integrator_targets_pool = []
+        self.analysis_solver_chain_pool = []
         self.pattern = PatternInput()
         self.rayleigh = RayleighInput()
         self.loads = []
@@ -736,6 +759,7 @@ struct StageInput(Movable, ImplicitlyCopyable):
         self.analysis_integrator_targets_pool = (
             existing.analysis_integrator_targets_pool.copy()
         )
+        self.analysis_solver_chain_pool = existing.analysis_solver_chain_pool.copy()
         self.pattern = existing.pattern
         self.rayleigh = existing.rayleigh
         self.loads = existing.loads.copy()
@@ -807,6 +831,7 @@ struct CaseInput(Movable):
     var dampings: List[DampingInput]
     var stages: List[StageInput]
     var analysis_integrator_targets_pool: List[Float64]
+    var analysis_solver_chain_pool: List[SolverAttemptInput]
     var recorder_nodes_pool: List[Int]
     var recorder_elements_pool: List[Int]
     var recorder_dofs_pool: List[Int]
@@ -835,6 +860,7 @@ struct CaseInput(Movable):
         self.dampings = []
         self.stages = []
         self.analysis_integrator_targets_pool = []
+        self.analysis_solver_chain_pool = []
         self.recorder_nodes_pool = []
         self.recorder_elements_pool = []
         self.recorder_dofs_pool = []
@@ -1048,7 +1074,9 @@ fn element_load_type_tag(type_name: String) -> Int:
 
 
 fn parse_analysis_input_from_raw(
-    analysis_raw: PythonObject, mut integrator_targets_pool: List[Float64]
+    analysis_raw: PythonObject,
+    mut integrator_targets_pool: List[Float64],
+    mut solver_chain_pool: List[SolverAttemptInput],
 ) raises -> AnalysisInput:
     var analysis = AnalysisInput()
     analysis.type = String(analysis_raw.get("type", "static_linear"))
@@ -1066,29 +1094,21 @@ fn parse_analysis_input_from_raw(
     analysis.max_iters = Int(analysis_raw.get("max_iters", 20))
     analysis.tol = Float64(analysis_raw.get("tol", 1.0e-10))
     analysis.rel_tol = Float64(analysis_raw.get("rel_tol", 1.0e-8))
-    analysis.fallback_algorithm = String(analysis_raw.get("fallback_algorithm", ""))
-    analysis.fallback_algorithm_tag = analysis_algorithm_tag(
-        analysis.fallback_algorithm
-    )
     analysis.test_type = String(analysis_raw.get("test_type", "MaxDispIncr"))
     analysis.test_type_tag = nonlinear_test_type_tag(analysis.test_type)
-    analysis.fallback_test_type = String(
-        analysis_raw.get("fallback_test_type", analysis.test_type)
-    )
-    analysis.fallback_test_type_tag = nonlinear_test_type_tag(
-        analysis.fallback_test_type
-    )
-    analysis.fallback_max_iters = Int(
-        analysis_raw.get("fallback_max_iters", analysis.max_iters)
-    )
-    analysis.fallback_tol = Float64(analysis_raw.get("fallback_tol", analysis.tol))
-    analysis.fallback_rel_tol = Float64(
-        analysis_raw.get("fallback_rel_tol", analysis.rel_tol)
-    )
     var step_retry_raw = analysis_raw.get("step_retry", {})
-    analysis.step_retry_enabled = Bool(step_retry_raw.get("type", "") != "")
     analysis.step_retry_restore_primary_after_success = Bool(
         step_retry_raw.get("restore_primary_after_success", True)
+    )
+    analysis.step_retry_continue_after_failure = Bool(
+        String(step_retry_raw.get("continue_after_failure", "")) != ""
+    )
+    analysis.step_retry_enabled = analysis.step_retry_continue_after_failure
+    analysis.step_retry_continue_target_disp = Float64(
+        step_retry_raw.get("continue_target_disp", 0.0)
+    )
+    analysis.step_retry_continue_max_steps = Int(
+        step_retry_raw.get("continue_max_steps", 0)
     )
     if analysis_raw.__contains__("system"):
         analysis.system_tag = analysis_system_tag(String(analysis_raw["system"]))
@@ -1136,6 +1156,61 @@ fn parse_analysis_input_from_raw(
         analysis.integrator_targets_count = py_len(targets)
         for i in range(py_len(targets)):
             integrator_targets_pool.append(Float64(targets[i]))
+    var primary_algorithm_options = analysis_raw.get("algorithm_options", {})
+    analysis.solver_chain_offset = len(solver_chain_pool)
+    analysis.has_solver_chain_override = analysis_raw.__contains__("solver_chain")
+    if analysis.has_solver_chain_override:
+        var solver_chain_raw = analysis_raw["solver_chain"]
+        for i in range(py_len(solver_chain_raw)):
+            var attempt_raw = solver_chain_raw[i]
+            var attempt = SolverAttemptInput()
+            var attempt_algorithm_options = attempt_raw.get("algorithm_options", {})
+            attempt.algorithm = String(
+                attempt_raw.get("algorithm", analysis.algorithm)
+            )
+            attempt.algorithm_tag = analysis_algorithm_tag(attempt.algorithm)
+            attempt.broyden_count = Int(
+                attempt_raw.get(
+                    "broyden_count",
+                    attempt_algorithm_options.get("max_iters", 0),
+                )
+            )
+            attempt.line_search_eta = Float64(
+                attempt_raw.get(
+                    "line_search_eta",
+                    attempt_algorithm_options.get("alpha", 1.0),
+                )
+            )
+            attempt.test_type = String(
+                attempt_raw.get("test_type", analysis.test_type)
+            )
+            attempt.test_type_tag = nonlinear_test_type_tag(attempt.test_type)
+            attempt.max_iters = Int(
+                attempt_raw.get("max_iters", analysis.max_iters)
+            )
+            attempt.tol = Float64(attempt_raw.get("tol", analysis.tol))
+            attempt.rel_tol = Float64(
+                attempt_raw.get("rel_tol", analysis.rel_tol)
+            )
+            solver_chain_pool.append(attempt^)
+            analysis.solver_chain_count += 1
+    else:
+        var primary_attempt = SolverAttemptInput()
+        primary_attempt.algorithm = analysis.algorithm
+        primary_attempt.algorithm_tag = analysis.algorithm_tag
+        primary_attempt.broyden_count = Int(
+            primary_algorithm_options.get("max_iters", 0)
+        )
+        primary_attempt.line_search_eta = Float64(
+            primary_algorithm_options.get("alpha", 1.0)
+        )
+        primary_attempt.test_type = analysis.test_type
+        primary_attempt.test_type_tag = analysis.test_type_tag
+        primary_attempt.max_iters = analysis.max_iters
+        primary_attempt.tol = analysis.tol
+        primary_attempt.rel_tol = analysis.rel_tol
+        solver_chain_pool.append(primary_attempt^)
+        analysis.solver_chain_count += 1
     return analysis^
 
 
@@ -1247,7 +1322,9 @@ fn parse_stage_input_from_raw(
     var stage = StageInput()
     var stage_analysis_raw = stage_raw.get("analysis", stage_raw)
     stage.analysis = parse_analysis_input_from_raw(
-        stage_analysis_raw, stage.analysis_integrator_targets_pool
+        stage_analysis_raw,
+        stage.analysis_integrator_targets_pool,
+        stage.analysis_solver_chain_pool,
     )
     stage.pattern = parse_pattern_input_from_raw(stage_raw.get("pattern", None))
     stage.rayleigh = parse_rayleigh_input_from_raw(stage_raw.get("rayleigh", None))
@@ -1622,7 +1699,9 @@ fn parse_case_input(data: PythonObject) raises -> CaseInput:
 
     var analysis_raw = data.get("analysis", {"type": "static_linear", "steps": 1})
     case_input.analysis = parse_analysis_input_from_raw(
-        analysis_raw, case_input.analysis_integrator_targets_pool
+        analysis_raw,
+        case_input.analysis_integrator_targets_pool,
+        case_input.analysis_solver_chain_pool,
     )
     if case_input.analysis.type_tag == AnalysisTypeTag.Staged:
         if not analysis_raw.__contains__("stages"):

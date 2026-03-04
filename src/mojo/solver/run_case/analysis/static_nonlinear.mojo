@@ -28,6 +28,7 @@ from solver.run_case.input_types import (
     NodeInput,
     RecorderInput,
     SectionInput,
+    SolverAttemptInput,
 )
 from solver.time_series import TimeSeriesInput, eval_time_series_input, find_time_series_input
 from sections import FiberCell, FiberSection2dDef, FiberSection3dDef
@@ -74,6 +75,12 @@ fn _static_nonlinear_algorithm_mode(algorithm_tag: Int, algorithm: String, label
         return NonlinearAlgorithmMode.ModifiedNewton
     if algorithm_tag == AnalysisAlgorithmTag.ModifiedNewtonInitial:
         return NonlinearAlgorithmMode.ModifiedNewtonInitial
+    if (
+        algorithm_tag == AnalysisAlgorithmTag.Broyden
+        or algorithm_tag == AnalysisAlgorithmTag.NewtonLineSearch
+    ):
+        # Mapped alternative: currently follows Newton tangent refresh behavior.
+        return NonlinearAlgorithmMode.Newton
     abort("unsupported " + label + " algorithm: " + algorithm)
     return NonlinearAlgorithmMode.Unknown
 
@@ -90,6 +97,174 @@ fn _static_nonlinear_test_mode(test_type_tag: Int, test_type: String, label: Str
     abort("unsupported " + label + " test_type: " + test_type)
     return -1
 
+
+fn _append_static_retry_attempt(
+    algorithm: String,
+    algorithm_tag: Int,
+    line_search_eta: Float64,
+    test_type: String,
+    test_type_tag: Int,
+    max_iters: Int,
+    tol: Float64,
+    rel_tol: Float64,
+    label: String,
+    mut retry_algorithm_tags: List[Int],
+    mut retry_algorithm_modes: List[Int],
+    mut retry_test_modes: List[Int],
+    mut retry_max_iters: List[Int],
+    mut retry_tols: List[Float64],
+    mut retry_rel_tols: List[Float64],
+    mut retry_line_search_etas: List[Float64],
+):
+    if len(algorithm) == 0:
+        return
+    retry_algorithm_tags.append(algorithm_tag)
+    retry_algorithm_modes.append(
+        _static_nonlinear_algorithm_mode(algorithm_tag, algorithm, label)
+    )
+    retry_test_modes.append(_static_nonlinear_test_mode(test_type_tag, test_type, label))
+    if max_iters < 1:
+        abort(label + "_max_iters must be >= 1")
+    retry_max_iters.append(max_iters)
+    retry_tols.append(tol)
+    retry_rel_tols.append(rel_tol)
+    retry_line_search_etas.append(line_search_eta)
+
+
+fn _append_static_retry_attempt_from_input(
+    attempt: SolverAttemptInput,
+    label: String,
+    mut retry_algorithm_tags: List[Int],
+    mut retry_algorithm_modes: List[Int],
+    mut retry_test_modes: List[Int],
+    mut retry_max_iters: List[Int],
+    mut retry_tols: List[Float64],
+    mut retry_rel_tols: List[Float64],
+    mut retry_line_search_etas: List[Float64],
+):
+    _append_static_retry_attempt(
+        attempt.algorithm,
+        attempt.algorithm_tag,
+        attempt.line_search_eta,
+        attempt.test_type,
+        attempt.test_type_tag,
+        attempt.max_iters,
+        attempt.tol,
+        attempt.rel_tol,
+        label,
+        retry_algorithm_tags,
+        retry_algorithm_modes,
+        retry_test_modes,
+        retry_max_iters,
+        retry_tols,
+        retry_rel_tols,
+        retry_line_search_etas,
+    )
+
+
+fn _collect_static_solver_chain(
+    analysis: AnalysisInput,
+    analysis_solver_chain_pool: List[SolverAttemptInput],
+    has_force_beam_column2d: Bool,
+    prefer_modified_newton_initial: Bool,
+    mut retry_algorithm_tags: List[Int],
+    mut retry_algorithm_modes: List[Int],
+    mut retry_test_modes: List[Int],
+    mut retry_max_iters: List[Int],
+    mut retry_tols: List[Float64],
+    mut retry_rel_tols: List[Float64],
+    mut retry_line_search_etas: List[Float64],
+):
+    for i in range(analysis.solver_chain_count):
+        _append_static_retry_attempt_from_input(
+            analysis_solver_chain_pool[analysis.solver_chain_offset + i],
+            "static_nonlinear solver_chain",
+            retry_algorithm_tags,
+            retry_algorithm_modes,
+            retry_test_modes,
+            retry_max_iters,
+            retry_tols,
+            retry_rel_tols,
+            retry_line_search_etas,
+        )
+    if len(retry_algorithm_modes) == 0:
+        _append_static_retry_attempt(
+            analysis.algorithm,
+            analysis.algorithm_tag,
+            1.0,
+            analysis.test_type,
+            analysis.test_type_tag,
+            analysis.max_iters,
+            analysis.tol,
+            analysis.rel_tol,
+            "static_nonlinear primary",
+            retry_algorithm_tags,
+            retry_algorithm_modes,
+            retry_test_modes,
+            retry_max_iters,
+            retry_tols,
+            retry_rel_tols,
+            retry_line_search_etas,
+        )
+    if analysis.has_solver_chain_override or len(retry_algorithm_modes) != 1:
+        return
+
+    var primary_algorithm_mode = retry_algorithm_modes[0]
+    var auto_algorithm = ""
+    var auto_algorithm_tag = AnalysisAlgorithmTag.Unknown
+    var auto_test_type = analysis.test_type
+    var auto_test_type_tag = analysis.test_type_tag
+    var auto_max_iters = retry_max_iters[0]
+    var auto_tol = retry_tols[0]
+    var auto_rel_tol = retry_rel_tols[0]
+    if has_force_beam_column2d and (
+        primary_algorithm_mode == NonlinearAlgorithmMode.Newton
+        or primary_algorithm_mode == NonlinearAlgorithmMode.ModifiedNewton
+    ):
+        if primary_algorithm_mode == NonlinearAlgorithmMode.Newton:
+            if prefer_modified_newton_initial:
+                auto_algorithm = "ModifiedNewtonInitial"
+                auto_algorithm_tag = AnalysisAlgorithmTag.ModifiedNewtonInitial
+            else:
+                auto_algorithm = "ModifiedNewton"
+                auto_algorithm_tag = AnalysisAlgorithmTag.ModifiedNewton
+        else:
+            auto_algorithm = "ModifiedNewtonInitial"
+            auto_algorithm_tag = AnalysisAlgorithmTag.ModifiedNewtonInitial
+        auto_test_type = "NormDispIncr"
+        auto_test_type_tag = NonlinearTestTypeTag.NormDispIncr
+        if auto_max_iters < 100:
+            auto_max_iters = 100
+        if auto_max_iters < retry_max_iters[0] * 5:
+            auto_max_iters = retry_max_iters[0] * 5
+        auto_tol = retry_tols[0]
+        if not prefer_modified_newton_initial and auto_tol < 1.0e-10:
+            auto_tol = 1.0e-10
+        auto_rel_tol = retry_rel_tols[0]
+    elif primary_algorithm_mode != NonlinearAlgorithmMode.Newton:
+        auto_algorithm = "Newton"
+        auto_algorithm_tag = AnalysisAlgorithmTag.Newton
+    if len(auto_algorithm) == 0:
+        return
+    _append_static_retry_attempt(
+        auto_algorithm,
+        auto_algorithm_tag,
+        1.0,
+        auto_test_type,
+        auto_test_type_tag,
+        auto_max_iters,
+        auto_tol,
+        auto_rel_tol,
+        "static_nonlinear auto_fallback",
+        retry_algorithm_tags,
+        retry_algorithm_modes,
+        retry_test_modes,
+        retry_max_iters,
+        retry_tols,
+        retry_rel_tols,
+        retry_line_search_etas,
+    )
+
 fn run_static_nonlinear_load_control(
     analysis: AnalysisInput,
     steps: Int,
@@ -97,6 +272,7 @@ fn run_static_nonlinear_load_control(
     time_series: List[TimeSeriesInput],
     time_series_values: List[Float64],
     time_series_times: List[Float64],
+    analysis_solver_chain_pool: List[SolverAttemptInput],
     typed_nodes: List[NodeInput],
     typed_elements: List[ElementInput],
     node_x: List[Float64],
@@ -183,64 +359,41 @@ fn run_static_nonlinear_load_control(
     var asm_u_elem6: List[Float64] = []
     var force_beam_column2d_scratch = ForceBeamColumn2dScratch()
     var force_beam_column3d_scratch = ForceBeamColumn3dScratch()
-    var max_iters = analysis.max_iters
-    var tol = analysis.tol
-    var rel_tol = analysis.rel_tol
     var has_force_beam_column2d = False
     for i in range(len(typed_elements)):
         if typed_elements[i].type_tag == ElementTypeTag.ForceBeamColumn2d:
             has_force_beam_column2d = True
             break
-    var primary_algorithm_mode = _static_nonlinear_algorithm_mode(
-        analysis.algorithm_tag, analysis.algorithm, "static_nonlinear"
+    var retry_algorithm_tags: List[Int] = []
+    var retry_algorithm_modes: List[Int] = []
+    var retry_test_modes: List[Int] = []
+    var retry_max_iters: List[Int] = []
+    var retry_tols: List[Float64] = []
+    var retry_rel_tols: List[Float64] = []
+    var retry_line_search_etas: List[Float64] = []
+    _collect_static_solver_chain(
+        analysis,
+        analysis_solver_chain_pool,
+        has_force_beam_column2d,
+        False,
+        retry_algorithm_tags,
+        retry_algorithm_modes,
+        retry_test_modes,
+        retry_max_iters,
+        retry_tols,
+        retry_rel_tols,
+        retry_line_search_etas,
     )
-    var fallback_algorithm = analysis.fallback_algorithm
-    var has_fallback = False
-    var fallback_algorithm_mode = NonlinearAlgorithmMode.Unknown
-    if len(fallback_algorithm) > 0:
-        fallback_algorithm_mode = _static_nonlinear_algorithm_mode(
-            analysis.fallback_algorithm_tag,
-            fallback_algorithm,
-            "static_nonlinear fallback",
-        )
-        has_fallback = True
-    elif has_force_beam_column2d and (
-        primary_algorithm_mode == NonlinearAlgorithmMode.Newton
-        or primary_algorithm_mode == NonlinearAlgorithmMode.ModifiedNewton
-    ):
-        if primary_algorithm_mode == NonlinearAlgorithmMode.Newton:
-            fallback_algorithm_mode = NonlinearAlgorithmMode.ModifiedNewton
-        else:
-            fallback_algorithm_mode = NonlinearAlgorithmMode.ModifiedNewtonInitial
-        has_fallback = True
-    elif primary_algorithm_mode != NonlinearAlgorithmMode.Newton:
-        fallback_algorithm_mode = NonlinearAlgorithmMode.Newton
-        has_fallback = True
-    var primary_test_mode = _static_nonlinear_test_mode(
-        analysis.test_type_tag, analysis.test_type, "static_nonlinear"
-    )
-    var fallback_test_mode = _static_nonlinear_test_mode(
-        analysis.fallback_test_type_tag,
-        analysis.fallback_test_type,
-        "static_nonlinear fallback",
-    )
-    if max_iters < 1:
-        abort("max_iters must be >= 1")
-    var fallback_max_iters = analysis.fallback_max_iters
-    var fallback_tol = analysis.fallback_tol
-    var fallback_rel_tol = analysis.fallback_rel_tol
-    if len(fallback_algorithm) == 0 and has_force_beam_column2d and has_fallback:
-        fallback_test_mode = 1
-        if fallback_max_iters < 100:
-            fallback_max_iters = 100
-        if fallback_max_iters < max_iters * 5:
-            fallback_max_iters = max_iters * 5
-        fallback_tol = tol
-        if fallback_tol < 1.0e-10:
-            fallback_tol = 1.0e-10
-        fallback_rel_tol = rel_tol
-    if fallback_max_iters < 1:
-        abort("static_nonlinear fallback_max_iters must be >= 1")
+    if len(retry_algorithm_modes) == 0:
+        abort("static_nonlinear solver_chain must contain at least one attempt")
+    var retry_attempt_count = len(retry_algorithm_modes)
+    var primary_algorithm_tag = retry_algorithm_tags[0]
+    var primary_algorithm_mode = retry_algorithm_modes[0]
+    var primary_test_mode = retry_test_modes[0]
+    var max_iters = retry_max_iters[0]
+    var tol = retry_tols[0]
+    var rel_tol = retry_rel_tols[0]
+    var primary_line_search_eta = retry_line_search_etas[0]
     var free_count = len(free)
     var F_const_free: List[Float64] = []
     F_const_free.resize(free_count, 0.0)
@@ -261,14 +414,16 @@ fn run_static_nonlinear_load_control(
     var integrator_tag = analysis.integrator_tag
     if integrator_tag == IntegratorTypeTag.Unknown:
         integrator_tag = IntegratorTypeTag.LoadControl
+    var chain_has_modified_newton_initial = False
+    for i in range(retry_attempt_count):
+        if retry_algorithm_modes[i] == NonlinearAlgorithmMode.ModifiedNewtonInitial:
+            chain_has_modified_newton_initial = True
+            break
     var use_banded_loadcontrol = (
         use_banded_nonlinear
         and integrator_tag == IntegratorTypeTag.LoadControl
         and primary_algorithm_mode != NonlinearAlgorithmMode.ModifiedNewtonInitial
-        and not (
-            has_fallback
-            and fallback_algorithm_mode == NonlinearAlgorithmMode.ModifiedNewtonInitial
-        )
+        and not chain_has_modified_newton_initial
     )
     var bw_nl = 0
     if use_banded_loadcontrol:
@@ -308,9 +463,7 @@ fn run_static_nonlinear_load_control(
         K_ff_banded = banded_matrix(free_count, bw_nl)
         K_ff_banded_step = banded_matrix(free_count, bw_nl)
         banded_rhs.resize(free_count, 0.0)
-    if primary_algorithm_mode == NonlinearAlgorithmMode.ModifiedNewtonInitial or (
-        has_fallback and fallback_algorithm_mode == NonlinearAlgorithmMode.ModifiedNewtonInitial
-    ):
+    if chain_has_modified_newton_initial:
         var initial_element_load_state = build_active_element_load_state(
             const_element_loads,
             pattern_element_loads,
@@ -453,23 +606,25 @@ fn run_static_nonlinear_load_control(
         var u_base = u.copy()
         var force_basic_q_base = force_basic_q.copy()
         var converged = False
+        var attempt_algorithm_tag = primary_algorithm_tag
         var attempt_algorithm_mode = primary_algorithm_mode
+        var attempt_line_search_eta = primary_line_search_eta
         var attempt_test_mode = primary_test_mode
         var attempt_max_iters = max_iters
         var attempt_tol = tol
         var attempt_rel_tol = rel_tol
-        for attempt in range(2):
-            if attempt == 1 and not has_fallback:
-                break
-            if attempt == 1:
+        for attempt in range(retry_attempt_count):
+            if attempt > 0:
                 for i in range(total_dofs):
                     u[i] = u_base[i]
                 force_basic_q = force_basic_q_base.copy()
-                attempt_algorithm_mode = fallback_algorithm_mode
-                attempt_test_mode = fallback_test_mode
-                attempt_max_iters = fallback_max_iters
-                attempt_tol = fallback_tol
-                attempt_rel_tol = fallback_rel_tol
+                attempt_algorithm_tag = retry_algorithm_tags[attempt]
+                attempt_algorithm_mode = retry_algorithm_modes[attempt]
+                attempt_line_search_eta = retry_line_search_etas[attempt]
+                attempt_test_mode = retry_test_modes[attempt]
+                attempt_max_iters = retry_max_iters[attempt]
+                attempt_tol = retry_tols[attempt]
+                attempt_rel_tol = retry_rel_tols[attempt]
 
             var tangent_initialized = False
             var tangent_factored = False
@@ -713,6 +868,12 @@ fn run_static_nonlinear_load_control(
                             lu_rhs[i] = F_f[i]
                         lu_solve_into(K_lu, lu_pivots, lu_rhs, lu_work, u_f_work)
                     u_f = u_f_work.copy()
+                    if attempt_algorithm_tag == AnalysisAlgorithmTag.NewtonLineSearch:
+                        var update_eta = attempt_line_search_eta
+                        if update_eta <= 0.0:
+                            update_eta = 0.8
+                        for i in range(free_count):
+                            u_f[i] *= update_eta
                 if do_profile:
                     var t_solve_nl_end = Int(time.perf_counter_ns())
                     var solve_nl_end_us = (t_solve_nl_end - t0) // 1000
@@ -771,6 +932,61 @@ fn run_static_nonlinear_load_control(
             )
         if not converged:
             abort("static_nonlinear did not converge")
+        var F_int_reaction = assemble_internal_forces_typed_soa(
+            typed_nodes,
+            typed_elements,
+            node_x,
+            node_y,
+            node_z,
+            elem_dof_offsets,
+            elem_dof_pool,
+            elem_node_offsets,
+            elem_node_pool,
+            elem_primary_material_ids,
+            elem_type_tags,
+            elem_geom_tags,
+            elem_section_ids,
+            elem_integration_tags,
+            elem_num_int_pts,
+            elem_area,
+            elem_thickness,
+            frame2d_elem_indices,
+            frame3d_elem_indices,
+            truss_elem_indices,
+            zero_length_elem_indices,
+            two_node_link_elem_indices,
+            zero_length_section_elem_indices,
+            quad_elem_indices,
+            shell_elem_indices,
+            active_element_load_state.element_loads,
+            active_element_load_state.elem_load_offsets,
+            active_element_load_state.elem_load_pool,
+            1.0,
+            typed_sections_by_id,
+            typed_materials_by_id,
+            id_to_index,
+            node_count,
+            ndf,
+            ndm,
+            u,
+            uniaxial_defs,
+            uniaxial_state_defs,
+            uniaxial_states,
+            elem_uniaxial_offsets,
+            elem_uniaxial_counts,
+            elem_uniaxial_state_ids,
+            force_basic_offsets,
+            force_basic_counts,
+            force_basic_q,
+            fiber_section_defs,
+            fiber_section_cells,
+            fiber_section_index_by_id,
+            fiber_section3d_defs,
+            fiber_section3d_cells,
+            fiber_section3d_index_by_id,
+            force_beam_column2d_scratch,
+            force_beam_column3d_scratch,
+        )
         if do_profile:
             var t_commit_start = Int(time.perf_counter_ns())
             var commit_start_us = (t_commit_start - t0) // 1000
@@ -801,64 +1017,8 @@ fn run_static_nonlinear_load_control(
             force_basic_counts,
             force_basic_q,
         )
-        var F_int_reaction: List[Float64] = []
         var F_ext_reaction: List[Float64] = []
         if has_reaction_recorder:
-            F_int_reaction = assemble_internal_forces_typed_soa(
-                typed_nodes,
-                typed_elements,
-                node_x,
-                node_y,
-                node_z,
-                elem_dof_offsets,
-                elem_dof_pool,
-                elem_node_offsets,
-                elem_node_pool,
-                elem_primary_material_ids,
-                elem_type_tags,
-                elem_geom_tags,
-                elem_section_ids,
-                elem_integration_tags,
-                elem_num_int_pts,
-                elem_area,
-                elem_thickness,
-                frame2d_elem_indices,
-                frame3d_elem_indices,
-                truss_elem_indices,
-                zero_length_elem_indices,
-                two_node_link_elem_indices,
-                zero_length_section_elem_indices,
-                quad_elem_indices,
-                shell_elem_indices,
-                active_element_load_state.element_loads,
-                active_element_load_state.elem_load_offsets,
-                active_element_load_state.elem_load_pool,
-                1.0,
-                typed_sections_by_id,
-                typed_materials_by_id,
-                id_to_index,
-                node_count,
-                ndf,
-                ndm,
-                u,
-                uniaxial_defs,
-                uniaxial_state_defs,
-                uniaxial_states,
-                elem_uniaxial_offsets,
-                elem_uniaxial_counts,
-                elem_uniaxial_state_ids,
-                force_basic_offsets,
-                force_basic_counts,
-                force_basic_q,
-                fiber_section_defs,
-                fiber_section_cells,
-                fiber_section_index_by_id,
-                fiber_section3d_defs,
-                fiber_section3d_cells,
-                fiber_section3d_index_by_id,
-                force_beam_column2d_scratch,
-                force_beam_column3d_scratch,
-            )
             F_ext_reaction = F_step.copy()
         for r in range(len(recorders)):
             var rec = recorders[r]
@@ -1292,6 +1452,7 @@ fn run_static_nonlinear_displacement_control(
     ts_index: Int,
     time_series: List[TimeSeriesInput],
     analysis_integrator_targets_pool: List[Float64],
+    analysis_solver_chain_pool: List[SolverAttemptInput],
     typed_nodes: List[NodeInput],
     typed_elements: List[ElementInput],
     node_x: List[Float64],
@@ -1376,9 +1537,6 @@ fn run_static_nonlinear_displacement_control(
     var asm_u_elem6: List[Float64] = []
     var force_beam_column2d_scratch = ForceBeamColumn2dScratch()
     var force_beam_column3d_scratch = ForceBeamColumn3dScratch()
-    var max_iters = analysis.max_iters
-    var tol = analysis.tol
-    var rel_tol = analysis.rel_tol
     var has_force_beam_column2d = False
     var has_fiber_beam_column2d = False
     for i in range(len(typed_elements)):
@@ -1399,51 +1557,36 @@ fn run_static_nonlinear_displacement_control(
                 and typed_sections_by_id[sec_id].type == "FiberSection2d"
             ):
                 has_fiber_beam_column2d = True
-    var primary_algorithm_mode = _static_nonlinear_algorithm_mode(
-        analysis.algorithm_tag, analysis.algorithm, "static_nonlinear"
+    var retry_algorithm_tags: List[Int] = []
+    var retry_algorithm_modes: List[Int] = []
+    var retry_test_modes: List[Int] = []
+    var retry_max_iters: List[Int] = []
+    var retry_tols: List[Float64] = []
+    var retry_rel_tols: List[Float64] = []
+    var retry_line_search_etas: List[Float64] = []
+    _collect_static_solver_chain(
+        analysis,
+        analysis_solver_chain_pool,
+        has_force_beam_column2d,
+        True,
+        retry_algorithm_tags,
+        retry_algorithm_modes,
+        retry_test_modes,
+        retry_max_iters,
+        retry_tols,
+        retry_rel_tols,
+        retry_line_search_etas,
     )
-    var fallback_algorithm = analysis.fallback_algorithm
-    var has_fallback = False
-    var fallback_algorithm_mode = NonlinearAlgorithmMode.Unknown
-    if len(fallback_algorithm) > 0:
-        fallback_algorithm_mode = _static_nonlinear_algorithm_mode(
-            analysis.fallback_algorithm_tag,
-            fallback_algorithm,
-            "static_nonlinear fallback",
-        )
-        has_fallback = True
-    elif has_force_beam_column2d and (
-        primary_algorithm_mode == NonlinearAlgorithmMode.Newton
-        or primary_algorithm_mode == NonlinearAlgorithmMode.ModifiedNewton
-    ):
-        fallback_algorithm_mode = NonlinearAlgorithmMode.ModifiedNewtonInitial
-        has_fallback = True
-    elif primary_algorithm_mode != NonlinearAlgorithmMode.Newton:
-        fallback_algorithm_mode = NonlinearAlgorithmMode.Newton
-        has_fallback = True
-    var primary_test_mode = _static_nonlinear_test_mode(
-        analysis.test_type_tag, analysis.test_type, "static_nonlinear"
-    )
-    var fallback_test_mode = _static_nonlinear_test_mode(
-        analysis.fallback_test_type_tag,
-        analysis.fallback_test_type,
-        "static_nonlinear fallback",
-    )
-    if max_iters < 1:
-        abort("max_iters must be >= 1")
-    var fallback_max_iters = analysis.fallback_max_iters
-    var fallback_tol = analysis.fallback_tol
-    var fallback_rel_tol = analysis.fallback_rel_tol
-    if len(fallback_algorithm) == 0 and has_force_beam_column2d and has_fallback:
-        fallback_test_mode = 1
-        if fallback_max_iters < 100:
-            fallback_max_iters = 100
-        if fallback_max_iters < max_iters * 5:
-            fallback_max_iters = max_iters * 5
-        fallback_tol = tol
-        fallback_rel_tol = rel_tol
-    if fallback_max_iters < 1:
-        abort("static_nonlinear fallback_max_iters must be >= 1")
+    if len(retry_algorithm_modes) == 0:
+        abort("static_nonlinear solver_chain must contain at least one attempt")
+    var retry_attempt_count = len(retry_algorithm_modes)
+    var primary_algorithm_tag = retry_algorithm_tags[0]
+    var primary_algorithm_mode = retry_algorithm_modes[0]
+    var primary_test_mode = retry_test_modes[0]
+    var max_iters = retry_max_iters[0]
+    var tol = retry_tols[0]
+    var rel_tol = retry_rel_tols[0]
+    var primary_line_search_eta = retry_line_search_etas[0]
     var free_count = len(free)
     var F_const_free: List[Float64] = []
     F_const_free.resize(free_count, 0.0)
@@ -1500,6 +1643,17 @@ fn run_static_nonlinear_displacement_control(
     var cutback = analysis.integrator_cutback
     var max_cutbacks = analysis.integrator_max_cutbacks
     var min_du = analysis.integrator_min_du
+    if analysis.step_retry_enabled:
+        max_cutbacks = 0
+    var chain_has_modified_newton_initial = False
+    for i in range(retry_attempt_count):
+        if retry_algorithm_modes[i] == NonlinearAlgorithmMode.ModifiedNewtonInitial:
+            chain_has_modified_newton_initial = True
+            break
+    var bulk_retry_attempt_count = retry_attempt_count
+    if analysis.step_retry_continue_after_failure and retry_attempt_count > 1:
+        bulk_retry_attempt_count = 1
+    var continuation_active = False
     var target_tol = 1.0e-14
     if cutback <= 0.0 or cutback >= 1.0:
         abort("DisplacementControl cutback must be in (0, 1)")
@@ -1555,9 +1709,7 @@ fn run_static_nonlinear_displacement_control(
     var envelope_min: List[List[Float64]] = []
     var envelope_max: List[List[Float64]] = []
     var envelope_abs: List[List[Float64]] = []
-    if primary_algorithm_mode == NonlinearAlgorithmMode.ModifiedNewtonInitial or (
-        has_fallback and fallback_algorithm_mode == NonlinearAlgorithmMode.ModifiedNewtonInitial
-    ):
+    if chain_has_modified_newton_initial:
         var initial_element_load_state = build_active_element_load_state(
             const_element_loads,
             pattern_element_loads,
@@ -1673,6 +1825,7 @@ fn run_static_nonlinear_displacement_control(
             _enforce_equal_dof_values(u, rep_dof, constrained)
 
         var target = target_disps[step]
+        var committed_F_int: List[Float64] = []
         while True:
             var remaining = target - u[control_idx]
             # `min_du` is the cutback floor, not the target-reached tolerance.
@@ -1689,24 +1842,29 @@ fn run_static_nonlinear_displacement_control(
 
             for _ in range(max_cutbacks + 1):
                 var converged = False
+                var attempt_algorithm_tag = primary_algorithm_tag
                 var attempt_algorithm_mode = primary_algorithm_mode
+                var attempt_line_search_eta = primary_line_search_eta
                 var attempt_test_mode = primary_test_mode
                 var attempt_max_iters = max_iters
                 var attempt_tol = tol
                 var attempt_rel_tol = rel_tol
-                for attempt in range(2):
-                    if attempt == 1 and not has_fallback:
-                        break
+                var current_retry_attempt_count = retry_attempt_count
+                if not continuation_active:
+                    current_retry_attempt_count = bulk_retry_attempt_count
+                for attempt in range(current_retry_attempt_count):
                     for i in range(total_dofs):
                         u[i] = u_base[i]
                     force_basic_q = force_basic_q_base.copy()
                     load_factor = lambda_base
-                    if attempt == 1:
-                        attempt_algorithm_mode = fallback_algorithm_mode
-                        attempt_test_mode = fallback_test_mode
-                        attempt_max_iters = fallback_max_iters
-                        attempt_tol = fallback_tol
-                        attempt_rel_tol = fallback_rel_tol
+                    if attempt > 0:
+                        attempt_algorithm_tag = retry_algorithm_tags[attempt]
+                        attempt_algorithm_mode = retry_algorithm_modes[attempt]
+                        attempt_line_search_eta = retry_line_search_etas[attempt]
+                        attempt_test_mode = retry_test_modes[attempt]
+                        attempt_max_iters = retry_max_iters[attempt]
+                        attempt_tol = retry_tols[attempt]
+                        attempt_rel_tol = retry_rel_tols[attempt]
 
                     var tangent_initialized = False
                     for _ in range(attempt_max_iters):
@@ -1965,9 +2123,14 @@ fn run_static_nonlinear_displacement_control(
 
                         var max_diff = 0.0
                         var max_u = 0.0
+                        var update_eta = 1.0
+                        if attempt_algorithm_tag == AnalysisAlgorithmTag.NewtonLineSearch:
+                            update_eta = attempt_line_search_eta
+                            if update_eta <= 0.0:
+                                update_eta = 0.8
                         for i in range(free_count):
                             var idx = free[i]
-                            var du = sol_aug[i]
+                            var du = sol_aug[i] * update_eta
                             var value = u[idx] + du
                             u[idx] = value
                             var diff = abs(du)
@@ -1976,9 +2139,12 @@ fn run_static_nonlinear_displacement_control(
                             var abs_val = abs(value)
                             if abs_val > max_u:
                                 max_u = abs_val
-                        load_factor += sol_aug[free_count]
+                        load_factor += sol_aug[free_count] * update_eta
                         if has_transformation_mpc:
                             _enforce_equal_dof_values(u, rep_dof, constrained)
+                        if update_eta != 1.0:
+                            for i in range(free_count):
+                                sol_aug[i] *= update_eta
                         var disp_incr_norm = sqrt(sum_sq_float64_contiguous(sol_aug, free_count))
                         var energy_incr = abs(dot_float64_contiguous(sol_aug, rhs_aug, free_count))
                         var scale_tol = attempt_rel_tol * max_u
@@ -2012,8 +2178,84 @@ fn run_static_nonlinear_displacement_control(
                     break
 
             if not attempt_ok:
+                if (
+                    analysis.step_retry_continue_after_failure
+                    and not continuation_active
+                    and retry_attempt_count > bulk_retry_attempt_count
+                ):
+                    continuation_active = True
+                    for i in range(total_dofs):
+                        u[i] = u_base[i]
+                    force_basic_q = force_basic_q_base.copy()
+                    load_factor = lambda_base
+                    continue
                 abort("static_nonlinear did not converge (DisplacementControl)")
 
+            var committed_load_scale = load_scale_derivative * load_factor
+            var committed_element_load_state = build_active_element_load_state(
+                const_element_loads,
+                pattern_element_loads,
+                committed_load_scale,
+                typed_elements,
+                elem_id_to_index,
+                ndm,
+                ndf,
+            )
+            committed_F_int = assemble_internal_forces_typed_soa(
+                typed_nodes,
+                typed_elements,
+                node_x,
+                node_y,
+                node_z,
+                elem_dof_offsets,
+                elem_dof_pool,
+                elem_node_offsets,
+                elem_node_pool,
+                elem_primary_material_ids,
+                elem_type_tags,
+                elem_geom_tags,
+                elem_section_ids,
+                elem_integration_tags,
+                elem_num_int_pts,
+                elem_area,
+                elem_thickness,
+                frame2d_elem_indices,
+                frame3d_elem_indices,
+                truss_elem_indices,
+                zero_length_elem_indices,
+                two_node_link_elem_indices,
+                zero_length_section_elem_indices,
+                quad_elem_indices,
+                shell_elem_indices,
+                committed_element_load_state.element_loads,
+                committed_element_load_state.elem_load_offsets,
+                committed_element_load_state.elem_load_pool,
+                1.0,
+                typed_sections_by_id,
+                typed_materials_by_id,
+                id_to_index,
+                node_count,
+                ndf,
+                ndm,
+                u,
+                uniaxial_defs,
+                uniaxial_state_defs,
+                uniaxial_states,
+                elem_uniaxial_offsets,
+                elem_uniaxial_counts,
+                elem_uniaxial_state_ids,
+                force_basic_offsets,
+                force_basic_counts,
+                force_basic_q,
+                fiber_section_defs,
+                fiber_section_cells,
+                fiber_section_index_by_id,
+                fiber_section3d_defs,
+                fiber_section3d_cells,
+                fiber_section3d_index_by_id,
+                force_beam_column2d_scratch,
+                force_beam_column3d_scratch,
+            )
             if do_profile:
                 var t_commit_start = Int(time.perf_counter_ns())
                 var commit_start_us = (t_commit_start - t0) // 1000
@@ -2068,61 +2310,64 @@ fn run_static_nonlinear_displacement_control(
         var F_int_reaction: List[Float64] = []
         var F_ext_reaction: List[Float64] = []
         if has_reaction_recorder:
-            F_int_reaction = assemble_internal_forces_typed_soa(
-                typed_nodes,
-                typed_elements,
-                node_x,
-                node_y,
-                node_z,
-                elem_dof_offsets,
-                elem_dof_pool,
-                elem_node_offsets,
-                elem_node_pool,
-                elem_primary_material_ids,
-                elem_type_tags,
-                elem_geom_tags,
-                elem_section_ids,
-                elem_integration_tags,
-                elem_num_int_pts,
-                elem_area,
-                elem_thickness,
-                frame2d_elem_indices,
-                frame3d_elem_indices,
-                truss_elem_indices,
-                zero_length_elem_indices,
-                two_node_link_elem_indices,
-                zero_length_section_elem_indices,
-                quad_elem_indices,
-                shell_elem_indices,
-                active_element_load_state.element_loads,
-                active_element_load_state.elem_load_offsets,
-                active_element_load_state.elem_load_pool,
-                1.0,
-                typed_sections_by_id,
-                typed_materials_by_id,
-                id_to_index,
-                node_count,
-                ndf,
-                ndm,
-                u,
-                uniaxial_defs,
-                uniaxial_state_defs,
-                uniaxial_states,
-                elem_uniaxial_offsets,
-                elem_uniaxial_counts,
-                elem_uniaxial_state_ids,
-                force_basic_offsets,
-                force_basic_counts,
-                force_basic_q,
-                fiber_section_defs,
-                fiber_section_cells,
-                fiber_section_index_by_id,
-                fiber_section3d_defs,
-                fiber_section3d_cells,
-                fiber_section3d_index_by_id,
-                force_beam_column2d_scratch,
-                force_beam_column3d_scratch,
-            )
+            if len(committed_F_int) == total_dofs:
+                F_int_reaction = committed_F_int^
+            else:
+                F_int_reaction = assemble_internal_forces_typed_soa(
+                    typed_nodes,
+                    typed_elements,
+                    node_x,
+                    node_y,
+                    node_z,
+                    elem_dof_offsets,
+                    elem_dof_pool,
+                    elem_node_offsets,
+                    elem_node_pool,
+                    elem_primary_material_ids,
+                    elem_type_tags,
+                    elem_geom_tags,
+                    elem_section_ids,
+                    elem_integration_tags,
+                    elem_num_int_pts,
+                    elem_area,
+                    elem_thickness,
+                    frame2d_elem_indices,
+                    frame3d_elem_indices,
+                    truss_elem_indices,
+                    zero_length_elem_indices,
+                    two_node_link_elem_indices,
+                    zero_length_section_elem_indices,
+                    quad_elem_indices,
+                    shell_elem_indices,
+                    active_element_load_state.element_loads,
+                    active_element_load_state.elem_load_offsets,
+                    active_element_load_state.elem_load_pool,
+                    1.0,
+                    typed_sections_by_id,
+                    typed_materials_by_id,
+                    id_to_index,
+                    node_count,
+                    ndf,
+                    ndm,
+                    u,
+                    uniaxial_defs,
+                    uniaxial_state_defs,
+                    uniaxial_states,
+                    elem_uniaxial_offsets,
+                    elem_uniaxial_counts,
+                    elem_uniaxial_state_ids,
+                    force_basic_offsets,
+                    force_basic_counts,
+                    force_basic_q,
+                    fiber_section_defs,
+                    fiber_section_cells,
+                    fiber_section_index_by_id,
+                    fiber_section3d_defs,
+                    fiber_section3d_cells,
+                    fiber_section3d_index_by_id,
+                    force_beam_column2d_scratch,
+                    force_beam_column3d_scratch,
+                )
             F_ext_reaction = F_step.copy()
 
         for r in range(len(recorders)):

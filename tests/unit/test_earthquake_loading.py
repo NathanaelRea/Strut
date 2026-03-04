@@ -516,15 +516,21 @@ def test_transient_nonlinear_newton_fallback_modified_initial_smoke():
         "steps": 6,
         "dt": 0.02,
         "integrator": {"type": "Newmark", "gamma": 0.5, "beta": 0.25},
-        "algorithm": "Newton",
-        "test_type": "NormUnbalance",
-        "tol": 0.0,
-        "max_iters": 1,
-        "fallback_algorithm": "ModifiedNewtonInitial",
-        "fallback_test_type": "MaxDispIncr",
-        "fallback_tol": 1.0,
-        "fallback_rel_tol": 0.0,
-        "fallback_max_iters": 10,
+        "solver_chain": [
+            {
+                "algorithm": "Newton",
+                "test_type": "NormUnbalance",
+                "tol": 0.0,
+                "max_iters": 1,
+            },
+            {
+                "algorithm": "ModifiedNewtonInitial",
+                "test_type": "MaxDispIncr",
+                "tol": 1.0,
+                "rel_tol": 0.0,
+                "max_iters": 10,
+            },
+        ],
     }
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -554,14 +560,22 @@ def test_transient_nonlinear_energy_incr_with_mapped_algorithms_smoke():
         "steps": 5,
         "dt": 0.02,
         "integrator": {"type": "Newmark", "gamma": 0.5, "beta": 0.25},
-        "algorithm": "Broyden",
-        "test_type": "EnergyIncr",
-        "tol": 1.0,
-        "max_iters": 10,
-        "fallback_algorithm": "NewtonLineSearch",
-        "fallback_test_type": "EnergyIncr",
-        "fallback_tol": 1.0,
-        "fallback_max_iters": 10,
+        "solver_chain": [
+            {
+                "algorithm": "Broyden",
+                "algorithm_options": {"max_iters": 8},
+                "test_type": "EnergyIncr",
+                "tol": 1.0,
+                "max_iters": 10,
+            },
+            {
+                "algorithm": "NewtonLineSearch",
+                "algorithm_options": {"alpha": 0.8},
+                "test_type": "EnergyIncr",
+                "tol": 1.0,
+                "max_iters": 10,
+            },
+        ],
     }
 
     with tempfile.TemporaryDirectory() as tmp:

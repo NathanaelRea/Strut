@@ -1381,12 +1381,25 @@ fn _force_beam_column2d_element_force_global(
             for b in range(6):
                 sum += k_global[a][b] * u_elem[b]
             f_global_elastic[a] = sum
+        var f_load = beam2d_element_load_global(
+            element_loads,
+            elem_load_offsets,
+            elem_load_pool,
+            elem_index,
+            load_scale,
+            node1.x,
+            node1.y,
+            node2.x,
+            node2.y,
+        )
+        for a in range(6):
+            f_global_elastic[a] -= f_load[a]
         if elem.uniform_load_wy != 0.0 or elem.uniform_load_wx != 0.0:
-            var f_load = _beam_uniform_load_for_element_global(
+            var f_embedded = _beam_uniform_load_for_element_global(
                 node1, node2, elem.uniform_load_wy, elem.uniform_load_wx
             )
             for a in range(6):
-                f_global_elastic[a] -= f_load[a]
+                f_global_elastic[a] -= f_embedded[a]
         var q_offset = force_basic_offsets[elem_index]
         if q_offset >= 0 and q_offset + 2 < len(force_basic_q):
             var f_local = _beam2d_force_global_to_local(node1, node2, f_global_elastic)

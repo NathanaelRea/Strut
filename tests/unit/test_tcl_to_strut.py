@@ -7,6 +7,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TCL_TO_STRUT_PATH = REPO_ROOT / "scripts" / "tcl_to_strut.py"
+RUN_CASE_PATH = REPO_ROOT / "scripts" / "run_case.py"
 
 
 def _load_tcl_to_strut_module():
@@ -21,6 +22,22 @@ def _load_tcl_to_strut_module():
 
 
 tcl_to_strut = _load_tcl_to_strut_module()
+run_case_spec = importlib.util.spec_from_file_location(
+    "strut_run_case_test_module", RUN_CASE_PATH
+)
+assert run_case_spec is not None
+assert run_case_spec.loader is not None
+run_case = importlib.util.module_from_spec(run_case_spec)
+sys.modules["strut_run_case_test_module"] = run_case
+run_case_spec.loader.exec_module(run_case)
+
+
+def _convert_direct_tcl_manifest(case_name: str) -> dict:
+    manifest = REPO_ROOT / "tests" / "validation" / case_name / "direct_tcl_case.json"
+    entry = run_case._resolve_entry_tcl_from_manifest(manifest, REPO_ROOT)
+    source_files = run_case._resolve_direct_tcl_source_files(entry, manifest)
+    runtime_entry, _ = run_case._prepare_direct_tcl_entry(entry, manifest.parent, source_files)
+    return tcl_to_strut.convert_tcl_to_case(runtime_entry, REPO_ROOT)
 
 
 def test_convert_ex1a_builds_staged_case():
@@ -143,7 +160,48 @@ def test_convert_advanced_ex1b_eq_expands_grouped_drift_nodes():
     assert all(rec["include_time"] is True for rec in drifts)
 
 
-def test_convert_load_drops_oversized_numeric_tail_like_benchmarked_opensees(tmp_path: Path):
+def test_convert_uniform_excitation_accepts_inline_sine_and_vel0(tmp_path: Path):
+    script = tmp_path / "uniform_sine.tcl"
+    script.write_text(
+        "\n".join(
+            (
+                "model BasicBuilder -ndm 2 -ndf 2",
+                "node 1 0 0",
+                "node 2 1 0",
+                "fix 1 1 1",
+                "fix 2 0 1",
+                'pattern UniformExcitation 400 1 -accel "Sine 0.0 3.0 0.35 -factor 193.2" -vel0 -10.76',
+                "integrator Newmark 0.5 0.25",
+                "analysis Transient",
+                "analyze 3 0.01",
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    case = tcl_to_strut.convert_tcl_to_case(script, REPO_ROOT)
+
+    assert case["time_series"] == [
+        {
+            "type": "Trig",
+            "tag": 1,
+            "t_start": 0.0,
+            "t_finish": 3.0,
+            "period": 0.35,
+            "factor": pytest.approx(193.2),
+        }
+    ]
+    stage = case["analysis"]["stages"][0]
+    assert stage["pattern"] == {
+        "type": "UniformExcitation",
+        "tag": 400,
+        "direction": 1,
+        "accel": 1,
+    }
+
+
+def test_convert_load_ignores_oversized_numeric_tail_beyond_model_ndf(tmp_path: Path):
     script = tmp_path / "oversized_load.tcl"
     script.write_text(
         "\n".join(
@@ -170,7 +228,7 @@ def test_convert_load_drops_oversized_numeric_tail_like_benchmarked_opensees(tmp
 
     case = tcl_to_strut.convert_tcl_to_case(script, REPO_ROOT)
 
-    assert case.get("loads", []) == []
+    assert case.get("loads", []) == [{"node": 2, "dof": 1, "value": 5.0}]
 
 
 def test_convert_displacement_control_with_empty_plain_pattern_is_noop(tmp_path: Path):
@@ -216,6 +274,44 @@ def test_convert_displacement_control_with_empty_plain_pattern_is_noop(tmp_path:
     assert case["analysis"]["stages"][0]["loads"] == [
         {"node": 2, "dof": 2, "value": -1.0}
     ]
+
+
+def test_convert_displacement_control_zero_increment_is_noop(tmp_path: Path):
+    script = tmp_path / "disp_control_zero_step.tcl"
+    script.write_text(
+        "\n".join(
+            (
+                "model BasicBuilder -ndm 2 -ndf 3",
+                "node 1 0 0",
+                "node 2 0 1",
+                "fix 1 1 1 1",
+                "geomTransf Linear 1",
+                "element elasticBeamColumn 1 1 2 1.0 1000.0 1.0 1",
+                "timeSeries Linear 1",
+                "pattern Plain 1 1 {",
+                "  load 2 1.0 0.0 0.0",
+                "}",
+                "constraints Plain",
+                "numberer Plain",
+                "system BandGeneral",
+                "algorithm Newton",
+                "integrator DisplacementControl 2 1 0.0",
+                "analysis Static",
+                "analyze 2",
+                "integrator DisplacementControl 2 1 0.1",
+                "analyze 1",
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    case = tcl_to_strut.convert_tcl_to_case(script, REPO_ROOT)
+
+    assert len(case["analysis"]["stages"]) == 1
+    stage = case["analysis"]["stages"][0]["analysis"]
+    assert stage["steps"] == 1
+    assert stage["integrator"]["du"] == pytest.approx(0.1)
 
 
 def test_convert_ex2a_eq_resolves_ground_motion_from_example_root_when_available():
@@ -340,13 +436,102 @@ def test_convert_rcframepushover_preserves_explicit_step_retry():
     assert pushover["type"] == "static_nonlinear"
     assert pushover["integrator"]["type"] == "DisplacementControl"
     assert pushover["algorithm"] == "Newton"
-    assert pushover["fallback_algorithm"] == "ModifiedNewtonInitial"
-    assert pushover["fallback_test_type"] == "NormDispIncr"
-    assert pushover["fallback_tol"] == pytest.approx(1.0e-12)
-    assert pushover["fallback_max_iters"] == 1000
+    assert "step_retry" not in pushover
+    assert pushover["solver_chain"] == [
+        {
+            "algorithm": "Newton",
+            "test_type": "NormDispIncr",
+            "tol": pytest.approx(1.0e-12),
+            "max_iters": 10,
+        },
+        {
+            "algorithm": "ModifiedNewtonInitial",
+            "test_type": "NormDispIncr",
+            "tol": pytest.approx(1.0e-12),
+            "max_iters": 1000,
+        },
+    ]
+
+
+def test_convert_ex4_static_push_uses_solver_chain_and_continuation_policy():
+    case = _convert_direct_tcl_manifest("opensees_example_ex4_portal2d_analyze_static_push")
+
+    stages = case["analysis"]["stages"]
+    pushover = stages[1]["analysis"]
+
+    assert pushover["integrator"]["type"] == "DisplacementControl"
+    assert len(pushover["solver_chain"]) == 4
+    assert pushover["solver_chain"][0] == {
+        "algorithm": "Newton",
+        "test_type": "EnergyIncr",
+        "tol": pytest.approx(1.0e-8),
+        "max_iters": 6,
+    }
+    assert pushover["solver_chain"][1] == {
+        "algorithm": "ModifiedNewtonInitial",
+        "test_type": "NormDispIncr",
+        "tol": pytest.approx(1.0e-8),
+        "max_iters": 2000,
+    }
+    assert pushover["solver_chain"][2] == {
+        "algorithm": "Broyden",
+        "algorithm_options": {"max_iters": 8},
+        "test_type": "EnergyIncr",
+        "tol": pytest.approx(1.0e-8),
+        "max_iters": 6,
+    }
+    assert pushover["solver_chain"][3] == {
+        "algorithm": "NewtonLineSearch",
+        "algorithm_options": {"alpha": pytest.approx(0.8)},
+        "test_type": "EnergyIncr",
+        "tol": pytest.approx(1.0e-8),
+        "max_iters": 6,
+    }
     assert pushover["step_retry"] == {
-        "type": "on_failure_retry_once",
+        "type": "continue_after_failure",
         "restore_primary_after_success": True,
+        "continue_after_failure": "displacement_control_single_steps",
+        "continue_target_disp": pytest.approx(43.2),
+        "continue_max_steps": 102,
+    }
+
+
+def test_convert_ex4_static_cycle_uses_solver_chain_per_step():
+    case = _convert_direct_tcl_manifest("opensees_example_ex4_portal2d_analyze_static_cycle")
+
+    first_cycle = next(
+        stage["analysis"]
+        for stage in case["analysis"]["stages"]
+        if stage["analysis"]["integrator"]["type"] == "DisplacementControl"
+    )
+
+    assert "step_retry" not in first_cycle
+    assert len(first_cycle["solver_chain"]) == 4
+    assert first_cycle["solver_chain"][0] == {
+        "algorithm": "Newton",
+        "test_type": "EnergyIncr",
+        "tol": pytest.approx(1.0e-8),
+        "max_iters": 6,
+    }
+    assert first_cycle["solver_chain"][1] == {
+        "algorithm": "ModifiedNewtonInitial",
+        "test_type": "NormDispIncr",
+        "tol": pytest.approx(1.0e-8),
+        "max_iters": 2000,
+    }
+    assert first_cycle["solver_chain"][2] == {
+        "algorithm": "Broyden",
+        "algorithm_options": {"max_iters": 8},
+        "test_type": "EnergyIncr",
+        "tol": pytest.approx(1.0e-8),
+        "max_iters": 6,
+    }
+    assert first_cycle["solver_chain"][3] == {
+        "algorithm": "NewtonLineSearch",
+        "algorithm_options": {"alpha": pytest.approx(0.8)},
+        "test_type": "EnergyIncr",
+        "tol": pytest.approx(1.0e-8),
+        "max_iters": 6,
     }
 
 

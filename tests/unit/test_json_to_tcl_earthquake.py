@@ -96,12 +96,20 @@ def test_json_to_tcl_emits_modified_newton_algorithms():
 
 def test_json_to_tcl_emits_transient_nonlinear_fallback_loop():
     case = _base_uniform_case()
-    case["analysis"]["algorithm"] = "Newton"
-    case["analysis"]["test_type"] = "NormUnbalance"
-    case["analysis"]["fallback_algorithm"] = "ModifiedNewtonInitial"
-    case["analysis"]["fallback_test_type"] = "NormDispIncr"
-    case["analysis"]["fallback_tol"] = 1.0e-8
-    case["analysis"]["fallback_max_iters"] = 25
+    case["analysis"]["solver_chain"] = [
+        {
+            "algorithm": "Newton",
+            "test_type": "NormUnbalance",
+            "tol": 1.0e-9,
+            "max_iters": 15,
+        },
+        {
+            "algorithm": "ModifiedNewtonInitial",
+            "test_type": "NormDispIncr",
+            "tol": 1.0e-8,
+            "max_iters": 25,
+        },
+    ]
 
     text = _run_json_to_tcl(case)
 
@@ -120,14 +128,20 @@ def test_json_to_tcl_emits_static_nonlinear_displacement_control_fallback_loop()
     case["analysis"] = {
         "type": "static_nonlinear",
         "steps": 2,
-        "algorithm": "Newton",
-        "test_type": "NormDispIncr",
-        "tol": 1.0e-8,
-        "max_iters": 10,
-        "fallback_algorithm": "ModifiedNewtonInitial",
-        "fallback_test_type": "NormDispIncr",
-        "fallback_tol": 1.0e-9,
-        "fallback_max_iters": 25,
+        "solver_chain": [
+            {
+                "algorithm": "Newton",
+                "test_type": "NormDispIncr",
+                "tol": 1.0e-8,
+                "max_iters": 10,
+            },
+            {
+                "algorithm": "ModifiedNewtonInitial",
+                "test_type": "NormDispIncr",
+                "tol": 1.0e-9,
+                "max_iters": 25,
+            },
+        ],
         "integrator": {"type": "DisplacementControl", "node": 2, "dof": 1, "du": 0.1},
     }
 
@@ -145,20 +159,39 @@ def test_json_to_tcl_emits_static_nonlinear_displacement_control_fallback_loop()
     assert "\nset strut_dc_ok [analyze 2]\n" not in text
 
 
-def test_json_to_tcl_emits_energy_incr_and_advanced_fallback_algorithms():
+def test_json_to_tcl_emits_ordered_solver_chain_retry_algorithms():
     case = _base_uniform_case()
-    case["analysis"]["algorithm"] = "NewtonLineSearch"
-    case["analysis"]["line_search_eta"] = 0.7
-    case["analysis"]["test_type"] = "EnergyIncr"
-    case["analysis"]["fallback_algorithm"] = "Broyden"
-    case["analysis"]["fallback_broyden_count"] = 6
-    case["analysis"]["fallback_test_type"] = "EnergyIncr"
+    case["analysis"]["solver_chain"] = [
+        {
+            "algorithm": "Newton",
+            "test_type": "EnergyIncr",
+            "tol": 1.0e-9,
+            "max_iters": 15,
+        },
+        {
+            "algorithm": "Broyden",
+            "algorithm_options": {"max_iters": 6},
+            "test_type": "EnergyIncr",
+            "tol": 1.0e-9,
+            "max_iters": 15,
+        },
+        {
+            "algorithm": "NewtonLineSearch",
+            "algorithm_options": {"alpha": 0.7},
+            "test_type": "EnergyIncr",
+            "tol": 1.0e-9,
+            "max_iters": 15,
+        },
+    ]
 
     text = _run_json_to_tcl(case)
 
     assert "test EnergyIncr 1e-09 15\n" in text
-    assert "algorithm NewtonLineSearch 0.7\n" in text
     assert "algorithm Broyden 6\n" in text
+    assert "algorithm NewtonLineSearch 0.7\n" in text
+    assert text.index("algorithm Broyden 6\n") < text.index(
+        "algorithm NewtonLineSearch 0.7\n"
+    )
 
 
 def test_json_to_tcl_preserves_numberer_system_and_print_commands():
@@ -363,8 +396,20 @@ def test_json_to_tcl_staged_transient_fallback_does_not_emit_extra_analyze():
                     "type": "transient_nonlinear",
                     "steps": 2,
                     "dt": 0.1,
-                    "algorithm": "Newton",
-                    "fallback_algorithm": "ModifiedNewtonInitial",
+                    "solver_chain": [
+                        {
+                            "algorithm": "Newton",
+                            "test_type": "NormUnbalance",
+                            "tol": 1.0e-10,
+                            "max_iters": 20,
+                        },
+                        {
+                            "algorithm": "ModifiedNewtonInitial",
+                            "test_type": "NormUnbalance",
+                            "tol": 1.0e-10,
+                            "max_iters": 20,
+                        },
+                    ],
                     "integrator": {"type": "Newmark", "gamma": 0.5, "beta": 0.25},
                 },
             },
@@ -390,14 +435,20 @@ def test_json_to_tcl_staged_static_fallback_does_not_emit_extra_analyze():
                 "analysis": {
                     "type": "static_nonlinear",
                     "steps": 2,
-                    "algorithm": "Newton",
-                    "test_type": "NormDispIncr",
-                    "tol": 1.0e-8,
-                    "max_iters": 8,
-                    "fallback_algorithm": "ModifiedNewtonInitial",
-                    "fallback_test_type": "NormDispIncr",
-                    "fallback_tol": 1.0e-8,
-                    "fallback_max_iters": 20,
+                    "solver_chain": [
+                        {
+                            "algorithm": "Newton",
+                            "test_type": "NormDispIncr",
+                            "tol": 1.0e-8,
+                            "max_iters": 8,
+                        },
+                        {
+                            "algorithm": "ModifiedNewtonInitial",
+                            "test_type": "NormDispIncr",
+                            "tol": 1.0e-8,
+                            "max_iters": 20,
+                        },
+                    ],
                     "integrator": {"type": "LoadControl"},
                 }
             }

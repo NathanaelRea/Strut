@@ -272,8 +272,9 @@ class PendingFiberSection:
 @dataclass(frozen=True)
 class StepRetryPolicy:
     analyze_args: tuple[str, ...]
-    fallback: dict[str, Any]
+    attempts: tuple[dict[str, Any], ...]
     restore_primary_after_success: bool
+    continue_after_failure: bool = False
 
 
 def _analysis_stage_from_dict(stage: dict[str, Any]) -> AnalysisStage:
@@ -629,6 +630,7 @@ class TclStrutBuilder:
             "timeSeries",
             "uniaxialMaterial",
             "unknown",
+            "uplevel",
             "variable",
             "viewWindow",
             "vup",
@@ -847,7 +849,41 @@ class TclStrutBuilder:
 
     def _parse_inline_series_spec(self, spec: str) -> dict[str, Any]:
         parts = [str(part) for part in self.interp.tk.splitlist(spec)]
-        if not parts or parts[0] != "Series":
+        if not parts:
+            raise self._error(
+                f"unsupported inline acceleration series `{spec}`",
+                "pattern",
+                (spec,),
+            )
+        if parts[0] == "Sine":
+            if len(parts) < 4:
+                raise self._error(
+                    "inline Sine series expects `Sine tStart tFinish period ?-factor value?`",
+                    "pattern",
+                    tuple(parts),
+                )
+            options = {
+                "type": "Trig",
+                "tag": self._next_time_series_tag(),
+                "t_start": float(parts[1]),
+                "t_finish": float(parts[2]),
+                "period": float(parts[3]),
+                "factor": 1.0,
+            }
+            idx = 4
+            while idx < len(parts):
+                token = parts[idx]
+                if token == "-factor":
+                    options["factor"] = float(parts[idx + 1])
+                    idx += 2
+                else:
+                    raise self._error(
+                        f"unsupported inline Sine flag `{token}`",
+                        "pattern",
+                        tuple(parts),
+                    )
+            return options
+        if parts[0] != "Series":
             raise self._error(
                 f"unsupported inline acceleration series `{spec}`",
                 "pattern",
@@ -1094,6 +1130,14 @@ class TclStrutBuilder:
             return None
         return match.group(1)
 
+    def _resolve_numeric_token(self, token: str) -> float:
+        try:
+            return float(token)
+        except ValueError:
+            if token.startswith("$"):
+                return float(self.interp.getvar(token[1:]))
+            raise
+
     def _parse_test_settings(
         self, command_words: tuple[str, ...]
     ) -> Optional[dict[str, Any]]:
@@ -1102,15 +1146,17 @@ class TclStrutBuilder:
         try:
             settings: dict[str, Any] = {
                 "fallback_test_type": command_words[1],
-                "fallback_tol": float(command_words[2]),
-                "fallback_max_iters": int(float(command_words[3])),
+                "fallback_tol": self._resolve_numeric_token(command_words[2]),
+                "fallback_max_iters": int(self._resolve_numeric_token(command_words[3])),
             }
-        except ValueError:
+        except (ValueError, tkinter.TclError):
             return None
         if len(command_words) >= 5:
             try:
-                settings["fallback_test_print_flag"] = int(float(command_words[4]))
-            except ValueError:
+                settings["fallback_test_print_flag"] = int(
+                    self._resolve_numeric_token(command_words[4])
+                )
+            except (ValueError, tkinter.TclError):
                 return None
         if len(command_words) > 5:
             settings["fallback_test_extra_args"] = list(command_words[5:])
@@ -1127,15 +1173,34 @@ class TclStrutBuilder:
         }
         if algorithm_args[0] == "Broyden" and len(algorithm_args) >= 2:
             try:
-                settings["fallback_broyden_count"] = int(float(algorithm_args[1]))
-            except ValueError:
+                settings["fallback_broyden_count"] = int(
+                    self._resolve_numeric_token(algorithm_args[1])
+                )
+            except (ValueError, tkinter.TclError):
                 pass
         if algorithm_args[0] == "NewtonLineSearch" and len(algorithm_args) >= 2:
             try:
-                settings["fallback_line_search_eta"] = float(algorithm_args[1])
-            except ValueError:
+                settings["fallback_line_search_eta"] = self._resolve_numeric_token(
+                    algorithm_args[1]
+                )
+            except (ValueError, tkinter.TclError):
                 pass
         return settings
+
+    def _subst_variables_only(self, script: str) -> str:
+        try:
+            return str(self.interp.call("subst", "-nocommands", "-nobackslashes", script))
+        except tkinter.TclError:
+            return script
+
+    def _script_contains_analyze_assignment(
+        self, script: str, result_var: str, analyze_args: tuple[str, ...]
+    ) -> bool:
+        for command in self._split_tcl_commands(script):
+            assignment = self._parse_analyze_assignment(self._command_words(command))
+            if assignment == (result_var, analyze_args):
+                return True
+        return False
 
     def _detect_step_retry_policy(self, script: str) -> Optional[StepRetryPolicy]:
         commands = self._split_tcl_commands(script)
@@ -1160,39 +1225,105 @@ class TclStrutBuilder:
         return None
 
     def _build_step_retry_policy_from_if_body(
-        self, result_var: str, analyze_args: tuple[str, ...], body_script: str
+        self,
+        result_var: str,
+        analyze_args: tuple[str, ...],
+        body_script: str,
+        *,
+        resolve_variables: bool = False,
     ) -> Optional[StepRetryPolicy]:
-        fallback: dict[str, Any] = {}
-        fallback_analyze_seen = False
-        restore_primary = False
+        if resolve_variables:
+            body_script = self._subst_variables_only(body_script)
+        attempts: list[dict[str, Any]] = []
+        pending_attempt: dict[str, Any] = {}
+        continue_after_failure = False
         for body_command in self._split_tcl_commands(body_script):
             body_words = self._command_words(body_command)
             if not body_words:
                 continue
+            if body_words[0] == "if" and len(body_words) >= 3:
+                pending_attempt = {}
+                if self._parse_retry_condition(body_words[1]) != result_var:
+                    continue
+                nested_policy = self._build_step_retry_policy_from_if_body(
+                    result_var,
+                    analyze_args,
+                    body_words[2],
+                    resolve_variables=resolve_variables,
+                )
+                if nested_policy is not None:
+                    attempts.extend(nested_policy.attempts)
+                    continue_after_failure = (
+                        continue_after_failure or nested_policy.continue_after_failure
+                    )
+                continue
+            if body_words[0] == "while" and len(body_words) >= 3:
+                pending_attempt = {}
+                loop_body = body_words[2]
+                if not self._script_contains_analyze_assignment(loop_body, result_var, ("1",)):
+                    continue
+                continue_after_failure = True
+                nested_policy = self._build_step_retry_policy_from_if_body(
+                    result_var,
+                    ("1",),
+                    loop_body,
+                    resolve_variables=resolve_variables,
+                )
+                if nested_policy is not None:
+                    attempts.extend(nested_policy.attempts)
+                continue
             test_settings = self._parse_test_settings(body_words)
             if test_settings is not None:
-                if fallback_analyze_seen:
-                    restore_primary = True
-                else:
-                    fallback.update(test_settings)
+                pending_attempt.update(test_settings)
                 continue
             algorithm_settings = self._parse_algorithm_settings(body_words)
             if algorithm_settings is not None:
-                if fallback_analyze_seen:
-                    restore_primary = True
-                else:
-                    fallback.update(algorithm_settings)
+                pending_attempt.update(algorithm_settings)
                 continue
             body_assignment = self._parse_analyze_assignment(body_words)
             if body_assignment == (result_var, analyze_args):
-                fallback_analyze_seen = True
-        if not fallback_analyze_seen or "fallback_algorithm" not in fallback:
+                if "fallback_algorithm" in pending_attempt:
+                    attempts.append(dict(pending_attempt))
+                pending_attempt.clear()
+        if not attempts and not continue_after_failure:
             return None
         return StepRetryPolicy(
             analyze_args=analyze_args,
-            fallback=fallback,
-            restore_primary_after_success=restore_primary,
+            attempts=tuple(attempts),
+            restore_primary_after_success=len(attempts) > 0,
+            continue_after_failure=continue_after_failure,
         )
+
+    def _detect_step_retry_policy_at_location(
+        self, path: Path, line: int, analyze_args: tuple[str, ...]
+    ) -> Optional[StepRetryPolicy]:
+        lines = path.read_text(encoding="utf-8").splitlines()
+        if line < 1 or line > len(lines):
+            return None
+        commands = self._split_tcl_commands("\n".join(lines[line - 1 :]))
+        if not commands:
+            return None
+        assignment = self._parse_analyze_assignment(self._command_words(commands[0]))
+        if assignment is None:
+            return None
+        result_var = assignment[0]
+        for follow_command in commands[1:]:
+            follow_words = self._command_words(follow_command)
+            if not follow_words:
+                continue
+            if self._parse_analyze_assignment(follow_words) is not None:
+                break
+            if follow_words[0] != "if" or len(follow_words) < 3:
+                continue
+            if self._parse_retry_condition(follow_words[1]) != result_var:
+                continue
+            return self._build_step_retry_policy_from_if_body(
+                result_var,
+                analyze_args,
+                follow_words[2],
+                resolve_variables=True,
+            )
+        return None
 
     def _register_source_step_retry_policies(self, path: Path) -> None:
         resolved = path.resolve()
@@ -1262,6 +1393,13 @@ class TclStrutBuilder:
         location = self._current_location("analyze", list(analyze_args))
         if location.file is None or location.line is None:
             return None
+        dynamic_policy = self._detect_step_retry_policy_at_location(
+            location.file.resolve(),
+            location.line,
+            analyze_args,
+        )
+        if dynamic_policy is not None:
+            return dynamic_policy
         policy = self.step_retry_policies_by_location.get(
             (location.file.resolve(), location.line)
         )
@@ -1346,6 +1484,8 @@ class TclStrutBuilder:
         if mode not in {"r", "w"}:
             raise self._error("only `open path r|w` is supported", "open", args)
         resolved = self._resolve_io_path(args[0], "open", args)
+        if mode == "w":
+            resolved.parent.mkdir(parents=True, exist_ok=True)
         channel = str(self.interp.tk.call("::strut::_open_builtin", str(resolved), mode))
         self.open_channels.add(channel)
         return channel
@@ -1425,7 +1565,7 @@ class TclStrutBuilder:
         self.source_stack.append(resolved)
         try:
             try:
-                return str(self.interp.tk.call("::strut::_source_builtin", str(resolved)))
+                return str(self.interp.eval(resolved.read_text(encoding="utf-8")))
             except tkinter.TclError as exc:
                 if self.last_error is not None:
                     raise self.last_error from exc
@@ -2359,6 +2499,36 @@ class TclStrutBuilder:
                 "values_path": options["values_path"],
                 "factor": options["factor"],
             }
+        elif ts_type == "Trig":
+            if len(args) < 5:
+                raise self._error(
+                    "Trig timeSeries expects tag tStart tFinish period",
+                    "timeSeries",
+                    args,
+                )
+            entry = {
+                "type": "Trig",
+                "tag": tag,
+                "t_start": float(args[2]),
+                "t_finish": float(args[3]),
+                "period": float(args[4]),
+                "factor": 1.0,
+            }
+            idx = 5
+            while idx < len(args):
+                token = args[idx]
+                if token == "-factor":
+                    entry["factor"] = float(args[idx + 1])
+                    idx += 2
+                elif token == "-shift":
+                    entry["phase_shift"] = float(args[idx + 1])
+                    idx += 2
+                else:
+                    raise self._error(
+                        f"unsupported Trig timeSeries flag `{token}`",
+                        "timeSeries",
+                        args,
+                    )
         else:
             raise self._error(f"unsupported timeSeries type `{ts_type}`", "timeSeries", args)
         self._register_time_series_entry(entry)
@@ -2398,7 +2568,7 @@ class TclStrutBuilder:
             return ""
 
         if pattern_type == "UniformExcitation":
-            if len(args) != 5 or args[3] != "-accel":
+            if len(args) < 5:
                 raise self._error(
                     "expected `pattern UniformExcitation tag dir -accel tsTag`",
                     "pattern",
@@ -2406,18 +2576,45 @@ class TclStrutBuilder:
                 )
             tag = int(args[1])
             direction = int(args[2])
-            try:
-                accel = int(args[4])
-                if accel not in self.time_series_by_tag:
-                    raise self._error(f"timeSeries tag {accel} not found", "pattern", args)
-            except ValueError:
-                accel = self._register_time_series_entry(self._parse_inline_series_spec(args[4]))
-            self.current_pattern = {
+            options: dict[str, Any] = {
                 "type": "UniformExcitation",
                 "tag": tag,
                 "direction": direction,
-                "accel": accel,
             }
+            idx = 3
+            while idx < len(args):
+                token = args[idx]
+                if token == "-accel":
+                    if idx + 1 >= len(args):
+                        raise self._error("UniformExcitation missing accel series", "pattern", args)
+                    try:
+                        accel = int(args[idx + 1])
+                        if accel not in self.time_series_by_tag:
+                            raise self._error(f"timeSeries tag {accel} not found", "pattern", args)
+                    except ValueError:
+                        accel = self._register_time_series_entry(
+                            self._parse_inline_series_spec(args[idx + 1])
+                        )
+                    options["accel"] = accel
+                    idx += 2
+                elif token == "-vel0":
+                    if idx + 1 >= len(args):
+                        raise self._error("UniformExcitation missing vel0 value", "pattern", args)
+                    options["vel0"] = float(args[idx + 1])
+                    idx += 2
+                else:
+                    raise self._error(
+                        f"unsupported UniformExcitation flag `{token}`",
+                        "pattern",
+                        args,
+                    )
+            if "accel" not in options:
+                raise self._error(
+                    "expected `pattern UniformExcitation tag dir -accel tsTag`",
+                    "pattern",
+                    args,
+                )
+            self.current_pattern = options
             return ""
 
         raise self._error(f"unsupported pattern type `{pattern_type}`", "pattern", args)
@@ -2428,22 +2625,6 @@ class TclStrutBuilder:
             raise self._error("load is only supported inside `pattern Plain`", "load", args)
         if len(args) < model["ndf"] + 1:
             raise self._error("load argument count does not match ndf", "load", args)
-        extra_args = args[model["ndf"] + 1 :]
-        if extra_args:
-            malformed_numeric_tail = True
-            for token in extra_args:
-                try:
-                    float(token)
-                except ValueError:
-                    malformed_numeric_tail = False
-                    break
-            if malformed_numeric_tail:
-                # The benchmarked OpenSees executable builds a load vector from all
-                # numeric arguments here. When that oversized vector reaches a node
-                # with fewer DOFs, the load is rejected during application and the
-                # pattern has no effect. Mirror that runtime behavior by dropping
-                # the malformed nodal load altogether.
-                return ""
         node_id = int(args[0])
         for dof, value_text in enumerate(args[1 : model["ndf"] + 1], start=1):
             value = float(value_text)
@@ -2597,6 +2778,73 @@ class TclStrutBuilder:
         self.pending_initialize = True
         return ""
 
+    def _solver_chain_primary_attempt(
+        self, analysis: dict[str, Any]
+    ) -> dict[str, Any]:
+        attempt: dict[str, Any] = {
+            "algorithm": analysis.get("algorithm", "Newton"),
+            "test_type": analysis.get("test_type", "MaxDispIncr"),
+            "max_iters": analysis.get("max_iters", 20),
+            "tol": analysis.get("tol", 1.0e-10),
+        }
+        if "rel_tol" in analysis:
+            attempt["rel_tol"] = analysis["rel_tol"]
+        if "algorithm_options" in analysis:
+            attempt["algorithm_options"] = dict(analysis["algorithm_options"])
+        return attempt
+
+    def _solver_chain_retry_attempt(
+        self, analysis: dict[str, Any], attempt: dict[str, Any]
+    ) -> dict[str, Any]:
+        retry_attempt: dict[str, Any] = {
+            "algorithm": attempt.get(
+                "fallback_algorithm", analysis.get("algorithm", "Newton")
+            ),
+            "test_type": attempt.get(
+                "fallback_test_type", analysis.get("test_type", "MaxDispIncr")
+            ),
+            "max_iters": attempt.get(
+                "fallback_max_iters", analysis.get("max_iters", 20)
+            ),
+            "tol": attempt.get("fallback_tol", analysis.get("tol", 1.0e-10)),
+        }
+        if "fallback_rel_tol" in attempt:
+            retry_attempt["rel_tol"] = attempt["fallback_rel_tol"]
+        elif "rel_tol" in analysis:
+            retry_attempt["rel_tol"] = analysis["rel_tol"]
+        if "fallback_broyden_count" in attempt:
+            retry_attempt["algorithm_options"] = {
+                "max_iters": attempt["fallback_broyden_count"]
+            }
+        elif "fallback_line_search_eta" in attempt:
+            retry_attempt["algorithm_options"] = {
+                "alpha": attempt["fallback_line_search_eta"]
+            }
+        return retry_attempt
+
+    def _set_solver_chain_with_fallback(
+        self,
+        analysis: dict[str, Any],
+        *,
+        fallback_algorithm: str,
+        fallback_test_type: str,
+        fallback_tol: float,
+        fallback_max_iters: int,
+        fallback_algorithm_options: Optional[dict[str, Any]] = None,
+    ) -> None:
+        fallback_attempt: dict[str, Any] = {
+            "algorithm": fallback_algorithm,
+            "test_type": fallback_test_type,
+            "tol": fallback_tol,
+            "max_iters": fallback_max_iters,
+        }
+        if fallback_algorithm_options:
+            fallback_attempt["algorithm_options"] = dict(fallback_algorithm_options)
+        analysis["solver_chain"] = [
+            self._solver_chain_primary_attempt(analysis),
+            fallback_attempt,
+        ]
+
     def _cmd_analyze(self, *args: str) -> str:
         if self.analysis_type is None:
             raise self._error("analysis type must be set before analyze", "analyze", args)
@@ -2630,23 +2878,57 @@ class TclStrutBuilder:
                     analysis["system_options"] = list(self.system_options)
             if self.numberer_handler is not None:
                 analysis["numberer"] = self.numberer_handler
-            if step_retry is not None:
-                analysis.update(step_retry.fallback)
-                analysis["step_retry"] = {
-                    "type": "on_failure_retry_once",
-                    "restore_primary_after_success": step_retry.restore_primary_after_success,
-                }
+            if step_retry is not None and step_retry.attempts:
+                analysis["solver_chain"] = [
+                    self._solver_chain_primary_attempt(analysis),
+                    *[
+                        self._solver_chain_retry_attempt(analysis, attempt)
+                        for attempt in step_retry.attempts
+                    ],
+                ]
+                if step_retry.continue_after_failure:
+                    step_retry_payload: dict[str, Any] = {
+                        "type": "continue_after_failure",
+                        "restore_primary_after_success": (
+                            step_retry.restore_primary_after_success
+                        ),
+                        "continue_after_failure": "displacement_control_single_steps",
+                    }
+                    if self.integrator["type"] == "DisplacementControl":
+                        try:
+                            continue_target = abs(float(self.interp.getvar("Dmax")))
+                        except tkinter.TclError:
+                            continue_target = abs(
+                                int(args[0]) * float(self.integrator.get("du", 0.0))
+                            )
+                        if continue_target > 0.0:
+                            step_retry_payload["continue_target_disp"] = continue_target
+                            du = abs(float(self.integrator.get("du", 0.0)))
+                            if du > 0.0:
+                                step_retry_payload["continue_max_steps"] = (
+                                    int(continue_target / du) + 2
+                                )
+                    analysis["step_retry"] = step_retry_payload
+                if self.integrator["type"] == "DisplacementControl":
+                    analysis["integrator"]["max_cutbacks"] = 0
             elif (
                 analysis["type"] == "static_nonlinear"
                 and self.integrator["type"] == "DisplacementControl"
                 and self.algorithm_name in {"Newton", "ModifiedNewton"}
             ):
-                analysis["fallback_algorithm"] = "ModifiedNewtonInitial"
-                analysis["fallback_test_type"] = self.current_test["type"] if self.current_test else "NormDispIncr"
-                analysis["fallback_tol"] = self.current_test["tol"] if self.current_test else 1.0e-8
-                analysis["fallback_max_iters"] = max(
-                    100,
-                    int(self.current_test["max_iters"]) if self.current_test else 100,
+                self._set_solver_chain_with_fallback(
+                    analysis,
+                    fallback_algorithm="ModifiedNewtonInitial",
+                    fallback_test_type="NormDispIncr",
+                    fallback_tol=self.current_test["tol"]
+                    if self.current_test
+                    else 1.0e-8,
+                    fallback_max_iters=max(
+                        2000,
+                        int(self.current_test["max_iters"])
+                        if self.current_test
+                        else 100,
+                    ),
                 )
             stage = {"analysis": analysis}
             if self.current_pattern is not None:
@@ -2661,6 +2943,20 @@ class TclStrutBuilder:
                 stage["pattern"] = {"type": "None"}
                 stage["loads"] = []
                 stage["element_loads"] = []
+            if (
+                self.integrator["type"] == "DisplacementControl"
+                and abs(float(self.integrator.get("du", 0.0))) <= 0.0
+            ):
+                # Ex4 cycle generation emits duplicate zero increments at the
+                # start of each peak sequence. Treat those as no-op analyze
+                # calls so generated cases never contain invalid `du 0` stages.
+                self.pattern_removed = False
+                return "0"
+            if self.integrator["type"] == "DisplacementControl" and not self.elements:
+                # A displacement-controlled analyze on a bare node set has no
+                # element stiffness or reference response to advance.
+                self.pattern_removed = False
+                return "0"
             if (
                 self.integrator["type"] == "DisplacementControl"
                 and stage.get("pattern", {}).get("type") == "Plain"
@@ -2737,19 +3033,28 @@ class TclStrutBuilder:
                     stage["analysis"]["test_print_flag"] = self.current_test["print_flag"]
                 if "extra_args" in self.current_test:
                     stage["analysis"]["test_extra_args"] = list(self.current_test["extra_args"])
-            if step_retry is not None:
-                stage["analysis"].update(step_retry.fallback)
-                stage["analysis"]["step_retry"] = {
-                    "type": "on_failure_retry_once",
-                    "restore_primary_after_success": step_retry.restore_primary_after_success,
-                }
+            if step_retry is not None and step_retry.attempts:
+                stage["analysis"]["solver_chain"] = [
+                    self._solver_chain_primary_attempt(stage["analysis"]),
+                    *[
+                        self._solver_chain_retry_attempt(stage["analysis"], attempt)
+                        for attempt in step_retry.attempts
+                    ],
+                ]
             elif self.algorithm_name in {"ModifiedNewton", "Newton"}:
-                stage["analysis"]["fallback_algorithm"] = "ModifiedNewtonInitial"
-                stage["analysis"]["fallback_test_type"] = "NormDispIncr"
-                stage["analysis"]["fallback_tol"] = self.current_test["tol"] if self.current_test else 1.0e-8
-                stage["analysis"]["fallback_max_iters"] = max(
-                    1000,
-                    int(self.current_test["max_iters"]) if self.current_test else 1000,
+                self._set_solver_chain_with_fallback(
+                    stage["analysis"],
+                    fallback_algorithm="ModifiedNewtonInitial",
+                    fallback_test_type="NormDispIncr",
+                    fallback_tol=self.current_test["tol"]
+                    if self.current_test
+                    else 1.0e-8,
+                    fallback_max_iters=max(
+                        1000,
+                        int(self.current_test["max_iters"])
+                        if self.current_test
+                        else 1000,
+                    ),
                 )
             if self.current_rayleigh is not None:
                 stage["rayleigh"] = dict(self.current_rayleigh)
