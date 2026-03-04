@@ -3,6 +3,7 @@ from math import atan2, sqrt
 from os import abort
 
 from elements import (
+    beam2d_basic_fixed_end_and_reactions,
     beam2d_element_load_global,
     beam2d_corotational_global_internal_force,
     beam2d_section_load_response,
@@ -28,7 +29,10 @@ from elements.beam3d import (
     _beam3d_transform_matrix,
     _beam3d_transform_u_global_to_local,
 )
-from elements.utils import _beam2d_transform_u_global_to_local
+from elements.utils import (
+    _beam2d_transform_force_local_to_global_in_place,
+    _beam2d_transform_u_global_to_local,
+)
 from materials import UniMaterialDef, UniMaterialState, uniaxial_set_trial_strain
 from solver.dof import node_dof_index, require_dof_in_range
 from solver.run_case.input_types import (
@@ -1428,6 +1432,95 @@ fn _force_beam_column2d_element_force_global(
     return f_global^
 
 
+fn _force_beam_column2d_force_global_from_basic_state(
+    elem_index: Int,
+    elem: ElementInput,
+    nodes: List[NodeInput],
+    ndf: Int,
+    u: List[Float64],
+    element_loads: List[ElementLoadInput],
+    elem_load_offsets: List[Int],
+    elem_load_pool: List[Int],
+    load_scale: Float64,
+    force_basic_offsets: List[Int],
+    force_basic_counts: List[Int],
+    force_basic_q: List[Float64],
+) raises -> List[Float64]:
+    if ndf != 3:
+        abort(elem.type + " requires ndf=3")
+    if elem_index < 0 or elem_index >= len(force_basic_offsets):
+        abort("forceBeamColumn2d basic state mapping missing")
+    if elem_index >= len(force_basic_counts):
+        abort("forceBeamColumn2d basic state count missing")
+
+    var q_offset = force_basic_offsets[elem_index]
+    if force_basic_counts[elem_index] < 3:
+        abort("forceBeamColumn2d basic force state count mismatch")
+    if q_offset < 0 or q_offset + 2 >= len(force_basic_q):
+        abort("forceBeamColumn2d basic force state out of range")
+
+    var i1 = elem.node_index_1
+    var i2 = elem.node_index_2
+    var node1 = nodes[i1]
+    var node2 = nodes[i2]
+    var dx = node2.x - node1.x
+    var dy = node2.y - node1.y
+    var L = sqrt(dx * dx + dy * dy)
+    if L == 0.0:
+        abort("zero-length element")
+    var c = dx / L
+    var s = dy / L
+    var inv_L = 1.0 / L
+
+    var q0 = force_basic_q[q_offset]
+    var q1 = force_basic_q[q_offset + 1]
+    var q2 = force_basic_q[q_offset + 2]
+    var fixed_end = beam2d_basic_fixed_end_and_reactions(
+        element_loads,
+        elem_load_offsets,
+        elem_load_pool,
+        elem_index,
+        load_scale,
+        L,
+    )
+    var shear = (q1 + q2) * inv_L
+
+    var f_local: List[Float64] = []
+    f_local.resize(6, 0.0)
+    f_local[0] = -q0 + fixed_end[3]
+    f_local[1] = shear + fixed_end[4]
+    f_local[2] = q1
+    f_local[3] = q0
+    f_local[4] = -shear + fixed_end[5]
+    f_local[5] = q2
+
+    if elem.geom_transf == "PDelta":
+        var dof_map = [
+            node_dof_index(i1, 1, ndf),
+            node_dof_index(i1, 2, ndf),
+            node_dof_index(i1, 3, ndf),
+            node_dof_index(i2, 1, ndf),
+            node_dof_index(i2, 2, ndf),
+            node_dof_index(i2, 3, ndf),
+        ]
+        var u_local: List[Float64] = []
+        u_local.resize(6, 0.0)
+        u_local[0] = c * u[dof_map[0]] + s * u[dof_map[1]]
+        u_local[1] = -s * u[dof_map[0]] + c * u[dof_map[1]]
+        u_local[2] = u[dof_map[2]]
+        u_local[3] = c * u[dof_map[3]] + s * u[dof_map[4]]
+        u_local[4] = -s * u[dof_map[3]] + c * u[dof_map[4]]
+        u_local[5] = u[dof_map[5]]
+        var pdelta_shear = (u_local[1] - u_local[4]) * q0 * inv_L
+        f_local[1] += pdelta_shear
+        f_local[4] -= pdelta_shear
+    elif elem.geom_transf != "Linear":
+        abort(elem.type + " supports geomTransf Linear or PDelta")
+
+    _beam2d_transform_force_local_to_global_in_place(f_local, c, s)
+    return f_local^
+
+
 fn _disp_beam_column2d_element_force_global(
     elem_index: Int,
     elem: ElementInput,
@@ -1703,22 +1796,9 @@ fn _force_beam_column2d_section_response(
     mut force_basic_q: List[Float64],
     want_deformation: Bool,
 ) raises -> List[Float64]:
-    var num_int_pts = elem.num_int_pts
-    if section_no < 1 or section_no > num_int_pts:
-        abort("section recorder section index out of range")
-    var ip = section_no - 1
-    var xi = _beam_integration_xi_for_section(elem.integration, num_int_pts, ip)
-    var i1 = elem.node_index_1
-    var i2 = elem.node_index_2
-    var node1 = nodes[i1]
-    var node2 = nodes[i2]
-    var dx = node2.x - node1.x
-    var dy = node2.y - node1.y
-    var L = sqrt(dx * dx + dy * dy)
-    if L == 0.0:
-        abort("zero-length element")
-
-    # Refresh basic force/predictor state at the current displacement.
+    # Generic recorder path must refresh from the current displacement state
+    # because linear analyses do not keep the force-beam cache synchronized
+    # with the post-solve displacement vector.
     _ = _force_beam_column2d_element_force_global(
         elem_index,
         elem,
@@ -1742,10 +1822,59 @@ fn _force_beam_column2d_section_response(
         elem_load_pool,
         load_scale,
     )
+    return _force_beam_column2d_section_response_from_basic_state(
+        elem_index,
+        elem,
+        section_no,
+        element_loads,
+        elem_load_offsets,
+        elem_load_pool,
+        load_scale,
+        nodes,
+        sections_by_id,
+        force_basic_offsets,
+        force_basic_counts,
+        force_basic_q,
+        want_deformation,
+    )
 
+
+fn _force_beam_column2d_section_response_from_basic_state(
+    elem_index: Int,
+    elem: ElementInput,
+    section_no: Int,
+    element_loads: List[ElementLoadInput],
+    elem_load_offsets: List[Int],
+    elem_load_pool: List[Int],
+    load_scale: Float64,
+    nodes: List[NodeInput],
+    sections_by_id: List[SectionInput],
+    force_basic_offsets: List[Int],
+    force_basic_counts: List[Int],
+    force_basic_q: List[Float64],
+    want_deformation: Bool,
+) raises -> List[Float64]:
+    var num_int_pts = elem.num_int_pts
+    if section_no < 1 or section_no > num_int_pts:
+        abort("section recorder section index out of range")
+    var ip = section_no - 1
+    var xi = _beam_integration_xi_for_section(elem.integration, num_int_pts, ip)
+    var i1 = elem.node_index_1
+    var i2 = elem.node_index_2
+    var node1 = nodes[i1]
+    var node2 = nodes[i2]
+    var dx = node2.x - node1.x
+    var dy = node2.y - node1.y
+    var L = sqrt(dx * dx + dy * dy)
+    if L == 0.0:
+        abort("zero-length element")
+    if elem_index < 0 or elem_index >= len(force_basic_offsets):
+        abort("section recorder forceBeamColumn2d basic state mapping missing")
+    if elem_index >= len(force_basic_counts):
+        abort("section recorder forceBeamColumn2d basic state count missing")
     var q_offset = force_basic_offsets[elem_index]
     var q_count = force_basic_counts[elem_index]
-    if q_count < 3:
+    if q_count < 3 or q_offset < 0 or q_offset + 2 >= len(force_basic_q):
         abort("section recorder forceBeamColumn2d basic state missing")
     var q0 = force_basic_q[q_offset]
     var q1 = force_basic_q[q_offset + 1]

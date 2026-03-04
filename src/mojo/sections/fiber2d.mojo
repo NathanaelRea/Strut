@@ -43,6 +43,10 @@ struct FiberSection2dDef(Defaultable, Movable, ImplicitlyCopyable):
     var y_bar: Float64
     var elastic_count: Int
     var nonlinear_count: Int
+    var initial_flex_valid: Bool
+    var initial_f00: Float64
+    var initial_f01: Float64
+    var initial_f11: Float64
     var elastic_y_rel: List[Float64]
     var elastic_area: List[Float64]
     var elastic_modulus: List[Float64]
@@ -57,6 +61,10 @@ struct FiberSection2dDef(Defaultable, Movable, ImplicitlyCopyable):
         self.y_bar = 0.0
         self.elastic_count = 0
         self.nonlinear_count = 0
+        self.initial_flex_valid = False
+        self.initial_f00 = 0.0
+        self.initial_f01 = 0.0
+        self.initial_f11 = 0.0
         self.elastic_y_rel = []
         self.elastic_area = []
         self.elastic_modulus = []
@@ -71,6 +79,10 @@ struct FiberSection2dDef(Defaultable, Movable, ImplicitlyCopyable):
         self.y_bar = y_bar
         self.elastic_count = 0
         self.nonlinear_count = 0
+        self.initial_flex_valid = False
+        self.initial_f00 = 0.0
+        self.initial_f01 = 0.0
+        self.initial_f11 = 0.0
         self.elastic_y_rel = []
         self.elastic_area = []
         self.elastic_modulus = []
@@ -85,6 +97,10 @@ struct FiberSection2dDef(Defaultable, Movable, ImplicitlyCopyable):
         self.y_bar = existing.y_bar
         self.elastic_count = existing.elastic_count
         self.nonlinear_count = existing.nonlinear_count
+        self.initial_flex_valid = existing.initial_flex_valid
+        self.initial_f00 = existing.initial_f00
+        self.initial_f01 = existing.initial_f01
+        self.initial_f11 = existing.initial_f11
         self.elastic_y_rel = existing.elastic_y_rel.copy()
         self.elastic_area = existing.elastic_area.copy()
         self.elastic_modulus = existing.elastic_modulus.copy()
@@ -141,6 +157,9 @@ fn _build_fiber_section2d_def(
     uniaxial_defs: List[UniMaterialDef],
 ) -> FiberSection2dDef:
     var sec_def = FiberSection2dDef(fiber_offset, fiber_count, y_bar)
+    var initial_k11 = 0.0
+    var initial_k12 = 0.0
+    var initial_k22 = 0.0
     for i in range(fiber_count):
         var cell = fibers[fiber_offset + i]
         var def_index = cell.def_index
@@ -148,6 +167,10 @@ fn _build_fiber_section2d_def(
             abort("FiberSection2d fiber material definition out of range")
         var mat_def = uniaxial_defs[def_index]
         var y_rel = cell.y - y_bar
+        var initial_ks = uni_mat_initial_tangent(mat_def) * cell.area
+        initial_k11 += initial_ks
+        initial_k12 += -initial_ks * y_rel
+        initial_k22 += initial_ks * y_rel * y_rel
         if uni_mat_is_elastic(mat_def):
             sec_def.elastic_y_rel.append(y_rel)
             sec_def.elastic_area.append(cell.area)
@@ -159,6 +182,13 @@ fn _build_fiber_section2d_def(
             sec_def.nonlinear_def_index.append(def_index)
     sec_def.elastic_count = len(sec_def.elastic_y_rel)
     sec_def.nonlinear_count = len(sec_def.nonlinear_y_rel)
+    var det = initial_k11 * initial_k22 - initial_k12 * initial_k12
+    if abs(det) > 1.0e-40:
+        var inv_det = 1.0 / det
+        sec_def.initial_flex_valid = True
+        sec_def.initial_f00 = initial_k22 * inv_det
+        sec_def.initial_f01 = -initial_k12 * inv_det
+        sec_def.initial_f11 = initial_k11 * inv_det
     return sec_def
 
 

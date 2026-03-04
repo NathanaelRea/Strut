@@ -14,7 +14,6 @@ from elements.utils import (
 from materials import (
     UniMaterialDef,
     UniMaterialState,
-    uni_mat_initial_tangent,
 )
 from solver.run_case.input_types import ElementLoadInput
 from sections import (
@@ -224,38 +223,16 @@ fn _fiber_section2d_solve_for_force(
 
 
 fn _fiber_section2d_initial_flexibility(
-    sec_def: FiberSection2dDef, fibers: List[FiberCell], uniaxial_defs: List[UniMaterialDef]
+    sec_def: FiberSection2dDef
 ) -> (Bool, Float64, Float64, Float64):
-    if sec_def.fiber_offset < 0 or sec_def.fiber_offset + sec_def.fiber_count > len(
-        fibers
-    ):
-        abort("forceBeamColumn2d fiber data out of range")
-    var k11 = 0.0
-    var k12 = 0.0
-    var k22 = 0.0
-    for i in range(sec_def.elastic_count):
-        var tangent = sec_def.elastic_modulus[i] * sec_def.elastic_area[i]
-        var y_rel = sec_def.elastic_y_rel[i]
-        k11 += tangent
-        k12 += -tangent * y_rel
-        k22 += tangent * y_rel * y_rel
-    for i in range(sec_def.nonlinear_count):
-        var def_index = sec_def.nonlinear_def_index[i]
-        if def_index < 0 or def_index >= len(uniaxial_defs):
-            abort("forceBeamColumn2d fiber material definition out of range")
-        var tangent = (
-            uni_mat_initial_tangent(uniaxial_defs[def_index]) * sec_def.nonlinear_area[i]
-        )
-        var y_rel = sec_def.nonlinear_y_rel[i]
-        k11 += tangent
-        k12 += -tangent * y_rel
-        k22 += tangent * y_rel * y_rel
-
-    var det = k11 * k22 - k12 * k12
-    if abs(det) <= 1.0e-40:
+    if not sec_def.initial_flex_valid:
         return (False, 0.0, 0.0, 0.0)
-    var inv_det = 1.0 / det
-    return (True, k22 * inv_det, -k12 * inv_det, k11 * inv_det)
+    return (
+        True,
+        sec_def.initial_f00,
+        sec_def.initial_f01,
+        sec_def.initial_f11,
+    )
 
 
 fn _fiber_section2d_response_flexibility(
@@ -269,20 +246,9 @@ fn _fiber_section2d_response_flexibility(
 
 
 fn _fiber_section2d_all_materials_elastic(
-    sec_def: FiberSection2dDef, fibers: List[FiberCell], uniaxial_defs: List[UniMaterialDef]
+    sec_def: FiberSection2dDef
 ) -> Bool:
-    if sec_def.fiber_offset < 0 or sec_def.fiber_offset + sec_def.fiber_count > len(
-        fibers
-    ):
-        abort("forceBeamColumn2d fiber data out of range")
-    if sec_def.nonlinear_count == 0:
-        return True
-    for i in range(sec_def.nonlinear_count):
-        if sec_def.nonlinear_def_index[i] < 0 or sec_def.nonlinear_def_index[i] >= len(
-            uniaxial_defs
-        ):
-            abort("forceBeamColumn2d fiber material definition out of range")
-    return False
+    return sec_def.nonlinear_count == 0
 
 
 fn _copy_force_beam_column2d_states(
@@ -478,7 +444,7 @@ fn _force_beam_column2d_exact_elastic_state(
     Float64,
     Float64,
 ):
-    var init_flex = _fiber_section2d_initial_flexibility(sec_def, fibers, uniaxial_defs)
+    var init_flex = _fiber_section2d_initial_flexibility(sec_def)
     if not init_flex[0]:
         return (False, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
@@ -594,7 +560,7 @@ fn _force_beam_column2d_initial_basic_tangent(
     Float64,
     Float64,
 ):
-    var init_flex = _fiber_section2d_initial_flexibility(sec_def, fibers, uniaxial_defs)
+    var init_flex = _fiber_section2d_initial_flexibility(sec_def)
     if not init_flex[0]:
         return (False, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
@@ -704,9 +670,7 @@ fn _force_beam_column2d_try_increment(
     var k21: Float64
     var k22: Float64
 
-    var initial_sec_flex = _fiber_section2d_initial_flexibility(
-        sec_def, fibers, uniaxial_defs
-    )
+    var initial_sec_flex = _fiber_section2d_initial_flexibility(sec_def)
     if not initial_sec_flex[0]:
         return (False, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
@@ -1205,9 +1169,7 @@ fn force_beam_column2d_global_tangent_and_internal(
     var attempt_1 = remaining_1
     var attempt_2 = remaining_2
     var converged = False
-    var all_materials_elastic = _fiber_section2d_all_materials_elastic(
-        sec_def, fibers, uniaxial_defs
-    )
+    var all_materials_elastic = _fiber_section2d_all_materials_elastic(sec_def)
     # Keep a recoverable tangent/internal state at the last compatible point so
     # the global nonlinear solve can cut back instead of aborting the process.
     var best_solved = _force_beam_column2d_try_increment(

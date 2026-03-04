@@ -10,6 +10,8 @@ from tag_types import UniMaterialTypeTag
 fn uniaxial_set_trial_strain(
     mat_def: UniMaterialDef, mut state: UniMaterialState, eps: Float64
 ):
+    if eps == state.eps_t:
+        return
     state.eps_t = eps
     if mat_def.mat_type == UniMaterialTypeTag.Elastic:
         var E = mat_def.p0

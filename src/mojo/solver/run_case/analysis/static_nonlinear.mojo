@@ -41,6 +41,8 @@ from solver.run_case.helpers import (
     _element_basic_force_for_recorder,
     _element_deformation_for_recorder,
     _element_force_global_for_recorder,
+    _force_beam_column2d_force_global_from_basic_state,
+    _force_beam_column2d_section_response_from_basic_state,
     _element_local_force_for_recorder,
     _enforce_equal_dof_values,
     _flush_envelope_outputs,
@@ -873,33 +875,53 @@ fn run_static_nonlinear_load_control(
                         abort("recorder element not found")
                     var elem_index = elem_id_to_index[elem_id]
                     var elem = typed_elements[elem_index]
-                    var f_elem = _element_force_global_for_recorder(
-                        elem_index,
-                        elem,
-                        ndf,
-                        u,
-                        active_element_load_state.element_loads,
-                        active_element_load_state.elem_load_offsets,
-                        active_element_load_state.elem_load_pool,
-                        1.0,
-                        typed_nodes,
-                        typed_sections_by_id,
-                        fiber_section_defs,
-                        fiber_section_cells,
-                        fiber_section_index_by_id,
-                        fiber_section3d_defs,
-                        fiber_section3d_cells,
-                        fiber_section3d_index_by_id,
-                        uniaxial_defs,
-                        uniaxial_state_defs,
-                        uniaxial_states,
-                        elem_uniaxial_offsets,
-                        elem_uniaxial_counts,
-                        elem_uniaxial_state_ids,
-                    force_basic_offsets,
-                    force_basic_counts,
-                    force_basic_q,
-                    )
+                    var f_elem: List[Float64]
+                    if (
+                        elem.type_tag == ElementTypeTag.ForceBeamColumn2d
+                        and typed_sections_by_id[elem.section].type == "FiberSection2d"
+                    ):
+                        f_elem = _force_beam_column2d_force_global_from_basic_state(
+                            elem_index,
+                            elem,
+                            typed_nodes,
+                            ndf,
+                            u,
+                            active_element_load_state.element_loads,
+                            active_element_load_state.elem_load_offsets,
+                            active_element_load_state.elem_load_pool,
+                            1.0,
+                            force_basic_offsets,
+                            force_basic_counts,
+                            force_basic_q,
+                        )
+                    else:
+                        f_elem = _element_force_global_for_recorder(
+                            elem_index,
+                            elem,
+                            ndf,
+                            u,
+                            active_element_load_state.element_loads,
+                            active_element_load_state.elem_load_offsets,
+                            active_element_load_state.elem_load_pool,
+                            1.0,
+                            typed_nodes,
+                            typed_sections_by_id,
+                            fiber_section_defs,
+                            fiber_section_cells,
+                            fiber_section_index_by_id,
+                            fiber_section3d_defs,
+                            fiber_section3d_cells,
+                            fiber_section3d_index_by_id,
+                            uniaxial_defs,
+                            uniaxial_state_defs,
+                            uniaxial_states,
+                            elem_uniaxial_offsets,
+                            elem_uniaxial_counts,
+                            elem_uniaxial_state_ids,
+                            force_basic_offsets,
+                            force_basic_counts,
+                            force_basic_q,
+                        )
                     var line = _format_values_line(f_elem)
                     var filename = rec.output + "_ele" + String(elem_id) + ".out"
                     _append_output(
@@ -1045,33 +1067,53 @@ fn run_static_nonlinear_load_control(
                         abort("recorder element not found")
                     var elem_index = elem_id_to_index[elem_id]
                     var elem = typed_elements[elem_index]
-                    var f_elem = _element_force_global_for_recorder(
-                        elem_index,
-                        elem,
-                        ndf,
-                        u,
-                        active_element_load_state.element_loads,
-                        active_element_load_state.elem_load_offsets,
-                        active_element_load_state.elem_load_pool,
-                        1.0,
-                        typed_nodes,
-                        typed_sections_by_id,
-                        fiber_section_defs,
-                        fiber_section_cells,
-                        fiber_section_index_by_id,
-                        fiber_section3d_defs,
-                        fiber_section3d_cells,
-                        fiber_section3d_index_by_id,
-                        uniaxial_defs,
-                        uniaxial_state_defs,
-                        uniaxial_states,
-                        elem_uniaxial_offsets,
-                        elem_uniaxial_counts,
-                        elem_uniaxial_state_ids,
-                    force_basic_offsets,
-                    force_basic_counts,
-                    force_basic_q,
-                    )
+                    var f_elem: List[Float64]
+                    if (
+                        elem.type_tag == ElementTypeTag.ForceBeamColumn2d
+                        and typed_sections_by_id[elem.section].type == "FiberSection2d"
+                    ):
+                        f_elem = _force_beam_column2d_force_global_from_basic_state(
+                            elem_index,
+                            elem,
+                            typed_nodes,
+                            ndf,
+                            u,
+                            active_element_load_state.element_loads,
+                            active_element_load_state.elem_load_offsets,
+                            active_element_load_state.elem_load_pool,
+                            1.0,
+                            force_basic_offsets,
+                            force_basic_counts,
+                            force_basic_q,
+                        )
+                    else:
+                        f_elem = _element_force_global_for_recorder(
+                            elem_index,
+                            elem,
+                            ndf,
+                            u,
+                            active_element_load_state.element_loads,
+                            active_element_load_state.elem_load_offsets,
+                            active_element_load_state.elem_load_pool,
+                            1.0,
+                            typed_nodes,
+                            typed_sections_by_id,
+                            fiber_section_defs,
+                            fiber_section_cells,
+                            fiber_section_index_by_id,
+                            fiber_section3d_defs,
+                            fiber_section3d_cells,
+                            fiber_section3d_index_by_id,
+                            uniaxial_defs,
+                            uniaxial_state_defs,
+                            uniaxial_states,
+                            elem_uniaxial_offsets,
+                            elem_uniaxial_counts,
+                            elem_uniaxial_state_ids,
+                            force_basic_offsets,
+                            force_basic_counts,
+                            force_basic_q,
+                        )
                     var filename = rec.output + "_ele" + String(elem_id) + ".out"
                     _update_envelope(
                         filename,
@@ -1097,34 +1139,55 @@ fn run_static_nonlinear_load_control(
                     var elem = typed_elements[elem_index]
                     for sidx in range(rec.section_count):
                         var sec_no = recorder_sections_pool[rec.section_offset + sidx]
-                        var values = _section_response_for_recorder(
-                            elem_index,
-                            elem,
-                            sec_no,
-                            ndf,
-                            u,
-                            active_element_load_state.element_loads,
-                            active_element_load_state.elem_load_offsets,
-                            active_element_load_state.elem_load_pool,
-                            1.0,
-                            typed_nodes,
-                            typed_sections_by_id,
-                            fiber_section_defs,
-                            fiber_section_cells,
-                            fiber_section_index_by_id,
-                            fiber_section3d_defs,
-                            fiber_section3d_cells,
-                            fiber_section3d_index_by_id,
-                            uniaxial_defs,
-                            uniaxial_states,
-                            elem_uniaxial_offsets,
-                            elem_uniaxial_counts,
-                            elem_uniaxial_state_ids,
-                            force_basic_offsets,
-                            force_basic_counts,
-                            force_basic_q,
-                            want_defo,
-                        )
+                        var values: List[Float64]
+                        if (
+                            elem.type_tag == ElementTypeTag.ForceBeamColumn2d
+                            and typed_sections_by_id[elem.section].type == "FiberSection2d"
+                        ):
+                            values = _force_beam_column2d_section_response_from_basic_state(
+                                elem_index,
+                                elem,
+                                sec_no,
+                                active_element_load_state.element_loads,
+                                active_element_load_state.elem_load_offsets,
+                                active_element_load_state.elem_load_pool,
+                                1.0,
+                                typed_nodes,
+                                typed_sections_by_id,
+                                force_basic_offsets,
+                                force_basic_counts,
+                                force_basic_q,
+                                want_defo,
+                            )
+                        else:
+                            values = _section_response_for_recorder(
+                                elem_index,
+                                elem,
+                                sec_no,
+                                ndf,
+                                u,
+                                active_element_load_state.element_loads,
+                                active_element_load_state.elem_load_offsets,
+                                active_element_load_state.elem_load_pool,
+                                1.0,
+                                typed_nodes,
+                                typed_sections_by_id,
+                                fiber_section_defs,
+                                fiber_section_cells,
+                                fiber_section_index_by_id,
+                                fiber_section3d_defs,
+                                fiber_section3d_cells,
+                                fiber_section3d_index_by_id,
+                                uniaxial_defs,
+                                uniaxial_states,
+                                elem_uniaxial_offsets,
+                                elem_uniaxial_counts,
+                                elem_uniaxial_state_ids,
+                                force_basic_offsets,
+                                force_basic_counts,
+                                force_basic_q,
+                                want_defo,
+                            )
                         var filename = (
                             rec.output
                             + "_ele"
@@ -2012,33 +2075,53 @@ fn run_static_nonlinear_displacement_control(
                         abort("recorder element not found")
                     var elem_index = elem_id_to_index[elem_id]
                     var elem = typed_elements[elem_index]
-                    var f_elem = _element_force_global_for_recorder(
-                        elem_index,
-                        elem,
-                        ndf,
-                        u,
-                        active_element_load_state.element_loads,
-                        active_element_load_state.elem_load_offsets,
-                        active_element_load_state.elem_load_pool,
-                        1.0,
-                        typed_nodes,
-                        typed_sections_by_id,
-                        fiber_section_defs,
-                        fiber_section_cells,
-                        fiber_section_index_by_id,
-                        fiber_section3d_defs,
-                        fiber_section3d_cells,
-                        fiber_section3d_index_by_id,
-                        uniaxial_defs,
-                        uniaxial_state_defs,
-                        uniaxial_states,
-                        elem_uniaxial_offsets,
-                        elem_uniaxial_counts,
-                        elem_uniaxial_state_ids,
-                    force_basic_offsets,
-                    force_basic_counts,
-                    force_basic_q,
-                    )
+                    var f_elem: List[Float64]
+                    if (
+                        elem.type_tag == ElementTypeTag.ForceBeamColumn2d
+                        and typed_sections_by_id[elem.section].type == "FiberSection2d"
+                    ):
+                        f_elem = _force_beam_column2d_force_global_from_basic_state(
+                            elem_index,
+                            elem,
+                            typed_nodes,
+                            ndf,
+                            u,
+                            active_element_load_state.element_loads,
+                            active_element_load_state.elem_load_offsets,
+                            active_element_load_state.elem_load_pool,
+                            1.0,
+                            force_basic_offsets,
+                            force_basic_counts,
+                            force_basic_q,
+                        )
+                    else:
+                        f_elem = _element_force_global_for_recorder(
+                            elem_index,
+                            elem,
+                            ndf,
+                            u,
+                            active_element_load_state.element_loads,
+                            active_element_load_state.elem_load_offsets,
+                            active_element_load_state.elem_load_pool,
+                            1.0,
+                            typed_nodes,
+                            typed_sections_by_id,
+                            fiber_section_defs,
+                            fiber_section_cells,
+                            fiber_section_index_by_id,
+                            fiber_section3d_defs,
+                            fiber_section3d_cells,
+                            fiber_section3d_index_by_id,
+                            uniaxial_defs,
+                            uniaxial_state_defs,
+                            uniaxial_states,
+                            elem_uniaxial_offsets,
+                            elem_uniaxial_counts,
+                            elem_uniaxial_state_ids,
+                            force_basic_offsets,
+                            force_basic_counts,
+                            force_basic_q,
+                        )
                     var line = _format_values_line(f_elem)
                     var filename = rec.output + "_ele" + String(elem_id) + ".out"
                     _append_output(
@@ -2184,33 +2267,53 @@ fn run_static_nonlinear_displacement_control(
                         abort("recorder element not found")
                     var elem_index = elem_id_to_index[elem_id]
                     var elem = typed_elements[elem_index]
-                    var f_elem = _element_force_global_for_recorder(
-                        elem_index,
-                        elem,
-                        ndf,
-                        u,
-                        active_element_load_state.element_loads,
-                        active_element_load_state.elem_load_offsets,
-                        active_element_load_state.elem_load_pool,
-                        1.0,
-                        typed_nodes,
-                        typed_sections_by_id,
-                        fiber_section_defs,
-                        fiber_section_cells,
-                        fiber_section_index_by_id,
-                        fiber_section3d_defs,
-                        fiber_section3d_cells,
-                        fiber_section3d_index_by_id,
-                        uniaxial_defs,
-                        uniaxial_state_defs,
-                        uniaxial_states,
-                        elem_uniaxial_offsets,
-                        elem_uniaxial_counts,
-                        elem_uniaxial_state_ids,
-                    force_basic_offsets,
-                    force_basic_counts,
-                    force_basic_q,
-                    )
+                    var f_elem: List[Float64]
+                    if (
+                        elem.type_tag == ElementTypeTag.ForceBeamColumn2d
+                        and typed_sections_by_id[elem.section].type == "FiberSection2d"
+                    ):
+                        f_elem = _force_beam_column2d_force_global_from_basic_state(
+                            elem_index,
+                            elem,
+                            typed_nodes,
+                            ndf,
+                            u,
+                            active_element_load_state.element_loads,
+                            active_element_load_state.elem_load_offsets,
+                            active_element_load_state.elem_load_pool,
+                            1.0,
+                            force_basic_offsets,
+                            force_basic_counts,
+                            force_basic_q,
+                        )
+                    else:
+                        f_elem = _element_force_global_for_recorder(
+                            elem_index,
+                            elem,
+                            ndf,
+                            u,
+                            active_element_load_state.element_loads,
+                            active_element_load_state.elem_load_offsets,
+                            active_element_load_state.elem_load_pool,
+                            1.0,
+                            typed_nodes,
+                            typed_sections_by_id,
+                            fiber_section_defs,
+                            fiber_section_cells,
+                            fiber_section_index_by_id,
+                            fiber_section3d_defs,
+                            fiber_section3d_cells,
+                            fiber_section3d_index_by_id,
+                            uniaxial_defs,
+                            uniaxial_state_defs,
+                            uniaxial_states,
+                            elem_uniaxial_offsets,
+                            elem_uniaxial_counts,
+                            elem_uniaxial_state_ids,
+                            force_basic_offsets,
+                            force_basic_counts,
+                            force_basic_q,
+                        )
                     var filename = rec.output + "_ele" + String(elem_id) + ".out"
                     _update_envelope(
                         filename,
@@ -2236,34 +2339,55 @@ fn run_static_nonlinear_displacement_control(
                     var elem = typed_elements[elem_index]
                     for sidx in range(rec.section_count):
                         var sec_no = recorder_sections_pool[rec.section_offset + sidx]
-                        var values = _section_response_for_recorder(
-                            elem_index,
-                            elem,
-                            sec_no,
-                            ndf,
-                            u,
-                            active_element_load_state.element_loads,
-                            active_element_load_state.elem_load_offsets,
-                            active_element_load_state.elem_load_pool,
-                            1.0,
-                            typed_nodes,
-                            typed_sections_by_id,
-                            fiber_section_defs,
-                            fiber_section_cells,
-                            fiber_section_index_by_id,
-                            fiber_section3d_defs,
-                            fiber_section3d_cells,
-                            fiber_section3d_index_by_id,
-                            uniaxial_defs,
-                            uniaxial_states,
-                            elem_uniaxial_offsets,
-                            elem_uniaxial_counts,
-                            elem_uniaxial_state_ids,
-                            force_basic_offsets,
-                            force_basic_counts,
-                            force_basic_q,
-                            want_defo,
-                        )
+                        var values: List[Float64]
+                        if (
+                            elem.type_tag == ElementTypeTag.ForceBeamColumn2d
+                            and typed_sections_by_id[elem.section].type == "FiberSection2d"
+                        ):
+                            values = _force_beam_column2d_section_response_from_basic_state(
+                                elem_index,
+                                elem,
+                                sec_no,
+                                active_element_load_state.element_loads,
+                                active_element_load_state.elem_load_offsets,
+                                active_element_load_state.elem_load_pool,
+                                1.0,
+                                typed_nodes,
+                                typed_sections_by_id,
+                                force_basic_offsets,
+                                force_basic_counts,
+                                force_basic_q,
+                                want_defo,
+                            )
+                        else:
+                            values = _section_response_for_recorder(
+                                elem_index,
+                                elem,
+                                sec_no,
+                                ndf,
+                                u,
+                                active_element_load_state.element_loads,
+                                active_element_load_state.elem_load_offsets,
+                                active_element_load_state.elem_load_pool,
+                                1.0,
+                                typed_nodes,
+                                typed_sections_by_id,
+                                fiber_section_defs,
+                                fiber_section_cells,
+                                fiber_section_index_by_id,
+                                fiber_section3d_defs,
+                                fiber_section3d_cells,
+                                fiber_section3d_index_by_id,
+                                uniaxial_defs,
+                                uniaxial_states,
+                                elem_uniaxial_offsets,
+                                elem_uniaxial_counts,
+                                elem_uniaxial_state_ids,
+                                force_basic_offsets,
+                                force_basic_counts,
+                                force_basic_q,
+                                want_defo,
+                            )
                         var filename = (
                             rec.output
                             + "_ele"
