@@ -47,6 +47,60 @@ struct AnalysisSystemTag:
     alias Banded = 3
 
 
+struct AnalysisTypeTag:
+    alias Unknown = 0
+    alias StaticLinear = 1
+    alias StaticNonlinear = 2
+    alias TransientLinear = 3
+    alias TransientNonlinear = 4
+    alias Staged = 5
+    alias ModalEigen = 6
+
+
+struct ConstraintHandlerTag:
+    alias Unknown = 0
+    alias Plain = 1
+    alias Transformation = 2
+
+
+struct ForceBeamModeTag:
+    alias Unknown = 0
+    alias Auto = 1
+    alias LinearIfElastic = 2
+    alias Nonlinear = 3
+
+
+struct IntegratorTypeTag:
+    alias Unknown = 0
+    alias LoadControl = 1
+    alias DisplacementControl = 2
+    alias Newmark = 3
+
+
+struct PatternTypeTag:
+    alias Unknown = 0
+    alias Plain = 1
+    alias UniformExcitation = 2
+    alias `None` = 3
+
+
+struct AnalysisAlgorithmTag:
+    alias Unknown = 0
+    alias Newton = 1
+    alias ModifiedNewton = 2
+    alias ModifiedNewtonInitial = 3
+    alias Broyden = 4
+    alias NewtonLineSearch = 5
+
+
+struct NonlinearTestTypeTag:
+    alias Unknown = 0
+    alias MaxDispIncr = 1
+    alias NormDispIncr = 2
+    alias NormUnbalance = 3
+    alias EnergyIncr = 4
+
+
 struct RecorderTypeTag:
     alias Unknown = 0
     alias NodeDisplacement = 1

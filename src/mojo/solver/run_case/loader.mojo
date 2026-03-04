@@ -42,13 +42,18 @@ from sections import (
 )
 from strut_io import py_len
 from tag_types import (
+    AnalysisTypeTag,
     AnalysisSystemTag,
     BeamIntegrationTag,
+    ConstraintHandlerTag,
     ElementLoadTypeTag,
     ElementTypeTag,
+    ForceBeamModeTag,
     GeomTransfTag,
+    IntegratorTypeTag,
     LinkDirectionTag,
     NumbererTag,
+    PatternTypeTag,
     UniMaterialTypeTag,
 )
 
@@ -124,9 +129,11 @@ struct RunCaseState(Movable):
 
     var analysis: AnalysisInput
     var analysis_type: String
+    var analysis_type_tag: Int
     var steps: Int
     var modal_num_modes: Int
     var constraints_handler: String
+    var constraints_handler_tag: Int
     var use_banded_linear: Bool
     var use_banded_nonlinear: Bool
     var has_transformation_mpc: Bool
@@ -147,6 +154,7 @@ struct RunCaseState(Movable):
     var stages: List[StageInput]
     var ts_index: Int
     var pattern_type: String
+    var pattern_type_tag: Int
     var uniform_excitation_direction: Int
     var uniform_accel_ts_index: Int
     var rayleigh_alpha_m: Float64
@@ -225,9 +233,11 @@ struct RunCaseState(Movable):
         self.constrained = []
         self.analysis = AnalysisInput()
         self.analysis_type = ""
+        self.analysis_type_tag = AnalysisTypeTag.Unknown
         self.steps = 0
         self.modal_num_modes = 0
         self.constraints_handler = "Plain"
+        self.constraints_handler_tag = ConstraintHandlerTag.Plain
         self.use_banded_linear = False
         self.use_banded_nonlinear = False
         self.has_transformation_mpc = False
@@ -246,6 +256,7 @@ struct RunCaseState(Movable):
         self.stages = []
         self.ts_index = -1
         self.pattern_type = "Plain"
+        self.pattern_type_tag = PatternTypeTag.Plain
         self.uniform_excitation_direction = 0
         self.uniform_accel_ts_index = -1
         self.rayleigh_alpha_m = 0.0
@@ -1820,8 +1831,10 @@ fn load_case_state_from_input(input: CaseInput) raises -> RunCaseState:
 
     var analysis_input = input.analysis
     var analysis_type = analysis_input.type
+    var analysis_type_tag = analysis_input.type_tag
     var constraints_handler = analysis_input.constraints
-    if constraints_handler != "Plain" and constraints_handler != "Transformation":
+    var constraints_handler_tag = analysis_input.constraints_tag
+    if constraints_handler_tag == ConstraintHandlerTag.Unknown:
         abort("unsupported constraints handler: " + constraints_handler)
     var numberer_tag = analysis_input.numberer_tag
     if numberer_tag == NumbererTag.Unknown:
@@ -1830,18 +1843,15 @@ fn load_case_state_from_input(input: CaseInput) raises -> RunCaseState:
         abort("unsupported analysis numberer tag")
     var steps = analysis_input.steps
     var modal_num_modes = 0
-    if analysis_type == "modal_eigen":
+    if analysis_type_tag == AnalysisTypeTag.ModalEigen:
         modal_num_modes = analysis_input.num_modes
         if modal_num_modes < 1:
             abort("modal_eigen requires num_modes >= 1")
     if steps < 1:
         abort("analysis steps must be >= 1")
     var force_beam_mode = analysis_input.force_beam_mode
-    if (
-        force_beam_mode != "auto"
-        and force_beam_mode != "linear_if_elastic"
-        and force_beam_mode != "nonlinear"
-    ):
+    var force_beam_mode_tag = analysis_input.force_beam_mode_tag
+    if force_beam_mode_tag == ForceBeamModeTag.Unknown:
         abort(
             "unsupported force_beam_mode: "
             + force_beam_mode
@@ -1849,55 +1859,58 @@ fn load_case_state_from_input(input: CaseInput) raises -> RunCaseState:
         )
     if has_force_beam_column2d:
         if (
-            analysis_type != "static_linear"
-            and analysis_type != "static_nonlinear"
-            and analysis_type != "transient_nonlinear"
-            and analysis_type != "staged"
+            analysis_type_tag != AnalysisTypeTag.StaticLinear
+            and analysis_type_tag != AnalysisTypeTag.StaticNonlinear
+            and analysis_type_tag != AnalysisTypeTag.TransientNonlinear
+            and analysis_type_tag != AnalysisTypeTag.Staged
         ):
             abort(
                 "forceBeamColumn2d/dispBeamColumn2d requires static_linear, "
                 "static_nonlinear, transient_nonlinear, or staged analysis"
             )
-        if analysis_type == "transient_nonlinear":
-            if force_beam_mode != "auto":
+        if analysis_type_tag == AnalysisTypeTag.TransientNonlinear:
+            if force_beam_mode_tag != ForceBeamModeTag.Auto:
                 abort(
                     "force_beam_mode is only supported for static forceBeamColumn2d/"
                     "dispBeamColumn2d analyses"
                 )
-        elif analysis_type == "staged":
-            if force_beam_mode != "auto":
+        elif analysis_type_tag == AnalysisTypeTag.Staged:
+            if force_beam_mode_tag != ForceBeamModeTag.Auto:
                 abort(
                     "force_beam_mode is only supported for non-staged static forceBeamColumn2d/"
                     "dispBeamColumn2d analyses"
                 )
         else:
-            if force_beam_mode == "nonlinear":
-                if analysis_type != "static_nonlinear":
+            if force_beam_mode_tag == ForceBeamModeTag.Nonlinear:
+                if analysis_type_tag != AnalysisTypeTag.StaticNonlinear:
                     abort("force_beam_mode=nonlinear requires static_nonlinear analysis")
-            elif force_beam_mode == "linear_if_elastic":
+            elif force_beam_mode_tag == ForceBeamModeTag.LinearIfElastic:
                 if force_beam_has_nonelastic:
-                    if analysis_type != "static_nonlinear":
+                    if analysis_type_tag != AnalysisTypeTag.StaticNonlinear:
                         abort(
                             "forceBeamColumn2d/dispBeamColumn2d "
                             "with non-elastic fibers "
                             "requires static_nonlinear analysis"
                         )
-                elif analysis_type != "static_linear":
+                elif analysis_type_tag != AnalysisTypeTag.StaticLinear:
                     abort(
                         "force_beam_mode=linear_if_elastic requires static_linear "
                         "analysis for elastic forceBeamColumn2d/dispBeamColumn2d"
                     )
-            elif analysis_type == "static_linear" and force_beam_has_nonelastic:
+            elif (
+                analysis_type_tag == AnalysisTypeTag.StaticLinear
+                and force_beam_has_nonelastic
+            ):
                 abort(
                     "forceBeamColumn2d/dispBeamColumn2d with "
                     "non-elastic fibers requires "
                     "static_nonlinear analysis"
                 )
     if (
-        analysis_type != "static_nonlinear"
-        and analysis_type != "transient_nonlinear"
-        and analysis_type != "modal_eigen"
-        and analysis_type != "staged"
+        analysis_type_tag != AnalysisTypeTag.StaticNonlinear
+        and analysis_type_tag != AnalysisTypeTag.TransientNonlinear
+        and analysis_type_tag != AnalysisTypeTag.ModalEigen
+        and analysis_type_tag != AnalysisTypeTag.Staged
         and used_nonelastic_uniaxial
     ):
         abort("nonlinear uniaxial materials require static_nonlinear or transient_nonlinear analysis")
@@ -1916,7 +1929,7 @@ fn load_case_state_from_input(input: CaseInput) raises -> RunCaseState:
 
     var has_transformation_mpc = False
     if len(input.mp_constraints) > 0:
-        if constraints_handler != "Transformation":
+        if constraints_handler_tag != ConstraintHandlerTag.Transformation:
             abort("mp_constraints require analysis.constraints=Transformation")
         has_transformation_mpc = True
     for i in range(len(input.mp_constraints)):
@@ -2009,13 +2022,13 @@ fn load_case_state_from_input(input: CaseInput) raises -> RunCaseState:
     if has_transformation_mpc:
         use_banded_linear = False
         use_banded_nonlinear = False
-    elif analysis_type == "static_linear":
+    elif analysis_type_tag == AnalysisTypeTag.StaticLinear:
         if (
             system_tag == AnalysisSystemTag.Banded
             or (system_tag == AnalysisSystemTag.Auto and free_count > band_threshold)
         ):
             use_banded_linear = True
-    elif analysis_type == "static_nonlinear":
+    elif analysis_type_tag == AnalysisTypeTag.StaticNonlinear:
         if (
             system_tag == AnalysisSystemTag.Banded
             or (system_tag == AnalysisSystemTag.Auto and free_count > band_threshold)
@@ -2073,6 +2086,7 @@ fn load_case_state_from_input(input: CaseInput) raises -> RunCaseState:
     var ts_index = -1
     var pattern_input = input.pattern
     var pattern_type = "Plain"
+    var pattern_type_tag = PatternTypeTag.Plain
     var uniform_excitation_direction = 0
     var uniform_accel_ts_index = -1
     var supports_linear_transient_fast_path = not used_nonelastic_uniaxial
@@ -2085,7 +2099,11 @@ fn load_case_state_from_input(input: CaseInput) raises -> RunCaseState:
                 break
     if pattern_input.has_pattern:
         pattern_type = pattern_input.type
-        if pattern_type != "Plain" and pattern_type != "UniformExcitation":
+        pattern_type_tag = pattern_input.type_tag
+        if (
+            pattern_type_tag != PatternTypeTag.Plain
+            and pattern_type_tag != PatternTypeTag.UniformExcitation
+        ):
             abort("unsupported pattern type: " + pattern_type)
     if len(time_series) > 0 or pattern_input.has_pattern:
         if not pattern_input.has_pattern:
@@ -2096,7 +2114,7 @@ fn load_case_state_from_input(input: CaseInput) raises -> RunCaseState:
                     abort("time_series tag not found")
             else:
                 abort("pattern missing for multiple time_series")
-        elif pattern_type == "Plain":
+        elif pattern_type_tag == PatternTypeTag.Plain:
             if not pattern_input.has_time_series:
                 abort("pattern missing time_series")
             var ts_tag = pattern_input.time_series
@@ -2105,9 +2123,9 @@ fn load_case_state_from_input(input: CaseInput) raises -> RunCaseState:
                 abort("time_series tag not found")
         else:
             if (
-                analysis_type != "transient_linear"
-                and analysis_type != "transient_nonlinear"
-                and analysis_type != "staged"
+                analysis_type_tag != AnalysisTypeTag.TransientLinear
+                and analysis_type_tag != AnalysisTypeTag.TransientNonlinear
+                and analysis_type_tag != AnalysisTypeTag.Staged
             ):
                 abort("UniformExcitation requires transient analysis")
             if not pattern_input.has_direction:
@@ -2202,9 +2220,11 @@ fn load_case_state_from_input(input: CaseInput) raises -> RunCaseState:
     state.constrained = constrained^
     state.analysis = analysis_input
     state.analysis_type = analysis_type
+    state.analysis_type_tag = analysis_type_tag
     state.steps = steps
     state.modal_num_modes = modal_num_modes
     state.constraints_handler = constraints_handler
+    state.constraints_handler_tag = constraints_handler_tag
     state.use_banded_linear = use_banded_linear
     state.use_banded_nonlinear = use_banded_nonlinear
     state.has_transformation_mpc = has_transformation_mpc
@@ -2225,6 +2245,7 @@ fn load_case_state_from_input(input: CaseInput) raises -> RunCaseState:
     state.stages = input.stages.copy()
     state.ts_index = ts_index
     state.pattern_type = pattern_type
+    state.pattern_type_tag = pattern_type_tag
     state.uniform_excitation_direction = uniform_excitation_direction
     state.uniform_accel_ts_index = uniform_accel_ts_index
     state.rayleigh_alpha_m = rayleigh_alpha_m

@@ -31,7 +31,15 @@ from solver.run_case.input_types import (
 )
 from solver.time_series import TimeSeriesInput, eval_time_series_input, find_time_series_input
 from sections import FiberCell, FiberSection2dDef, FiberSection3dDef
-from tag_types import ElementTypeTag, NonlinearAlgorithmMode, RecorderTypeTag, TimeSeriesTypeTag
+from tag_types import (
+    AnalysisAlgorithmTag,
+    ElementTypeTag,
+    IntegratorTypeTag,
+    NonlinearAlgorithmMode,
+    NonlinearTestTypeTag,
+    RecorderTypeTag,
+    TimeSeriesTypeTag,
+)
 
 from solver.run_case.helpers import (
     _append_output,
@@ -59,25 +67,25 @@ from solver.run_case.load_state import (
 )
 
 
-fn _static_nonlinear_algorithm_mode(algorithm: String, label: String) -> Int:
-    if algorithm == "Newton":
+fn _static_nonlinear_algorithm_mode(algorithm_tag: Int, algorithm: String, label: String) -> Int:
+    if algorithm_tag == AnalysisAlgorithmTag.Newton:
         return NonlinearAlgorithmMode.Newton
-    if algorithm == "ModifiedNewton":
+    if algorithm_tag == AnalysisAlgorithmTag.ModifiedNewton:
         return NonlinearAlgorithmMode.ModifiedNewton
-    if algorithm == "ModifiedNewtonInitial":
+    if algorithm_tag == AnalysisAlgorithmTag.ModifiedNewtonInitial:
         return NonlinearAlgorithmMode.ModifiedNewtonInitial
     abort("unsupported " + label + " algorithm: " + algorithm)
     return NonlinearAlgorithmMode.Unknown
 
 
-fn _static_nonlinear_test_mode(test_type: String, label: String) -> Int:
-    if test_type == "MaxDispIncr":
+fn _static_nonlinear_test_mode(test_type_tag: Int, test_type: String, label: String) -> Int:
+    if test_type_tag == NonlinearTestTypeTag.MaxDispIncr:
         return 0
-    if test_type == "NormDispIncr":
+    if test_type_tag == NonlinearTestTypeTag.NormDispIncr:
         return 1
-    if test_type == "NormUnbalance":
+    if test_type_tag == NonlinearTestTypeTag.NormUnbalance:
         return 2
-    if test_type == "EnergyIncr":
+    if test_type_tag == NonlinearTestTypeTag.EnergyIncr:
         return 3
     abort("unsupported " + label + " test_type: " + test_type)
     return -1
@@ -183,13 +191,17 @@ fn run_static_nonlinear_load_control(
         if typed_elements[i].type_tag == ElementTypeTag.ForceBeamColumn2d:
             has_force_beam_column2d = True
             break
-    var primary_algorithm_mode = _static_nonlinear_algorithm_mode(analysis.algorithm, "static_nonlinear")
+    var primary_algorithm_mode = _static_nonlinear_algorithm_mode(
+        analysis.algorithm_tag, analysis.algorithm, "static_nonlinear"
+    )
     var fallback_algorithm = analysis.fallback_algorithm
     var has_fallback = False
     var fallback_algorithm_mode = NonlinearAlgorithmMode.Unknown
     if len(fallback_algorithm) > 0:
         fallback_algorithm_mode = _static_nonlinear_algorithm_mode(
-            fallback_algorithm, "static_nonlinear fallback"
+            analysis.fallback_algorithm_tag,
+            fallback_algorithm,
+            "static_nonlinear fallback",
         )
         has_fallback = True
     elif has_force_beam_column2d and (
@@ -205,10 +217,12 @@ fn run_static_nonlinear_load_control(
         fallback_algorithm_mode = NonlinearAlgorithmMode.Newton
         has_fallback = True
     var primary_test_mode = _static_nonlinear_test_mode(
-        analysis.test_type, "static_nonlinear"
+        analysis.test_type_tag, analysis.test_type, "static_nonlinear"
     )
     var fallback_test_mode = _static_nonlinear_test_mode(
-        analysis.fallback_test_type, "static_nonlinear fallback"
+        analysis.fallback_test_type_tag,
+        analysis.fallback_test_type,
+        "static_nonlinear fallback",
     )
     if max_iters < 1:
         abort("max_iters must be >= 1")
@@ -244,12 +258,12 @@ fn run_static_nonlinear_load_control(
     var F_int: List[Float64] = []
     F_int.resize(total_dofs, 0.0)
 
-    var integrator_type = analysis.integrator_type
-    if integrator_type == "":
-        integrator_type = "LoadControl"
+    var integrator_tag = analysis.integrator_tag
+    if integrator_tag == IntegratorTypeTag.Unknown:
+        integrator_tag = IntegratorTypeTag.LoadControl
     var use_banded_loadcontrol = (
         use_banded_nonlinear
-        and integrator_type == "LoadControl"
+        and integrator_tag == IntegratorTypeTag.LoadControl
         and primary_algorithm_mode != NonlinearAlgorithmMode.ModifiedNewtonInitial
         and not (
             has_fallback
@@ -1385,13 +1399,17 @@ fn run_static_nonlinear_displacement_control(
                 and typed_sections_by_id[sec_id].type == "FiberSection2d"
             ):
                 has_fiber_beam_column2d = True
-    var primary_algorithm_mode = _static_nonlinear_algorithm_mode(analysis.algorithm, "static_nonlinear")
+    var primary_algorithm_mode = _static_nonlinear_algorithm_mode(
+        analysis.algorithm_tag, analysis.algorithm, "static_nonlinear"
+    )
     var fallback_algorithm = analysis.fallback_algorithm
     var has_fallback = False
     var fallback_algorithm_mode = NonlinearAlgorithmMode.Unknown
     if len(fallback_algorithm) > 0:
         fallback_algorithm_mode = _static_nonlinear_algorithm_mode(
-            fallback_algorithm, "static_nonlinear fallback"
+            analysis.fallback_algorithm_tag,
+            fallback_algorithm,
+            "static_nonlinear fallback",
         )
         has_fallback = True
     elif has_force_beam_column2d and (
@@ -1404,10 +1422,12 @@ fn run_static_nonlinear_displacement_control(
         fallback_algorithm_mode = NonlinearAlgorithmMode.Newton
         has_fallback = True
     var primary_test_mode = _static_nonlinear_test_mode(
-        analysis.test_type, "static_nonlinear"
+        analysis.test_type_tag, analysis.test_type, "static_nonlinear"
     )
     var fallback_test_mode = _static_nonlinear_test_mode(
-        analysis.fallback_test_type, "static_nonlinear fallback"
+        analysis.fallback_test_type_tag,
+        analysis.fallback_test_type,
+        "static_nonlinear fallback",
     )
     if max_iters < 1:
         abort("max_iters must be >= 1")

@@ -49,7 +49,7 @@ from sections import (
     FiberSection3dDef,
     fiber_section2d_set_trial_from_offset,
 )
-from tag_types import ElementTypeTag
+from tag_types import ElementTypeTag, GeomTransfTag
 
 
 fn _elem_dir(elem: ElementInput, idx: Int) -> Int:
@@ -452,9 +452,9 @@ fn _beam2d_element_force_global(
     for i in range(6):
         u_elem[i] = u[dof_map[i]]
 
-    var geom = elem.geom_transf
+    var geom = elem.geom_tag
     var f_elem: List[Float64] = []
-    if geom == "Corotational":
+    if geom == GeomTransfTag.Corotational:
         f_elem = beam2d_corotational_global_internal_force(
             E,
             A,
@@ -467,7 +467,7 @@ fn _beam2d_element_force_global(
         )
     else:
         var k_global: List[List[Float64]] = []
-        if geom == "Linear":
+        if geom == GeomTransfTag.Linear:
             k_global = beam_global_stiffness(
                 E,
                 A,
@@ -477,7 +477,7 @@ fn _beam2d_element_force_global(
                 node2.x,
                 node2.y,
             )
-        elif geom == "PDelta":
+        elif geom == GeomTransfTag.PDelta:
             k_global = beam2d_pdelta_global_stiffness(
                 E,
                 A,
@@ -489,7 +489,7 @@ fn _beam2d_element_force_global(
                 u_elem,
             )
         else:
-            abort("unsupported geomTransf: " + geom)
+            abort("unsupported geomTransf: " + elem.geom_transf)
 
         f_elem.resize(6, 0.0)
         for i in range(6):
@@ -540,8 +540,12 @@ fn _beam_column3d_element_force_global(
     var beam_col_type = elem.type
     if ndf != 6:
         abort(beam_col_type + " requires ndf=6")
-    var geom = elem.geom_transf
-    if geom != "Linear" and geom != "PDelta" and geom != "Corotational":
+    var geom = elem.geom_tag
+    if (
+        geom != GeomTransfTag.Linear
+        and geom != GeomTransfTag.PDelta
+        and geom != GeomTransfTag.Corotational
+    ):
         abort(beam_col_type + " supports geomTransf Linear, PDelta, or Corotational")
     if (
         elem.type_tag == ElementTypeTag.ForceBeamColumn3d
@@ -595,7 +599,7 @@ fn _beam_column3d_element_force_global(
                 node2.y,
                 node2.z,
                 u_elem,
-                geom,
+                elem.geom_transf,
                 element_loads,
                 elem_load_offsets,
                 elem_load_pool,
@@ -619,7 +623,7 @@ fn _beam_column3d_element_force_global(
                 node2.y,
                 node2.z,
                 u_elem,
-                geom,
+                elem.geom_transf,
                 element_loads,
                 elem_load_offsets,
                 elem_load_pool,
@@ -643,7 +647,7 @@ fn _beam_column3d_element_force_global(
                 node2.y,
                 node2.z,
                 u_elem,
-                geom,
+                elem.geom_transf,
                 element_loads,
                 elem_load_offsets,
                 elem_load_pool,
@@ -671,7 +675,7 @@ fn _beam_column3d_element_force_global(
                 node2.y,
                 node2.z,
                 u_elem,
-                geom,
+                elem.geom_transf,
                 element_loads,
                 elem_load_offsets,
                 elem_load_pool,
@@ -703,7 +707,7 @@ fn _beam_column3d_element_force_global(
                 node2.y,
                 node2.z,
                 u_elem,
-                geom,
+                elem.geom_transf,
                 element_loads,
                 elem_load_offsets,
                 elem_load_pool,
@@ -1320,8 +1324,8 @@ fn _force_beam_column2d_element_force_global(
     var beam_col_type = elem.type
     if ndf != 3:
         abort(beam_col_type + " requires ndf=3")
-    var geom = elem.geom_transf
-    if geom != "Linear" and geom != "PDelta":
+    var geom = elem.geom_tag
+    if geom != GeomTransfTag.Linear and geom != GeomTransfTag.PDelta:
         abort(beam_col_type + " supports geomTransf Linear or PDelta")
     var integration = elem.integration
     var num_int_pts = elem.num_int_pts
@@ -1347,7 +1351,7 @@ fn _force_beam_column2d_element_force_global(
 
     if sec.type == "ElasticSection2d":
         var k_global: List[List[Float64]] = []
-        if geom == "Linear":
+        if geom == GeomTransfTag.Linear:
             k_global = beam_global_stiffness(
                 sec.E,
                 sec.A,
@@ -1357,7 +1361,7 @@ fn _force_beam_column2d_element_force_global(
                 node2.x,
                 node2.y,
             )
-        elif geom == "PDelta":
+        elif geom == GeomTransfTag.PDelta:
             k_global = beam2d_pdelta_global_stiffness(
                 sec.E,
                 sec.A,
@@ -1421,7 +1425,7 @@ fn _force_beam_column2d_element_force_global(
         elem_uniaxial_state_ids,
         elem_offset,
         elem_state_count,
-        geom,
+        elem.geom_transf,
         integration,
         num_int_pts,
         force_basic_q,
@@ -1495,7 +1499,7 @@ fn _force_beam_column2d_force_global_from_basic_state(
     f_local[4] = -shear + fixed_end[5]
     f_local[5] = q2
 
-    if elem.geom_transf == "PDelta":
+    if elem.geom_tag == GeomTransfTag.PDelta:
         var dof_map = [
             node_dof_index(i1, 1, ndf),
             node_dof_index(i1, 2, ndf),
@@ -1515,7 +1519,7 @@ fn _force_beam_column2d_force_global_from_basic_state(
         var pdelta_shear = (u_local[1] - u_local[4]) * q0 * inv_L
         f_local[1] += pdelta_shear
         f_local[4] -= pdelta_shear
-    elif elem.geom_transf == "Corotational":
+    elif elem.geom_tag == GeomTransfTag.Corotational:
         var dof_map = [
             node_dof_index(i1, 1, ndf),
             node_dof_index(i1, 2, ndf),
@@ -1571,7 +1575,7 @@ fn _force_beam_column2d_force_global_from_basic_state(
         f_local[0] += fixed_end[3]
         f_local[1] += fixed_end[4]
         f_local[4] += fixed_end[5]
-    elif elem.geom_transf != "Linear":
+    elif elem.geom_tag != GeomTransfTag.Linear:
         abort(
             elem.type + " supports geomTransf Linear, PDelta, or Corotational"
         )
@@ -1644,8 +1648,8 @@ fn _disp_beam_column2d_element_force_global(
     var beam_col_type = elem.type
     if ndf != 3:
         abort(beam_col_type + " requires ndf=3")
-    var geom = elem.geom_transf
-    if geom != "Linear" and geom != "PDelta":
+    var geom = elem.geom_tag
+    if geom != GeomTransfTag.Linear and geom != GeomTransfTag.PDelta:
         abort(beam_col_type + " supports geomTransf Linear or PDelta")
     var integration = elem.integration
     var num_int_pts = elem.num_int_pts
@@ -1671,7 +1675,7 @@ fn _disp_beam_column2d_element_force_global(
 
     if sec.type == "ElasticSection2d":
         var k_global: List[List[Float64]] = []
-        if geom == "Linear":
+        if geom == GeomTransfTag.Linear:
             k_global = beam_global_stiffness(
                 sec.E,
                 sec.A,
@@ -1681,7 +1685,7 @@ fn _disp_beam_column2d_element_force_global(
                 node2.x,
                 node2.y,
             )
-        elif geom == "PDelta":
+        elif geom == GeomTransfTag.PDelta:
             k_global = beam2d_pdelta_global_stiffness(
                 sec.E,
                 sec.A,
@@ -1739,7 +1743,7 @@ fn _disp_beam_column2d_element_force_global(
         elem_uniaxial_state_ids,
         elem_offset,
         elem_state_count,
-        geom,
+        elem.geom_transf,
         integration,
         num_int_pts,
         k_dummy,
@@ -2945,7 +2949,7 @@ fn _beam2d_deformation_for_recorder(
     var u_local: List[Float64] = []
     u_local.resize(6, 0.0)
     _beam2d_transform_u_global_to_local(c, s, u_global, u_local)
-    if elem.geom_transf == "Corotational":
+    if elem.geom_tag == GeomTransfTag.Corotational:
         var dulx = u_local[3] - u_local[0]
         var duly = u_local[4] - u_local[1]
         var Lx = L + dulx

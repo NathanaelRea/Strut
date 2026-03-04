@@ -47,7 +47,13 @@ from solver.run_case.load_state import (
 )
 from solver.run_case.loader import load_case_state_from_input
 from solver.time_series import TimeSeriesInput, eval_time_series_input, find_time_series_input
-from tag_types import ElementTypeTag, RecorderTypeTag
+from tag_types import (
+    AnalysisTypeTag,
+    ElementTypeTag,
+    IntegratorTypeTag,
+    PatternTypeTag,
+    RecorderTypeTag,
+)
 
 
 fn _write_output_chunk_files(
@@ -190,6 +196,7 @@ def run_case_input(
     var total_dofs = state.total_dofs
     var analysis = state.analysis
     var analysis_type = state.analysis_type
+    var analysis_type_tag = state.analysis_type_tag
     var steps = state.steps
     var modal_num_modes = state.modal_num_modes
     var use_banded_linear = state.use_banded_linear
@@ -204,6 +211,7 @@ def run_case_input(
     var dampings = state.dampings.copy()
     var ts_index = state.ts_index
     var pattern_type = state.pattern_type
+    var pattern_type_tag = state.pattern_type_tag
     var uniform_excitation_direction = state.uniform_excitation_direction
     var uniform_accel_ts_index = state.uniform_accel_ts_index
     var rayleigh_alpha_m = state.rayleigh_alpha_m
@@ -298,7 +306,7 @@ def run_case_input(
         _append_event(events, events_need_comma, "C", frame_assemble, assemble_end)
         _append_event(events, events_need_comma, "O", frame_solve, assemble_end)
 
-    if analysis_type == "static_linear":
+    if analysis_type_tag == AnalysisTypeTag.StaticLinear:
         run_static_linear(
             typed_nodes,
             typed_elements,
@@ -375,11 +383,13 @@ def run_case_input(
             rep_dof,
             constrained,
         )
-    elif analysis_type == "static_nonlinear":
+    elif analysis_type_tag == AnalysisTypeTag.StaticNonlinear:
         var integrator_type = analysis.integrator_type
-        if integrator_type == "":
+        var integrator_tag = analysis.integrator_tag
+        if integrator_tag == IntegratorTypeTag.Unknown:
             integrator_type = "LoadControl"
-        if integrator_type == "LoadControl":
+            integrator_tag = IntegratorTypeTag.LoadControl
+        if integrator_tag == IntegratorTypeTag.LoadControl:
             run_static_nonlinear_load_control(
                 analysis,
                 steps,
@@ -467,7 +477,7 @@ def run_case_input(
                 rep_dof,
                 constrained,
             )
-        elif integrator_type == "DisplacementControl":
+        elif integrator_tag == IntegratorTypeTag.DisplacementControl:
             _ = run_static_nonlinear_displacement_control(
                 analysis,
                 steps,
@@ -555,9 +565,9 @@ def run_case_input(
         else:
             abort("unsupported static_nonlinear integrator: " + integrator_type)
     elif (
-        analysis_type == "transient_linear"
+        analysis_type_tag == AnalysisTypeTag.TransientLinear
         or (
-            analysis_type == "transient_nonlinear"
+            analysis_type_tag == AnalysisTypeTag.TransientNonlinear
             and supports_linear_transient_fast_path
         )
     ):
@@ -570,6 +580,7 @@ def run_case_input(
             time_series_times,
             dampings,
             pattern_type,
+            pattern_type_tag,
             uniform_excitation_direction,
             uniform_accel_ts_index,
             rayleigh_alpha_m,
@@ -655,7 +666,7 @@ def run_case_input(
             frame_transient_step,
             frame_uniaxial_commit_all,
         )
-    elif analysis_type == "transient_nonlinear":
+    elif analysis_type_tag == AnalysisTypeTag.TransientNonlinear:
         run_transient_nonlinear(
             analysis,
             steps,
@@ -665,6 +676,7 @@ def run_case_input(
             time_series_times,
             dampings,
             pattern_type,
+            pattern_type_tag,
             uniform_excitation_direction,
             uniform_accel_ts_index,
             rayleigh_alpha_m,
@@ -755,8 +767,9 @@ def run_case_input(
             frame_uniaxial_revert_all,
             frame_uniaxial_commit_all,
         )
-    elif analysis_type == "staged":
+    elif analysis_type_tag == AnalysisTypeTag.Staged:
         var stage_pattern_type = pattern_type
+        var stage_pattern_type_tag = pattern_type_tag
         var stage_ts_index = ts_index
         var stage_uniform_excitation_direction = uniform_excitation_direction
         var stage_uniform_accel_ts_index = uniform_accel_ts_index
@@ -774,6 +787,7 @@ def run_case_input(
             )
             var stage_analysis = stage.analysis
             var stage_type = stage_analysis.type
+            var stage_type_tag = stage_analysis.type_tag
             if stage_analysis.steps < 1:
                 abort("analysis steps must be >= 1")
             if (
@@ -803,7 +817,8 @@ def run_case_input(
 
             if stage.pattern.has_pattern:
                 var stage_pattern_type_next = stage.pattern.type
-                if stage_pattern_type_next == "Plain":
+                var stage_pattern_type_next_tag = stage.pattern.type_tag
+                if stage_pattern_type_next_tag == PatternTypeTag.Plain:
                     if not stage.pattern.has_time_series:
                         abort("pattern missing time_series")
                     var stage_ts_tag = stage.pattern.time_series
@@ -821,9 +836,10 @@ def run_case_input(
                     elif stage_idx > 0:
                         stage_element_loads = []
                     stage_pattern_type = "Plain"
+                    stage_pattern_type_tag = PatternTypeTag.Plain
                     stage_uniform_excitation_direction = 0
                     stage_uniform_accel_ts_index = -1
-                elif stage_pattern_type_next == "UniformExcitation":
+                elif stage_pattern_type_next_tag == PatternTypeTag.UniformExcitation:
                     if has_stage_loads or has_stage_element_loads:
                         abort("UniformExcitation does not support nodal/element loads")
                     if not stage.pattern.has_direction:
@@ -849,13 +865,15 @@ def run_case_input(
                     stage_F = _zero_nodal_force_vector(total_dofs)
                     stage_element_loads = []
                     stage_pattern_type = "UniformExcitation"
+                    stage_pattern_type_tag = PatternTypeTag.UniformExcitation
                     stage_ts_index = -1
-                elif stage_pattern_type_next == "None":
+                elif stage_pattern_type_next_tag == PatternTypeTag.`None`:
                     if has_stage_loads or has_stage_element_loads:
                         abort("None pattern does not support nodal/element loads")
                     stage_F = _zero_nodal_force_vector(total_dofs)
                     stage_element_loads = []
                     stage_pattern_type = "Plain"
+                    stage_pattern_type_tag = PatternTypeTag.Plain
                     stage_ts_index = -1
                     stage_uniform_excitation_direction = 0
                     stage_uniform_accel_ts_index = -1
@@ -871,8 +889,8 @@ def run_case_input(
                 stage_rayleigh_beta_k_comm = stage.rayleigh.beta_k_comm
 
             var stage_final_pattern_scale = 0.0
-            if stage_type == "static_linear":
-                if stage_pattern_type != "Plain":
+            if stage_type_tag == AnalysisTypeTag.StaticLinear:
+                if stage_pattern_type_tag != PatternTypeTag.Plain:
                     abort("staged static_linear only supports Plain pattern")
                 run_static_linear(
                     typed_nodes,
@@ -958,11 +976,13 @@ def run_case_input(
                         time_series_values,
                         time_series_times,
                     )
-            elif stage_type == "static_nonlinear":
+            elif stage_type_tag == AnalysisTypeTag.StaticNonlinear:
                 var stage_integrator_type = stage_analysis.integrator_type
-                if stage_integrator_type == "":
+                var stage_integrator_tag = stage_analysis.integrator_tag
+                if stage_integrator_tag == IntegratorTypeTag.Unknown:
                     stage_integrator_type = "LoadControl"
-                if stage_integrator_type == "LoadControl":
+                    stage_integrator_tag = IntegratorTypeTag.LoadControl
+                if stage_integrator_tag == IntegratorTypeTag.LoadControl:
                     run_static_nonlinear_load_control(
                         stage_analysis,
                         stage_analysis.steps,
@@ -1058,7 +1078,7 @@ def run_case_input(
                             time_series_values,
                             time_series_times,
                         )
-                elif stage_integrator_type == "DisplacementControl":
+                elif stage_integrator_tag == IntegratorTypeTag.DisplacementControl:
                     var stage_disp_steps = stage_analysis.steps
                     stage_final_pattern_scale = run_static_nonlinear_displacement_control(
                         stage_analysis,
@@ -1150,9 +1170,9 @@ def run_case_input(
                         + stage_integrator_type
                     )
             elif (
-                stage_type == "transient_linear"
+                stage_type_tag == AnalysisTypeTag.TransientLinear
                 or (
-                    stage_type == "transient_nonlinear"
+                    stage_type_tag == AnalysisTypeTag.TransientNonlinear
                     and supports_linear_transient_fast_path
                 )
             ):
@@ -1165,6 +1185,7 @@ def run_case_input(
                     time_series_times,
                     dampings,
                     stage_pattern_type,
+                    stage_pattern_type_tag,
                     stage_uniform_excitation_direction,
                     stage_uniform_accel_ts_index,
                     stage_rayleigh_alpha_m,
@@ -1250,7 +1271,7 @@ def run_case_input(
                     frame_transient_step,
                     frame_uniaxial_commit_all,
                 )
-                if stage_pattern_type == "Plain":
+                if stage_pattern_type_tag == PatternTypeTag.Plain:
                     stage_final_pattern_scale = 1.0
                     if stage_ts_index >= 0:
                         stage_final_pattern_scale = eval_time_series_input(
@@ -1259,7 +1280,7 @@ def run_case_input(
                             time_series_values,
                             time_series_times,
                         )
-            elif stage_type == "transient_nonlinear":
+            elif stage_type_tag == AnalysisTypeTag.TransientNonlinear:
                 run_transient_nonlinear(
                     stage_analysis,
                     stage_analysis.steps,
@@ -1269,6 +1290,7 @@ def run_case_input(
                     time_series_times,
                     dampings,
                     stage_pattern_type,
+                    stage_pattern_type_tag,
                     stage_uniform_excitation_direction,
                     stage_uniform_accel_ts_index,
                     stage_rayleigh_alpha_m,
@@ -1359,7 +1381,7 @@ def run_case_input(
                     frame_uniaxial_revert_all,
                     frame_uniaxial_commit_all,
                 )
-                if stage_pattern_type == "Plain":
+                if stage_pattern_type_tag == PatternTypeTag.Plain:
                     stage_final_pattern_scale = 1.0
                     if stage_ts_index >= 0:
                         stage_final_pattern_scale = eval_time_series_input(
@@ -1368,7 +1390,7 @@ def run_case_input(
                             time_series_values,
                             time_series_times,
                         )
-            elif stage_type == "modal_eigen":
+            elif stage_type_tag == AnalysisTypeTag.ModalEigen:
                 if stage_analysis.num_modes < 1:
                     abort("modal_eigen requires num_modes >= 1")
                 run_modal_eigen(
@@ -1414,7 +1436,7 @@ def run_case_input(
                 abort("unsupported staged analysis type: " + stage_type)
 
             if stage.has_load_const:
-                if stage_pattern_type == "Plain":
+                if stage_pattern_type_tag == PatternTypeTag.Plain:
                     F_const = build_active_nodal_load(
                         F_const, stage_F, stage_final_pattern_scale
                     )
@@ -1426,10 +1448,11 @@ def run_case_input(
                 stage_F = _zero_nodal_force_vector(total_dofs)
                 stage_element_loads = []
                 stage_pattern_type = "Plain"
+                stage_pattern_type_tag = PatternTypeTag.Plain
                 stage_ts_index = -1
                 stage_uniform_excitation_direction = 0
                 stage_uniform_accel_ts_index = -1
-    elif analysis_type == "modal_eigen":
+    elif analysis_type_tag == AnalysisTypeTag.ModalEigen:
         run_modal_eigen(
             modal_num_modes,
             typed_nodes,
@@ -1485,23 +1508,29 @@ def run_case_input(
     var analysis_path = out_dir.joinpath("analysis_time_us.txt")
     analysis_path.write_text(PythonObject(String(analysis_us) + "\n"))
     if (
-        analysis_type == "transient_linear"
-        or analysis_type == "transient_nonlinear"
-        or (analysis_type == "staged" and len(transient_output_files) > 0)
+        analysis_type_tag == AnalysisTypeTag.TransientLinear
+        or analysis_type_tag == AnalysisTypeTag.TransientNonlinear
+        or (
+            analysis_type_tag == AnalysisTypeTag.Staged
+            and len(transient_output_files) > 0
+        )
     ):
         _write_output_chunk_files(
             out_dir, transient_output_files, transient_output_buffers
         )
-    elif analysis_type == "modal_eigen":
+    elif analysis_type_tag == AnalysisTypeTag.ModalEigen:
         _write_output_chunk_files(out_dir, static_output_files, static_output_buffers)
-    elif analysis_type == "static_nonlinear" and len(static_output_files) > 0:
+    elif (
+        analysis_type_tag == AnalysisTypeTag.StaticNonlinear
+        and len(static_output_files) > 0
+    ):
         _write_output_chunk_files(out_dir, static_output_files, static_output_buffers)
     else:
         if has_transformation_mpc:
             _enforce_equal_dof_values(u, rep_dof, constrained)
         var has_reaction_recorder = _has_recorder_type(recorders, RecorderTypeTag.NodeReaction)
         var final_load_scale = 1.0
-        if analysis_type == "static_linear" and ts_index >= 0:
+        if analysis_type_tag == AnalysisTypeTag.StaticLinear and ts_index >= 0:
             final_load_scale = eval_time_series_input(
                 time_series[ts_index], 1.0, time_series_values, time_series_times
             )

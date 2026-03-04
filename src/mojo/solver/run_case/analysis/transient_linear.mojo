@@ -64,7 +64,7 @@ from solver.run_case.helpers import (
     _section_response_for_recorder,
     _update_envelope,
 )
-from tag_types import ElementTypeTag, RecorderTypeTag
+from tag_types import ElementTypeTag, IntegratorTypeTag, PatternTypeTag, RecorderTypeTag
 
 
 @always_inline
@@ -317,6 +317,7 @@ fn run_transient_linear(
     time_series_times: List[Float64],
     dampings: List[DampingInput],
     pattern_type: String,
+    pattern_type_tag: Int,
     uniform_excitation_direction: Int,
     uniform_accel_ts_index: Int,
     rayleigh_alpha_m: Float64,
@@ -407,22 +408,25 @@ fn run_transient_linear(
     var dt = analysis.dt
     if dt <= 0.0:
         abort("transient_linear requires dt > 0")
-    if pattern_type != "Plain" and pattern_type != "UniformExcitation":
+    if (
+        pattern_type_tag != PatternTypeTag.Plain
+        and pattern_type_tag != PatternTypeTag.UniformExcitation
+    ):
         abort("unsupported pattern type: " + pattern_type)
-    if pattern_type == "UniformExcitation":
+    if pattern_type_tag == PatternTypeTag.UniformExcitation:
         if uniform_excitation_direction < 1 or uniform_excitation_direction > ndm:
             abort("UniformExcitation direction out of range")
         if uniform_accel_ts_index < 0:
             abort("UniformExcitation missing accel time_series")
     var uniform_excitation_dofs: List[Int] = []
-    if pattern_type == "UniformExcitation":
+    if pattern_type_tag == PatternTypeTag.UniformExcitation:
         for i in range(total_dofs):
             if (i % ndf) + 1 == uniform_excitation_direction:
                 uniform_excitation_dofs.append(i)
-    var integrator_type = analysis.integrator_type
-    if integrator_type == "":
-        integrator_type = "Newmark"
-    if integrator_type != "Newmark":
+    var integrator_tag = analysis.integrator_tag
+    if integrator_tag == IntegratorTypeTag.Unknown:
+        integrator_tag = IntegratorTypeTag.Newmark
+    if integrator_tag != IntegratorTypeTag.Newmark:
         abort("transient_linear only supports Newmark integrator")
     var gamma = analysis.integrator_gamma
     var beta = analysis.integrator_beta
@@ -453,7 +457,7 @@ fn run_transient_linear(
             events, events_need_comma, "O", frame_assemble_stiffness, asm_start_us
         )
     var initial_pattern_scale = 0.0
-    if pattern_type == "Plain":
+    if pattern_type_tag == PatternTypeTag.Plain:
         if ts_index >= 0:
             initial_pattern_scale = eval_time_series_input(
                 time_series[ts_index], 0.0, time_series_values, time_series_times
@@ -828,7 +832,7 @@ fn run_transient_linear(
                     constraints_end_us,
                 )
         var t = Float64(step + 1) * dt
-        if pattern_type == "UniformExcitation":
+        if pattern_type_tag == PatternTypeTag.UniformExcitation:
             copy_float64_contiguous(F_ext_step, F_const, len(F_ext_step))
             active_element_load_state = build_active_element_load_state(
                 const_element_loads,

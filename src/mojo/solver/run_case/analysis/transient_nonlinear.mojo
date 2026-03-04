@@ -73,7 +73,15 @@ from solver.run_case.helpers import (
     _sync_force_beam_column2d_committed_basic_states,
     _update_envelope,
 )
-from tag_types import ElementTypeTag, NonlinearAlgorithmMode, RecorderTypeTag
+from tag_types import (
+    AnalysisAlgorithmTag,
+    ElementTypeTag,
+    IntegratorTypeTag,
+    NonlinearAlgorithmMode,
+    NonlinearTestTypeTag,
+    PatternTypeTag,
+    RecorderTypeTag,
+)
 
 
 @always_inline
@@ -320,6 +328,7 @@ fn run_transient_nonlinear(
     time_series_times: List[Float64],
     dampings: List[DampingInput],
     pattern_type: String,
+    pattern_type_tag: Int,
     uniform_excitation_direction: Int,
     uniform_accel_ts_index: Int,
     rayleigh_alpha_m: Float64,
@@ -420,28 +429,34 @@ fn run_transient_nonlinear(
     var dt = analysis.dt
     if dt <= 0.0:
         abort("transient_nonlinear requires dt > 0")
-    if pattern_type != "Plain" and pattern_type != "UniformExcitation":
+    if (
+        pattern_type_tag != PatternTypeTag.Plain
+        and pattern_type_tag != PatternTypeTag.UniformExcitation
+    ):
         abort("unsupported pattern type: " + pattern_type)
-    if pattern_type == "UniformExcitation":
+    if pattern_type_tag == PatternTypeTag.UniformExcitation:
         if uniform_excitation_direction < 1 or uniform_excitation_direction > ndm:
             abort("UniformExcitation direction out of range")
         if uniform_accel_ts_index < 0:
             abort("UniformExcitation missing accel time_series")
     var uniform_excitation_dofs: List[Int] = []
-    if pattern_type == "UniformExcitation":
+    if pattern_type_tag == PatternTypeTag.UniformExcitation:
         for i in range(total_dofs):
             if (i % ndf) + 1 == uniform_excitation_direction:
                 uniform_excitation_dofs.append(i)
 
     var algorithm = analysis.algorithm
     var primary_algorithm_mode = NonlinearAlgorithmMode.Unknown
-    if algorithm == "Newton":
+    if analysis.algorithm_tag == AnalysisAlgorithmTag.Newton:
         primary_algorithm_mode = NonlinearAlgorithmMode.Newton
-    elif algorithm == "ModifiedNewton":
+    elif analysis.algorithm_tag == AnalysisAlgorithmTag.ModifiedNewton:
         primary_algorithm_mode = NonlinearAlgorithmMode.ModifiedNewton
-    elif algorithm == "ModifiedNewtonInitial":
+    elif analysis.algorithm_tag == AnalysisAlgorithmTag.ModifiedNewtonInitial:
         primary_algorithm_mode = NonlinearAlgorithmMode.ModifiedNewtonInitial
-    elif algorithm == "Broyden" or algorithm == "NewtonLineSearch":
+    elif (
+        analysis.algorithm_tag == AnalysisAlgorithmTag.Broyden
+        or analysis.algorithm_tag == AnalysisAlgorithmTag.NewtonLineSearch
+    ):
         # Mapped alternative: currently follows Newton tangent refresh behavior.
         primary_algorithm_mode = NonlinearAlgorithmMode.Newton
     else:
@@ -451,13 +466,20 @@ fn run_transient_nonlinear(
     var has_fallback = False
     var fallback_algorithm_mode = NonlinearAlgorithmMode.Unknown
     if len(fallback_algorithm) > 0:
-        if fallback_algorithm == "Newton":
+        if analysis.fallback_algorithm_tag == AnalysisAlgorithmTag.Newton:
             fallback_algorithm_mode = NonlinearAlgorithmMode.Newton
-        elif fallback_algorithm == "ModifiedNewton":
+        elif analysis.fallback_algorithm_tag == AnalysisAlgorithmTag.ModifiedNewton:
             fallback_algorithm_mode = NonlinearAlgorithmMode.ModifiedNewton
-        elif fallback_algorithm == "ModifiedNewtonInitial":
+        elif (
+            analysis.fallback_algorithm_tag
+            == AnalysisAlgorithmTag.ModifiedNewtonInitial
+        ):
             fallback_algorithm_mode = NonlinearAlgorithmMode.ModifiedNewtonInitial
-        elif fallback_algorithm == "Broyden" or fallback_algorithm == "NewtonLineSearch":
+        elif (
+            analysis.fallback_algorithm_tag == AnalysisAlgorithmTag.Broyden
+            or analysis.fallback_algorithm_tag
+            == AnalysisAlgorithmTag.NewtonLineSearch
+        ):
             # Mapped alternative: currently follows Newton tangent refresh behavior.
             fallback_algorithm_mode = NonlinearAlgorithmMode.Newton
         else:
@@ -471,10 +493,10 @@ fn run_transient_nonlinear(
         fallback_algorithm_mode = NonlinearAlgorithmMode.Newton
         has_fallback = True
 
-    var integrator_type = analysis.integrator_type
-    if integrator_type == "":
-        integrator_type = "Newmark"
-    if integrator_type != "Newmark":
+    var integrator_tag = analysis.integrator_tag
+    if integrator_tag == IntegratorTypeTag.Unknown:
+        integrator_tag = IntegratorTypeTag.Newmark
+    if integrator_tag != IntegratorTypeTag.Newmark:
         abort("transient_nonlinear only supports Newmark integrator")
     var gamma = analysis.integrator_gamma
     var beta = analysis.integrator_beta
@@ -483,25 +505,25 @@ fn run_transient_nonlinear(
 
     var primary_test_mode = -1
     var test_type = analysis.test_type
-    if test_type == "MaxDispIncr":
+    if analysis.test_type_tag == NonlinearTestTypeTag.MaxDispIncr:
         primary_test_mode = 0
-    elif test_type == "NormDispIncr":
+    elif analysis.test_type_tag == NonlinearTestTypeTag.NormDispIncr:
         primary_test_mode = 1
-    elif test_type == "NormUnbalance":
+    elif analysis.test_type_tag == NonlinearTestTypeTag.NormUnbalance:
         primary_test_mode = 2
-    elif test_type == "EnergyIncr":
+    elif analysis.test_type_tag == NonlinearTestTypeTag.EnergyIncr:
         primary_test_mode = 3
     else:
         abort("unsupported transient_nonlinear test_type: " + test_type)
     var fallback_test_mode = -1
     var fallback_test_type = analysis.fallback_test_type
-    if fallback_test_type == "MaxDispIncr":
+    if analysis.fallback_test_type_tag == NonlinearTestTypeTag.MaxDispIncr:
         fallback_test_mode = 0
-    elif fallback_test_type == "NormDispIncr":
+    elif analysis.fallback_test_type_tag == NonlinearTestTypeTag.NormDispIncr:
         fallback_test_mode = 1
-    elif fallback_test_type == "NormUnbalance":
+    elif analysis.fallback_test_type_tag == NonlinearTestTypeTag.NormUnbalance:
         fallback_test_mode = 2
-    elif fallback_test_type == "EnergyIncr":
+    elif analysis.fallback_test_type_tag == NonlinearTestTypeTag.EnergyIncr:
         fallback_test_mode = 3
     else:
         abort(
@@ -628,7 +650,7 @@ fn run_transient_nonlinear(
             events, events_need_comma, "O", frame_assemble_stiffness, asm_start_us
         )
     var initial_pattern_scale = 0.0
-    if pattern_type == "Plain":
+    if pattern_type_tag == PatternTypeTag.Plain:
         if ts_index >= 0:
             initial_pattern_scale = eval_time_series_input(
                 time_series[ts_index], 0.0, time_series_values, time_series_times
@@ -994,7 +1016,7 @@ fn run_transient_nonlinear(
         var force_basic_q_base = force_basic_q.copy()
 
         var t = Float64(step + 1) * dt
-        if pattern_type == "UniformExcitation":
+        if pattern_type_tag == PatternTypeTag.UniformExcitation:
             copy_float64_contiguous(F_ext_step, F_const, len(F_ext_step))
             active_element_load_state = build_active_element_load_state(
                 const_element_loads,

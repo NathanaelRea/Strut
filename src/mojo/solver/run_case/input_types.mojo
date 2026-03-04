@@ -9,12 +9,19 @@ from solver.time_series import (
     parse_time_series_inputs,
 )
 from tag_types import (
+    AnalysisAlgorithmTag,
+    AnalysisTypeTag,
     AnalysisSystemTag,
     BeamIntegrationTag,
+    ConstraintHandlerTag,
     ElementLoadTypeTag,
     ElementTypeTag,
+    ForceBeamModeTag,
     GeomTransfTag,
+    IntegratorTypeTag,
+    NonlinearTestTypeTag,
     NumbererTag,
+    PatternTypeTag,
     RecorderTypeTag,
 )
 
@@ -515,27 +522,35 @@ struct MassInput(Movable, ImplicitlyCopyable):
 
 struct AnalysisInput(Movable, ImplicitlyCopyable):
     var type: String
+    var type_tag: Int
     var constraints: String
+    var constraints_tag: Int
     var numberer_tag: Int
     var steps: Int
     var num_modes: Int
     var force_beam_mode: String
+    var force_beam_mode_tag: Int
     var system_tag: Int
     var band_threshold: Int
     var dt: Float64
     var algorithm: String
+    var algorithm_tag: Int
     var max_iters: Int
     var tol: Float64
     var rel_tol: Float64
     var fallback_algorithm: String
+    var fallback_algorithm_tag: Int
     var test_type: String
+    var test_type_tag: Int
     var fallback_test_type: String
+    var fallback_test_type_tag: Int
     var fallback_max_iters: Int
     var fallback_tol: Float64
     var fallback_rel_tol: Float64
     var step_retry_enabled: Bool
     var step_retry_restore_primary_after_success: Bool
     var integrator_type: String
+    var integrator_tag: Int
     var integrator_gamma: Float64
     var integrator_beta: Float64
     var integrator_step: Float64
@@ -552,27 +567,35 @@ struct AnalysisInput(Movable, ImplicitlyCopyable):
 
     fn __init__(out self):
         self.type = "static_linear"
+        self.type_tag = AnalysisTypeTag.StaticLinear
         self.constraints = "Plain"
+        self.constraints_tag = ConstraintHandlerTag.Plain
         self.numberer_tag = NumbererTag.Unknown
         self.steps = 1
         self.num_modes = 0
         self.force_beam_mode = "auto"
+        self.force_beam_mode_tag = ForceBeamModeTag.Auto
         self.system_tag = AnalysisSystemTag.Auto
         self.band_threshold = 128
         self.dt = 0.0
         self.algorithm = "Newton"
+        self.algorithm_tag = AnalysisAlgorithmTag.Newton
         self.max_iters = 20
         self.tol = 1.0e-10
         self.rel_tol = 1.0e-8
         self.fallback_algorithm = ""
+        self.fallback_algorithm_tag = AnalysisAlgorithmTag.Unknown
         self.test_type = "MaxDispIncr"
+        self.test_type_tag = NonlinearTestTypeTag.MaxDispIncr
         self.fallback_test_type = "MaxDispIncr"
+        self.fallback_test_type_tag = NonlinearTestTypeTag.MaxDispIncr
         self.fallback_max_iters = 20
         self.fallback_tol = 1.0e-10
         self.fallback_rel_tol = 1.0e-8
         self.step_retry_enabled = False
         self.step_retry_restore_primary_after_success = True
         self.integrator_type = ""
+        self.integrator_tag = IntegratorTypeTag.Unknown
         self.integrator_gamma = 0.5
         self.integrator_beta = 0.25
         self.integrator_step = 1.0
@@ -628,6 +651,7 @@ struct MPConstraintInput(Movable, ImplicitlyCopyable):
 struct PatternInput(Movable, ImplicitlyCopyable):
     var has_pattern: Bool
     var type: String
+    var type_tag: Int
     var has_time_series: Bool
     var time_series: Int
     var has_direction: Bool
@@ -638,6 +662,7 @@ struct PatternInput(Movable, ImplicitlyCopyable):
     fn __init__(out self):
         self.has_pattern = False
         self.type = "Plain"
+        self.type_tag = PatternTypeTag.Plain
         self.has_time_series = False
         self.time_series = -1
         self.has_direction = False
@@ -898,6 +923,90 @@ fn analysis_system_tag(system_name: String) -> Int:
     return AnalysisSystemTag.Unknown
 
 
+fn analysis_type_tag(type_name: String) -> Int:
+    if type_name == "static_linear":
+        return AnalysisTypeTag.StaticLinear
+    if type_name == "static_nonlinear":
+        return AnalysisTypeTag.StaticNonlinear
+    if type_name == "transient_linear":
+        return AnalysisTypeTag.TransientLinear
+    if type_name == "transient_nonlinear":
+        return AnalysisTypeTag.TransientNonlinear
+    if type_name == "staged":
+        return AnalysisTypeTag.Staged
+    if type_name == "modal_eigen":
+        return AnalysisTypeTag.ModalEigen
+    return AnalysisTypeTag.Unknown
+
+
+fn constraint_handler_tag(handler_name: String) -> Int:
+    if handler_name == "Plain":
+        return ConstraintHandlerTag.Plain
+    if handler_name == "Transformation":
+        return ConstraintHandlerTag.Transformation
+    return ConstraintHandlerTag.Unknown
+
+
+fn force_beam_mode_tag(mode_name: String) -> Int:
+    if mode_name == "auto":
+        return ForceBeamModeTag.Auto
+    if mode_name == "linear_if_elastic":
+        return ForceBeamModeTag.LinearIfElastic
+    if mode_name == "nonlinear":
+        return ForceBeamModeTag.Nonlinear
+    return ForceBeamModeTag.Unknown
+
+
+fn analysis_algorithm_tag(algorithm_name: String) -> Int:
+    if len(algorithm_name) == 0:
+        return AnalysisAlgorithmTag.Unknown
+    if algorithm_name == "Newton":
+        return AnalysisAlgorithmTag.Newton
+    if algorithm_name == "ModifiedNewton":
+        return AnalysisAlgorithmTag.ModifiedNewton
+    if algorithm_name == "ModifiedNewtonInitial":
+        return AnalysisAlgorithmTag.ModifiedNewtonInitial
+    if algorithm_name == "Broyden":
+        return AnalysisAlgorithmTag.Broyden
+    if algorithm_name == "NewtonLineSearch":
+        return AnalysisAlgorithmTag.NewtonLineSearch
+    return AnalysisAlgorithmTag.Unknown
+
+
+fn nonlinear_test_type_tag(test_type_name: String) -> Int:
+    if test_type_name == "MaxDispIncr":
+        return NonlinearTestTypeTag.MaxDispIncr
+    if test_type_name == "NormDispIncr":
+        return NonlinearTestTypeTag.NormDispIncr
+    if test_type_name == "NormUnbalance":
+        return NonlinearTestTypeTag.NormUnbalance
+    if test_type_name == "EnergyIncr":
+        return NonlinearTestTypeTag.EnergyIncr
+    return NonlinearTestTypeTag.Unknown
+
+
+fn integrator_type_tag(integrator_name: String) -> Int:
+    if len(integrator_name) == 0:
+        return IntegratorTypeTag.Unknown
+    if integrator_name == "LoadControl":
+        return IntegratorTypeTag.LoadControl
+    if integrator_name == "DisplacementControl":
+        return IntegratorTypeTag.DisplacementControl
+    if integrator_name == "Newmark":
+        return IntegratorTypeTag.Newmark
+    return IntegratorTypeTag.Unknown
+
+
+fn pattern_type_tag(type_name: String) -> Int:
+    if type_name == "Plain":
+        return PatternTypeTag.Plain
+    if type_name == "UniformExcitation":
+        return PatternTypeTag.UniformExcitation
+    if type_name == "None":
+        return PatternTypeTag.`None`
+    return PatternTypeTag.Unknown
+
+
 fn recorder_type_tag(type_name: String) -> Int:
     if type_name == "node_displacement":
         return RecorderTypeTag.NodeDisplacement
@@ -943,20 +1052,31 @@ fn parse_analysis_input_from_raw(
 ) raises -> AnalysisInput:
     var analysis = AnalysisInput()
     analysis.type = String(analysis_raw.get("type", "static_linear"))
+    analysis.type_tag = analysis_type_tag(analysis.type)
     analysis.constraints = String(analysis_raw.get("constraints", "Plain"))
+    analysis.constraints_tag = constraint_handler_tag(analysis.constraints)
     analysis.numberer_tag = numberer_tag(String(analysis_raw.get("numberer", "")))
     analysis.steps = Int(analysis_raw.get("steps", 1))
     analysis.num_modes = Int(analysis_raw.get("num_modes", 0))
     analysis.force_beam_mode = String(analysis_raw.get("force_beam_mode", "auto"))
+    analysis.force_beam_mode_tag = force_beam_mode_tag(analysis.force_beam_mode)
     analysis.dt = Float64(analysis_raw.get("dt", 0.0))
     analysis.algorithm = String(analysis_raw.get("algorithm", "Newton"))
+    analysis.algorithm_tag = analysis_algorithm_tag(analysis.algorithm)
     analysis.max_iters = Int(analysis_raw.get("max_iters", 20))
     analysis.tol = Float64(analysis_raw.get("tol", 1.0e-10))
     analysis.rel_tol = Float64(analysis_raw.get("rel_tol", 1.0e-8))
     analysis.fallback_algorithm = String(analysis_raw.get("fallback_algorithm", ""))
+    analysis.fallback_algorithm_tag = analysis_algorithm_tag(
+        analysis.fallback_algorithm
+    )
     analysis.test_type = String(analysis_raw.get("test_type", "MaxDispIncr"))
+    analysis.test_type_tag = nonlinear_test_type_tag(analysis.test_type)
     analysis.fallback_test_type = String(
         analysis_raw.get("fallback_test_type", analysis.test_type)
+    )
+    analysis.fallback_test_type_tag = nonlinear_test_type_tag(
+        analysis.fallback_test_type
     )
     analysis.fallback_max_iters = Int(
         analysis_raw.get("fallback_max_iters", analysis.max_iters)
@@ -979,13 +1099,17 @@ fn parse_analysis_input_from_raw(
     analysis.band_threshold = Int(analysis_raw.get("band_threshold", 128))
     var integrator_raw = analysis_raw.get("integrator", {})
     var default_integrator_type = ""
-    if analysis.type == "static_nonlinear":
+    if analysis.type_tag == AnalysisTypeTag.StaticNonlinear:
         default_integrator_type = "LoadControl"
-    elif analysis.type == "transient_linear" or analysis.type == "transient_nonlinear":
+    elif (
+        analysis.type_tag == AnalysisTypeTag.TransientLinear
+        or analysis.type_tag == AnalysisTypeTag.TransientNonlinear
+    ):
         default_integrator_type = "Newmark"
     analysis.integrator_type = String(
         integrator_raw.get("type", default_integrator_type)
     )
+    analysis.integrator_tag = integrator_type_tag(analysis.integrator_type)
     analysis.integrator_gamma = Float64(integrator_raw.get("gamma", 0.5))
     analysis.integrator_beta = Float64(integrator_raw.get("beta", 0.25))
     analysis.has_integrator_step = integrator_raw.__contains__("step")
@@ -1033,6 +1157,7 @@ fn parse_pattern_input_from_raw(pattern_raw: PythonObject) raises -> PatternInpu
         return pattern^
     pattern.has_pattern = True
     pattern.type = String(pattern_raw.get("type", "Plain"))
+    pattern.type_tag = pattern_type_tag(pattern.type)
     if pattern_raw.__contains__("time_series"):
         pattern.has_time_series = True
         pattern.time_series = Int(pattern_raw["time_series"])
@@ -1499,7 +1624,7 @@ fn parse_case_input(data: PythonObject) raises -> CaseInput:
     case_input.analysis = parse_analysis_input_from_raw(
         analysis_raw, case_input.analysis_integrator_targets_pool
     )
-    if case_input.analysis.type == "staged":
+    if case_input.analysis.type_tag == AnalysisTypeTag.Staged:
         if not analysis_raw.__contains__("stages"):
             abort("staged analysis requires analysis.stages")
         var stages_raw = analysis_raw["stages"]
