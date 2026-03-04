@@ -739,6 +739,7 @@ struct RecorderInput(Movable, ImplicitlyCopyable):
     var j_node: Int
     var drift_dof: Int
     var perp_dirn: Int
+    var time_series_tag: Int
 
     fn __init__(out self):
         self.type_tag = RecorderTypeTag.Unknown
@@ -757,6 +758,7 @@ struct RecorderInput(Movable, ImplicitlyCopyable):
         self.j_node = -1
         self.drift_dof = -1
         self.perp_dirn = -1
+        self.time_series_tag = -1
 
 
 struct CaseInput(Movable):
@@ -913,6 +915,12 @@ fn recorder_type_tag(type_name: String) -> Int:
         return RecorderTypeTag.Drift
     if type_name == "envelope_element_force":
         return RecorderTypeTag.EnvelopeElementForce
+    if type_name == "envelope_element_local_force":
+        return RecorderTypeTag.EnvelopeElementLocalForce
+    if type_name == "envelope_node_displacement":
+        return RecorderTypeTag.EnvelopeNodeDisplacement
+    if type_name == "envelope_node_acceleration":
+        return RecorderTypeTag.EnvelopeNodeAcceleration
     if type_name == "modal_eigen":
         return RecorderTypeTag.ModalEigen
     if type_name == "section_force":
@@ -1548,10 +1556,19 @@ fn parse_case_input(data: PythonObject) raises -> CaseInput:
         parsed.type_tag = recorder_type_tag(String(rec["type"]))
         if parsed.type_tag == RecorderTypeTag.Unknown:
             abort("unsupported recorder type")
-        if parsed.type_tag == RecorderTypeTag.NodeDisplacement:
-            parsed.output = String(rec.get("output", "node_disp"))
+        if (
+            parsed.type_tag == RecorderTypeTag.NodeDisplacement
+            or parsed.type_tag == RecorderTypeTag.EnvelopeNodeDisplacement
+            or parsed.type_tag == RecorderTypeTag.EnvelopeNodeAcceleration
+        ):
+            if parsed.type_tag == RecorderTypeTag.NodeDisplacement:
+                parsed.output = String(rec.get("output", "node_disp"))
+            elif parsed.type_tag == RecorderTypeTag.EnvelopeNodeDisplacement:
+                parsed.output = String(rec.get("output", "envelope_node_displacement"))
+            else:
+                parsed.output = String(rec.get("output", "envelope_node_acceleration"))
             if not rec.__contains__("nodes") or not rec.__contains__("dofs"):
-                abort("node_displacement recorder requires nodes and dofs")
+                abort("node recorder requires nodes and dofs")
             var nodes_raw = rec["nodes"]
             parsed.node_offset = len(case_input.recorder_nodes_pool)
             parsed.node_count = py_len(nodes_raw)
@@ -1562,6 +1579,8 @@ fn parse_case_input(data: PythonObject) raises -> CaseInput:
             parsed.dof_count = py_len(dofs_raw)
             for j in range(py_len(dofs_raw)):
                 case_input.recorder_dofs_pool.append(Int(dofs_raw[j]))
+            if rec.__contains__("time_series"):
+                parsed.time_series_tag = Int(rec["time_series"])
         elif parsed.type_tag == RecorderTypeTag.ElementForce:
             parsed.output = String(rec.get("output", "element_force"))
             if not rec.__contains__("elements"):
@@ -1629,6 +1648,15 @@ fn parse_case_input(data: PythonObject) raises -> CaseInput:
             parsed.output = String(rec.get("output", "envelope_element_force"))
             if not rec.__contains__("elements"):
                 abort("envelope_element_force recorder requires elements")
+            var elements_raw = rec["elements"]
+            parsed.element_offset = len(case_input.recorder_elements_pool)
+            parsed.element_count = py_len(elements_raw)
+            for j in range(py_len(elements_raw)):
+                case_input.recorder_elements_pool.append(Int(elements_raw[j]))
+        elif parsed.type_tag == RecorderTypeTag.EnvelopeElementLocalForce:
+            parsed.output = String(rec.get("output", "envelope_element_local_force"))
+            if not rec.__contains__("elements"):
+                abort("envelope_element_local_force recorder requires elements")
             var elements_raw = rec["elements"]
             parsed.element_offset = len(case_input.recorder_elements_pool)
             parsed.element_count = py_len(elements_raw)

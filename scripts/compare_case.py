@@ -17,6 +17,8 @@ REL_TOL = 1e-5
 
 DEFAULT_RECORDER_TOLERANCES = {
     "node_displacement": {"atol": 1e-9, "rtol": 1e-5},
+    "envelope_node_displacement": {"atol": 1e-9, "rtol": 1e-5},
+    "envelope_node_acceleration": {"atol": 1e-8, "rtol": 1e-5},
     "node_reaction": {"atol": 1e-9, "rtol": 1e-5},
     "drift": {"atol": 1e-9, "rtol": 1e-5},
     "element_force": {"atol": 1e-8, "rtol": 1e-5},
@@ -24,6 +26,7 @@ DEFAULT_RECORDER_TOLERANCES = {
     "element_basic_force": {"atol": 1e-8, "rtol": 1e-5},
     "element_deformation": {"atol": 1e-8, "rtol": 1e-5},
     "envelope_element_force": {"atol": 1e-8, "rtol": 1e-5},
+    "envelope_element_local_force": {"atol": 1e-8, "rtol": 1e-5},
     "section_force": {"atol": 1e-8, "rtol": 1e-5},
     "section_deformation": {"atol": 1e-9, "rtol": 1e-6},
     "modal_eigen": {"atol": 1e-8, "rtol": 1e-5},
@@ -420,11 +423,23 @@ def _compare_output_dirs(data: dict, ref_dir: Path, strut_dir: Path) -> list[str
                     if not ok:
                         failures.append(f"{rec_type} element {elem_id} mismatch")
                         failures.extend([f"  {err}" for err in errors])
-        elif rec_type == "envelope_element_force":
-            output = rec.get("output", "envelope_element_force")
-            for elem_id in rec["elements"]:
-                ref_file = ref_dir / f"{output}_ele{elem_id}.out"
-                strut_file = strut_dir / f"{output}_ele{elem_id}.out"
+        elif rec_type in (
+            "envelope_element_force",
+            "envelope_element_local_force",
+            "envelope_node_displacement",
+            "envelope_node_acceleration",
+        ):
+            output = rec.get("output", rec_type)
+            item_label = "element"
+            item_ids = rec.get("elements", [])
+            filename_template = "{output}_ele{item_id}.out"
+            if rec_type.startswith("envelope_node_"):
+                item_label = "node"
+                item_ids = rec.get("nodes", [])
+                filename_template = "{output}_node{item_id}.out"
+            for item_id in item_ids:
+                ref_file = ref_dir / filename_template.format(output=output, item_id=item_id)
+                strut_file = strut_dir / filename_template.format(output=output, item_id=item_id)
                 if not ref_file.exists():
                     failures.append(f"missing reference output: {ref_file}")
                     continue
@@ -435,7 +450,7 @@ def _compare_output_dirs(data: dict, ref_dir: Path, strut_dir: Path) -> list[str
                 strut_vals = _load_all_values(strut_file)
                 if len(ref_vals) != len(strut_vals):
                     failures.append(
-                        f"envelope element {elem_id} row count mismatch: {len(ref_vals)} != {len(strut_vals)}"
+                        f"envelope {item_label} {item_id} row count mismatch: {len(ref_vals)} != {len(strut_vals)}"
                     )
                     continue
                 for row_idx, (rvec, gvec) in enumerate(
@@ -446,7 +461,7 @@ def _compare_output_dirs(data: dict, ref_dir: Path, strut_dir: Path) -> list[str
                     )
                     if not ok:
                         failures.append(
-                            f"envelope element {elem_id} mismatch at row {row_idx}"
+                            f"envelope {item_label} {item_id} mismatch at row {row_idx}"
                         )
                         failures.extend([f"  {err}" for err in errors])
                         break

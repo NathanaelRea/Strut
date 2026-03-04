@@ -523,8 +523,38 @@ def _emit_recorders(f, recorders, node_by_id, ndf):
             output = rec.get("output", "envelope_element_force")
             for elem_id in rec["elements"]:
                 filename = f"{output}_ele{elem_id}.out"
+                time_flag = "-time " if rec.get("include_time") else ""
                 f.write(
-                    f"recorder EnvelopeElement -file {filename} -ele {elem_id} forces\n"
+                    f"recorder EnvelopeElement {time_flag}-file {filename} -ele {elem_id} forces\n"
+                )
+        elif rec_type == "envelope_element_local_force":
+            output = rec.get("output", "envelope_element_local_force")
+            for elem_id in rec["elements"]:
+                filename = f"{output}_ele{elem_id}.out"
+                time_flag = "-time " if rec.get("include_time") else ""
+                f.write(
+                    f"recorder EnvelopeElement {time_flag}-file {filename} -ele {elem_id} localForce\n"
+                )
+        elif rec_type == "envelope_node_displacement":
+            dofs = rec["dofs"]
+            output = rec.get("output", "envelope_node_displacement")
+            for node_id in rec["nodes"]:
+                filename = f"{output}_node{node_id}.out"
+                time_flag = "-time " if rec.get("include_time") else ""
+                f.write(
+                    f"recorder EnvelopeNode {time_flag}-file {filename} -node {node_id} -dof {' '.join(str(d) for d in dofs)} disp\n"
+                )
+        elif rec_type == "envelope_node_acceleration":
+            dofs = rec["dofs"]
+            output = rec.get("output", "envelope_node_acceleration")
+            time_series_flag = ""
+            if "time_series" in rec:
+                time_series_flag = f"-timeSeries {int(rec['time_series'])} "
+            for node_id in rec["nodes"]:
+                filename = f"{output}_node{node_id}.out"
+                time_flag = "-time " if rec.get("include_time") else ""
+                f.write(
+                    f"recorder EnvelopeNode {time_flag}-file {filename} {time_series_flag}-node {node_id} -dof {' '.join(str(d) for d in dofs)} accel\n"
                 )
         elif rec_type == "section_force" or rec_type == "section_deformation":
             output = rec.get("output", rec_type)
@@ -939,8 +969,10 @@ def main():
                     raise ValueError(
                         f"{elem_type} supports geomTransf Linear, PDelta, or Corotational"
                     )
-            elif geom not in ("Linear", "PDelta"):
-                raise ValueError(f"{elem_type} supports geomTransf Linear or PDelta")
+            elif geom not in ("Linear", "PDelta", "Corotational"):
+                raise ValueError(
+                    f"{elem_type} supports geomTransf Linear, PDelta, or Corotational"
+                )
             integration = elem.get("integration", "Lobatto")
             num_int_pts = int(elem.get("num_int_pts", 3))
             _validate_beam_integration(elem_type, integration, num_int_pts)
@@ -1313,6 +1345,8 @@ def main():
                     analysis.get("system", "BandGeneral"),
                     analysis.get("system_options", []),
                 )
+                if bool(stage.get("initialize", False)):
+                    f.write("initialize\n")
                 f.write(f"constraints {stage_constraints}\n")
                 f.write(f"numberer {stage_numberer}\n")
                 f.write(stage_system_line + "\n")
@@ -1611,6 +1645,8 @@ def main():
             raise ValueError("mp_constraints require analysis.constraints=Transformation")
         numberer = _analysis_numberer(analysis)
         system_line = _analysis_system_line(analysis)
+        if bool(data.get("initialize", False)):
+            f.write("initialize\n")
         f.write(f"constraints {constraints_handler}\n")
         f.write(f"numberer {numberer}\n")
         f.write(system_line + "\n")

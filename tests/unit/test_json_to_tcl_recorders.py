@@ -81,6 +81,65 @@ def test_json_to_tcl_emits_reaction_drift_and_envelope_recorders():
     assert "recorder Element -file sec_defo_ele1_sec1.out -ele 1 section 1 deformation\n" in text
 
 
+def test_json_to_tcl_emits_phase4_envelope_recorders():
+    case = {
+        "schema_version": "1.0",
+        "metadata": {"name": "phase4_recorders_tcl_unit", "units": "SI"},
+        "model": {"ndm": 2, "ndf": 3},
+        "nodes": [
+            {"id": 1, "x": 0.0, "y": 0.0, "constraints": [1, 2, 3]},
+            {"id": 2, "x": 0.0, "y": 3.0},
+        ],
+        "materials": [{"id": 1, "type": "Elastic", "params": {"E": 2.0e11}}],
+        "sections": [
+            {
+                "id": 1,
+                "type": "ElasticSection2d",
+                "params": {"E": 2.0e11, "A": 0.02, "I": 8.0e-5},
+            }
+        ],
+        "elements": [
+            {
+                "id": 1,
+                "type": "elasticBeamColumn2d",
+                "nodes": [1, 2],
+                "section": 1,
+                "geomTransf": "Linear",
+            }
+        ],
+        "analysis": {"type": "static_linear", "steps": 1},
+        "recorders": [
+            {
+                "type": "envelope_element_local_force",
+                "elements": [1],
+                "output": "env_local",
+                "include_time": True,
+            },
+            {
+                "type": "envelope_node_displacement",
+                "nodes": [2],
+                "dofs": [1],
+                "output": "env_disp",
+                "include_time": True,
+            },
+            {
+                "type": "envelope_node_acceleration",
+                "nodes": [2],
+                "dofs": [1],
+                "time_series": 3,
+                "output": "env_accel",
+                "include_time": True,
+            },
+        ],
+    }
+
+    text = _run_json_to_tcl(case)
+
+    assert "recorder EnvelopeElement -time -file env_local_ele1.out -ele 1 localForce\n" in text
+    assert "recorder EnvelopeNode -time -file env_disp_node2.out -node 2 -dof 1 disp\n" in text
+    assert "recorder EnvelopeNode -time -file env_accel_node2.out -timeSeries 3 -node 2 -dof 1 accel\n" in text
+
+
 def test_json_to_tcl_emits_beam_uniform_with_optional_wx():
     case = {
         "schema_version": "1.0",

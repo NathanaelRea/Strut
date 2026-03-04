@@ -580,3 +580,72 @@ def test_normalize_reference_outputs_splits_envelope_group_layout_with_time_pair
     assert (reference_dir / "env_ele2.out").read_text(encoding="utf-8") == (
         "-7 8 9 10 11 12 -19 20 21 22 23 24 -31 32 33 34 35 36\n"
     )
+
+
+def test_normalize_reference_outputs_splits_envelope_node_group_layout_with_time_pairs(
+    tmp_path: Path,
+):
+    case_json = tmp_path / "case.json"
+    reference_dir = tmp_path / "reference"
+    reference_dir.mkdir(parents=True, exist_ok=True)
+    (reference_dir / "disp.out").write_text(
+        "\n".join(
+            [
+                "7.0 -1 7.0 2",
+                "1.0 -3 1.0 4",
+                "3.0 5 3.0 6",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    case_json.write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "metadata": {"name": "group_layout_case", "units": "SI"},
+                "model": {"ndm": 2, "ndf": 3},
+                "nodes": [],
+                "elements": [],
+                "analysis": {"type": "staged", "stages": []},
+                "recorders": [
+                    {
+                        "type": "envelope_node_displacement",
+                        "nodes": [3],
+                        "dofs": [1],
+                        "output": "env_disp",
+                        "raw_path": "disp.out",
+                        "include_time": True,
+                        "group_layout": {
+                            "type": "envelope_node_displacement",
+                            "nodes": [3, 4],
+                            "values_per_node": [1, 1],
+                        },
+                    },
+                    {
+                        "type": "envelope_node_displacement",
+                        "nodes": [4],
+                        "dofs": [1],
+                        "output": "env_disp",
+                        "raw_path": "disp.out",
+                        "include_time": True,
+                        "group_layout": {
+                            "type": "envelope_node_displacement",
+                            "nodes": [3, 4],
+                            "values_per_node": [1, 1],
+                        },
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    run_case._normalize_reference_outputs(case_json, reference_dir)
+
+    assert (reference_dir / "env_disp_node3.out").read_text(encoding="utf-8") == (
+        "-1 -3 5\n"
+    )
+    assert (reference_dir / "env_disp_node4.out").read_text(encoding="utf-8") == (
+        "2 4 6\n"
+    )

@@ -76,6 +76,39 @@ def test_convert_ex1a_builds_staged_case():
     assert recorders["element_force"]["raw_path"] == "Data/FCol.out"
 
 
+def test_convert_example31_preserves_initialize_profilespd_and_rcm():
+    entry = (
+        REPO_ROOT
+        / "docs/agent-reference/OpenSees/EXAMPLES/ExampleScripts"
+        / "Example3.1.tcl"
+    )
+
+    case = tcl_to_strut.convert_tcl_to_case(entry, REPO_ROOT)
+
+    assert case["analysis"]["type"] == "staged"
+    assert len(case["analysis"]["stages"]) == 1
+    stage = case["analysis"]["stages"][0]
+
+    assert stage["initialize"] is True
+    assert stage["analysis"]["type"] == "static_nonlinear"
+    assert stage["analysis"]["steps"] == 10
+    assert stage["analysis"]["constraints"] == "Transformation"
+    assert stage["analysis"]["numberer"] == "RCM"
+    assert stage["analysis"]["system"] == "ProfileSPD"
+    assert stage["analysis"]["algorithm"] == "Newton"
+    assert stage["analysis"]["test_type"] == "NormDispIncr"
+    assert stage["analysis"]["integrator"]["type"] == "LoadControl"
+    assert stage["analysis"]["integrator"]["step"] == pytest.approx(0.1)
+    assert [element["type"] for element in case["elements"]] == [
+        "forceBeamColumn2d",
+        "forceBeamColumn2d",
+        "elasticBeamColumn2d",
+    ]
+    assert case["elements"][0]["geomTransf"] == "Corotational"
+    assert case["elements"][1]["geomTransf"] == "Corotational"
+    assert case["elements"][2]["geomTransf"] == "Linear"
+
+
 def test_convert_advanced_ex1a_eq_accepts_plural_element_deformations():
     entry = (
         REPO_ROOT
@@ -915,6 +948,60 @@ def test_convert_adds_envelope_element_group_layout_with_time_without_doubling(
         layout = recorder.get("group_layout")
         assert layout is not None
         assert layout["values_per_element"] == [6, 6]
+
+
+def test_convert_adds_envelope_local_force_and_node_recorders(tmp_path: Path):
+    script = tmp_path / "case.tcl"
+    script.write_text(
+        "\n".join(
+            [
+                "wipe",
+                "model basic -ndm 2 -ndf 3",
+                "node 1 0.0 0.0",
+                "node 2 0.0 144.0",
+                "node 3 0.0 288.0",
+                "fix 1 1 1 1",
+                "geomTransf Linear 1",
+                "element elasticBeamColumn 1 1 2 3600 3225 1080000 1",
+                "element elasticBeamColumn 2 2 3 3600 3225 1080000 1",
+                "recorder EnvelopeElement -file ele32.out -time -ele 1 2 localForce",
+                "recorder EnvelopeNode -time -file disp.out -node 2 3 -dof 1 disp",
+                "recorder EnvelopeNode -time -file accel.out -timeSeries 1 -node 2 3 -dof 1 accel",
+                "constraints Plain",
+                "numberer Plain",
+                "system BandGeneral",
+                "algorithm Linear",
+                "integrator LoadControl 1.0",
+                "analysis Static",
+                "analyze 1",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    case = tcl_to_strut.convert_tcl_to_case(script, REPO_ROOT)
+
+    local_force = [
+        rec for rec in case["recorders"] if rec["type"] == "envelope_element_local_force"
+    ]
+    assert len(local_force) == 2
+    for recorder in local_force:
+        assert recorder["group_layout"]["type"] == "envelope_element_local_force"
+        assert recorder["group_layout"]["values_per_element"] == [6, 6]
+
+    disp = [rec for rec in case["recorders"] if rec["type"] == "envelope_node_displacement"]
+    assert len(disp) == 2
+    for recorder in disp:
+        assert recorder["group_layout"]["type"] == "envelope_node_displacement"
+        assert recorder["group_layout"]["nodes"] == [2, 3]
+        assert recorder["group_layout"]["values_per_node"] == [1, 1]
+
+    accel = [rec for rec in case["recorders"] if rec["type"] == "envelope_node_acceleration"]
+    assert len(accel) == 2
+    for recorder in accel:
+        assert recorder["time_series"] == 1
+        assert recorder["group_layout"]["type"] == "envelope_node_acceleration"
+        assert recorder["group_layout"]["values_per_node"] == [1, 1]
 
 
 def test_convert_accepts_xml_plastic_rotation_recorder_and_skips_it(tmp_path: Path):

@@ -123,7 +123,12 @@ def _normalized_recorder_outputs(recorder: dict):
         return []
     rec_type = recorder["type"]
     output = recorder.get("output", rec_type)
-    if rec_type in ("node_displacement", "node_reaction"):
+    if rec_type in (
+        "node_displacement",
+        "node_reaction",
+        "envelope_node_displacement",
+        "envelope_node_acceleration",
+    ):
         nodes = recorder.get("nodes", [])
         if len(nodes) != 1:
             raise SystemExit(f"direct Tcl parity requires single-node recorder: {recorder}")
@@ -138,7 +143,7 @@ def _normalized_recorder_outputs(recorder: dict):
         if len(elements) != 1:
             raise SystemExit(f"direct Tcl parity requires single-element recorder: {recorder}")
         return [f"{output}_ele{int(elements[0])}.out"]
-    if rec_type == "envelope_element_force":
+    if rec_type in ("envelope_element_force", "envelope_element_local_force"):
         elements = recorder.get("elements", [])
         if len(elements) != 1:
             raise SystemExit(f"direct Tcl parity requires single-element recorder: {recorder}")
@@ -192,28 +197,29 @@ def _normalize_reference_outputs(case_data: dict | Path, reference_dir: Path):
             if not line.strip():
                 continue
             parts = line.replace(",", " ").split()
-            if (
-                group_layout
-                and group_layout.get("type") == "envelope_element_force"
-                and strip_time
-            ):
+            if group_layout and group_layout.get("type", "").startswith("envelope_") and strip_time:
                 normalized_rows.append(parts)
                 continue
             if strip_time and parts:
                 parts = parts[1:]
             normalized_rows.append(parts)
 
-        if group_layout and group_layout.get("type") == "envelope_element_force":
-            layout_elements = group_layout.get("elements") or []
-            layout_widths = group_layout.get("values_per_element") or []
-            width_by_element = dict(zip(layout_elements, layout_widths))
+        if group_layout and group_layout.get("type", "").startswith("envelope_"):
+            layout_items = group_layout.get("elements")
+            layout_widths = group_layout.get("values_per_element")
+            item_key = "elements"
+            if layout_items is None:
+                layout_items = group_layout.get("nodes") or []
+                layout_widths = group_layout.get("values_per_node") or []
+                item_key = "nodes"
+            width_by_item = dict(zip(layout_items, layout_widths))
             widths = []
             for recorder in recorders:
-                elements = recorder.get("elements") or []
-                if len(elements) != 1 or elements[0] not in width_by_element:
+                items = recorder.get(item_key) or []
+                if len(items) != 1 or items[0] not in width_by_item:
                     widths = []
                     break
-                widths.append(int(width_by_element[elements[0]]))
+                widths.append(int(width_by_item[items[0]]))
             if widths:
                 expected = sum(widths)
                 paired_payloads = [[] for _ in targets]

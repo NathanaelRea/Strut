@@ -181,6 +181,36 @@ def test_json_to_tcl_preserves_numberer_system_and_print_commands():
     assert "print ele\n" in text
 
 
+def test_json_to_tcl_emits_stage_initialize_before_analysis_setup():
+    case = _base_uniform_case()
+    case["pattern"] = {"type": "Plain", "tag": 1, "time_series": 2}
+    case["loads"] = [{"node": 2, "dof": 1, "value": 1.0}]
+    case["analysis"] = {
+        "type": "staged",
+        "constraints": "Transformation",
+        "stages": [
+            {
+                "initialize": True,
+                "analysis": {
+                    "type": "static_nonlinear",
+                    "steps": 1,
+                    "numberer": "RCM",
+                    "system": "ProfileSPD",
+                    "algorithm": "Newton",
+                    "test_type": "NormDispIncr",
+                    "tol": 1.0e-12,
+                    "max_iters": 10,
+                    "integrator": {"type": "LoadControl", "step": 0.1},
+                },
+            }
+        ],
+    }
+
+    text = _run_json_to_tcl(case)
+
+    assert "initialize\nconstraints Transformation\nnumberer RCM\nsystem ProfileSPD\n" in text
+
+
 def test_json_to_tcl_emits_staged_analysis_with_load_const_and_pattern_override():
     case = _base_uniform_case()
     case["time_series"] = [

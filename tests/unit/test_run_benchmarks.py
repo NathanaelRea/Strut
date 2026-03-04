@@ -966,6 +966,63 @@ def test_normalize_reference_outputs_splits_envelope_group_layout_with_time_pair
     )
 
 
+def test_normalize_reference_outputs_splits_envelope_node_group_layout_with_time_pairs(
+    tmp_path: Path,
+):
+    reference_dir = tmp_path / "reference"
+    reference_dir.mkdir(parents=True, exist_ok=True)
+    (reference_dir / "disp.out").write_text(
+        "\n".join(
+            [
+                "7.0 -1 7.0 2",
+                "1.0 -3 1.0 4",
+                "3.0 5 3.0 6",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    case_data = {
+        "recorders": [
+            {
+                "type": "envelope_node_displacement",
+                "nodes": [3],
+                "dofs": [1],
+                "output": "env_disp",
+                "raw_path": "disp.out",
+                "include_time": True,
+                "group_layout": {
+                    "type": "envelope_node_displacement",
+                    "nodes": [3, 4],
+                    "values_per_node": [1, 1],
+                },
+            },
+            {
+                "type": "envelope_node_displacement",
+                "nodes": [4],
+                "dofs": [1],
+                "output": "env_disp",
+                "raw_path": "disp.out",
+                "include_time": True,
+                "group_layout": {
+                    "type": "envelope_node_displacement",
+                    "nodes": [3, 4],
+                    "values_per_node": [1, 1],
+                },
+            },
+        ]
+    }
+
+    run_benchmarks._normalize_reference_outputs(case_data, reference_dir)
+
+    assert (reference_dir / "env_disp_node3.out").read_text(encoding="utf-8") == (
+        "-1 -3 5\n"
+    )
+    assert (reference_dir / "env_disp_node4.out").read_text(encoding="utf-8") == (
+        "2 4 6\n"
+    )
+
+
 def test_normalize_reference_outputs_preserves_existing_grouped_targets_on_mismatch(
     tmp_path: Path,
 ):

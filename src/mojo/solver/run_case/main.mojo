@@ -1578,22 +1578,48 @@ def run_case_input(
         var envelope_abs: List[List[Float64]] = []
         for r in range(len(recorders)):
             var rec = recorders[r]
-            if rec.type_tag == RecorderTypeTag.NodeDisplacement:
+            if (
+                rec.type_tag == RecorderTypeTag.NodeDisplacement
+                or rec.type_tag == RecorderTypeTag.EnvelopeNodeDisplacement
+                or rec.type_tag == RecorderTypeTag.EnvelopeNodeAcceleration
+            ):
                 for nidx in range(rec.node_count):
                     var node_id = recorder_nodes_pool[rec.node_offset + nidx]
                     var i = id_to_index[node_id]
-                    var line = String()
+                    var values: List[Float64] = []
+                    values.resize(rec.dof_count, 0.0)
                     for j in range(rec.dof_count):
                         var dof = recorder_dofs_pool[rec.dof_offset + j]
                         require_dof_in_range(dof, ndf, "recorder")
                         var value = u[node_dof_index(i, dof, ndf)]
-                        if j > 0:
-                            line += " "
-                        line += String(value)
-                    line += "\n"
+                        if rec.type_tag == RecorderTypeTag.EnvelopeNodeAcceleration:
+                            value = 0.0
+                            if rec.time_series_tag >= 0:
+                                var ts_index = find_time_series_input(
+                                    time_series, rec.time_series_tag
+                                )
+                                if ts_index < 0:
+                                    abort("recorder time series not found")
+                                value += eval_time_series_input(
+                                    time_series[ts_index],
+                                    0.0,
+                                    time_series_values,
+                                    time_series_times,
+                                )
+                        values[j] = value
                     var filename = rec.output + "_node" + String(node_id) + ".out"
-                    var file_path = out_dir.joinpath(filename)
-                    file_path.write_text(PythonObject(line))
+                    if rec.type_tag == RecorderTypeTag.NodeDisplacement:
+                        var file_path = out_dir.joinpath(filename)
+                        file_path.write_text(PythonObject(_format_values_line(values)))
+                    else:
+                        _update_envelope(
+                            filename,
+                            values,
+                            envelope_files,
+                            envelope_min,
+                            envelope_max,
+                            envelope_abs,
+                        )
             elif rec.type_tag == RecorderTypeTag.ElementForce:
                 for eidx in range(rec.element_count):
                     var elem_id = recorder_elements_pool[rec.element_offset + eidx]
@@ -1771,6 +1797,45 @@ def run_case_input(
                     _update_envelope(
                         filename,
                         f_elem,
+                        envelope_files,
+                        envelope_min,
+                        envelope_max,
+                        envelope_abs,
+                    )
+            elif rec.type_tag == RecorderTypeTag.EnvelopeElementLocalForce:
+                for eidx in range(rec.element_count):
+                    var elem_id = recorder_elements_pool[rec.element_offset + eidx]
+                    if elem_id >= len(elem_id_to_index) or elem_id_to_index[elem_id] < 0:
+                        abort("recorder element not found")
+                    var elem_index = elem_id_to_index[elem_id]
+                    var elem = typed_elements[elem_index]
+                    var values = _element_local_force_for_recorder(
+                        elem_index,
+                        elem,
+                        ndf,
+                        u,
+                        typed_nodes,
+                        typed_sections_by_id,
+                        fiber_section_defs,
+                        fiber_section_cells,
+                        fiber_section_index_by_id,
+                        fiber_section3d_defs,
+                        fiber_section3d_cells,
+                        fiber_section3d_index_by_id,
+                        uniaxial_defs,
+                        uniaxial_state_defs,
+                        uniaxial_states,
+                        elem_uniaxial_offsets,
+                        elem_uniaxial_counts,
+                        elem_uniaxial_state_ids,
+                        force_basic_offsets,
+                        force_basic_counts,
+                        force_basic_q,
+                    )
+                    var filename = rec.output + "_ele" + String(elem_id) + ".out"
+                    _update_envelope(
+                        filename,
+                        values,
                         envelope_files,
                         envelope_min,
                         envelope_max,

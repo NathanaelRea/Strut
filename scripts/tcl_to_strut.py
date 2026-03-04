@@ -52,6 +52,7 @@ SUPPORTED_TCL_BUILTINS = frozenset(
         "llength",
         "open",
         "proc",
+        "pset",
         "puts",
         "read",
         "return",
@@ -351,6 +352,7 @@ class TclStrutBuilder:
         self.node_displacements: dict[tuple[int, int], float] = {}
         self.last_eigenvalues: list[float] = []
         self.last_error: Optional[TclToStrutError] = None
+        self.pending_initialize = False
         self.step_retry_policies_by_location: dict[tuple[Path, int], StepRetryPolicy] = {}
         self.step_retry_policies_by_signature: dict[
             tuple[Path, tuple[str, ...]], list[StepRetryPolicy]
@@ -377,6 +379,7 @@ class TclStrutBuilder:
         self.interp.createcommand("close", self._wrap_command(self._cmd_close))
         self.interp.createcommand("info", self._wrap_command(self._cmd_info))
         self.interp.createcommand("variable", self._wrap_command(self._cmd_variable))
+        self.interp.createcommand("pset", self._wrap_command(self._cmd_pset))
         self.interp.createcommand("exit", self._wrap_command(self._cmd_exit))
         self.interp.createcommand("wipe", self._wrap_command(self._cmd_wipe))
         self.interp.createcommand("model", self._wrap_command(self._cmd_model))
@@ -402,6 +405,7 @@ class TclStrutBuilder:
         self.interp.createcommand("test", self._wrap_command(self._cmd_test))
         self.interp.createcommand("algorithm", self._wrap_command(self._cmd_algorithm))
         self.interp.createcommand("integrator", self._wrap_command(self._cmd_integrator))
+        self.interp.createcommand("initialize", self._wrap_command(self._cmd_initialize))
         self.interp.createcommand("analysis", self._wrap_command(self._cmd_analysis))
         self.interp.createcommand("analyze", self._wrap_command(self._cmd_analyze))
         self.interp.createcommand("getTime", self._wrap_command(self._cmd_get_time))
@@ -591,6 +595,7 @@ class TclStrutBuilder:
             "getTime",
             "info",
             "integrator",
+            "initialize",
             "load",
             "loadConst",
             "layer",
@@ -604,6 +609,7 @@ class TclStrutBuilder:
             "numberer",
             "open",
             "patch",
+            "pset",
             "pattern",
             "print",
             "prp",
@@ -923,6 +929,11 @@ class TclStrutBuilder:
             return None
         return width
 
+    def _envelope_node_width(self, dofs: list[int], include_time: bool) -> Optional[int]:
+        if not dofs:
+            return None
+        return len(dofs)
+
     def _can_merge_stage(self, stage: dict[str, Any]) -> bool:
         if self.last_stage is None:
             return False
@@ -935,6 +946,8 @@ class TclStrutBuilder:
         if self.last_stage.get("element_loads", []) != stage.get("element_loads", []):
             return False
         if self.last_stage.get("rayleigh") != stage.get("rayleigh"):
+            return False
+        if self.last_stage.get("initialize", False) != stage.get("initialize", False):
             return False
         prev_analysis = dict(self.last_stage.get("analysis", {}))
         next_analysis = dict(stage.get("analysis", {}))
@@ -1376,6 +1389,17 @@ class TclStrutBuilder:
             last_value = args[idx + 1]
         return str(last_value)
 
+    def _cmd_pset(self, *args: str) -> str:
+        if not args:
+            raise self._error("pset expects at least one argument", "pset", args)
+        if len(args) == 1:
+            value = self.interp.getvar(args[0])
+            return "" if value is None else str(value)
+        if len(args) != 2:
+            raise self._error("pset expects `pset name value`", "pset", args)
+        self.interp.setvar(args[0], args[1])
+        return str(args[1])
+
     def _cmd_exit(self, *args: str) -> str:
         if args:
             raise self._error("exit takes no arguments in the restricted runtime", "exit", args)
@@ -1447,6 +1471,7 @@ class TclStrutBuilder:
         self.analysis_type = None
         self.current_time = 0.0
         self.node_displacements.clear()
+        self.pending_initialize = False
         self.step_retry_policies_by_location.clear()
         self.step_retry_policies_by_signature.clear()
         return ""
@@ -2028,6 +2053,9 @@ class TclStrutBuilder:
                         break
                     idx += 1
                 options["dof"] = values
+            elif token == "-timeSeries":
+                options["timeSeries"] = int(args[idx + 1])
+                idx += 2
             elif token == "-iNode":
                 values = []
                 idx += 1
@@ -2106,6 +2134,52 @@ class TclStrutBuilder:
                 return ""
             else:
                 raise self._error(f"unsupported Node recorder response `{kind}`", "recorder", args)
+            return ""
+
+        if recorder_type == "EnvelopeNode":
+            nodes = options.get("node") or []
+            dofs = options.get("dof") or []
+            if not remainder:
+                raise self._error("EnvelopeNode recorder response is required", "recorder", args)
+            if not nodes or not dofs:
+                raise self._error("EnvelopeNode recorder requires -node and -dof", "recorder", args)
+            kind = remainder[0]
+            if kind == "disp":
+                rec_type = "envelope_node_displacement"
+            elif kind == "accel":
+                rec_type = "envelope_node_acceleration"
+            else:
+                raise self._error(
+                    f"unsupported EnvelopeNode response `{kind}`", "recorder", args
+                )
+            widths: list[int] = []
+            for _node_id in nodes:
+                width = self._envelope_node_width(dofs, include_time)
+                if width is None:
+                    widths = []
+                    break
+                widths.append(width)
+            group_layout = None
+            if widths:
+                group_layout = {
+                    "type": rec_type,
+                    "nodes": list(nodes),
+                    "values_per_node": widths,
+                }
+            for node_id in nodes:
+                recorder = {
+                    "type": rec_type,
+                    "nodes": [node_id],
+                    "dofs": dofs,
+                    "output": output,
+                    "raw_path": raw_file,
+                    "include_time": include_time,
+                }
+                if kind == "accel" and "timeSeries" in options:
+                    recorder["time_series"] = int(options["timeSeries"])
+                if group_layout is not None:
+                    recorder["group_layout"] = dict(group_layout)
+                self._append_recorder(recorder)
             return ""
 
         if recorder_type == "Drift":
@@ -2203,8 +2277,13 @@ class TclStrutBuilder:
 
         if recorder_type == "EnvelopeElement":
             known_elements = {int(element["id"]) for element in self.elements}
-            if not remainder or remainder[0] not in {"force", "forces"}:
+            if not remainder or remainder[0] not in {"force", "forces", "localForce"}:
                 raise self._error("unsupported EnvelopeElement response", "recorder", args)
+            rec_type = (
+                "envelope_element_local_force"
+                if remainder[0] == "localForce"
+                else "envelope_element_force"
+            )
             element_by_id = {int(element["id"]): element for element in self.elements}
             elements = [elem_id for elem_id in (options.get("ele") or []) if elem_id in known_elements]
             group_layout = None
@@ -2220,13 +2299,13 @@ class TclStrutBuilder:
                     widths.append(width)
                 if widths:
                     group_layout = {
-                        "type": "envelope_element_force",
+                        "type": rec_type,
                         "elements": list(elements),
                         "values_per_element": widths,
                     }
             for elem_id in elements:
                 recorder = {
-                    "type": "envelope_element_force",
+                    "type": rec_type,
                     "elements": [elem_id],
                     "output": output,
                     "raw_path": raw_file,
@@ -2512,6 +2591,12 @@ class TclStrutBuilder:
         self.analysis_type = args[0]
         return ""
 
+    def _cmd_initialize(self, *args: str) -> str:
+        if args:
+            raise self._error("initialize takes no arguments", "initialize", args)
+        self.pending_initialize = True
+        return ""
+
     def _cmd_analyze(self, *args: str) -> str:
         if self.analysis_type is None:
             raise self._error("analysis type must be set before analyze", "analyze", args)
@@ -2589,6 +2674,8 @@ class TclStrutBuilder:
                 return "0"
             if self.current_rayleigh is not None:
                 stage["rayleigh"] = dict(self.current_rayleigh)
+            if self.pending_initialize:
+                stage["initialize"] = True
             steps = int(args[0])
             if self.integrator["type"] == "LoadControl":
                 self.current_time += steps * float(self.integrator["step"])
@@ -2666,9 +2753,12 @@ class TclStrutBuilder:
                 )
             if self.current_rayleigh is not None:
                 stage["rayleigh"] = dict(self.current_rayleigh)
+            if self.pending_initialize:
+                stage["initialize"] = True
             self.current_time += int(args[0]) * float(args[1])
 
         self._append_stage(stage)
+        self.pending_initialize = False
         self.pattern_removed = False
         return "0"
 
@@ -2751,6 +2841,7 @@ class TclStrutBuilder:
         self.algorithm_name = None
         self.integrator = None
         self.analysis_type = None
+        self.pending_initialize = False
         return ""
 
     def _cmd_eigen(self, *args: str) -> str:

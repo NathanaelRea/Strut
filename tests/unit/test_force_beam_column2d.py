@@ -131,6 +131,29 @@ def test_force_beam_column2d_smoke_static_nonlinear_load_control():
     assert all(math.isfinite(value) for row in rows for value in row)
 
 
+def test_force_beam_column2d_corotational_smoke_static_nonlinear_load_control():
+    case_data = _base_force_beam_case(
+        {"id": 1, "type": "Elastic", "params": {"E": 30000000000.0}}
+    )
+    case_data["elements"][0]["geomTransf"] = "Corotational"
+    case_data["analysis"] = {
+        "type": "static_nonlinear",
+        "steps": 3,
+        "max_iters": 20,
+        "tol": 1e-10,
+        "integrator": {"type": "LoadControl"},
+    }
+
+    with tempfile.TemporaryDirectory() as tmp:
+        out_dir = Path(tmp)
+        _run_strut_case(case_data, out_dir)
+        rows = _read_rows(out_dir / "element_force_ele1.out")
+
+    assert len(rows) == 3
+    assert all(len(row) == 6 for row in rows)
+    assert all(math.isfinite(value) for row in rows for value in row)
+
+
 def test_force_beam_column2d_smoke_static_nonlinear_modified_newton():
     case_data = _base_force_beam_case(
         {"id": 1, "type": "Elastic", "params": {"E": 30000000000.0}}
@@ -468,7 +491,7 @@ def test_force_beam_column2d_beam_uniform_reports_zero_free_end_forces():
     assert row[5] == pytest.approx(0.0, abs=1e-8)
 
 
-def test_force_beam_column2d_rejects_unsupported_geom_transf():
+def test_force_beam_column2d_accepts_corotational_geom_transf():
     case_data = _base_force_beam_case(
         {"id": 1, "type": "Elastic", "params": {"E": 30000000000.0}}
     )
@@ -481,8 +504,11 @@ def test_force_beam_column2d_rejects_unsupported_geom_transf():
 
     with tempfile.TemporaryDirectory() as tmp:
         out_dir = Path(tmp)
-        with pytest.raises(subprocess.CalledProcessError):
-            _run_strut_case(case_data, out_dir)
+        _run_strut_case(case_data, out_dir)
+        rows = _read_rows(out_dir / "element_force_ele1.out")
+
+    assert len(rows) == 1
+    assert all(math.isfinite(value) for value in rows[0])
 
 
 def test_force_beam_column2d_radau_variable_points_runs():

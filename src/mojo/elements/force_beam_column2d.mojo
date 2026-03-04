@@ -1,5 +1,5 @@
 from collections import List
-from math import hypot
+from math import atan2, hypot, sqrt
 from os import abort
 
 from elements.beam_loads import beam2d_basic_fixed_end_and_reactions, beam2d_section_load_response
@@ -410,6 +410,138 @@ fn _ensure_force_beam_column2d_load_cache(
     fixed_end[5] = fixed[5]
     scratch.fixed_end_cache[elem_index] = fixed_end^
     scratch.load_valid[elem_index] = True
+
+
+fn _force_beam_column2d_corotational_basic_to_global(
+    L: Float64,
+    c: Float64,
+    s: Float64,
+    u_local: List[Float64],
+    q0: Float64,
+    q1: Float64,
+    q2: Float64,
+    k00: Float64,
+    k01: Float64,
+    k02: Float64,
+    k10: Float64,
+    k11: Float64,
+    k12: Float64,
+    k22: Float64,
+    fixed_end: (Float64, Float64, Float64, Float64, Float64, Float64),
+    mut k_global_out: List[List[Float64]],
+    mut f_global_out: List[Float64],
+):
+    var dulx = u_local[3] - u_local[0]
+    var duly = u_local[4] - u_local[1]
+    var Lx = L + dulx
+    var Ly = duly
+    var Ln = sqrt(Lx * Lx + Ly * Ly)
+    if Ln == 0.0:
+        abort("zero-length element")
+
+    var cos_alpha = Lx / Ln
+    var sin_alpha = Ly / Ln
+    var Tbl: List[List[Float64]] = [
+        [-cos_alpha, -sin_alpha, 0.0, cos_alpha, sin_alpha, 0.0],
+        [
+            -sin_alpha / Ln,
+            cos_alpha / Ln,
+            1.0,
+            sin_alpha / Ln,
+            -cos_alpha / Ln,
+            0.0,
+        ],
+        [
+            -sin_alpha / Ln,
+            cos_alpha / Ln,
+            0.0,
+            sin_alpha / Ln,
+            -cos_alpha / Ln,
+            1.0,
+        ],
+    ]
+
+    _ensure_zero_matrix(k_global_out, 6, 6)
+    for i in range(6):
+        var t0i = Tbl[0][i]
+        var t1i = Tbl[1][i]
+        var t2i = Tbl[2][i]
+        for j in range(6):
+            var t0j = Tbl[0][j]
+            var t1j = Tbl[1][j]
+            var t2j = Tbl[2][j]
+            k_global_out[i][j] = (
+                k00 * t0i * t0j
+                + k01 * t0i * t1j
+                + k02 * t0i * t2j
+                + k10 * t1i * t0j
+                + k11 * t1i * t1j
+                + k12 * t1i * t2j
+                + k02 * t2i * t0j
+                + k12 * t2i * t1j
+                + k22 * t2i * t2j
+            )
+
+    var s2 = sin_alpha * sin_alpha
+    var c2 = cos_alpha * cos_alpha
+    var cs = sin_alpha * cos_alpha
+
+    var kg0: List[List[Float64]] = []
+    _ensure_zero_matrix(kg0, 6, 6)
+    kg0[0][0] = s2
+    kg0[3][3] = s2
+    kg0[0][1] = -cs
+    kg0[3][4] = -cs
+    kg0[1][0] = -cs
+    kg0[4][3] = -cs
+    kg0[1][1] = c2
+    kg0[4][4] = c2
+    kg0[0][3] = -s2
+    kg0[3][0] = -s2
+    kg0[0][4] = cs
+    kg0[3][1] = cs
+    kg0[1][3] = cs
+    kg0[4][0] = cs
+    kg0[1][4] = -c2
+    kg0[4][1] = -c2
+
+    var kg12: List[List[Float64]] = []
+    _ensure_zero_matrix(kg12, 6, 6)
+    kg12[0][0] = -2.0 * cs
+    kg12[3][3] = -2.0 * cs
+    kg12[0][1] = c2 - s2
+    kg12[3][4] = c2 - s2
+    kg12[1][0] = c2 - s2
+    kg12[4][3] = c2 - s2
+    kg12[1][1] = 2.0 * cs
+    kg12[4][4] = 2.0 * cs
+    kg12[0][3] = 2.0 * cs
+    kg12[3][0] = 2.0 * cs
+    kg12[0][4] = -c2 + s2
+    kg12[3][1] = -c2 + s2
+    kg12[1][3] = -c2 + s2
+    kg12[4][0] = -c2 + s2
+    kg12[1][4] = -2.0 * cs
+    kg12[4][1] = -2.0 * cs
+
+    var scale0 = q0 / Ln
+    var scale12 = (q1 + q2) / (Ln * Ln)
+    for i in range(6):
+        for j in range(6):
+            k_global_out[i][j] += kg0[i][j] * scale0 + kg12[i][j] * scale12
+
+    _ensure_zero_vector(f_global_out, 6)
+    for i in range(6):
+        f_global_out[i] = Tbl[0][i] * q0 + Tbl[1][i] * q1 + Tbl[2][i] * q2
+
+    # Distributed-load basic reactions are already folded into q*, but the
+    # extra local shear/end-force terms still need to be carried through.
+    f_global_out[0] += fixed_end[3]
+    f_global_out[1] += fixed_end[4]
+    f_global_out[4] += fixed_end[5]
+
+    _beam2d_transform_stiffness_local_to_global_in_place(k_global_out, c, s)
+    _beam2d_transform_force_local_to_global_in_place(f_global_out, c, s)
 
 
 fn _force_beam_column2d_exact_elastic_state(
@@ -1135,10 +1267,26 @@ fn force_beam_column2d_global_tangent_and_internal(
     ):
         abort("forceBeamColumn2d fiber backup state out of range")
 
-    var chord_rotation = (scratch.u_local[4] - scratch.u_local[1]) / L
-    var v_basic_0 = scratch.u_local[3] - scratch.u_local[0]
-    var v_basic_1 = scratch.u_local[2] - chord_rotation
-    var v_basic_2 = scratch.u_local[5] - chord_rotation
+    var v_basic_0: Float64
+    var v_basic_1: Float64
+    var v_basic_2: Float64
+    if geom_transf == "Corotational":
+        var dulx = scratch.u_local[3] - scratch.u_local[0]
+        var duly = scratch.u_local[4] - scratch.u_local[1]
+        var Lx = L + dulx
+        var Ly = duly
+        var Ln = sqrt(Lx * Lx + Ly * Ly)
+        if Ln == 0.0:
+            abort("zero-length element")
+        var alpha = atan2(Ly, Lx)
+        v_basic_0 = Ln - L
+        v_basic_1 = scratch.u_local[2] - alpha
+        v_basic_2 = scratch.u_local[5] - alpha
+    else:
+        var chord_rotation = (scratch.u_local[4] - scratch.u_local[1]) / L
+        v_basic_0 = scratch.u_local[3] - scratch.u_local[0]
+        v_basic_1 = scratch.u_local[2] - chord_rotation
+        v_basic_2 = scratch.u_local[5] - chord_rotation
     var basic_prev_0 = force_basic_q_state[basic_state_offset]
     var basic_prev_1 = force_basic_q_state[basic_state_offset + 1]
     var basic_prev_2 = force_basic_q_state[basic_state_offset + 2]
@@ -1479,6 +1627,28 @@ fn force_beam_column2d_global_tangent_and_internal(
     var k20 = k02
     var k21 = k12
     var k22 = best_solved[10]
+
+    if geom_transf == "Corotational":
+        _force_beam_column2d_corotational_basic_to_global(
+            L,
+            c,
+            s,
+            scratch.u_local,
+            q0,
+            q1,
+            q2,
+            k00,
+            k01,
+            k02,
+            k10,
+            k11,
+            k12,
+            k22,
+            fixed_end,
+            k_global_out,
+            f_global_out,
+        )
+        return
 
     var inv_L = 1.0 / L
     if elem_index >= 0 and elem_index < len(scratch.cached_inv_length):

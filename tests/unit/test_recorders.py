@@ -141,3 +141,117 @@ def test_elastic_beam_column_2d_element_deformation_recorder():
         defo_rows = _read_rows(out_dir / "beam_defo_ele1.out")
 
     assert defo_rows == [[0.01, 0.0, 0.0]]
+
+
+def test_envelope_local_force_recorder_static_linear():
+    case_data = {
+        "schema_version": "1.0",
+        "metadata": {"name": "envelope_local_force_unit", "units": "SI"},
+        "model": {"ndm": 2, "ndf": 3},
+        "nodes": [
+            {"id": 1, "x": 0.0, "y": 0.0, "constraints": [1, 2, 3]},
+            {"id": 2, "x": 0.0, "y": 5.0},
+        ],
+        "materials": [{"id": 1, "type": "Elastic", "params": {"E": 1000.0}}],
+        "sections": [
+            {
+                "id": 1,
+                "type": "ElasticSection2d",
+                "params": {"E": 1000.0, "A": 2.0, "I": 1.0},
+            }
+        ],
+        "elements": [
+            {
+                "id": 1,
+                "type": "elasticBeamColumn2d",
+                "nodes": [1, 2],
+                "section": 1,
+                "geomTransf": "Linear",
+            }
+        ],
+        "loads": [{"node": 2, "dof": 1, "value": 4.0}],
+        "analysis": {"type": "static_linear", "steps": 1},
+        "recorders": [
+            {
+                "type": "envelope_element_local_force",
+                "elements": [1],
+                "output": "env_local",
+            }
+        ],
+    }
+
+    with tempfile.TemporaryDirectory() as tmp:
+        out_dir = Path(tmp)
+        _run_strut_case(case_data, out_dir)
+        env_rows = _read_rows(out_dir / "env_local_ele1.out")
+
+    assert len(env_rows) == 3
+    assert all(len(row) == len(env_rows[0]) for row in env_rows)
+    assert all(math.isfinite(v) for row in env_rows for v in row)
+
+
+def test_envelope_node_disp_and_accel_recorders_transient_linear():
+    case_data = {
+        "schema_version": "1.0",
+        "metadata": {"name": "envelope_node_transient_unit", "units": "SI"},
+        "model": {"ndm": 2, "ndf": 3},
+        "nodes": [
+            {"id": 1, "x": 0.0, "y": 0.0, "constraints": [1, 2, 3]},
+            {"id": 2, "x": 0.0, "y": 3.0},
+        ],
+        "materials": [{"id": 1, "type": "Elastic", "params": {"E": 2.0e11}}],
+        "sections": [
+            {
+                "id": 1,
+                "type": "ElasticSection2d",
+                "params": {"E": 2.0e11, "A": 0.02, "I": 8.0e-5},
+            }
+        ],
+        "elements": [
+            {
+                "id": 1,
+                "type": "elasticBeamColumn2d",
+                "nodes": [1, 2],
+                "section": 1,
+                "geomTransf": "Linear",
+            }
+        ],
+        "masses": [
+            {"node": 2, "dof": 1, "value": 1.0},
+            {"node": 2, "dof": 2, "value": 1.0},
+        ],
+        "time_series": [
+            {"type": "Path", "tag": 2, "dt": 0.1, "values": [0.0, 1.0, 0.0], "factor": 1.0}
+        ],
+        "pattern": {"type": "UniformExcitation", "tag": 1, "direction": 1, "accel": 2},
+        "analysis": {"type": "transient_linear", "steps": 3, "dt": 0.1},
+        "recorders": [
+            {
+                "type": "envelope_node_displacement",
+                "nodes": [2],
+                "dofs": [1],
+                "output": "env_disp",
+            },
+            {
+                "type": "envelope_node_acceleration",
+                "nodes": [2],
+                "dofs": [1],
+                "time_series": 2,
+                "output": "env_accel",
+            },
+        ],
+    }
+
+    with tempfile.TemporaryDirectory() as tmp:
+        out_dir = Path(tmp)
+        _run_strut_case(case_data, out_dir)
+        disp_rows = _read_rows(out_dir / "env_disp_node2.out")
+        accel_rows = _read_rows(out_dir / "env_accel_node2.out")
+
+    assert len(disp_rows) == 3
+    assert len(accel_rows) == 3
+    assert all(len(row) == 1 for row in disp_rows)
+    assert all(len(row) == 1 for row in accel_rows)
+    assert all(math.isfinite(row[0]) for row in disp_rows)
+    assert all(math.isfinite(row[0]) for row in accel_rows)
+    assert accel_rows[2][0] >= 0.0

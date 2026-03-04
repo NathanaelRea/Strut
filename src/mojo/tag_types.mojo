@@ -60,6 +60,9 @@ struct RecorderTypeTag:
     alias ElementLocalForce = 9
     alias ElementBasicForce = 10
     alias ElementDeformation = 11
+    alias EnvelopeElementLocalForce = 12
+    alias EnvelopeNodeDisplacement = 13
+    alias EnvelopeNodeAcceleration = 14
 
 
 struct TimeSeriesTypeTag:

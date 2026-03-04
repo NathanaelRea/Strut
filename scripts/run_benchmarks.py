@@ -28,6 +28,8 @@ ABS_TOL = 1e-8
 REL_TOL = 1e-5
 DEFAULT_RECORDER_TOLERANCES = {
     "node_displacement": {"atol": 1e-9, "rtol": 1e-5},
+    "envelope_node_displacement": {"atol": 1e-9, "rtol": 1e-5},
+    "envelope_node_acceleration": {"atol": 1e-8, "rtol": 1e-5},
     "node_reaction": {"atol": 1e-9, "rtol": 1e-5},
     "drift": {"atol": 1e-9, "rtol": 1e-5},
     "element_force": {"atol": 1e-8, "rtol": 1e-5},
@@ -35,6 +37,7 @@ DEFAULT_RECORDER_TOLERANCES = {
     "element_basic_force": {"atol": 1e-8, "rtol": 1e-5},
     "element_deformation": {"atol": 1e-8, "rtol": 1e-5},
     "envelope_element_force": {"atol": 1e-8, "rtol": 1e-5},
+    "envelope_element_local_force": {"atol": 1e-8, "rtol": 1e-5},
     "section_force": {"atol": 1e-8, "rtol": 1e-5},
     "section_deformation": {"atol": 1e-9, "rtol": 1e-6},
     "modal_eigen": {"atol": 1e-8, "rtol": 1e-5},
@@ -393,7 +396,12 @@ def _normalized_recorder_outputs(recorder: dict) -> List[str]:
         return []
     rec_type = recorder["type"]
     output = recorder.get("output", rec_type)
-    if rec_type in ("node_displacement", "node_reaction"):
+    if rec_type in (
+        "node_displacement",
+        "node_reaction",
+        "envelope_node_displacement",
+        "envelope_node_acceleration",
+    ):
         nodes = recorder.get("nodes", [])
         if len(nodes) != 1:
             raise SystemExit(
@@ -414,7 +422,7 @@ def _normalized_recorder_outputs(recorder: dict) -> List[str]:
                 f"direct Tcl benchmark normalization requires single-element recorder: {recorder}"
             )
         return [f"{output}_ele{int(elements[0])}.out"]
-    if rec_type == "envelope_element_force":
+    if rec_type in ("envelope_element_force", "envelope_element_local_force"):
         elements = recorder.get("elements", [])
         if len(elements) != 1:
             raise SystemExit(
@@ -473,11 +481,7 @@ def _normalize_reference_outputs(
             if not line.strip():
                 continue
             parts = line.replace(",", " ").split()
-            if (
-                group_layout
-                and group_layout.get("type") == "envelope_element_force"
-                and strip_time
-            ):
+            if group_layout and group_layout.get("type", "").startswith("envelope_") and strip_time:
                 normalized_rows.append(parts)
                 continue
             if strip_time and parts:
@@ -485,17 +489,22 @@ def _normalize_reference_outputs(
             normalized_rows.append(parts)
 
         payloads = [[] for _ in targets]
-        if group_layout and group_layout.get("type") == "envelope_element_force":
-            layout_elements = group_layout.get("elements") or []
-            layout_widths = group_layout.get("values_per_element") or []
-            width_by_element = dict(zip(layout_elements, layout_widths))
+        if group_layout and group_layout.get("type", "").startswith("envelope_"):
+            layout_items = group_layout.get("elements")
+            layout_widths = group_layout.get("values_per_element")
+            item_key = "elements"
+            if layout_items is None:
+                layout_items = group_layout.get("nodes") or []
+                layout_widths = group_layout.get("values_per_node") or []
+                item_key = "nodes"
+            width_by_item = dict(zip(layout_items, layout_widths))
             widths = []
             for recorder in recorders:
-                elements = recorder.get("elements") or []
-                if len(elements) != 1 or elements[0] not in width_by_element:
+                items = recorder.get(item_key) or []
+                if len(items) != 1 or items[0] not in width_by_item:
                     widths = []
                     break
-                widths.append(int(width_by_element[elements[0]]))
+                widths.append(int(width_by_item[items[0]]))
             if widths:
                 expected = sum(widths)
                 paired_payloads = [[] for _ in targets]
@@ -1891,7 +1900,7 @@ def _summarize_benchmark_failures(
         if detail.startswith("drift "):
             add(case_name, "drift mismatch", detail)
             continue
-        if detail.startswith("envelope element "):
+        if detail.startswith("envelope element ") or detail.startswith("envelope node "):
             add(case_name, "envelope mismatch", detail)
             continue
         if detail.startswith("modal "):
@@ -3276,20 +3285,32 @@ def main() -> None:
                                 case_parity_failures.extend(
                                     [f"  {err}" for err in errors]
                                 )
-                elif rec_type == "envelope_element_force":
-                    output = rec.get("output", "envelope_element_force")
-                    for elem_id in rec.get("elements", []):
+                elif rec_type in (
+                    "envelope_element_force",
+                    "envelope_element_local_force",
+                    "envelope_node_displacement",
+                    "envelope_node_acceleration",
+                ):
+                    output = rec.get("output", rec_type)
+                    item_label = "element"
+                    item_ids = rec.get("elements", [])
+                    filename_template = "{output}_ele{item_id}.out"
+                    if rec_type.startswith("envelope_node_"):
+                        item_label = "node"
+                        item_ids = rec.get("nodes", [])
+                        filename_template = "{output}_node{item_id}.out"
+                    for item_id in item_ids:
                         ref_file = (
                             results_root
                             / "opensees"
                             / case_name
-                            / f"{output}_ele{elem_id}.out"
+                            / filename_template.format(output=output, item_id=item_id)
                         )
                         strut_file = (
                             results_root
                             / "strut"
                             / case_name
-                            / f"{output}_ele{elem_id}.out"
+                            / filename_template.format(output=output, item_id=item_id)
                         )
                         if not ref_file.exists():
                             case_parity_failures.append(
@@ -3309,7 +3330,7 @@ def main() -> None:
                             continue
                         if len(ref_vals) != len(strut_vals):
                             case_parity_failures.append(
-                                f"{case_name}: envelope element {elem_id} row count mismatch: {len(ref_vals)} != {len(strut_vals)}"
+                                f"{case_name}: envelope {item_label} {item_id} row count mismatch: {len(ref_vals)} != {len(strut_vals)}"
                             )
                             continue
                         for row, (rvec, gvec) in enumerate(
@@ -3320,7 +3341,7 @@ def main() -> None:
                             )
                             if not ok:
                                 case_parity_failures.append(
-                                    f"{case_name}: envelope element {elem_id} mismatch at row {row}"
+                                    f"{case_name}: envelope {item_label} {item_id} mismatch at row {row}"
                                 )
                                 case_parity_failures.extend(
                                     [f"  {err}" for err in errors]

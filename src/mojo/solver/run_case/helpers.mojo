@@ -32,6 +32,7 @@ from elements.beam3d import (
 from elements.utils import (
     _beam2d_transform_force_local_to_global_in_place,
     _beam2d_transform_u_global_to_local,
+    _ensure_zero_vector,
 )
 from materials import UniMaterialDef, UniMaterialState, uniaxial_set_trial_strain
 from solver.dof import node_dof_index, require_dof_in_range
@@ -1514,8 +1515,66 @@ fn _force_beam_column2d_force_global_from_basic_state(
         var pdelta_shear = (u_local[1] - u_local[4]) * q0 * inv_L
         f_local[1] += pdelta_shear
         f_local[4] -= pdelta_shear
+    elif elem.geom_transf == "Corotational":
+        var dof_map = [
+            node_dof_index(i1, 1, ndf),
+            node_dof_index(i1, 2, ndf),
+            node_dof_index(i1, 3, ndf),
+            node_dof_index(i2, 1, ndf),
+            node_dof_index(i2, 2, ndf),
+            node_dof_index(i2, 3, ndf),
+        ]
+        var u_local: List[Float64] = []
+        u_local.resize(6, 0.0)
+        u_local[0] = c * u[dof_map[0]] + s * u[dof_map[1]]
+        u_local[1] = -s * u[dof_map[0]] + c * u[dof_map[1]]
+        u_local[2] = u[dof_map[2]]
+        u_local[3] = c * u[dof_map[3]] + s * u[dof_map[4]]
+        u_local[4] = -s * u[dof_map[3]] + c * u[dof_map[4]]
+        u_local[5] = u[dof_map[5]]
+        var dulx = u_local[3] - u_local[0]
+        var duly = u_local[4] - u_local[1]
+        var Lx = L + dulx
+        var Ly = duly
+        var Ln = sqrt(Lx * Lx + Ly * Ly)
+        if Ln == 0.0:
+            abort("zero-length element")
+        var cos_alpha = Lx / Ln
+        var sin_alpha = Ly / Ln
+        var tbl0 = [
+            -cos_alpha,
+            -sin_alpha,
+            0.0,
+            cos_alpha,
+            sin_alpha,
+            0.0,
+        ]
+        var tbl1 = [
+            -sin_alpha / Ln,
+            cos_alpha / Ln,
+            1.0,
+            sin_alpha / Ln,
+            -cos_alpha / Ln,
+            0.0,
+        ]
+        var tbl2 = [
+            -sin_alpha / Ln,
+            cos_alpha / Ln,
+            0.0,
+            sin_alpha / Ln,
+            -cos_alpha / Ln,
+            1.0,
+        ]
+        _ensure_zero_vector(f_local, 6)
+        for idx in range(6):
+            f_local[idx] = tbl0[idx] * q0 + tbl1[idx] * q1 + tbl2[idx] * q2
+        f_local[0] += fixed_end[3]
+        f_local[1] += fixed_end[4]
+        f_local[4] += fixed_end[5]
     elif elem.geom_transf != "Linear":
-        abort(elem.type + " supports geomTransf Linear or PDelta")
+        abort(
+            elem.type + " supports geomTransf Linear, PDelta, or Corotational"
+        )
 
     _beam2d_transform_force_local_to_global_in_place(f_local, c, s)
     return f_local^

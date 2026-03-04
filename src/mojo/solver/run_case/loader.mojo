@@ -980,8 +980,12 @@ fn load_case_state_from_input(input: CaseInput) raises -> RunCaseState:
             if (
                 elem.geom_tag != GeomTransfTag.Linear
                 and elem.geom_tag != GeomTransfTag.PDelta
+                and elem.geom_tag != GeomTransfTag.Corotational
             ):
-                abort(beam_col_type + " supports geomTransf Linear or PDelta")
+                abort(
+                    beam_col_type
+                    + " supports geomTransf Linear, PDelta, or Corotational"
+                )
             beam_integration_validate_or_abort(
                 beam_col_type, elem.integration, elem.num_int_pts
             )
