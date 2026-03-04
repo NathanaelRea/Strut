@@ -115,9 +115,10 @@ def test_json_to_tcl_emits_transient_nonlinear_fallback_loop():
 
     assert "set strut_tr_ok 0\n" in text
     assert "set strut_tr_ok [analyze 1 0.1]\n" in text
+    assert "if {$strut_tr_ok != 0} {\n" in text
     assert "test NormDispIncr 1e-08 25\n" in text
     assert "algorithm ModifiedNewton -initial\n" in text
-    assert "if {$strut_tr_ok != 0} {\n" in text
+    assert "if {strut_tr_ok != 0} {\n" not in text
     assert "analyze 2 0.1\n" not in text
 
 
@@ -154,8 +155,10 @@ def test_json_to_tcl_emits_static_nonlinear_displacement_control_fallback_loop()
     assert "set strut_dc_max_cutbacks 8\n" in text
     assert "integrator DisplacementControl 2 1 $strut_dc_try_du\n" in text
     assert "set strut_dc_ok [analyze 1]\n" in text
+    assert "if {$strut_dc_ok != 0} {\n" in text
     assert "test NormDispIncr 1e-09 25\n" in text
     assert "algorithm ModifiedNewton -initial\n" in text
+    assert "if {strut_dc_ok != 0} {\n" not in text
     assert "\nset strut_dc_ok [analyze 2]\n" not in text
 
 
@@ -419,6 +422,8 @@ def test_json_to_tcl_staged_transient_fallback_does_not_emit_extra_analyze():
     text = _run_json_to_tcl(case)
     assert "for {set strut_tr_step 0} {$strut_tr_step < 2 && $strut_tr_ok == 0} {incr strut_tr_step} {\n" in text
     assert "set strut_tr_ok [analyze 1 0.1]\n" in text
+    assert "if {$strut_tr_ok != 0} {\n" in text
+    assert "if {strut_tr_ok != 0} {\n" not in text
     assert "\nanalyze 2\n" not in text
     assert "\nanalyze 2 0.1\n" not in text
 
@@ -460,7 +465,9 @@ def test_json_to_tcl_staged_static_fallback_does_not_emit_extra_analyze():
     assert "test NormDispIncr 1e-08 8\n" in text
     assert "set strut_nl_ok 0\n" in text
     assert "set strut_nl_ok [analyze 1]\n" in text
+    assert "if {$strut_nl_ok != 0} {\n" in text
     assert "algorithm ModifiedNewton -initial\n" in text
+    assert "if {strut_nl_ok != 0} {\n" not in text
     assert "\nset strut_nl_ok [analyze 2]\n" not in text
 
 

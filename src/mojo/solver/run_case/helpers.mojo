@@ -1718,6 +1718,19 @@ fn _disp_beam_column2d_element_force_global(
             for b in range(6):
                 sum += k_global[a][b] * u_elem[b]
             f_global_elastic[a] = sum
+        var f_load = beam2d_element_load_global(
+            element_loads,
+            elem_load_offsets,
+            elem_load_pool,
+            elem_index,
+            load_scale,
+            node1.x,
+            node1.y,
+            node2.x,
+            node2.y,
+        )
+        for a in range(6):
+            f_global_elastic[a] -= f_load[a]
         if elem.uniform_load_wy != 0.0 or elem.uniform_load_wx != 0.0:
             var f_load = _beam_uniform_load_for_element_global(
                 node1, node2, elem.uniform_load_wy, elem.uniform_load_wx

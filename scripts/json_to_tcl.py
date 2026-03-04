@@ -503,7 +503,7 @@ def _append_solver_chain_retry_lines(
     if len(solver_chain) == 1:
         return
     for attempt in solver_chain[1:]:
-        lines.append(f"{indent}if {{{ok_var} != 0}} {{")
+        lines.append(f"{indent}if {{${ok_var} != 0}} {{")
         lines.append(
             f"{indent}  test {attempt['tcl_test_type']} {attempt['tol']} {attempt['max_iters']}"
         )
