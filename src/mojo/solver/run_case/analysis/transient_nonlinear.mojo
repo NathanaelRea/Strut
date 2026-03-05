@@ -1,4 +1,4 @@
-from collections import List
+from collections import Dict, List
 from elements import (
     ForceBeamColumn2dScratch,
     ForceBeamColumn3dScratch,
@@ -58,7 +58,7 @@ from solver.run_case.load_state import (
 from solver.time_series import TimeSeriesInput, eval_time_series_input, find_time_series_input
 
 from solver.run_case.helpers import (
-    _append_output,
+    _append_output_at_index,
     _element_basic_force_for_recorder,
     _element_deformation_for_recorder,
     _collapse_matrix_by_rep,
@@ -71,7 +71,7 @@ from solver.run_case.helpers import (
     _flush_envelope_outputs,
     _format_values_line,
     _has_recorder_type,
-    _drift_value,
+    _output_buffer_index,
     _section_response_for_recorder,
     _sync_force_beam_column2d_committed_basic_states,
     _update_envelope,
@@ -1067,6 +1067,184 @@ fn run_transient_nonlinear(
     var envelope_max: List[List[Float64]] = []
     var envelope_abs: List[List[Float64]] = []
 
+    if len(transient_output_files) != len(transient_output_buffers):
+        abort("output files/buffers length mismatch")
+    var output_file_index: Dict[String, Int] = {}
+    for i in range(len(transient_output_files)):
+        output_file_index[transient_output_files[i]] = i
+
+    var recorder_count = len(recorders)
+    var recorder_node_dof_index_offsets: List[Int] = []
+    recorder_node_dof_index_offsets.resize(recorder_count, -1)
+    var recorder_node_file_index_offsets: List[Int] = []
+    recorder_node_file_index_offsets.resize(recorder_count, -1)
+    var recorder_node_time_series_index: List[Int] = []
+    recorder_node_time_series_index.resize(recorder_count, -1)
+    var recorder_element_index_offsets: List[Int] = []
+    recorder_element_index_offsets.resize(recorder_count, -1)
+    var recorder_element_file_index_offsets: List[Int] = []
+    recorder_element_file_index_offsets.resize(recorder_count, -1)
+    var recorder_section_file_index_offsets: List[Int] = []
+    recorder_section_file_index_offsets.resize(recorder_count, -1)
+    var recorder_drift_i_dof_index: List[Int] = []
+    recorder_drift_i_dof_index.resize(recorder_count, -1)
+    var recorder_drift_j_dof_index: List[Int] = []
+    recorder_drift_j_dof_index.resize(recorder_count, -1)
+    var recorder_drift_denominator: List[Float64] = []
+    recorder_drift_denominator.resize(recorder_count, 0.0)
+    var recorder_drift_file_index: List[Int] = []
+    recorder_drift_file_index.resize(recorder_count, -1)
+
+    var recorder_node_dof_indices: List[Int] = []
+    var recorder_node_file_indices: List[Int] = []
+    var recorder_element_indices: List[Int] = []
+    var recorder_element_file_indices: List[Int] = []
+    var recorder_section_file_indices: List[Int] = []
+
+    for r in range(recorder_count):
+        var rec = recorders[r]
+
+        if (
+            rec.type_tag == RecorderTypeTag.NodeDisplacement
+            or rec.type_tag == RecorderTypeTag.EnvelopeNodeDisplacement
+            or rec.type_tag == RecorderTypeTag.EnvelopeNodeAcceleration
+            or rec.type_tag == RecorderTypeTag.NodeReaction
+        ):
+            recorder_node_dof_index_offsets[r] = len(recorder_node_dof_indices)
+            recorder_node_file_index_offsets[r] = len(recorder_node_file_indices)
+            if (
+                rec.type_tag == RecorderTypeTag.EnvelopeNodeAcceleration
+                and rec.time_series_tag >= 0
+            ):
+                var ts_index = find_time_series_input(time_series, rec.time_series_tag)
+                if ts_index < 0:
+                    abort("recorder time series not found")
+                recorder_node_time_series_index[r] = ts_index
+            for nidx in range(rec.node_count):
+                var node_id = recorder_nodes_pool[rec.node_offset + nidx]
+                if node_id >= len(id_to_index) or id_to_index[node_id] < 0:
+                    abort("recorder node not found")
+                var node_index = id_to_index[node_id]
+                var filename = rec.output + "_node" + String(node_id) + ".out"
+                var file_index = _output_buffer_index(
+                    transient_output_files,
+                    transient_output_buffers,
+                    output_file_index,
+                    filename,
+                )
+                recorder_node_file_indices.append(file_index)
+                for j in range(rec.dof_count):
+                    var dof = recorder_dofs_pool[rec.dof_offset + j]
+                    require_dof_in_range(dof, ndf, "recorder")
+                    recorder_node_dof_indices.append(
+                        node_dof_index(node_index, dof, ndf)
+                    )
+
+        if (
+            rec.type_tag == RecorderTypeTag.ElementForce
+            or rec.type_tag == RecorderTypeTag.ElementLocalForce
+            or rec.type_tag == RecorderTypeTag.ElementBasicForce
+            or rec.type_tag == RecorderTypeTag.ElementDeformation
+            or rec.type_tag == RecorderTypeTag.EnvelopeElementForce
+            or rec.type_tag == RecorderTypeTag.EnvelopeElementLocalForce
+            or rec.type_tag == RecorderTypeTag.SectionForce
+            or rec.type_tag == RecorderTypeTag.SectionDeformation
+        ):
+            recorder_element_index_offsets[r] = len(recorder_element_indices)
+            if (
+                rec.type_tag != RecorderTypeTag.SectionForce
+                and rec.type_tag != RecorderTypeTag.SectionDeformation
+            ):
+                recorder_element_file_index_offsets[r] = len(
+                    recorder_element_file_indices
+                )
+            for eidx in range(rec.element_count):
+                var elem_id = recorder_elements_pool[rec.element_offset + eidx]
+                if elem_id >= len(elem_id_to_index) or elem_id_to_index[elem_id] < 0:
+                    abort("recorder element not found")
+                var elem_index = elem_id_to_index[elem_id]
+                recorder_element_indices.append(elem_index)
+                if (
+                    rec.type_tag != RecorderTypeTag.SectionForce
+                    and rec.type_tag != RecorderTypeTag.SectionDeformation
+                ):
+                    var filename = rec.output + "_ele" + String(elem_id) + ".out"
+                    var file_index = _output_buffer_index(
+                        transient_output_files,
+                        transient_output_buffers,
+                        output_file_index,
+                        filename,
+                    )
+                    recorder_element_file_indices.append(file_index)
+
+        if (
+            rec.type_tag == RecorderTypeTag.SectionForce
+            or rec.type_tag == RecorderTypeTag.SectionDeformation
+        ):
+            recorder_section_file_index_offsets[r] = len(recorder_section_file_indices)
+            for eidx in range(rec.element_count):
+                var elem_id = recorder_elements_pool[rec.element_offset + eidx]
+                for sidx in range(rec.section_count):
+                    var sec_no = recorder_sections_pool[rec.section_offset + sidx]
+                    var filename = (
+                        rec.output
+                        + "_ele"
+                        + String(elem_id)
+                        + "_sec"
+                        + String(sec_no)
+                        + ".out"
+                    )
+                    var file_index = _output_buffer_index(
+                        transient_output_files,
+                        transient_output_buffers,
+                        output_file_index,
+                        filename,
+                    )
+                    recorder_section_file_indices.append(file_index)
+
+        if rec.type_tag == RecorderTypeTag.Drift:
+            var i_node = rec.i_node
+            var j_node = rec.j_node
+            if i_node >= len(id_to_index) or id_to_index[i_node] < 0:
+                abort("drift i_node not found")
+            if j_node >= len(id_to_index) or id_to_index[j_node] < 0:
+                abort("drift j_node not found")
+            var dof = rec.drift_dof
+            var perp_dirn = rec.perp_dirn
+            require_dof_in_range(dof, ndf, "drift recorder dof")
+            if perp_dirn < 1 or perp_dirn > 3:
+                abort("drift perp_dirn must be in 1..3")
+            var i_idx = id_to_index[i_node]
+            var j_idx = id_to_index[j_node]
+            var node_i = typed_nodes[i_idx]
+            var node_j = typed_nodes[j_idx]
+            if perp_dirn == 3 and (not node_i.has_z or not node_j.has_z):
+                abort("drift perp_dirn=3 requires z coordinates")
+            var dx = node_j.z - node_i.z
+            if perp_dirn == 1:
+                dx = node_j.x - node_i.x
+            elif perp_dirn == 2:
+                dx = node_j.y - node_i.y
+            if dx == 0.0:
+                abort("drift denominator is zero")
+            recorder_drift_i_dof_index[r] = node_dof_index(i_idx, dof, ndf)
+            recorder_drift_j_dof_index[r] = node_dof_index(j_idx, dof, ndf)
+            recorder_drift_denominator[r] = dx
+            var filename = (
+                rec.output
+                + "_i"
+                + String(i_node)
+                + "_j"
+                + String(j_node)
+                + ".out"
+            )
+            recorder_drift_file_index[r] = _output_buffer_index(
+                transient_output_files,
+                transient_output_buffers,
+                output_file_index,
+                filename,
+            )
+
     for step in range(steps):
         if do_profile:
             var t_step_start = Int(time.perf_counter_ns())
@@ -1236,6 +1414,7 @@ fn run_transient_nonlinear(
         _gather_from_free_simd(free, F_ext_step, P_ext_f)
 
         var converged = False
+        var reaction_internal_current = False
         var attempt_algorithm_tag = primary_algorithm_tag
         var attempt_algorithm_mode = primary_algorithm_mode
         var attempt_line_search_eta = primary_line_search_eta
@@ -1255,6 +1434,7 @@ fn run_transient_nonlinear(
                 attempt_max_iters = retry_max_iters[attempt]
                 attempt_tol = retry_tols[attempt]
                 attempt_rel_tol = retry_rel_tols[attempt]
+                reaction_internal_current = False
 
             var tangent_initialized = False
             var damping_initialized = False
@@ -1411,6 +1591,7 @@ fn run_transient_nonlinear(
                             frame_constraints,
                             constraints_end_us,
                         )
+                reaction_internal_current = True
                 if need_link_rayleigh_filter:
                     assemble_link_stiffness_typed(
                         typed_nodes,
@@ -1769,6 +1950,7 @@ fn run_transient_nonlinear(
                             frame_constraints,
                             constraints_end_us,
                         )
+                reaction_internal_current = False
 
                 if attempt_test_mode == 1:
                     if disp_incr_norm <= attempt_tol:
@@ -1933,6 +2115,7 @@ fn run_transient_nonlinear(
                         frame_constraints,
                         constraints_end_us,
                     )
+            reaction_internal_current = True
             for i in range(free_count):
                 for j in range(free_count):
                     K_comm_ff[i][j] = K[free[i]][free[j]]
@@ -2084,62 +2267,66 @@ fn run_transient_nonlinear(
             var rec_start_us = (t_rec_start - t0) // 1000
             _append_event(events, events_need_comma, "O", frame_recorders, rec_start_us)
         var F_int_reaction: List[Float64] = []
+        var use_solver_internal_for_reaction = False
         if record_reactions:
-            F_int_reaction = assemble_internal_forces_typed_soa(
-                typed_nodes,
-                typed_elements,
-                node_x,
-                node_y,
-                node_z,
-                elem_dof_offsets,
-                elem_dof_pool,
-                elem_node_offsets,
-                elem_node_pool,
-                elem_primary_material_ids,
-                elem_type_tags,
-                elem_geom_tags,
-                elem_section_ids,
-                elem_integration_tags,
-                elem_num_int_pts,
-                elem_area,
-                elem_thickness,
-                frame2d_elem_indices,
-                frame3d_elem_indices,
-                truss_elem_indices,
-                zero_length_elem_indices,
-                two_node_link_elem_indices,
-                zero_length_section_elem_indices,
-                quad_elem_indices,
-                shell_elem_indices,
-                active_element_load_state.element_loads,
-                active_element_load_state.elem_load_offsets,
-                active_element_load_state.elem_load_pool,
-                1.0,
-                typed_sections_by_id,
-                typed_materials_by_id,
-                id_to_index,
-                node_count,
-                ndf,
-                ndm,
-                u,
-                uniaxial_defs,
-                uniaxial_state_defs,
-                uniaxial_states,
-                elem_uniaxial_offsets,
-                elem_uniaxial_counts,
-                elem_uniaxial_state_ids,
-                force_basic_offsets,
-                force_basic_counts,
-                force_basic_q,
-                fiber_section_defs,
-                fiber_section_cells,
-                fiber_section_index_by_id,
-                fiber_section3d_defs,
-                fiber_section3d_cells,
-                fiber_section3d_index_by_id,
-                force_beam_column2d_scratch,
-                force_beam_column3d_scratch,
-            )
+            if reaction_internal_current:
+                use_solver_internal_for_reaction = True
+            else:
+                F_int_reaction = assemble_internal_forces_typed_soa(
+                    typed_nodes,
+                    typed_elements,
+                    node_x,
+                    node_y,
+                    node_z,
+                    elem_dof_offsets,
+                    elem_dof_pool,
+                    elem_node_offsets,
+                    elem_node_pool,
+                    elem_primary_material_ids,
+                    elem_type_tags,
+                    elem_geom_tags,
+                    elem_section_ids,
+                    elem_integration_tags,
+                    elem_num_int_pts,
+                    elem_area,
+                    elem_thickness,
+                    frame2d_elem_indices,
+                    frame3d_elem_indices,
+                    truss_elem_indices,
+                    zero_length_elem_indices,
+                    two_node_link_elem_indices,
+                    zero_length_section_elem_indices,
+                    quad_elem_indices,
+                    shell_elem_indices,
+                    active_element_load_state.element_loads,
+                    active_element_load_state.elem_load_offsets,
+                    active_element_load_state.elem_load_pool,
+                    1.0,
+                    typed_sections_by_id,
+                    typed_materials_by_id,
+                    id_to_index,
+                    node_count,
+                    ndf,
+                    ndm,
+                    u,
+                    uniaxial_defs,
+                    uniaxial_state_defs,
+                    uniaxial_states,
+                    elem_uniaxial_offsets,
+                    elem_uniaxial_counts,
+                    elem_uniaxial_state_ids,
+                    force_basic_offsets,
+                    force_basic_counts,
+                    force_basic_q,
+                    fiber_section_defs,
+                    fiber_section_cells,
+                    fiber_section_index_by_id,
+                    fiber_section3d_defs,
+                    fiber_section3d_cells,
+                    fiber_section3d_index_by_id,
+                    force_beam_column2d_scratch,
+                    force_beam_column3d_scratch,
+                )
         if record_any_element_force:
             for i in range(elem_count):
                 elem_force_cached[i] = False
@@ -2150,23 +2337,19 @@ fn run_transient_nonlinear(
                 or rec.type_tag == RecorderTypeTag.EnvelopeNodeDisplacement
                 or rec.type_tag == RecorderTypeTag.EnvelopeNodeAcceleration
             ):
+                var node_dof_index_offset = recorder_node_dof_index_offsets[r]
+                var node_file_index_offset = recorder_node_file_index_offsets[r]
                 for nidx in range(rec.node_count):
-                    var node_id = recorder_nodes_pool[rec.node_offset + nidx]
-                    var i = id_to_index[node_id]
                     var values: List[Float64] = []
                     values.resize(rec.dof_count, 0.0)
+                    var dof_index_base = node_dof_index_offset + nidx * rec.dof_count
                     for j in range(rec.dof_count):
-                        var dof = recorder_dofs_pool[rec.dof_offset + j]
-                        require_dof_in_range(dof, ndf, "recorder")
-                        var value = u[node_dof_index(i, dof, ndf)]
+                        var dof_index = recorder_node_dof_indices[dof_index_base + j]
+                        var value = u[dof_index]
                         if rec.type_tag == RecorderTypeTag.EnvelopeNodeAcceleration:
-                            value = a[node_dof_index(i, dof, ndf)]
-                            if rec.time_series_tag >= 0:
-                                var ts_index = find_time_series_input(
-                                    time_series, rec.time_series_tag
-                                )
-                                if ts_index < 0:
-                                    abort("recorder time series not found")
+                            value = a[dof_index]
+                            var ts_index = recorder_node_time_series_index[r]
+                            if ts_index >= 0:
                                 value += eval_time_series_input(
                                     time_series[ts_index],
                                     t,
@@ -2174,17 +2357,18 @@ fn run_transient_nonlinear(
                                     time_series_times,
                                 )
                         values[j] = value
-                    var filename = rec.output + "_node" + String(node_id) + ".out"
+                    var file_index = recorder_node_file_indices[
+                        node_file_index_offset + nidx
+                    ]
                     if rec.type_tag == RecorderTypeTag.NodeDisplacement:
-                        _append_output(
-                            transient_output_files,
+                        _append_output_at_index(
                             transient_output_buffers,
-                            filename,
+                            file_index,
                             _format_values_line(values),
                         )
                     else:
                         _update_envelope(
-                            filename,
+                            transient_output_files[file_index],
                             values,
                             envelope_files,
                             envelope_min,
@@ -2192,11 +2376,10 @@ fn run_transient_nonlinear(
                             envelope_abs,
                         )
             elif rec.type_tag == RecorderTypeTag.ElementForce:
+                var elem_index_offset = recorder_element_index_offsets[r]
+                var elem_file_index_offset = recorder_element_file_index_offsets[r]
                 for eidx in range(rec.element_count):
-                    var elem_id = recorder_elements_pool[rec.element_offset + eidx]
-                    if elem_id >= len(elem_id_to_index) or elem_id_to_index[elem_id] < 0:
-                        abort("recorder element not found")
-                    var elem_index = elem_id_to_index[elem_id]
+                    var elem_index = recorder_element_indices[elem_index_offset + eidx]
                     if not elem_force_cached[elem_index]:
                         var elem = typed_elements[elem_index]
                         if (
@@ -2247,16 +2430,16 @@ fn run_transient_nonlinear(
                             )
                         elem_force_cached[elem_index] = True
                     var line = _format_values_line(elem_force_values[elem_index])
-                    var filename = rec.output + "_ele" + String(elem_id) + ".out"
-                    _append_output(
-                        transient_output_files, transient_output_buffers, filename, line
+                    _append_output_at_index(
+                        transient_output_buffers,
+                        recorder_element_file_indices[elem_file_index_offset + eidx],
+                        line,
                     )
             elif rec.type_tag == RecorderTypeTag.ElementLocalForce:
+                var elem_index_offset = recorder_element_index_offsets[r]
+                var elem_file_index_offset = recorder_element_file_index_offsets[r]
                 for eidx in range(rec.element_count):
-                    var elem_id = recorder_elements_pool[rec.element_offset + eidx]
-                    if elem_id >= len(elem_id_to_index) or elem_id_to_index[elem_id] < 0:
-                        abort("recorder element not found")
-                    var elem_index = elem_id_to_index[elem_id]
+                    var elem_index = recorder_element_indices[elem_index_offset + eidx]
                     var elem = typed_elements[elem_index]
                     var values = _element_local_force_for_recorder(
                         elem_index,
@@ -2281,19 +2464,16 @@ fn run_transient_nonlinear(
                         force_basic_counts,
                         force_basic_q,
                     )
-                    var filename = rec.output + "_ele" + String(elem_id) + ".out"
-                    _append_output(
-                        transient_output_files,
+                    _append_output_at_index(
                         transient_output_buffers,
-                        filename,
+                        recorder_element_file_indices[elem_file_index_offset + eidx],
                         _format_values_line(values),
                     )
             elif rec.type_tag == RecorderTypeTag.ElementBasicForce:
+                var elem_index_offset = recorder_element_index_offsets[r]
+                var elem_file_index_offset = recorder_element_file_index_offsets[r]
                 for eidx in range(rec.element_count):
-                    var elem_id = recorder_elements_pool[rec.element_offset + eidx]
-                    if elem_id >= len(elem_id_to_index) or elem_id_to_index[elem_id] < 0:
-                        abort("recorder element not found")
-                    var elem_index = elem_id_to_index[elem_id]
+                    var elem_index = recorder_element_indices[elem_index_offset + eidx]
                     var elem = typed_elements[elem_index]
                     var values = _element_basic_force_for_recorder(
                         elem_index,
@@ -2308,72 +2488,59 @@ fn run_transient_nonlinear(
                         elem_uniaxial_counts,
                         elem_uniaxial_state_ids,
                     )
-                    var filename = rec.output + "_ele" + String(elem_id) + ".out"
-                    _append_output(
-                        transient_output_files,
+                    _append_output_at_index(
                         transient_output_buffers,
-                        filename,
+                        recorder_element_file_indices[elem_file_index_offset + eidx],
                         _format_values_line(values),
                     )
             elif rec.type_tag == RecorderTypeTag.ElementDeformation:
+                var elem_index_offset = recorder_element_index_offsets[r]
+                var elem_file_index_offset = recorder_element_file_index_offsets[r]
                 for eidx in range(rec.element_count):
-                    var elem_id = recorder_elements_pool[rec.element_offset + eidx]
-                    if elem_id >= len(elem_id_to_index) or elem_id_to_index[elem_id] < 0:
-                        abort("recorder element not found")
-                    var elem_index = elem_id_to_index[elem_id]
+                    var elem_index = recorder_element_indices[elem_index_offset + eidx]
                     var elem = typed_elements[elem_index]
                     var values = _element_deformation_for_recorder(
                         elem_index, elem, ndf, u, typed_nodes
                     )
-                    var filename = rec.output + "_ele" + String(elem_id) + ".out"
-                    _append_output(
-                        transient_output_files,
+                    _append_output_at_index(
                         transient_output_buffers,
-                        filename,
+                        recorder_element_file_indices[elem_file_index_offset + eidx],
                         _format_values_line(values),
                     )
             elif rec.type_tag == RecorderTypeTag.NodeReaction:
                 if not record_reactions:
                     abort("internal error: reaction recorder flag mismatch")
+                var node_dof_index_offset = recorder_node_dof_index_offsets[r]
+                var node_file_index_offset = recorder_node_file_index_offsets[r]
                 for nidx in range(rec.node_count):
-                    var node_id = recorder_nodes_pool[rec.node_offset + nidx]
-                    var i = id_to_index[node_id]
                     var values: List[Float64] = []
                     values.resize(rec.dof_count, 0.0)
+                    var dof_index_base = node_dof_index_offset + nidx * rec.dof_count
                     for j in range(rec.dof_count):
-                        var dof = recorder_dofs_pool[rec.dof_offset + j]
-                        require_dof_in_range(dof, ndf, "recorder")
-                        var idx = node_dof_index(i, dof, ndf)
-                        values[j] = F_int_reaction[idx] - F_ext_step[idx]
-                    var line = _format_values_line(values)
-                    var filename = rec.output + "_node" + String(node_id) + ".out"
-                    _append_output(
-                        transient_output_files, transient_output_buffers, filename, line
+                        var dof_index = recorder_node_dof_indices[dof_index_base + j]
+                        var internal_force = F_int_reaction[dof_index]
+                        if use_solver_internal_for_reaction:
+                            internal_force = F_int[dof_index]
+                        values[j] = internal_force - F_ext_step[dof_index]
+                    _append_output_at_index(
+                        transient_output_buffers,
+                        recorder_node_file_indices[node_file_index_offset + nidx],
+                        _format_values_line(values),
                     )
             elif rec.type_tag == RecorderTypeTag.Drift:
-                var i_node = rec.i_node
-                var j_node = rec.j_node
-                var value = _drift_value(rec, typed_nodes, id_to_index, ndf, u)
-                var filename = (
-                    rec.output
-                    + "_i"
-                    + String(i_node)
-                    + "_j"
-                    + String(j_node)
-                    + ".out"
-                )
-                _append_output(
-                    transient_output_files,
+                var value = (
+                    u[recorder_drift_j_dof_index[r]] - u[recorder_drift_i_dof_index[r]]
+                ) / recorder_drift_denominator[r]
+                _append_output_at_index(
                     transient_output_buffers,
-                    filename,
+                    recorder_drift_file_index[r],
                     _format_values_line([value]),
                 )
             elif rec.type_tag == RecorderTypeTag.EnvelopeElementForce:
+                var elem_index_offset = recorder_element_index_offsets[r]
+                var elem_file_index_offset = recorder_element_file_index_offsets[r]
                 for eidx in range(rec.element_count):
-                    var elem_id = recorder_elements_pool[rec.element_offset + eidx]
-                    if elem_id >= len(elem_id_to_index) or elem_id_to_index[elem_id] < 0:
-                        abort("recorder element not found")
-                    var elem_index = elem_id_to_index[elem_id]
+                    var elem_index = recorder_element_indices[elem_index_offset + eidx]
                     if not elem_force_cached[elem_index]:
                         var elem = typed_elements[elem_index]
                         if (
@@ -2423,9 +2590,11 @@ fn run_transient_nonlinear(
                                 force_basic_q,
                             )
                         elem_force_cached[elem_index] = True
-                    var filename = rec.output + "_ele" + String(elem_id) + ".out"
+                    var file_index = recorder_element_file_indices[
+                        elem_file_index_offset + eidx
+                    ]
                     _update_envelope(
-                        filename,
+                        transient_output_files[file_index],
                         elem_force_values[elem_index],
                         envelope_files,
                         envelope_min,
@@ -2433,11 +2602,10 @@ fn run_transient_nonlinear(
                         envelope_abs,
                     )
             elif rec.type_tag == RecorderTypeTag.EnvelopeElementLocalForce:
+                var elem_index_offset = recorder_element_index_offsets[r]
+                var elem_file_index_offset = recorder_element_file_index_offsets[r]
                 for eidx in range(rec.element_count):
-                    var elem_id = recorder_elements_pool[rec.element_offset + eidx]
-                    if elem_id >= len(elem_id_to_index) or elem_id_to_index[elem_id] < 0:
-                        abort("recorder element not found")
-                    var elem_index = elem_id_to_index[elem_id]
+                    var elem_index = recorder_element_indices[elem_index_offset + eidx]
                     var elem = typed_elements[elem_index]
                     var values = _element_local_force_for_recorder(
                         elem_index,
@@ -2462,9 +2630,11 @@ fn run_transient_nonlinear(
                         force_basic_counts,
                         force_basic_q,
                     )
-                    var filename = rec.output + "_ele" + String(elem_id) + ".out"
+                    var file_index = recorder_element_file_indices[
+                        elem_file_index_offset + eidx
+                    ]
                     _update_envelope(
-                        filename,
+                        transient_output_files[file_index],
                         values,
                         envelope_files,
                         envelope_min,
@@ -2476,11 +2646,10 @@ fn run_transient_nonlinear(
                 or rec.type_tag == RecorderTypeTag.SectionDeformation
             ):
                 var want_defo = rec.type_tag == RecorderTypeTag.SectionDeformation
+                var elem_index_offset = recorder_element_index_offsets[r]
+                var section_file_index_offset = recorder_section_file_index_offsets[r]
                 for eidx in range(rec.element_count):
-                    var elem_id = recorder_elements_pool[rec.element_offset + eidx]
-                    if elem_id >= len(elem_id_to_index) or elem_id_to_index[elem_id] < 0:
-                        abort("recorder element not found")
-                    var elem_index = elem_id_to_index[elem_id]
+                    var elem_index = recorder_element_indices[elem_index_offset + eidx]
                     var elem = typed_elements[elem_index]
                     for sidx in range(rec.section_count):
                         var sec_no = recorder_sections_pool[rec.section_offset + sidx]
@@ -2533,18 +2702,12 @@ fn run_transient_nonlinear(
                                 force_basic_q,
                                 want_defo,
                             )
-                        var filename = (
-                            rec.output
-                            + "_ele"
-                            + String(elem_id)
-                            + "_sec"
-                            + String(sec_no)
-                            + ".out"
-                        )
-                        _append_output(
-                            transient_output_files,
+                        var file_index = recorder_section_file_indices[
+                            section_file_index_offset + eidx * rec.section_count + sidx
+                        ]
+                        _append_output_at_index(
                             transient_output_buffers,
-                            filename,
+                            file_index,
                             _format_values_line(values),
                         )
             else:
@@ -2566,4 +2729,5 @@ fn run_transient_nonlinear(
         envelope_abs,
         transient_output_files,
         transient_output_buffers,
+        output_file_index,
     )

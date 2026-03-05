@@ -1,4 +1,4 @@
-from collections import List
+from collections import Dict, List
 from math import atan2, sqrt
 from os import abort
 
@@ -2496,6 +2496,42 @@ fn _append_output(
     buffers.append(lines^)
 
 
+fn _output_buffer_index(
+    mut filenames: List[String],
+    mut buffers: List[List[String]],
+    mut filename_to_index: Dict[String, Int],
+    filename: String,
+) -> Int:
+    var existing_index = filename_to_index.get(filename)
+    if existing_index:
+        return existing_index.value()
+    var index = len(filenames)
+    filenames.append(filename)
+    var lines: List[String] = []
+    buffers.append(lines^)
+    filename_to_index[filename] = index
+    return index
+
+
+fn _append_output(
+    mut filenames: List[String],
+    mut buffers: List[List[String]],
+    mut filename_to_index: Dict[String, Int],
+    filename: String,
+    line: String,
+):
+    var index = _output_buffer_index(filenames, buffers, filename_to_index, filename)
+    buffers[index].append(line)
+
+
+fn _append_output_at_index(
+    mut buffers: List[List[String]], file_index: Int, line: String
+) raises:
+    if file_index < 0 or file_index >= len(buffers):
+        abort("output buffer index out of range")
+    buffers[file_index].append(line)
+
+
 fn _has_recorder_type(recorders: List[RecorderInput], wanted_tag: Int) -> Bool:
     for r in range(len(recorders)):
         if recorders[r].type_tag == wanted_tag:
@@ -3125,6 +3161,29 @@ fn _flush_envelope_outputs(
         line += _format_values_line(envelope_max[i])
         line += _format_values_line(envelope_abs[i])
         _append_output(output_files, output_buffers, envelope_files[i], line)
+
+
+fn _flush_envelope_outputs(
+    envelope_files: List[String],
+    envelope_min: List[List[Float64]],
+    envelope_max: List[List[Float64]],
+    envelope_abs: List[List[Float64]],
+    mut output_files: List[String],
+    mut output_buffers: List[List[String]],
+    mut output_file_index: Dict[String, Int],
+):
+    for i in range(len(envelope_files)):
+        var line = String()
+        line += _format_values_line(envelope_min[i])
+        line += _format_values_line(envelope_max[i])
+        line += _format_values_line(envelope_abs[i])
+        _append_output(
+            output_files,
+            output_buffers,
+            output_file_index,
+            envelope_files[i],
+            line,
+        )
 
 
 fn _solve_linear_system(
