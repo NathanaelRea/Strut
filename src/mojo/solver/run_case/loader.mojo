@@ -16,7 +16,7 @@ from materials import (
     uni_mat_is_elastic,
 )
 from solver.dof import node_dof_index, require_dof_in_range
-from solver.reorder import build_node_adjacency_typed, rcm_order
+from solver.reorder import build_node_adjacency_typed, min_degree_order, rcm_order
 from solver.run_case.helpers import _aggregator_section2d_expected_state_count
 from solver.run_case.input_types import (
     AnalysisInput,
@@ -1921,9 +1921,7 @@ fn load_case_state_from_input(input: CaseInput) raises -> RunCaseState:
     var system_tag = analysis_input.system_tag
     if system_tag == AnalysisSystemTag.Unknown:
         abort("unsupported analysis system tag")
-    var band_threshold = analysis_input.band_threshold
-    if band_threshold < 0:
-        band_threshold = 0
+    var sparse_sym_ordering = analysis_input.sparse_sym_ordering
 
     var rep_dof: List[Int] = []
     rep_dof.resize(total_dofs, 0)
@@ -1932,8 +1930,11 @@ fn load_case_state_from_input(input: CaseInput) raises -> RunCaseState:
 
     var has_transformation_mpc = False
     if len(input.mp_constraints) > 0:
-        if constraints_handler_tag != ConstraintHandlerTag.Transformation:
-            abort("mp_constraints require analysis.constraints=Transformation")
+        if (
+            constraints_handler_tag != ConstraintHandlerTag.Transformation
+            and constraints_handler_tag != ConstraintHandlerTag.Lagrange
+        ):
+            abort("mp_constraints require analysis.constraints=Transformation or Lagrange")
         has_transformation_mpc = True
     for i in range(len(input.mp_constraints)):
         var mpc = input.mp_constraints[i]
@@ -2020,32 +2021,43 @@ fn load_case_state_from_input(input: CaseInput) raises -> RunCaseState:
     if free_count == 0:
         abort("no free dofs")
 
+    var system_is_banded = (
+        system_tag == AnalysisSystemTag.BandGeneral
+        or system_tag == AnalysisSystemTag.BandSPD
+        or system_tag == AnalysisSystemTag.ProfileSPD
+    )
     var use_banded_linear = False
     var use_banded_nonlinear = False
-    if has_transformation_mpc:
-        use_banded_linear = False
-        use_banded_nonlinear = False
-    elif analysis_type_tag == AnalysisTypeTag.StaticLinear:
-        if (
-            system_tag == AnalysisSystemTag.Banded
-            or (system_tag == AnalysisSystemTag.Auto and free_count > band_threshold)
-        ):
+    if not has_transformation_mpc:
+        if analysis_type_tag == AnalysisTypeTag.StaticLinear and system_is_banded:
             use_banded_linear = True
-    elif analysis_type_tag == AnalysisTypeTag.StaticNonlinear:
-        if (
-            system_tag == AnalysisSystemTag.Banded
-            or (system_tag == AnalysisSystemTag.Auto and free_count > band_threshold)
-        ):
+        elif analysis_type_tag == AnalysisTypeTag.StaticNonlinear and system_is_banded:
             use_banded_nonlinear = True
 
     var free: List[Int] = []
     var free_index: List[Int] = []
-    if use_banded_linear or use_banded_nonlinear:
+    var use_sparse_sym_graph_ordering = (
+        system_tag == AnalysisSystemTag.SparseSYM and sparse_sym_ordering != 0
+    )
+    if use_banded_linear or use_banded_nonlinear or use_sparse_sym_graph_ordering:
         var node_order: List[Int] = []
-        if numberer_tag == NumbererTag.RCM:
+        var use_adjacency_ordering = (
+            numberer_tag == NumbererTag.RCM or use_sparse_sym_graph_ordering
+        )
+        if use_adjacency_ordering:
             var adjacency = build_node_adjacency_typed(typed_elements, node_count)
-            node_order = rcm_order(adjacency)
-        else:
+            if use_sparse_sym_graph_ordering:
+                if sparse_sym_ordering == 1:
+                    node_order = min_degree_order(adjacency)
+                elif sparse_sym_ordering == 2:
+                    # Provisional ND approximation until a dedicated nested-dissection
+                    # ordering is implemented.
+                    node_order = rcm_order(adjacency)
+                else:
+                    node_order = rcm_order(adjacency)
+            else:
+                node_order = rcm_order(adjacency)
+        if len(node_order) == 0:
             node_order.resize(node_count, 0)
             for i in range(node_count):
                 node_order[i] = i

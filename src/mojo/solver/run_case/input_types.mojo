@@ -530,7 +530,18 @@ struct AnalysisInput(Movable, ImplicitlyCopyable):
     var num_modes: Int
     var force_beam_mode: String
     var force_beam_mode_tag: Int
+    var system: String
     var system_tag: Int
+    var system_options_serialized: String
+    var superlu_prefer_symmetric: Bool
+    var superlu_enable_pivot: Bool
+    var superlu_np_row: Int
+    var superlu_np_col: Int
+    var superlu_perm_spec: Int
+    var umfpack_factor_once: Bool
+    var umfpack_print_time: Bool
+    var umfpack_lvalue_fact: Int
+    var sparse_sym_ordering: Int
     var band_threshold: Int
     var dt: Float64
     var algorithm: String
@@ -552,13 +563,22 @@ struct AnalysisInput(Movable, ImplicitlyCopyable):
     var integrator_tag: Int
     var integrator_gamma: Float64
     var integrator_beta: Float64
+    var integrator_num_iter: Int
+    var has_integrator_num_iter: Bool
     var integrator_step: Float64
     var has_integrator_step: Bool
+    var integrator_min_step: Float64
+    var has_integrator_min_step: Bool
+    var integrator_max_step: Float64
+    var has_integrator_max_step: Bool
     var integrator_node: Int
     var integrator_dof: Int
     var integrator_cutback: Float64
     var integrator_max_cutbacks: Int
     var integrator_min_du: Float64
+    var has_integrator_min_du: Bool
+    var integrator_max_du: Float64
+    var has_integrator_max_du: Bool
     var has_integrator_du: Bool
     var integrator_du: Float64
     var integrator_targets_offset: Int
@@ -574,7 +594,18 @@ struct AnalysisInput(Movable, ImplicitlyCopyable):
         self.num_modes = 0
         self.force_beam_mode = "auto"
         self.force_beam_mode_tag = ForceBeamModeTag.Auto
-        self.system_tag = AnalysisSystemTag.Auto
+        self.system = "BandGeneral"
+        self.system_tag = AnalysisSystemTag.BandGeneral
+        self.system_options_serialized = ""
+        self.superlu_prefer_symmetric = False
+        self.superlu_enable_pivot = False
+        self.superlu_np_row = -1
+        self.superlu_np_col = -1
+        self.superlu_perm_spec = -1
+        self.umfpack_factor_once = False
+        self.umfpack_print_time = False
+        self.umfpack_lvalue_fact = -1
+        self.sparse_sym_ordering = 0
         self.band_threshold = 128
         self.dt = 0.0
         self.algorithm = "Newton"
@@ -596,13 +627,22 @@ struct AnalysisInput(Movable, ImplicitlyCopyable):
         self.integrator_tag = IntegratorTypeTag.Unknown
         self.integrator_gamma = 0.5
         self.integrator_beta = 0.25
+        self.integrator_num_iter = 1
+        self.has_integrator_num_iter = False
         self.integrator_step = 1.0
         self.has_integrator_step = False
+        self.integrator_min_step = 1.0
+        self.has_integrator_min_step = False
+        self.integrator_max_step = 1.0
+        self.has_integrator_max_step = False
         self.integrator_node = -1
         self.integrator_dof = -1
         self.integrator_cutback = 0.5
         self.integrator_max_cutbacks = 8
         self.integrator_min_du = 1.0e-10
+        self.has_integrator_min_du = False
+        self.integrator_max_du = 0.0
+        self.has_integrator_max_du = False
         self.has_integrator_du = False
         self.integrator_du = 0.0
         self.integrator_targets_offset = 0
@@ -928,25 +968,233 @@ fn numberer_tag(numberer_name: String) -> Int:
 
 
 fn analysis_system_tag(system_name: String) -> Int:
-    if len(system_name) == 0 or system_name == "auto":
-        return AnalysisSystemTag.Auto
-    if system_name == "dense":
-        return AnalysisSystemTag.Dense
-    if system_name == "banded":
-        return AnalysisSystemTag.Banded
-    if (
-        system_name == "BandSPD"
-        or system_name == "BandGeneral"
-        or system_name == "ProfileSPD"
-    ):
-        return AnalysisSystemTag.Banded
-    if (
-        system_name == "SparseGeneral"
-        or system_name == "UmfPack"
-        or system_name == "Mumps"
-    ):
-        return AnalysisSystemTag.Dense
+    if system_name == "BandGeneral":
+        return AnalysisSystemTag.BandGeneral
+    if system_name == "BandSPD":
+        return AnalysisSystemTag.BandSPD
+    if system_name == "ProfileSPD":
+        return AnalysisSystemTag.ProfileSPD
+    if system_name == "SuperLU":
+        return AnalysisSystemTag.SuperLU
+    if system_name == "UmfPack":
+        return AnalysisSystemTag.UmfPack
+    if system_name == "FullGeneral":
+        return AnalysisSystemTag.FullGeneral
+    if system_name == "SparseSYM":
+        return AnalysisSystemTag.SparseSYM
     return AnalysisSystemTag.Unknown
+
+
+fn canonical_analysis_system_name(system_name: String) -> String:
+    var canonical = system_name
+    if len(canonical) == 0:
+        canonical = "BandGeneral"
+    if canonical == "BandGEN" or canonical == "BandGen":
+        canonical = "BandGeneral"
+    elif canonical == "SparseGeneral" or canonical == "SparseGEN":
+        canonical = "SuperLU"
+    elif canonical == "SparseSPD":
+        canonical = "SparseSYM"
+    elif canonical == "Umfpack":
+        canonical = "UmfPack"
+    elif canonical == "Mumps":
+        abort("unsupported analysis system: Mumps")
+    if analysis_system_tag(canonical) == AnalysisSystemTag.Unknown:
+        abort("unsupported analysis system: " + canonical)
+    return canonical
+
+
+fn _validate_analysis_system_options(
+    system_name: String, system_tag: Int, system_options: List[String]
+) raises:
+    var count = len(system_options)
+    if count == 0:
+        return
+
+    if (
+        system_tag == AnalysisSystemTag.BandGeneral
+        or system_tag == AnalysisSystemTag.BandSPD
+        or system_tag == AnalysisSystemTag.ProfileSPD
+        or system_tag == AnalysisSystemTag.FullGeneral
+    ):
+        abort("analysis system `" + system_name + "` does not accept system_options")
+
+    if system_tag == AnalysisSystemTag.SuperLU:
+        var i = 0
+        while i < count:
+            var option = system_options[i]
+            if (
+                option == "p"
+                or option == "piv"
+                or option == "-piv"
+                or option == "s"
+                or option == "symmetric"
+                or option == "-symmetric"
+                or option == "-symm"
+                or option == "u"
+                or option == "unsymmetric"
+                or option == "-unsymm"
+            ):
+                i += 1
+                continue
+            if (
+                option == "np"
+                or option == "-np"
+                or option == "npRow"
+                or option == "-npRow"
+                or option == "npCol"
+                or option == "-npCol"
+                or option == "permSpec"
+                or option == "-permSpec"
+            ):
+                if i + 1 >= count:
+                    abort(
+                        "analysis system_options for `SuperLU` expects a value after `"
+                        + option
+                        + "`"
+                    )
+                _ = Int(system_options[i + 1])
+                i += 2
+                continue
+            abort(
+                "unsupported analysis system option `"
+                + option
+                + "` for system `SuperLU`"
+            )
+        return
+
+    if system_tag == AnalysisSystemTag.UmfPack:
+        var i = 0
+        while i < count:
+            var option = system_options[i]
+            if (
+                option == "-factorOnce"
+                or option == "-FactorOnce"
+                or option == "-printTime"
+                or option == "-time"
+            ):
+                i += 1
+                continue
+            if (
+                option == "-lValueFact"
+                or option == "-lvalueFact"
+                or option == "-LVALUE"
+            ):
+                if i + 1 >= count:
+                    abort(
+                        "analysis system_options for `UmfPack` expects a value after `"
+                        + option
+                        + "`"
+                    )
+                _ = Int(system_options[i + 1])
+                i += 2
+                continue
+            abort(
+                "unsupported analysis system option `"
+                + option
+                + "` for system `UmfPack`"
+            )
+        return
+
+    if system_tag == AnalysisSystemTag.SparseSYM:
+        if count == 1:
+            var ordering = Int(system_options[0])
+            if ordering < 1 or ordering > 3:
+                abort(
+                    "analysis system_options for `SparseSYM` ordering must be 1 (MMD), 2 (ND), or 3 (RCM)"
+                )
+            return
+        abort(
+            "analysis system_options for `SparseSYM` expects at most one ordering value (1, 2, or 3)"
+        )
+
+    abort("unsupported analysis system tag")
+
+
+fn _apply_analysis_system_options(
+    mut analysis: AnalysisInput, system_options: List[String]
+) raises:
+    analysis.superlu_prefer_symmetric = False
+    analysis.superlu_enable_pivot = False
+    analysis.superlu_np_row = -1
+    analysis.superlu_np_col = -1
+    analysis.superlu_perm_spec = -1
+    analysis.umfpack_factor_once = False
+    analysis.umfpack_print_time = False
+    analysis.umfpack_lvalue_fact = -1
+    analysis.sparse_sym_ordering = 0
+
+    var count = len(system_options)
+    if count == 0:
+        return
+
+    if analysis.system_tag == AnalysisSystemTag.SuperLU:
+        var i = 0
+        while i < count:
+            var option = system_options[i]
+            if option == "p" or option == "piv" or option == "-piv":
+                analysis.superlu_enable_pivot = True
+                i += 1
+                continue
+            if (
+                option == "s"
+                or option == "symmetric"
+                or option == "-symmetric"
+                or option == "-symm"
+            ):
+                analysis.superlu_prefer_symmetric = True
+                i += 1
+                continue
+            if option == "u" or option == "unsymmetric" or option == "-unsymm":
+                analysis.superlu_prefer_symmetric = False
+                i += 1
+                continue
+            if option == "np" or option == "-np":
+                var value = Int(system_options[i + 1])
+                analysis.superlu_np_row = value
+                analysis.superlu_np_col = value
+                i += 2
+                continue
+            if option == "npRow" or option == "-npRow":
+                analysis.superlu_np_row = Int(system_options[i + 1])
+                i += 2
+                continue
+            if option == "npCol" or option == "-npCol":
+                analysis.superlu_np_col = Int(system_options[i + 1])
+                i += 2
+                continue
+            if option == "permSpec" or option == "-permSpec":
+                analysis.superlu_perm_spec = Int(system_options[i + 1])
+                i += 2
+                continue
+            i += 1
+        return
+
+    if analysis.system_tag == AnalysisSystemTag.UmfPack:
+        var i = 0
+        while i < count:
+            var option = system_options[i]
+            if option == "-factorOnce" or option == "-FactorOnce":
+                analysis.umfpack_factor_once = True
+                i += 1
+                continue
+            if option == "-printTime" or option == "-time":
+                analysis.umfpack_print_time = True
+                i += 1
+                continue
+            if (
+                option == "-lValueFact"
+                or option == "-lvalueFact"
+                or option == "-LVALUE"
+            ):
+                analysis.umfpack_lvalue_fact = Int(system_options[i + 1])
+                i += 2
+                continue
+            i += 1
+        return
+
+    if analysis.system_tag == AnalysisSystemTag.SparseSYM:
+        analysis.sparse_sym_ordering = Int(system_options[0])
 
 
 fn analysis_type_tag(type_name: String) -> Int:
@@ -970,6 +1218,8 @@ fn constraint_handler_tag(handler_name: String) -> Int:
         return ConstraintHandlerTag.Plain
     if handler_name == "Transformation":
         return ConstraintHandlerTag.Transformation
+    if handler_name == "Lagrange":
+        return ConstraintHandlerTag.Lagrange
     return ConstraintHandlerTag.Unknown
 
 
@@ -1110,12 +1360,28 @@ fn parse_analysis_input_from_raw(
     analysis.step_retry_continue_max_steps = Int(
         step_retry_raw.get("continue_max_steps", 0)
     )
+    var builtins = Python.import_module("builtins")
+    var system_name = ""
     if analysis_raw.__contains__("system"):
-        analysis.system_tag = analysis_system_tag(String(analysis_raw["system"]))
+        system_name = String(analysis_raw["system"])
     elif analysis_raw.__contains__("solver"):
-        analysis.system_tag = analysis_system_tag(String(analysis_raw["solver"]))
-    else:
-        analysis.system_tag = AnalysisSystemTag.Auto
+        system_name = String(analysis_raw["solver"])
+    analysis.system = canonical_analysis_system_name(system_name)
+    analysis.system_tag = analysis_system_tag(analysis.system)
+    var system_options_raw = analysis_raw.get("system_options", builtins.list())
+    if not Bool(builtins.isinstance(system_options_raw, builtins.list)):
+        abort("analysis system_options must be a list")
+    var system_options: List[String] = []
+    for i in range(py_len(system_options_raw)):
+        system_options.append(String(system_options_raw[i]))
+    _validate_analysis_system_options(
+        analysis.system, analysis.system_tag, system_options
+    )
+    _apply_analysis_system_options(analysis, system_options)
+    for i in range(len(system_options)):
+        if i > 0:
+            analysis.system_options_serialized += "\x1f"
+        analysis.system_options_serialized += system_options[i]
     analysis.band_threshold = Int(analysis_raw.get("band_threshold", 128))
     var integrator_raw = analysis_raw.get("integrator", {})
     var default_integrator_type = ""
@@ -1132,8 +1398,23 @@ fn parse_analysis_input_from_raw(
     analysis.integrator_tag = integrator_type_tag(analysis.integrator_type)
     analysis.integrator_gamma = Float64(integrator_raw.get("gamma", 0.5))
     analysis.integrator_beta = Float64(integrator_raw.get("beta", 0.25))
+    analysis.has_integrator_num_iter = (
+        integrator_raw.__contains__("num_iter")
+        or integrator_raw.__contains__("numIter")
+    )
+    analysis.integrator_num_iter = Int(
+        integrator_raw.get("num_iter", integrator_raw.get("numIter", 1))
+    )
     analysis.has_integrator_step = integrator_raw.__contains__("step")
     analysis.integrator_step = Float64(integrator_raw.get("step", 1.0))
+    analysis.has_integrator_min_step = integrator_raw.__contains__("min_step")
+    analysis.integrator_min_step = Float64(
+        integrator_raw.get("min_step", analysis.integrator_step)
+    )
+    analysis.has_integrator_max_step = integrator_raw.__contains__("max_step")
+    analysis.integrator_max_step = Float64(
+        integrator_raw.get("max_step", analysis.integrator_step)
+    )
     if integrator_raw.__contains__("node"):
         analysis.integrator_node = Int(integrator_raw["node"])
     if integrator_raw.__contains__("dof"):
@@ -1144,8 +1425,22 @@ fn parse_analysis_input_from_raw(
     analysis.integrator_max_cutbacks = Int(
         integrator_raw.get("max_cutbacks", analysis_raw.get("max_cutbacks", 8))
     )
+    analysis.has_integrator_min_du = (
+        integrator_raw.__contains__("min_du")
+        or integrator_raw.__contains__("minIncrement")
+    )
     analysis.integrator_min_du = Float64(
-        integrator_raw.get("min_du", analysis_raw.get("min_du", 1.0e-10))
+        integrator_raw.get(
+            "min_du",
+            integrator_raw.get("minIncrement", analysis_raw.get("min_du", 1.0e-10)),
+        )
+    )
+    analysis.has_integrator_max_du = (
+        integrator_raw.__contains__("max_du")
+        or integrator_raw.__contains__("maxIncrement")
+    )
+    analysis.integrator_max_du = Float64(
+        integrator_raw.get("max_du", integrator_raw.get("maxIncrement", 0.0))
     )
     analysis.has_integrator_du = integrator_raw.__contains__("du")
     if analysis.has_integrator_du:

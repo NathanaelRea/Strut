@@ -1092,7 +1092,7 @@ def test_convert_preserves_algorithm_integrator_test_and_system_options(tmp_path
     assert first["test_print_flag"] == 3
     assert first["test_extra_args"] == ["7", "extraA", "extraB"]
     assert first["numberer"] == "Plain"
-    assert first["system"] == "SparseGeneral"
+    assert first["system"] == "SuperLU"
     assert first["system_options"] == ["-piv"]
 
     second = stages[1]["analysis"]

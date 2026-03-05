@@ -19,7 +19,13 @@ from python import Python
 from sections import FiberCell, FiberSection2dDef, FiberSection3dDef
 from sys import simd_width_of
 
-from linalg import gaussian_elimination_into, lu_factorize_into, lu_solve_into
+from solver.run_case.linear_solver_backend import (
+    LinearSolverBackend,
+    clear,
+    initialize_structure,
+    refactor_if_needed,
+    solve,
+)
 from solver.assembly import (
     assemble_global_stiffness_and_internal_soa,
     assemble_link_stiffness_typed,
@@ -78,6 +84,7 @@ from solver.run_case.helpers import (
 )
 from tag_types import (
     AnalysisAlgorithmTag,
+    AnalysisSystemTag,
     ElementTypeTag,
     IntegratorTypeTag,
     NonlinearAlgorithmMode,
@@ -359,6 +366,7 @@ fn _transient_nonlinear_test_mode(
 fn _append_transient_solver_attempt(
     algorithm: String,
     algorithm_tag: Int,
+    broyden_count: Int,
     line_search_eta: Float64,
     test_type: String,
     test_type_tag: Int,
@@ -372,6 +380,7 @@ fn _append_transient_solver_attempt(
     mut retry_max_iters: List[Int],
     mut retry_tols: List[Float64],
     mut retry_rel_tols: List[Float64],
+    mut retry_broyden_counts: List[Int],
     mut retry_line_search_etas: List[Float64],
 ):
     if len(algorithm) == 0:
@@ -388,6 +397,7 @@ fn _append_transient_solver_attempt(
     retry_max_iters.append(max_iters)
     retry_tols.append(tol)
     retry_rel_tols.append(rel_tol)
+    retry_broyden_counts.append(broyden_count)
     retry_line_search_etas.append(line_search_eta)
 
 
@@ -400,11 +410,13 @@ fn _append_transient_solver_attempt_from_input(
     mut retry_max_iters: List[Int],
     mut retry_tols: List[Float64],
     mut retry_rel_tols: List[Float64],
+    mut retry_broyden_counts: List[Int],
     mut retry_line_search_etas: List[Float64],
 ):
     _append_transient_solver_attempt(
         attempt.algorithm,
         attempt.algorithm_tag,
+        attempt.broyden_count,
         attempt.line_search_eta,
         attempt.test_type,
         attempt.test_type_tag,
@@ -418,6 +430,7 @@ fn _append_transient_solver_attempt_from_input(
         retry_max_iters,
         retry_tols,
         retry_rel_tols,
+        retry_broyden_counts,
         retry_line_search_etas,
     )
 
@@ -431,6 +444,7 @@ fn _collect_transient_solver_chain(
     mut retry_max_iters: List[Int],
     mut retry_tols: List[Float64],
     mut retry_rel_tols: List[Float64],
+    mut retry_broyden_counts: List[Int],
     mut retry_line_search_etas: List[Float64],
 ):
     for i in range(analysis.solver_chain_count):
@@ -443,12 +457,14 @@ fn _collect_transient_solver_chain(
             retry_max_iters,
             retry_tols,
             retry_rel_tols,
+            retry_broyden_counts,
             retry_line_search_etas,
         )
     if len(retry_algorithm_modes) == 0:
         _append_transient_solver_attempt(
             analysis.algorithm,
             analysis.algorithm_tag,
+            0,
             1.0,
             analysis.test_type,
             analysis.test_type_tag,
@@ -462,6 +478,7 @@ fn _collect_transient_solver_chain(
             retry_max_iters,
             retry_tols,
             retry_rel_tols,
+            retry_broyden_counts,
             retry_line_search_etas,
         )
     if analysis.has_solver_chain_override or len(retry_algorithm_modes) != 1:
@@ -471,6 +488,7 @@ fn _collect_transient_solver_chain(
     _append_transient_solver_attempt(
         "Newton",
         AnalysisAlgorithmTag.Newton,
+        0,
         1.0,
         analysis.test_type,
         analysis.test_type_tag,
@@ -484,6 +502,7 @@ fn _collect_transient_solver_chain(
         retry_max_iters,
         retry_tols,
         retry_rel_tols,
+        retry_broyden_counts,
         retry_line_search_etas,
     )
 
@@ -621,6 +640,7 @@ fn run_transient_nonlinear(
     var retry_max_iters: List[Int] = []
     var retry_tols: List[Float64] = []
     var retry_rel_tols: List[Float64] = []
+    var retry_broyden_counts: List[Int] = []
     var retry_line_search_etas: List[Float64] = []
     _collect_transient_solver_chain(
         analysis,
@@ -631,6 +651,7 @@ fn run_transient_nonlinear(
         retry_max_iters,
         retry_tols,
         retry_rel_tols,
+        retry_broyden_counts,
         retry_line_search_etas,
     )
     if len(retry_algorithm_modes) == 0:
@@ -642,6 +663,7 @@ fn run_transient_nonlinear(
     var max_iters = retry_max_iters[0]
     var tol = retry_tols[0]
     var rel_tol = retry_rel_tols[0]
+    var primary_broyden_count = retry_broyden_counts[0]
     var primary_line_search_eta = retry_line_search_etas[0]
 
     var integrator_tag = analysis.integrator_tag
@@ -680,6 +702,8 @@ fn run_transient_nonlinear(
     )
     var has_zero_length_damp_mats = _has_zero_length_damp_mats(typed_elements)
     var has_zero_length_dampers = _has_zero_length_dampers(typed_elements)
+    var backend = LinearSolverBackend()
+    initialize_structure(backend, analysis, free_count)
 
     var K: List[List[Float64]] = []
     for _ in range(total_dofs):
@@ -710,8 +734,6 @@ fn run_transient_nonlinear(
     var C_zero_length_damp_ff: List[List[Float64]] = []
     var K_zero_length_damp_ff: List[List[Float64]] = []
     var K_eff: List[List[Float64]] = []
-    var K_step: List[List[Float64]] = []
-    var K_lu: List[List[Float64]] = []
     for _ in range(free_count):
         var row_kff: List[Float64] = []
         row_kff.resize(free_count, 0.0)
@@ -746,12 +768,6 @@ fn run_transient_nonlinear(
         var row_keff: List[Float64] = []
         row_keff.resize(free_count, 0.0)
         K_eff.append(row_keff^)
-        var row_step: List[Float64] = []
-        row_step.resize(free_count, 0.0)
-        K_step.append(row_step^)
-        var row_lu: List[Float64] = []
-        row_lu.resize(free_count, 0.0)
-        K_lu.append(row_lu^)
     var F_zero_length_damp_f: List[Float64] = []
     F_zero_length_damp_f.resize(free_count, 0.0)
 
@@ -1043,12 +1059,8 @@ fn run_transient_nonlinear(
     R_step.resize(free_count, 0.0)
     var du_f: List[Float64] = []
     du_f.resize(free_count, 0.0)
-    var lu_pivots: List[Int] = []
-    lu_pivots.resize(free_count, 0)
     var lu_rhs: List[Float64] = []
     lu_rhs.resize(free_count, 0.0)
-    var lu_work: List[Float64] = []
-    lu_work.resize(free_count, 0.0)
 
     var record_reactions = _has_recorder_type(recorders, RecorderTypeTag.NodeReaction)
     var record_any_element_force = (
@@ -1422,6 +1434,7 @@ fn run_transient_nonlinear(
         var attempt_max_iters = max_iters
         var attempt_tol = tol
         var attempt_rel_tol = rel_tol
+        var attempt_broyden_count = primary_broyden_count
         for attempt in range(retry_attempt_count):
             if attempt > 0:
                 copy_float64_contiguous(u_f, u_step_base_f, free_count)
@@ -1434,13 +1447,14 @@ fn run_transient_nonlinear(
                 attempt_max_iters = retry_max_iters[attempt]
                 attempt_tol = retry_tols[attempt]
                 attempt_rel_tol = retry_rel_tols[attempt]
+                attempt_broyden_count = retry_broyden_counts[attempt]
                 reaction_internal_current = False
 
             var tangent_initialized = False
             var damping_initialized = False
             var k_eff_initialized = False
             var k_eff_factored = False
-            for _ in range(attempt_max_iters):
+            for iter_idx in range(attempt_max_iters):
                 if do_profile:
                     var t_revert_start = Int(time.perf_counter_ns())
                     var revert_start_us = (t_revert_start - t0) // 1000
@@ -1559,14 +1573,26 @@ fn run_transient_nonlinear(
                         frame_assemble_stiffness,
                         asm_end_us,
                     )
-                var need_tangent_matrix = (
-                    attempt_algorithm_mode == NonlinearAlgorithmMode.Newton
-                    or (
-                        attempt_algorithm_mode
-                        == NonlinearAlgorithmMode.ModifiedNewton
-                        and not tangent_initialized
-                    )
-                )
+                var broyden_refresh_interval = attempt_broyden_count
+                if (
+                    attempt_algorithm_tag == AnalysisAlgorithmTag.Broyden
+                    and broyden_refresh_interval < 1
+                ):
+                    broyden_refresh_interval = 8
+                var need_tangent_matrix: Bool
+                if attempt_algorithm_mode == NonlinearAlgorithmMode.Newton:
+                    if attempt_algorithm_tag == AnalysisAlgorithmTag.Broyden:
+                        need_tangent_matrix = (
+                            not tangent_initialized
+                            or broyden_refresh_interval <= 1
+                            or (iter_idx % broyden_refresh_interval == 0)
+                        )
+                    else:
+                        need_tangent_matrix = True
+                elif attempt_algorithm_mode == NonlinearAlgorithmMode.ModifiedNewton:
+                    need_tangent_matrix = not tangent_initialized
+                else:
+                    need_tangent_matrix = not tangent_initialized
                 if has_transformation_mpc:
                     if do_profile:
                         var t_constraints_start = Int(time.perf_counter_ns())
@@ -1670,13 +1696,16 @@ fn run_transient_nonlinear(
                                 + K_link_rayleigh[free[i]][free[j]]
                             )
                 if attempt_algorithm_mode == NonlinearAlgorithmMode.Newton:
-                    for i in range(free_count):
-                        for j in range(free_count):
-                            K_ff[i][j] = K[free[i]][free[j]]
-                            if need_link_rayleigh_filter:
-                                K_damp_ff[i][j] = K_current_damp_ff[i][j]
-                            else:
-                                K_damp_ff[i][j] = K_ff[i][j]
+                    if need_tangent_matrix:
+                        for i in range(free_count):
+                            for j in range(free_count):
+                                K_ff[i][j] = K[free[i]][free[j]]
+                                if need_link_rayleigh_filter:
+                                    K_damp_ff[i][j] = K_current_damp_ff[i][j]
+                                else:
+                                    K_damp_ff[i][j] = K_ff[i][j]
+                        tangent_initialized = True
+                        k_eff_factored = False
                 elif attempt_algorithm_mode == NonlinearAlgorithmMode.ModifiedNewton:
                     if not tangent_initialized:
                         for i in range(free_count):
@@ -1687,6 +1716,7 @@ fn run_transient_nonlinear(
                                 else:
                                     K_damp_ff[i][j] = K_ff[i][j]
                         tangent_initialized = True
+                        k_eff_factored = False
                 else:
                     if not tangent_initialized:
                         for i in range(free_count):
@@ -1694,6 +1724,7 @@ fn run_transient_nonlinear(
                                 K_ff[i][j] = K_init_ff[i][j]
                                 K_damp_ff[i][j] = K_init_damp_ff[i][j]
                         tangent_initialized = True
+                        k_eff_factored = False
 
                 if has_zero_length_dampers:
                     var K_zero_length_damp_global: List[List[Float64]] = []
@@ -1740,10 +1771,7 @@ fn run_transient_nonlinear(
                         for j in range(free_count):
                             K_zero_length_damp_ff[i][j] = 0.0
 
-                if (
-                    attempt_algorithm_mode == NonlinearAlgorithmMode.Newton
-                    or not damping_initialized
-                ):
+                if need_tangent_matrix or not damping_initialized:
                     for i in range(free_count):
                         for j in range(free_count):
                             C_ff[i][j] = 0.0
@@ -1795,10 +1823,7 @@ fn run_transient_nonlinear(
                         converged = True
                         break
 
-                if (
-                    attempt_algorithm_mode == NonlinearAlgorithmMode.Newton
-                    or not k_eff_initialized
-                ):
+                if need_tangent_matrix or not k_eff_initialized:
                     for i in range(free_count):
                         for j in range(free_count):
                             K_eff[i][j] = (
@@ -1809,12 +1834,11 @@ fn run_transient_nonlinear(
                         K_eff[i][i] += a0 * M_f[i]
                     k_eff_initialized = True
 
-                if attempt_algorithm_mode == NonlinearAlgorithmMode.Newton:
-                    for i in range(free_count):
-                        for j in range(free_count):
-                            K_step[i][j] = K_eff[i][j]
-                    for i in range(free_count):
-                        R_step[i] = R_f[i]
+                var direct_newton_solve = (
+                    attempt_algorithm_mode == NonlinearAlgorithmMode.Newton
+                    and attempt_algorithm_tag != AnalysisAlgorithmTag.Broyden
+                )
+                if direct_newton_solve:
                     if do_profile:
                         var t_solve_start = Int(time.perf_counter_ns())
                         var solve_start_us = (t_solve_start - t0) // 1000
@@ -1832,7 +1856,10 @@ fn run_transient_nonlinear(
                             frame_factorize,
                             solve_start_us,
                         )
-                    gaussian_elimination_into(K_step, R_step, du_f)
+                    _ = refactor_if_needed(backend, K_eff, True, True)
+                    for i in range(free_count):
+                        R_step[i] = R_f[i]
+                    solve(backend, R_step, du_f)
                     if do_profile:
                         var t_solve_end = Int(time.perf_counter_ns())
                         var solve_end_us = (t_solve_end - t0) // 1000
@@ -1851,13 +1878,17 @@ fn run_transient_nonlinear(
                             solve_end_us,
                         )
                 else:
-                    if not k_eff_factored:
-                        for i in range(free_count):
-                            for j in range(free_count):
-                                K_lu[i][j] = K_eff[i][j]
+                    var fac_start_us = 0
+                    if do_profile:
+                        var t_fac_start = Int(time.perf_counter_ns())
+                        fac_start_us = (t_fac_start - t0) // 1000
+                    var did_factor = refactor_if_needed(
+                        backend, K_eff, not k_eff_factored, False
+                    )
+                    if did_factor:
                         if do_profile:
-                            var t_fac_start = Int(time.perf_counter_ns())
-                            var fac_start_us = (t_fac_start - t0) // 1000
+                            var t_fac_end = Int(time.perf_counter_ns())
+                            var fac_end_us = (t_fac_end - t0) // 1000
                             _append_event(
                                 events,
                                 events_need_comma,
@@ -1865,10 +1896,6 @@ fn run_transient_nonlinear(
                                 frame_factorize,
                                 fac_start_us,
                             )
-                        lu_factorize_into(K_lu, lu_pivots)
-                        if do_profile:
-                            var t_fac_end = Int(time.perf_counter_ns())
-                            var fac_end_us = (t_fac_end - t0) // 1000
                             _append_event(
                                 events,
                                 events_need_comma,
@@ -1889,7 +1916,7 @@ fn run_transient_nonlinear(
                             frame_solve_nonlinear,
                             solve_start_us,
                         )
-                    lu_solve_into(K_lu, lu_pivots, lu_rhs, lu_work, du_f)
+                    solve(backend, lu_rhs, du_f)
                     if do_profile:
                         var t_solve_end = Int(time.perf_counter_ns())
                         var solve_end_us = (t_solve_end - t0) // 1000
@@ -2722,6 +2749,7 @@ fn run_transient_nonlinear(
             _append_event(
                 events, events_need_comma, "C", frame_transient_step, rec_end_us
             )
+    clear(backend)
     _flush_envelope_outputs(
         envelope_files,
         envelope_min,

@@ -11,6 +11,13 @@ fn _append_unique(mut items: List[Int], value: Int):
     items.append(value)
 
 
+fn _append_unique_row(mut rows: List[List[Int]], row_index: Int, value: Int):
+    for i in range(len(rows[row_index])):
+        if rows[row_index][i] == value:
+            return
+    rows[row_index].append(value)
+
+
 fn _elem_node_index(elem: ElementInput, idx: Int) -> Int:
     if idx == 0:
         return elem.node_index_1
@@ -124,3 +131,51 @@ fn rcm_order(adjacency: List[List[Int]]) -> List[Int]:
         i -= 1
 
     return rcm^
+
+
+fn min_degree_order(adjacency: List[List[Int]]) -> List[Int]:
+    var n = len(adjacency)
+    var active: List[Bool] = []
+    active.resize(n, True)
+    var graph: List[List[Int]] = []
+    for i in range(n):
+        graph.append(adjacency[i].copy())
+    var order: List[Int] = []
+
+    for _ in range(n):
+        var chosen = -1
+        var min_degree = 0
+        for node in range(n):
+            if not active[node]:
+                continue
+            var degree = 0
+            for k in range(len(graph[node])):
+                var nb = graph[node][k]
+                if active[nb]:
+                    degree += 1
+            if chosen < 0 or degree < min_degree:
+                chosen = node
+                min_degree = degree
+        if chosen < 0:
+            break
+
+        order.append(chosen)
+        active[chosen] = False
+
+        var active_neighbors: List[Int] = []
+        for k in range(len(graph[chosen])):
+            var nb = graph[chosen][k]
+            if active[nb]:
+                active_neighbors.append(nb)
+
+        # Approximate minimum-degree fill-in by connecting active neighbors.
+        for i in range(len(active_neighbors)):
+            var a = active_neighbors[i]
+            for j in range(i + 1, len(active_neighbors)):
+                var b = active_neighbors[j]
+                if a == b:
+                    continue
+                _append_unique_row(graph, a, b)
+                _append_unique_row(graph, b, a)
+
+    return order^

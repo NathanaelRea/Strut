@@ -12,7 +12,13 @@ from python import Python
 from sections import FiberCell, FiberSection2dDef, FiberSection3dDef
 from sys import simd_width_of
 
-from linalg import lu_factorize_into, lu_solve_into
+from solver.run_case.linear_solver_backend import (
+    LinearSolverBackend,
+    clear,
+    initialize_structure,
+    refactor_if_needed,
+    solve,
+)
 from solver.assembly import (
     assemble_global_stiffness_typed_soa,
     assemble_internal_forces_typed_soa,
@@ -64,7 +70,12 @@ from solver.run_case.helpers import (
     _section_response_for_recorder,
     _update_envelope,
 )
-from tag_types import ElementTypeTag, IntegratorTypeTag, PatternTypeTag, RecorderTypeTag
+from tag_types import (
+    ElementTypeTag,
+    IntegratorTypeTag,
+    PatternTypeTag,
+    RecorderTypeTag,
+)
 
 
 @always_inline
@@ -727,15 +738,12 @@ fn run_transient_linear(
             K_eff[i][j] = K_ff[i][j] + a1 * C_ff[i][j]
         K_eff[i][i] += a0 * M_f[i]
     var K_lu: List[List[Float64]] = []
-    for i in range(free_count):
+    for _ in range(free_count):
         var row_lu: List[Float64] = []
         row_lu.resize(free_count, 0.0)
         K_lu.append(row_lu^)
-        if not has_zero_length_dampers:
-            for j in range(free_count):
-                K_lu[i][j] = K_eff[i][j]
-    var lu_pivots: List[Int] = []
-    lu_pivots.resize(free_count, 0)
+    var backend = LinearSolverBackend()
+    initialize_structure(backend, analysis, free_count)
     var K_zero_length_damp_ff: List[List[Float64]] = []
     for _ in range(free_count):
         var row_zero_length_damp: List[Float64] = []
@@ -748,7 +756,7 @@ fn run_transient_linear(
             var t_fac_start = Int(time.perf_counter_ns())
             var fac_start_us = (t_fac_start - t0) // 1000
             _append_event(events, events_need_comma, "O", frame_factorize, fac_start_us)
-        lu_factorize_into(K_lu, lu_pivots)
+        _ = refactor_if_needed(backend, K_eff, True, True)
         if do_profile:
             var t_fac_end = Int(time.perf_counter_ns())
             var fac_end_us = (t_fac_end - t0) // 1000
@@ -779,8 +787,6 @@ fn run_transient_linear(
     C_term.resize(free_count, 0.0)
     var lu_rhs: List[Float64] = []
     lu_rhs.resize(free_count, 0.0)
-    var lu_work: List[Float64] = []
-    lu_work.resize(free_count, 0.0)
     var u_next_f: List[Float64] = []
     u_next_f.resize(free_count, 0.0)
     var record_reactions = _has_recorder_type(recorders, RecorderTypeTag.NodeReaction)
@@ -1005,7 +1011,7 @@ fn run_transient_linear(
                 var t_fac_start = Int(time.perf_counter_ns())
                 var fac_start_us = (t_fac_start - t0) // 1000
                 _append_event(events, events_need_comma, "O", frame_factorize, fac_start_us)
-            lu_factorize_into(K_lu, lu_pivots)
+            _ = refactor_if_needed(backend, K_lu, True, True)
             if do_profile:
                 var t_fac_end = Int(time.perf_counter_ns())
                 var fac_end_us = (t_fac_end - t0) // 1000
@@ -1020,7 +1026,7 @@ fn run_transient_linear(
             _append_event(
                 events, events_need_comma, "O", frame_solve_linear, solve_start_us
             )
-        lu_solve_into(K_lu, lu_pivots, lu_rhs, lu_work, u_next_f)
+        solve(backend, lu_rhs, u_next_f)
         if do_profile:
             var t_solve_end = Int(time.perf_counter_ns())
             var solve_end_us = (t_solve_end - t0) // 1000
@@ -1563,6 +1569,7 @@ fn run_transient_linear(
                     frame_uniaxial_commit_all,
                     commit_end_us,
                 )
+    clear(backend)
     _flush_envelope_outputs(
         envelope_files,
         envelope_min,

@@ -10,7 +10,13 @@ from materials import UniMaterialDef, UniMaterialState
 from os import abort
 from python import Python
 
-from linalg import gaussian_elimination_into, lu_factorize_into, lu_solve_into
+from solver.run_case.linear_solver_backend import (
+    LinearSolverBackend,
+    clear,
+    initialize_structure,
+    refactor_if_needed,
+    solve,
+)
 from materials import uniaxial_commit_all, uniaxial_revert_trial_all
 from solver.assembly import (
     assemble_global_stiffness_and_internal_soa,
@@ -34,6 +40,7 @@ from solver.time_series import TimeSeriesInput, eval_time_series_input, find_tim
 from sections import FiberCell, FiberSection2dDef, FiberSection3dDef
 from tag_types import (
     AnalysisAlgorithmTag,
+    AnalysisSystemTag,
     ElementTypeTag,
     IntegratorTypeTag,
     NonlinearAlgorithmMode,
@@ -101,6 +108,7 @@ fn _static_nonlinear_test_mode(test_type_tag: Int, test_type: String, label: Str
 fn _append_static_retry_attempt(
     algorithm: String,
     algorithm_tag: Int,
+    broyden_count: Int,
     line_search_eta: Float64,
     test_type: String,
     test_type_tag: Int,
@@ -114,6 +122,7 @@ fn _append_static_retry_attempt(
     mut retry_max_iters: List[Int],
     mut retry_tols: List[Float64],
     mut retry_rel_tols: List[Float64],
+    mut retry_broyden_counts: List[Int],
     mut retry_line_search_etas: List[Float64],
 ):
     if len(algorithm) == 0:
@@ -128,6 +137,7 @@ fn _append_static_retry_attempt(
     retry_max_iters.append(max_iters)
     retry_tols.append(tol)
     retry_rel_tols.append(rel_tol)
+    retry_broyden_counts.append(broyden_count)
     retry_line_search_etas.append(line_search_eta)
 
 
@@ -140,11 +150,13 @@ fn _append_static_retry_attempt_from_input(
     mut retry_max_iters: List[Int],
     mut retry_tols: List[Float64],
     mut retry_rel_tols: List[Float64],
+    mut retry_broyden_counts: List[Int],
     mut retry_line_search_etas: List[Float64],
 ):
     _append_static_retry_attempt(
         attempt.algorithm,
         attempt.algorithm_tag,
+        attempt.broyden_count,
         attempt.line_search_eta,
         attempt.test_type,
         attempt.test_type_tag,
@@ -158,6 +170,7 @@ fn _append_static_retry_attempt_from_input(
         retry_max_iters,
         retry_tols,
         retry_rel_tols,
+        retry_broyden_counts,
         retry_line_search_etas,
     )
 
@@ -173,6 +186,7 @@ fn _collect_static_solver_chain(
     mut retry_max_iters: List[Int],
     mut retry_tols: List[Float64],
     mut retry_rel_tols: List[Float64],
+    mut retry_broyden_counts: List[Int],
     mut retry_line_search_etas: List[Float64],
 ):
     for i in range(analysis.solver_chain_count):
@@ -185,12 +199,14 @@ fn _collect_static_solver_chain(
             retry_max_iters,
             retry_tols,
             retry_rel_tols,
+            retry_broyden_counts,
             retry_line_search_etas,
         )
     if len(retry_algorithm_modes) == 0:
         _append_static_retry_attempt(
             analysis.algorithm,
             analysis.algorithm_tag,
+            0,
             1.0,
             analysis.test_type,
             analysis.test_type_tag,
@@ -204,6 +220,7 @@ fn _collect_static_solver_chain(
             retry_max_iters,
             retry_tols,
             retry_rel_tols,
+            retry_broyden_counts,
             retry_line_search_etas,
         )
     if analysis.has_solver_chain_override or len(retry_algorithm_modes) != 1:
@@ -249,6 +266,7 @@ fn _collect_static_solver_chain(
     _append_static_retry_attempt(
         auto_algorithm,
         auto_algorithm_tag,
+        0,
         1.0,
         auto_test_type,
         auto_test_type_tag,
@@ -262,6 +280,7 @@ fn _collect_static_solver_chain(
         retry_max_iters,
         retry_tols,
         retry_rel_tols,
+        retry_broyden_counts,
         retry_line_search_etas,
     )
 
@@ -325,7 +344,6 @@ fn run_static_nonlinear_load_control(
     total_dofs: Int,
     F_const: List[Float64],
     F_pattern: List[Float64],
-    use_banded_nonlinear: Bool,
     free: List[Int],
     free_index: List[Int],
     recorders: List[RecorderInput],
@@ -370,6 +388,7 @@ fn run_static_nonlinear_load_control(
     var retry_max_iters: List[Int] = []
     var retry_tols: List[Float64] = []
     var retry_rel_tols: List[Float64] = []
+    var retry_broyden_counts: List[Int] = []
     var retry_line_search_etas: List[Float64] = []
     _collect_static_solver_chain(
         analysis,
@@ -382,6 +401,7 @@ fn run_static_nonlinear_load_control(
         retry_max_iters,
         retry_tols,
         retry_rel_tols,
+        retry_broyden_counts,
         retry_line_search_etas,
     )
     if len(retry_algorithm_modes) == 0:
@@ -393,6 +413,7 @@ fn run_static_nonlinear_load_control(
     var max_iters = retry_max_iters[0]
     var tol = retry_tols[0]
     var rel_tol = retry_rel_tols[0]
+    var primary_broyden_count = retry_broyden_counts[0]
     var primary_line_search_eta = retry_line_search_etas[0]
     var free_count = len(free)
     var F_const_free: List[Float64] = []
@@ -420,7 +441,8 @@ fn run_static_nonlinear_load_control(
             chain_has_modified_newton_initial = True
             break
     var use_banded_loadcontrol = (
-        use_banded_nonlinear
+        analysis.system_tag == AnalysisSystemTag.BandGeneral
+        and not has_transformation_mpc
         and integrator_tag == IntegratorTypeTag.LoadControl
         and primary_algorithm_mode != NonlinearAlgorithmMode.ModifiedNewtonInitial
         and not chain_has_modified_newton_initial
@@ -432,13 +454,11 @@ fn run_static_nonlinear_load_control(
             bw_nl = free_count - 1
     var K_ff: List[List[Float64]] = []
     var K_init_ff: List[List[Float64]] = []
-    var K_step: List[List[Float64]] = []
-    var K_lu: List[List[Float64]] = []
-    var lu_pivots: List[Int] = []
+    var backend = LinearSolverBackend()
     var lu_rhs: List[Float64] = []
-    var lu_work: List[Float64] = []
     var u_f_work: List[Float64] = []
     if not use_banded_loadcontrol:
+        initialize_structure(backend, analysis, free_count)
         for _ in range(free_count):
             var row_ff: List[Float64] = []
             row_ff.resize(free_count, 0.0)
@@ -446,15 +466,7 @@ fn run_static_nonlinear_load_control(
             var row_kinit: List[Float64] = []
             row_kinit.resize(free_count, 0.0)
             K_init_ff.append(row_kinit^)
-            var row_step: List[Float64] = []
-            row_step.resize(free_count, 0.0)
-            K_step.append(row_step^)
-            var row_lu: List[Float64] = []
-            row_lu.resize(free_count, 0.0)
-            K_lu.append(row_lu^)
-        lu_pivots.resize(free_count, 0)
         lu_rhs.resize(free_count, 0.0)
-        lu_work.resize(free_count, 0.0)
         u_f_work.resize(free_count, 0.0)
     var K_ff_banded: List[List[Float64]] = []
     var K_ff_banded_step: List[List[Float64]] = []
@@ -575,7 +587,27 @@ fn run_static_nonlinear_load_control(
     var envelope_min: List[List[Float64]] = []
     var envelope_max: List[List[Float64]] = []
     var envelope_abs: List[List[Float64]] = []
-    for step in range(steps):
+    var base_step_size = 1.0 / Float64(steps)
+    if analysis.has_integrator_step:
+        base_step_size = analysis.integrator_step
+    var adaptive_step = (
+        analysis.has_integrator_num_iter
+        or analysis.has_integrator_min_step
+        or analysis.has_integrator_max_step
+    )
+    var step_target_iters = analysis.integrator_num_iter
+    if step_target_iters < 1:
+        step_target_iters = 1
+    var last_step_iters = step_target_iters
+    var min_step_size = base_step_size
+    if analysis.has_integrator_min_step:
+        min_step_size = analysis.integrator_min_step
+    var max_step_size = base_step_size
+    if analysis.has_integrator_max_step:
+        max_step_size = analysis.integrator_max_step
+    var current_step_size = base_step_size
+    var load_control_time = 0.0
+    for _ in range(steps):
         if do_profile:
             var t_step_start = Int(time.perf_counter_ns())
             var step_start_us = (t_step_start - t0) // 1000
@@ -584,9 +616,30 @@ fn run_static_nonlinear_load_control(
             )
         if has_transformation_mpc:
             _enforce_equal_dof_values(u, rep_dof, constrained)
-        var scale = Float64(step + 1) / Float64(steps)
-        if analysis.has_integrator_step:
-            scale = Float64(step + 1) * analysis.integrator_step
+        var step_size = current_step_size
+        if adaptive_step:
+            if last_step_iters > 0:
+                step_size = (
+                    current_step_size
+                    * Float64(step_target_iters)
+                    / Float64(last_step_iters)
+                )
+            var step_sign = 1.0
+            if step_size < 0.0:
+                step_sign = -1.0
+            var step_mag = abs(step_size)
+            var min_mag = abs(min_step_size)
+            var max_mag = abs(max_step_size)
+            if max_mag < min_mag:
+                max_mag = min_mag
+            if step_mag < min_mag:
+                step_mag = min_mag
+            if step_mag > max_mag:
+                step_mag = max_mag
+            step_size = step_sign * step_mag
+        current_step_size = step_size
+        load_control_time += step_size
+        var scale = load_control_time
         if ts_index >= 0:
             scale = eval_time_series_input(
                 time_series[ts_index], scale, time_series_values, time_series_times
@@ -613,6 +666,8 @@ fn run_static_nonlinear_load_control(
         var attempt_max_iters = max_iters
         var attempt_tol = tol
         var attempt_rel_tol = rel_tol
+        var attempt_broyden_count = primary_broyden_count
+        var step_converged_iters = 0
         for attempt in range(retry_attempt_count):
             if attempt > 0:
                 for i in range(total_dofs):
@@ -625,10 +680,11 @@ fn run_static_nonlinear_load_control(
                 attempt_max_iters = retry_max_iters[attempt]
                 attempt_tol = retry_tols[attempt]
                 attempt_rel_tol = retry_rel_tols[attempt]
+                attempt_broyden_count = retry_broyden_counts[attempt]
 
             var tangent_initialized = False
             var tangent_factored = False
-            for _ in range(attempt_max_iters):
+            for iter_idx in range(attempt_max_iters):
                 if do_profile:
                     var t_iter_start = Int(time.perf_counter_ns())
                     var iter_start_us = (t_iter_start - t0) // 1000
@@ -755,15 +811,28 @@ fn run_static_nonlinear_load_control(
                     _append_event(
                         events, events_need_comma, "O", frame_kff_extract, kff_start_us
                     )
-                if use_banded_loadcontrol:
-                    var refresh_banded_tangent = (
-                        attempt_algorithm_mode == NonlinearAlgorithmMode.Newton
-                        or (
-                            attempt_algorithm_mode == NonlinearAlgorithmMode.ModifiedNewton
-                            and not tangent_initialized
+                var broyden_refresh_interval = attempt_broyden_count
+                if (
+                    attempt_algorithm_tag == AnalysisAlgorithmTag.Broyden
+                    and broyden_refresh_interval < 1
+                ):
+                    broyden_refresh_interval = 8
+                var refresh_tangent: Bool
+                if attempt_algorithm_mode == NonlinearAlgorithmMode.Newton:
+                    if attempt_algorithm_tag == AnalysisAlgorithmTag.Broyden:
+                        refresh_tangent = (
+                            not tangent_initialized
+                            or broyden_refresh_interval <= 1
+                            or (iter_idx % broyden_refresh_interval == 0)
                         )
-                    )
-                    if refresh_banded_tangent:
+                    else:
+                        refresh_tangent = True
+                elif attempt_algorithm_mode == NonlinearAlgorithmMode.ModifiedNewton:
+                    refresh_tangent = not tangent_initialized
+                else:
+                    refresh_tangent = not tangent_initialized
+                if use_banded_loadcontrol:
+                    if refresh_tangent:
                         var width = bw_nl * 2 + 1
                         for i in range(free_count):
                             for j in range(width):
@@ -784,11 +853,17 @@ fn run_static_nonlinear_load_control(
                             F_f[i] = F_step[free[i]] - F_int[free[i]]
                 else:
                     if attempt_algorithm_mode == NonlinearAlgorithmMode.Newton:
-                        for i in range(free_count):
-                            var row_i = free[i]
-                            F_f[i] = F_step[row_i] - F_int[row_i]
-                            for j in range(free_count):
-                                K_ff[i][j] = K[row_i][free[j]]
+                        if refresh_tangent:
+                            for i in range(free_count):
+                                var row_i = free[i]
+                                F_f[i] = F_step[row_i] - F_int[row_i]
+                                for j in range(free_count):
+                                    K_ff[i][j] = K[row_i][free[j]]
+                            tangent_initialized = True
+                            tangent_factored = False
+                        else:
+                            for i in range(free_count):
+                                F_f[i] = F_step[free[i]] - F_int[free[i]]
                     elif attempt_algorithm_mode == NonlinearAlgorithmMode.ModifiedNewton:
                         if not tangent_initialized:
                             for i in range(free_count):
@@ -797,6 +872,7 @@ fn run_static_nonlinear_load_control(
                                 for j in range(free_count):
                                     K_ff[i][j] = K[row_i][free[j]]
                             tangent_initialized = True
+                            tangent_factored = False
                         else:
                             for i in range(free_count):
                                 F_f[i] = F_step[free[i]] - F_int[free[i]]
@@ -806,6 +882,7 @@ fn run_static_nonlinear_load_control(
                                 for j in range(free_count):
                                     K_ff[i][j] = K_init_ff[i][j]
                             tangent_initialized = True
+                            tangent_factored = False
                         for i in range(free_count):
                             F_f[i] = F_step[free[i]] - F_int[free[i]]
                 if do_profile:
@@ -829,6 +906,7 @@ fn run_static_nonlinear_load_control(
                                 frame_nonlinear_iter,
                                 iter_end_us,
                             )
+                        step_converged_iters = iter_idx + 1
                         converged = True
                         break
 
@@ -851,22 +929,18 @@ fn run_static_nonlinear_load_control(
                             K_ff_banded_step[i][j] = K_ff_banded[i][j]
                     u_f = banded_gaussian_elimination(K_ff_banded_step, bw_nl, banded_rhs)
                 else:
-                    if attempt_algorithm_mode == NonlinearAlgorithmMode.Newton:
-                        for i in range(free_count):
-                            lu_rhs[i] = F_f[i]
-                            for j in range(free_count):
-                                K_step[i][j] = K_ff[i][j]
-                        gaussian_elimination_into(K_step, lu_rhs, u_f_work)
-                    else:
-                        if not tangent_factored:
-                            for i in range(free_count):
-                                for j in range(free_count):
-                                    K_lu[i][j] = K_ff[i][j]
-                            lu_factorize_into(K_lu, lu_pivots)
-                            tangent_factored = True
-                        for i in range(free_count):
-                            lu_rhs[i] = F_f[i]
-                        lu_solve_into(K_lu, lu_pivots, lu_rhs, lu_work, u_f_work)
+                    var direct_newton_solve = (
+                        attempt_algorithm_mode == NonlinearAlgorithmMode.Newton
+                        and attempt_algorithm_tag != AnalysisAlgorithmTag.Broyden
+                    )
+                    var force_refactor = direct_newton_solve or not tangent_factored
+                    _ = refactor_if_needed(
+                        backend, K_ff, refresh_tangent, force_refactor
+                    )
+                    tangent_factored = True
+                    for i in range(free_count):
+                        lu_rhs[i] = F_f[i]
+                    solve(backend, lu_rhs, u_f_work)
                     u_f = u_f_work.copy()
                     if attempt_algorithm_tag == AnalysisAlgorithmTag.NewtonLineSearch:
                         var update_eta = attempt_line_search_eta
@@ -920,6 +994,7 @@ fn run_static_nonlinear_load_control(
                         iter_end_us,
                     )
                 if converged_iter:
+                    step_converged_iters = iter_idx + 1
                     converged = True
                     break
             if converged:
@@ -932,6 +1007,10 @@ fn run_static_nonlinear_load_control(
             )
         if not converged:
             abort("static_nonlinear did not converge")
+        if adaptive_step:
+            if step_converged_iters < 1:
+                step_converged_iters = step_target_iters
+            last_step_iters = step_converged_iters
         var F_int_reaction = assemble_internal_forces_typed_soa(
             typed_nodes,
             typed_elements,
@@ -1437,6 +1516,7 @@ fn run_static_nonlinear_load_control(
                         )
             else:
                 abort("unsupported recorder type")
+    clear(backend)
     _flush_envelope_outputs(
         envelope_files,
         envelope_min,
@@ -1563,6 +1643,7 @@ fn run_static_nonlinear_displacement_control(
     var retry_max_iters: List[Int] = []
     var retry_tols: List[Float64] = []
     var retry_rel_tols: List[Float64] = []
+    var retry_broyden_counts: List[Int] = []
     var retry_line_search_etas: List[Float64] = []
     _collect_static_solver_chain(
         analysis,
@@ -1575,6 +1656,7 @@ fn run_static_nonlinear_displacement_control(
         retry_max_iters,
         retry_tols,
         retry_rel_tols,
+        retry_broyden_counts,
         retry_line_search_etas,
     )
     if len(retry_algorithm_modes) == 0:
@@ -1586,6 +1668,7 @@ fn run_static_nonlinear_displacement_control(
     var max_iters = retry_max_iters[0]
     var tol = retry_tols[0]
     var rel_tol = retry_rel_tols[0]
+    var primary_broyden_count = retry_broyden_counts[0]
     var primary_line_search_eta = retry_line_search_etas[0]
     var free_count = len(free)
     var F_const_free: List[Float64] = []
@@ -1643,6 +1726,15 @@ fn run_static_nonlinear_displacement_control(
     var cutback = analysis.integrator_cutback
     var max_cutbacks = analysis.integrator_max_cutbacks
     var min_du = analysis.integrator_min_du
+    var adaptive_du = (
+        analysis.has_integrator_num_iter
+        or analysis.has_integrator_min_du
+        or analysis.has_integrator_max_du
+    )
+    var du_target_iters = analysis.integrator_num_iter
+    if du_target_iters < 1:
+        du_target_iters = 1
+    var du_last_iters = du_target_iters
     if analysis.step_retry_enabled:
         max_cutbacks = 0
     var chain_has_modified_newton_initial = False
@@ -1661,9 +1753,15 @@ fn run_static_nonlinear_displacement_control(
         abort("DisplacementControl max_cutbacks must be >= 0")
     if min_du <= 0.0:
         abort("DisplacementControl min_du must be > 0")
+    if analysis.has_integrator_max_du and analysis.integrator_max_du <= 0.0:
+        abort("DisplacementControl max_du must be > 0")
 
+    var has_explicit_targets = analysis.integrator_targets_count > 0
     var target_disps: List[Float64] = []
-    if analysis.integrator_targets_count > 0:
+    var current_du_step = 0.0
+    var du_min_mag = 0.0
+    var du_max_mag = 0.0
+    if has_explicit_targets:
         for i in range(analysis.integrator_targets_count):
             target_disps.append(
                 analysis_integrator_targets_pool[analysis.integrator_targets_offset + i]
@@ -1677,8 +1775,15 @@ fn run_static_nonlinear_displacement_control(
         var du_step = analysis.integrator_du
         if du_step == 0.0:
             abort("DisplacementControl du must be nonzero")
-        for i in range(steps):
-            target_disps.append(du_step * Float64(i + 1))
+        current_du_step = du_step
+        du_min_mag = abs(du_step)
+        if analysis.has_integrator_min_du:
+            du_min_mag = abs(analysis.integrator_min_du)
+        du_max_mag = abs(du_step)
+        if analysis.has_integrator_max_du:
+            du_max_mag = abs(analysis.integrator_max_du)
+        if du_max_mag < du_min_mag:
+            du_max_mag = du_min_mag
 
     var load_factor = 0.0
     var has_pattern_reference_load = False
@@ -1824,8 +1929,30 @@ fn run_static_nonlinear_displacement_control(
         if has_transformation_mpc:
             _enforce_equal_dof_values(u, rep_dof, constrained)
 
-        var target = target_disps[step]
+        var target: Float64
+        if has_explicit_targets:
+            target = target_disps[step]
+        else:
+            if adaptive_du:
+                var du_next = current_du_step
+                if du_last_iters > 0:
+                    du_next = (
+                        current_du_step
+                        * Float64(du_target_iters)
+                        / Float64(du_last_iters)
+                    )
+                var du_sign = 1.0
+                if du_next < 0.0:
+                    du_sign = -1.0
+                var du_mag = abs(du_next)
+                if du_mag < du_min_mag:
+                    du_mag = du_min_mag
+                if du_mag > du_max_mag:
+                    du_mag = du_max_mag
+                current_du_step = du_sign * du_mag
+            target = u[control_idx] + current_du_step
         var committed_F_int: List[Float64] = []
+        var step_converged_iters = 0
         while True:
             var remaining = target - u[control_idx]
             # `min_du` is the cutback floor, not the target-reached tolerance.
@@ -1842,6 +1969,7 @@ fn run_static_nonlinear_displacement_control(
 
             for _ in range(max_cutbacks + 1):
                 var converged = False
+                var converged_iters = 0
                 var attempt_algorithm_tag = primary_algorithm_tag
                 var attempt_algorithm_mode = primary_algorithm_mode
                 var attempt_line_search_eta = primary_line_search_eta
@@ -1849,6 +1977,7 @@ fn run_static_nonlinear_displacement_control(
                 var attempt_max_iters = max_iters
                 var attempt_tol = tol
                 var attempt_rel_tol = rel_tol
+                var attempt_broyden_count = primary_broyden_count
                 var current_retry_attempt_count = retry_attempt_count
                 if not continuation_active:
                     current_retry_attempt_count = bulk_retry_attempt_count
@@ -1865,9 +1994,10 @@ fn run_static_nonlinear_displacement_control(
                         attempt_max_iters = retry_max_iters[attempt]
                         attempt_tol = retry_tols[attempt]
                         attempt_rel_tol = retry_rel_tols[attempt]
+                        attempt_broyden_count = retry_broyden_counts[attempt]
 
                     var tangent_initialized = False
-                    for _ in range(attempt_max_iters):
+                    for iter_idx in range(attempt_max_iters):
                         if do_profile:
                             var t_iter_start = Int(time.perf_counter_ns())
                             var iter_start_us = (t_iter_start - t0) // 1000
@@ -2011,17 +2141,46 @@ fn run_static_nonlinear_displacement_control(
                                 frame_kff_extract,
                                 kff_start_us,
                             )
+                        var broyden_refresh_interval = attempt_broyden_count
+                        if (
+                            attempt_algorithm_tag == AnalysisAlgorithmTag.Broyden
+                            and broyden_refresh_interval < 1
+                        ):
+                            broyden_refresh_interval = 8
+                        var refresh_tangent: Bool
+                        if attempt_algorithm_mode == NonlinearAlgorithmMode.Newton:
+                            if attempt_algorithm_tag == AnalysisAlgorithmTag.Broyden:
+                                refresh_tangent = (
+                                    not tangent_initialized
+                                    or broyden_refresh_interval <= 1
+                                    or (iter_idx % broyden_refresh_interval == 0)
+                                )
+                            else:
+                                refresh_tangent = True
+                        elif attempt_algorithm_mode == NonlinearAlgorithmMode.ModifiedNewton:
+                            refresh_tangent = not tangent_initialized
+                        else:
+                            refresh_tangent = not tangent_initialized
                         var load_ext_scale = load_scale
                         if attempt_algorithm_mode == NonlinearAlgorithmMode.Newton:
-                            for i in range(free_count):
-                                var row_i = free[i]
-                                R_f[i] = (
-                                    F_const_free[i]
-                                    + load_ext_scale * F_pattern_free[i]
-                                    - F_int[row_i]
-                                )
-                                for j in range(free_count):
-                                    K_ff[i][j] = K[row_i][free[j]]
+                            if refresh_tangent:
+                                for i in range(free_count):
+                                    var row_i = free[i]
+                                    R_f[i] = (
+                                        F_const_free[i]
+                                        + load_ext_scale * F_pattern_free[i]
+                                        - F_int[row_i]
+                                    )
+                                    for j in range(free_count):
+                                        K_ff[i][j] = K[row_i][free[j]]
+                                tangent_initialized = True
+                            else:
+                                for i in range(free_count):
+                                    R_f[i] = (
+                                        F_const_free[i]
+                                        + load_ext_scale * F_pattern_free[i]
+                                        - F_int[free[i]]
+                                    )
                         elif attempt_algorithm_mode == NonlinearAlgorithmMode.ModifiedNewton:
                             if not tangent_initialized:
                                 for i in range(free_count):
@@ -2081,6 +2240,7 @@ fn run_static_nonlinear_displacement_control(
                                         frame_nonlinear_iter,
                                         iter_end_us,
                                     )
+                                converged_iters = iter_idx + 1
                                 converged = True
                                 break
 
@@ -2166,12 +2326,14 @@ fn run_static_nonlinear_displacement_control(
                                 iter_end_us,
                             )
                         if converged_iter:
+                            converged_iters = iter_idx + 1
                             converged = True
                             break
                     if converged:
                         break
                 if converged:
                     attempt_ok = True
+                    step_converged_iters = converged_iters
                     break
                 attempt_du *= cutback
                 if abs(attempt_du) <= min_du:
@@ -2286,6 +2448,11 @@ fn run_static_nonlinear_displacement_control(
                 force_basic_counts,
                 force_basic_q,
             )
+
+        if not has_explicit_targets and adaptive_du:
+            if step_converged_iters < 1:
+                step_converged_iters = du_target_iters
+            du_last_iters = step_converged_iters
 
         if do_profile:
             var t_step_end = Int(time.perf_counter_ns())

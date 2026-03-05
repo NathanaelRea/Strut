@@ -86,6 +86,28 @@ OPEN_SEES_COMMAND_ALIASES = {
 }
 
 
+_SUPPORTED_SYSTEM_NAMES = frozenset(
+    {
+        "BandGeneral",
+        "BandSPD",
+        "ProfileSPD",
+        "SuperLU",
+        "UmfPack",
+        "FullGeneral",
+        "SparseSYM",
+    }
+)
+
+_SYSTEM_NAME_ALIASES = {
+    "BandGEN": "BandGeneral",
+    "BandGen": "BandGeneral",
+    "SparseGeneral": "SuperLU",
+    "SparseGEN": "SuperLU",
+    "SparseSPD": "SparseSYM",
+    "Umfpack": "UmfPack",
+}
+
+
 def _sanitize_slug_part(text: str) -> str:
     chars = []
     for ch in text.lower():
@@ -884,8 +906,8 @@ class TclStrutBuilder:
         return ea, ei
 
     def _analysis_constraints_name(self) -> str:
-        if self.constraints_handler == "Transformation":
-            return "Transformation"
+        if self.constraints_handler in {"Transformation", "Lagrange"}:
+            return self.constraints_handler
         return "Plain"
 
     def _normalize_algorithm_name(self, args: tuple[str, ...]) -> str:
@@ -2790,7 +2812,7 @@ class TclStrutBuilder:
     def _cmd_constraints(self, *args: str) -> str:
         if len(args) != 1 or args[0] not in {"Plain", "Transformation", "Lagrange"}:
             raise self._error("unsupported constraints handler", "constraints", args)
-        self.constraints_handler = "Transformation" if args[0] == "Lagrange" else args[0]
+        self.constraints_handler = args[0]
         return ""
 
     def _cmd_numberer(self, *args: str) -> str:
@@ -2802,7 +2824,17 @@ class TclStrutBuilder:
     def _cmd_system(self, *args: str) -> str:
         if not args:
             raise self._error("system expects a solver name", "system", args)
-        self.system_handler = args[0]
+        solver = _SYSTEM_NAME_ALIASES.get(args[0], args[0])
+        if solver == "Mumps" or solver not in _SUPPORTED_SYSTEM_NAMES:
+            raise self._error(
+                (
+                    "unsupported system solver "
+                    f"`{args[0]}` (supported: {', '.join(sorted(_SUPPORTED_SYSTEM_NAMES))})"
+                ),
+                "system",
+                args,
+            )
+        self.system_handler = solver
         self.system_options = list(args[1:])
         return ""
 

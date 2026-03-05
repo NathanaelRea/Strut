@@ -201,7 +201,7 @@ def test_force_beam_column2d_dense_modified_newton_load_control_matches_newton()
             "tol": 1e-8,
             "rel_tol": 1e-8,
             "algorithm": algorithm,
-            "solver": "dense",
+            "system": "FullGeneral",
             "integrator": {"type": "LoadControl"},
         }
 

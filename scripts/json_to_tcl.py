@@ -129,14 +129,80 @@ def _analysis_numberer(analysis, default="RCM"):
     return numberer
 
 
-def _analysis_system_line(analysis, default="BandGeneral", default_options=None):
-    system = analysis.get("system", default)
-    options = analysis.get("system_options", default_options or [])
+_SUPPORTED_SYSTEM_NAMES = frozenset(
+    {
+        "BandGeneral",
+        "BandSPD",
+        "ProfileSPD",
+        "SuperLU",
+        "UmfPack",
+        "FullGeneral",
+        "SparseSYM",
+    }
+)
+
+_SYSTEM_NAME_ALIASES = {
+    "BandGEN": "BandGeneral",
+    "BandGen": "BandGeneral",
+    "SparseGeneral": "SuperLU",
+    "SparseGEN": "SuperLU",
+    "SparseSPD": "SparseSYM",
+    "Umfpack": "UmfPack",
+}
+
+
+def _canonicalize_system_name(system):
     if not isinstance(system, str) or not system:
         raise ValueError("analysis system must be a non-empty string")
+    canonical = _SYSTEM_NAME_ALIASES.get(system, system)
+    if canonical == "Mumps" or canonical not in _SUPPORTED_SYSTEM_NAMES:
+        supported = ", ".join(sorted(_SUPPORTED_SYSTEM_NAMES))
+        raise ValueError(
+            f"unsupported analysis system `{system}` (supported: {supported})"
+        )
+    return canonical
+
+
+def _analysis_system_line(analysis, default="BandGeneral", default_options=None):
+    system = _canonicalize_system_name(analysis.get("system", default))
+    options = analysis.get("system_options", default_options or [])
     if not isinstance(options, list) or not all(isinstance(opt, str) for opt in options):
         raise ValueError("analysis system_options must be a list of strings")
     words = ["system", system, *options]
+    return " ".join(words)
+
+
+def _load_control_integrator_line(integrator, default_step):
+    step = float(integrator.get("step", default_step))
+    words = ["integrator", "LoadControl", str(step)]
+    if any(
+        key in integrator for key in ("num_iter", "min_step", "max_step")
+    ):
+        num_iter = int(integrator.get("num_iter", 1))
+        words.append(str(num_iter))
+        if "min_step" in integrator or "max_step" in integrator:
+            min_step = integrator.get("min_step", step)
+            words.append(str(float(min_step)))
+            if "max_step" in integrator:
+                words.append(str(float(integrator["max_step"])))
+    return " ".join(words)
+
+
+def _displacement_control_integrator_line(integrator, node, dof, du_token):
+    words = [
+        "integrator",
+        "DisplacementControl",
+        str(int(node)),
+        str(int(dof)),
+        du_token,
+    ]
+    if any(key in integrator for key in ("num_iter", "min_du", "max_du")):
+        words.append(str(int(integrator.get("num_iter", 1))))
+        if "min_du" in integrator or "max_du" in integrator:
+            min_du = integrator.get("min_du", du_token)
+            words.append(str(min_du))
+            if "max_du" in integrator:
+                words.append(str(float(integrator["max_du"])))
     return " ".join(words)
 
 
@@ -521,6 +587,7 @@ def _append_solver_chain_retry_lines(
 def _static_nonlinear_displacement_control_post_lines(
     node,
     dof,
+    integrator_line,
     targets,
     cutback,
     max_cutbacks,
@@ -542,7 +609,7 @@ def _static_nonlinear_displacement_control_post_lines(
         "    set strut_dc_try_du $strut_dc_remaining",
         "    set strut_dc_ok 1",
         "    for {set strut_dc_cut 0} {$strut_dc_cut <= $strut_dc_max_cutbacks} {incr strut_dc_cut} {",
-        f"      integrator DisplacementControl {int(node)} {int(dof)} $strut_dc_try_du",
+        f"      {integrator_line}",
         "      set strut_dc_ok [analyze 1]",
     ]
     _append_solver_chain_retry_lines(
@@ -551,9 +618,7 @@ def _static_nonlinear_displacement_control_post_lines(
         "analyze 1",
         solver_chain,
         indent="      ",
-        retry_integrator_line=(
-            f"integrator DisplacementControl {int(node)} {int(dof)} $strut_dc_try_du"
-        ),
+        retry_integrator_line=integrator_line,
     )
     lines.extend(
         [
@@ -1338,10 +1403,12 @@ def main():
             stages = analysis.get("stages", [])
             if not isinstance(stages, list) or len(stages) == 0:
                 raise ValueError("staged analysis requires non-empty analysis.stages")
-            if constraints_handler not in ("Plain", "Transformation"):
+            if constraints_handler not in ("Plain", "Transformation", "Lagrange"):
                 raise ValueError(f"unsupported constraints handler: {constraints_handler}")
-            if mp_constraints and constraints_handler != "Transformation":
-                raise ValueError("mp_constraints require analysis.constraints=Transformation")
+            if mp_constraints and constraints_handler not in ("Transformation", "Lagrange"):
+                raise ValueError(
+                    "mp_constraints require analysis.constraints=Transformation or Lagrange"
+                )
 
             _emit_recorders(f, recorders, node_by_id, ndf)
 
@@ -1437,7 +1504,7 @@ def main():
                     f.write(f"rayleigh {alpha_m} {beta_k} {beta_k_init} {beta_k_comm}\n")
 
                 stage_constraints = stage_analysis.get("constraints", constraints_handler)
-                if stage_constraints not in ("Plain", "Transformation"):
+                if stage_constraints not in ("Plain", "Transformation", "Lagrange"):
                     raise ValueError(
                         f"unsupported constraints handler: {stage_constraints}"
                     )
@@ -1486,7 +1553,12 @@ def main():
                     integrator = stage_analysis.get("integrator", {"type": "LoadControl"})
                     integrator_type = integrator.get("type", "LoadControl")
                     if integrator_type == "LoadControl":
-                        f.write(f"integrator LoadControl {1.0/stage_steps}\n")
+                        f.write(
+                            _load_control_integrator_line(
+                                integrator, 1.0 / stage_steps
+                            )
+                            + "\n"
+                        )
                         f.write("analysis Static\n")
                         if len(solver_chain) > 1:
                             stage_static_nl_post_lines = [
@@ -1518,6 +1590,12 @@ def main():
                             integrator, "DisplacementControl"
                         )
                         f.write("analysis Static\n")
+                        dc_integrator_line = _displacement_control_integrator_line(
+                            integrator,
+                            node,
+                            dof,
+                            "$strut_dc_try_du",
+                        )
                         targets = integrator.get("targets")
                         if targets is not None:
                             if not isinstance(targets, list) or len(targets) == 0:
@@ -1528,6 +1606,7 @@ def main():
                                 _static_nonlinear_displacement_control_post_lines(
                                     node,
                                     dof,
+                                    dc_integrator_line,
                                     targets,
                                     cutback,
                                     max_cutbacks,
@@ -1548,6 +1627,7 @@ def main():
                                 _static_nonlinear_displacement_control_post_lines(
                                     node,
                                     dof,
+                                    dc_integrator_line,
                                     step_targets,
                                     cutback,
                                     max_cutbacks,
@@ -1670,10 +1750,12 @@ def main():
 
         if steps < 1:
             raise ValueError("analysis steps must be >= 1")
-        if constraints_handler not in ("Plain", "Transformation"):
+        if constraints_handler not in ("Plain", "Transformation", "Lagrange"):
             raise ValueError(f"unsupported constraints handler: {constraints_handler}")
-        if mp_constraints and constraints_handler != "Transformation":
-            raise ValueError("mp_constraints require analysis.constraints=Transformation")
+        if mp_constraints and constraints_handler not in ("Transformation", "Lagrange"):
+            raise ValueError(
+                "mp_constraints require analysis.constraints=Transformation or Lagrange"
+            )
         numberer = _analysis_numberer(analysis)
         system_line = _analysis_system_line(analysis)
         if bool(data.get("initialize", False)):
@@ -1705,7 +1787,7 @@ def main():
             integrator = analysis.get("integrator", {"type": "LoadControl"})
             integrator_type = integrator.get("type", "LoadControl")
             if integrator_type == "LoadControl":
-                f.write(f"integrator LoadControl {1.0/steps}\n")
+                f.write(_load_control_integrator_line(integrator, 1.0 / steps) + "\n")
                 f.write("analysis Static\n")
                 if len(solver_chain) > 1:
                     static_nl_post_lines = [
@@ -1737,6 +1819,12 @@ def main():
                     integrator, "DisplacementControl"
                 )
                 f.write("analysis Static\n")
+                dc_integrator_line = _displacement_control_integrator_line(
+                    integrator,
+                    node,
+                    dof,
+                    "$strut_dc_try_du",
+                )
                 targets = integrator.get("targets")
                 if targets is not None:
                     if not isinstance(targets, list) or len(targets) == 0:
@@ -1744,6 +1832,7 @@ def main():
                     static_nl_post_lines = _static_nonlinear_displacement_control_post_lines(
                         node,
                         dof,
+                        dc_integrator_line,
                         targets,
                         cutback,
                         max_cutbacks,
@@ -1758,6 +1847,7 @@ def main():
                     static_nl_post_lines = _static_nonlinear_displacement_control_post_lines(
                         node,
                         dof,
+                        dc_integrator_line,
                         step_targets,
                         cutback,
                         max_cutbacks,

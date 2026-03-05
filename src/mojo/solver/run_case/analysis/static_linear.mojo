@@ -9,14 +9,26 @@ from solver.run_case.input_types import ElementLoadInput
 from materials import UniMaterialDef, UniMaterialState
 from python import Python
 
-from linalg import gaussian_elimination
 from solver.assembly import (
     assemble_global_stiffness_banded_frame2d_soa,
     assemble_global_stiffness_and_internal_soa,
 )
 from solver.banded import banded_gaussian_elimination, estimate_bandwidth_typed
 from solver.profile import _append_event
-from solver.run_case.input_types import ElementInput, MaterialInput, NodeInput, SectionInput
+from solver.run_case.input_types import (
+    AnalysisInput,
+    ElementInput,
+    MaterialInput,
+    NodeInput,
+    SectionInput,
+)
+from solver.run_case.linear_solver_backend import (
+    LinearSolverBackend,
+    clear,
+    factorize,
+    initialize_structure,
+    solve,
+)
 from solver.run_case.helpers import (
     _collapse_matrix_by_rep,
     _collapse_vector_by_rep,
@@ -28,7 +40,7 @@ from solver.run_case.load_state import (
 )
 from solver.time_series import TimeSeriesInput, eval_time_series_input
 from sections import FiberCell, FiberSection2dDef, FiberSection3dDef
-from tag_types import ElementTypeTag
+from tag_types import AnalysisSystemTag, ElementTypeTag
 
 fn run_static_linear(
     typed_nodes: List[NodeInput],
@@ -85,7 +97,7 @@ fn run_static_linear(
     fiber_section3d_defs: List[FiberSection3dDef],
     fiber_section3d_cells: List[FiberCell],
     fiber_section3d_index_by_id: List[Int],
-    use_banded_linear: Bool,
+    analysis: AnalysisInput,
     free_index: List[Int],
     free: List[Int],
     ts_index: Int,
@@ -144,7 +156,11 @@ fn run_static_linear(
     var K: List[List[Float64]] = []
     var F_int_dummy: List[Float64] = []
     F_int_dummy.resize(total_dofs, 0.0)
-    if use_banded_linear:
+    var use_bandgeneral_banded = (
+        analysis.system_tag == AnalysisSystemTag.BandGeneral
+        and not has_transformation_mpc
+    )
+    if use_bandgeneral_banded:
         bw = estimate_bandwidth_typed(typed_elements, free_index)
         if bw > free_count - 1:
             bw = free_count - 1
@@ -198,7 +214,7 @@ fn run_static_linear(
                 asm_u_elem6,
                 asm_f_dummy,
             )
-    if not (use_banded_linear and use_typed_banded):
+    if not (use_bandgeneral_banded and use_typed_banded):
         for _ in range(total_dofs):
             var row: List[Float64] = []
             row.resize(total_dofs, 0.0)
@@ -287,7 +303,7 @@ fn run_static_linear(
             events, events_need_comma, "O", frame_kff_extract, kff_start_us
         )
     var K_ff: List[List[Float64]] = []
-    if not (use_banded_linear and use_typed_banded):
+    if not (use_bandgeneral_banded and use_typed_banded):
         for _ in range(free_count):
             var row: List[Float64] = []
             row.resize(free_count, 0.0)
@@ -310,11 +326,15 @@ fn run_static_linear(
         _append_event(
             events, events_need_comma, "O", frame_solve_linear, solve_lin_start_us
         )
-    var u_f: List[Float64]
-    if use_banded_linear and use_typed_banded:
+    var u_f: List[Float64] = []
+    if use_bandgeneral_banded and use_typed_banded:
         u_f = banded_gaussian_elimination(K_ff_banded, bw, F_f)
     else:
-        u_f = gaussian_elimination(K_ff, F_f)
+        var backend = LinearSolverBackend()
+        initialize_structure(backend, analysis, free_count)
+        factorize(backend, K_ff)
+        solve(backend, F_f, u_f)
+        clear(backend)
     if do_profile:
         var t_solve_lin_end = Int(time.perf_counter_ns())
         var solve_lin_end_us = (t_solve_lin_end - t0) // 1000

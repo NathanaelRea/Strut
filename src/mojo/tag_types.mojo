@@ -42,9 +42,13 @@ struct NumbererTag:
 
 struct AnalysisSystemTag:
     alias Unknown = 0
-    alias Auto = 1
-    alias Dense = 2
-    alias Banded = 3
+    alias BandGeneral = 1
+    alias BandSPD = 2
+    alias ProfileSPD = 3
+    alias SuperLU = 4
+    alias UmfPack = 5
+    alias FullGeneral = 6
+    alias SparseSYM = 7
 
 
 struct AnalysisTypeTag:
@@ -61,6 +65,7 @@ struct ConstraintHandlerTag:
     alias Unknown = 0
     alias Plain = 1
     alias Transformation = 2
+    alias Lagrange = 3
 
 
 struct ForceBeamModeTag:

@@ -199,8 +199,6 @@ def run_case_input(
     var analysis_type_tag = state.analysis_type_tag
     var steps = state.steps
     var modal_num_modes = state.modal_num_modes
-    var use_banded_linear = state.use_banded_linear
-    var use_banded_nonlinear = state.use_banded_nonlinear
     var has_transformation_mpc = state.has_transformation_mpc
     var supports_linear_transient_fast_path = (
         state.supports_linear_transient_fast_path
@@ -363,7 +361,7 @@ def run_case_input(
             fiber_section3d_defs,
             fiber_section3d_cells,
             fiber_section3d_index_by_id,
-            use_banded_linear,
+            analysis,
             free_index,
             free,
             ts_index,
@@ -451,7 +449,6 @@ def run_case_input(
                 total_dofs,
                 F_const,
                 F_pattern,
-                use_banded_nonlinear,
                 free,
                 free_index,
                 recorders,
@@ -800,6 +797,7 @@ def run_case_input(
             if (
                 stage_analysis.constraints != "Plain"
                 and stage_analysis.constraints != "Transformation"
+                and stage_analysis.constraints != "Lagrange"
             ):
                 abort(
                     "unsupported staged constraints handler: "
@@ -894,7 +892,6 @@ def run_case_input(
                 stage_rayleigh_beta_k = stage.rayleigh.beta_k
                 stage_rayleigh_beta_k_init = stage.rayleigh.beta_k_init
                 stage_rayleigh_beta_k_comm = stage.rayleigh.beta_k_comm
-
             var stage_final_pattern_scale = 0.0
             if stage_type_tag == AnalysisTypeTag.StaticLinear:
                 if stage_pattern_type_tag != PatternTypeTag.Plain:
@@ -954,7 +951,7 @@ def run_case_input(
                     fiber_section3d_defs,
                     fiber_section3d_cells,
                     fiber_section3d_index_by_id,
-                    use_banded_linear,
+                    stage_analysis,
                     free_index,
                     free,
                     stage_ts_index,
@@ -1050,7 +1047,6 @@ def run_case_input(
                         total_dofs,
                         F_const,
                         stage_F,
-                        use_banded_nonlinear,
                         free,
                         free_index,
                         recorders,
