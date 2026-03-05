@@ -167,6 +167,7 @@ class StrutCase:
     enabled: bool = True
     status: str = "generated"
     parity_tolerance: Optional[dict[str, Any]] = None
+    parity_tolerance_by_category: Optional[dict[str, Any]] = None
     parity_tolerance_by_recorder: Optional[dict[str, Any]] = None
     parity_mode: Optional[str] = None
     mp_constraints: list[dict[str, Any]] = field(default_factory=list)
@@ -194,6 +195,10 @@ class StrutCase:
             data["source_example"] = self.source_example
         if self.parity_tolerance is not None:
             data["parity_tolerance"] = _clone(self.parity_tolerance)
+        if self.parity_tolerance_by_category is not None:
+            data["parity_tolerance_by_category"] = _clone(
+                self.parity_tolerance_by_category
+            )
         if self.parity_tolerance_by_recorder is not None:
             data["parity_tolerance_by_recorder"] = _clone(
                 self.parity_tolerance_by_recorder

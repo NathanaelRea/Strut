@@ -54,6 +54,7 @@ def test_global_parity_tolerance_overrides_recorder_defaults():
         5.0e-4,
         True,
         {},
+        {},
     )
 
     assert rtol == 0.2
@@ -67,10 +68,39 @@ def test_default_recorder_tolerance_used_without_global_override():
         compare_case.ABS_TOL,
         False,
         {},
+        {},
     )
 
     assert rtol == compare_case.DEFAULT_RECORDER_TOLERANCES["element_force"]["rtol"]
     assert atol == compare_case.DEFAULT_RECORDER_TOLERANCES["element_force"]["atol"]
+
+
+def test_category_override_applies_to_recorder_types():
+    rtol, atol = compare_case._resolve_recorder_tolerance(
+        "element_force",
+        compare_case.REL_TOL,
+        compare_case.ABS_TOL,
+        False,
+        {"force": {"rtol": 0.2, "atol": 1.0e-3}},
+        {},
+    )
+
+    assert rtol == 0.2
+    assert atol == 1.0e-3
+
+
+def test_recorder_override_wins_over_category_override():
+    rtol, atol = compare_case._resolve_recorder_tolerance(
+        "element_force",
+        compare_case.REL_TOL,
+        compare_case.ABS_TOL,
+        False,
+        {"force": {"rtol": 0.2, "atol": 1.0e-3}},
+        {"element_force": {"rtol": 0.3, "atol": 5.0e-3}},
+    )
+
+    assert rtol == 0.3
+    assert atol == 5.0e-3
 
 
 def test_compare_transient_rows_allows_different_lengths_for_max_abs():

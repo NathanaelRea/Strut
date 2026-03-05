@@ -133,6 +133,50 @@ def _copy_direct_tcl_shared_assets(script_dir: Path, mirrored_parent: Path) -> l
     return mirrored_inputs
 
 
+def _ensure_direct_tcl_compat_aliases(
+    mirrored_parent: Path, mirrored_script_dir: Path
+) -> list[Path]:
+    mirrored_inputs: list[Path] = []
+
+    # Some OpenSees bundles source GeneratePeaks.tcl even when only
+    # LibGeneratePeaks.tcl is present in the directory.
+    lib_generate_peaks = mirrored_script_dir / "LibGeneratePeaks.tcl"
+    generate_peaks = mirrored_script_dir / "GeneratePeaks.tcl"
+    if lib_generate_peaks.exists() and not generate_peaks.exists():
+        shutil.copy2(lib_generate_peaks, generate_peaks)
+        mirrored_inputs.append(lib_generate_peaks.resolve())
+
+    gm_dirs = [mirrored_parent / "GMfiles", mirrored_script_dir / "GMfiles"]
+    seen_dirs: set[Path] = set()
+    for gm_dir in gm_dirs:
+        gm_dir = gm_dir.resolve()
+        if gm_dir in seen_dirs or not gm_dir.is_dir():
+            continue
+        seen_dirs.add(gm_dir)
+
+        at2_files = sorted(
+            path for path in gm_dir.iterdir() if path.is_file() and path.suffix.lower() == ".at2"
+        )
+        for at2_path in at2_files:
+            dt2_path = at2_path.with_suffix(".dt2")
+            if not dt2_path.exists():
+                shutil.copy2(at2_path, dt2_path)
+                mirrored_inputs.append(at2_path.resolve())
+
+        canonical_peer = gm_dir / "H-e12140.at2"
+        legacy_peer = gm_dir / "H-E01140.at2"
+        if canonical_peer.exists() and not legacy_peer.exists():
+            shutil.copy2(canonical_peer, legacy_peer)
+            mirrored_inputs.append(canonical_peer.resolve())
+        if legacy_peer.exists():
+            legacy_dt2 = gm_dir / "H-E01140.dt2"
+            if not legacy_dt2.exists():
+                shutil.copy2(legacy_peer, legacy_dt2)
+                mirrored_inputs.append(legacy_peer.resolve())
+
+    return mirrored_inputs
+
+
 def prepare_direct_tcl_entry(
     entry_tcl: Path,
     source_files: Sequence[Path],
@@ -176,6 +220,9 @@ def prepare_direct_tcl_entry(
     )
     mirrored_script_dir = mirrored_parent / script_dir.name
     shared_asset_inputs = _copy_direct_tcl_shared_assets(script_dir, mirrored_parent)
+    compat_alias_inputs = _ensure_direct_tcl_compat_aliases(
+        mirrored_parent, mirrored_script_dir
+    )
 
     wrapper_path = mirrored_script_dir / f"__strut_{entry_path.stem}_entry.tcl"
     wrapper_lines = []
@@ -183,4 +230,4 @@ def prepare_direct_tcl_entry(
         relative_path = os.path.relpath(source_path, script_dir)
         wrapper_lines.append(f"source {{{relative_path}}}")
     wrapper_path.write_text("\n".join(wrapper_lines) + "\n", encoding="utf-8")
-    return wrapper_path, [*resolved_sources, *shared_asset_inputs]
+    return wrapper_path, [*resolved_sources, *shared_asset_inputs, *compat_alias_inputs]

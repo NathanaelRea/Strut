@@ -1246,11 +1246,26 @@ def test_resolve_recorder_tolerance_prefers_per_recorder_override():
         global_rtol=0.2,
         global_atol=0.001,
         has_global_override=True,
+        per_category_overrides={},
         per_recorder_overrides={"element_force": {"rtol": 0.3, "atol": 0.01}},
     )
 
     assert rtol == pytest.approx(0.3)
     assert atol == pytest.approx(0.01)
+
+
+def test_resolve_recorder_tolerance_applies_category_override():
+    rtol, atol = run_benchmarks._resolve_recorder_tolerance(
+        "node_reaction",
+        global_rtol=run_benchmarks.REL_TOL,
+        global_atol=run_benchmarks.ABS_TOL,
+        has_global_override=False,
+        per_category_overrides={"force": {"rtol": 0.25, "atol": 0.002}},
+        per_recorder_overrides={},
+    )
+
+    assert rtol == pytest.approx(0.25)
+    assert atol == pytest.approx(0.002)
 
 
 def test_write_benchmark_plots_calls_plot_helper(monkeypatch, tmp_path: Path):

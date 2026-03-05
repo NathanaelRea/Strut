@@ -15,22 +15,41 @@ import direct_tcl_support
 ABS_TOL = 1e-8
 REL_TOL = 1e-5
 
-DEFAULT_RECORDER_TOLERANCES = {
-    "node_displacement": {"atol": 1e-9, "rtol": 1e-5},
-    "envelope_node_displacement": {"atol": 1e-9, "rtol": 1e-5},
-    "envelope_node_acceleration": {"atol": 1e-8, "rtol": 1e-5},
-    "node_reaction": {"atol": 1e-9, "rtol": 1e-5},
-    "drift": {"atol": 1e-9, "rtol": 1e-5},
-    "element_force": {"atol": 1e-8, "rtol": 1e-5},
-    "element_local_force": {"atol": 1e-8, "rtol": 1e-5},
-    "element_basic_force": {"atol": 1e-8, "rtol": 1e-5},
-    "element_deformation": {"atol": 1e-8, "rtol": 1e-5},
-    "envelope_element_force": {"atol": 1e-8, "rtol": 1e-5},
-    "envelope_element_local_force": {"atol": 1e-8, "rtol": 1e-5},
-    "section_force": {"atol": 1e-8, "rtol": 1e-5},
-    "section_deformation": {"atol": 1e-9, "rtol": 1e-6},
-    "modal_eigen": {"atol": 1e-8, "rtol": 1e-5},
+DEFAULT_RECORDER_CATEGORY_TOLERANCES = {
+    "displacement": {"atol": 1e-9, "rtol": 1e-5},
+    "velocity": {"atol": 1e-8, "rtol": 1e-5},
+    "acceleration": {"atol": 1e-8, "rtol": 1e-5},
+    "force": {"atol": 1e-8, "rtol": 1e-5},
+    "deformation": {"atol": 1e-8, "rtol": 1e-5},
+    "modal": {"atol": 1e-8, "rtol": 1e-5},
 }
+
+RECORDER_TOLERANCE_CATEGORIES = {
+    "node_displacement": "displacement",
+    "envelope_node_displacement": "displacement",
+    "drift": "displacement",
+    "node_velocity": "velocity",
+    "envelope_node_velocity": "velocity",
+    "node_acceleration": "acceleration",
+    "envelope_node_acceleration": "acceleration",
+    "node_reaction": "force",
+    "element_force": "force",
+    "element_local_force": "force",
+    "element_basic_force": "force",
+    "envelope_element_force": "force",
+    "envelope_element_local_force": "force",
+    "section_force": "force",
+    "element_deformation": "deformation",
+    "section_deformation": "deformation",
+    "modal_eigen": "modal",
+}
+
+DEFAULT_RECORDER_TOLERANCES = {
+    rec_type: dict(DEFAULT_RECORDER_CATEGORY_TOLERANCES[category])
+    for rec_type, category in RECORDER_TOLERANCE_CATEGORIES.items()
+}
+# Preserve legacy per-recorder defaults that were intentionally tighter.
+DEFAULT_RECORDER_TOLERANCES["section_deformation"] = {"atol": 1e-9, "rtol": 1e-6}
 
 
 def _isclose(a, b, rtol=REL_TOL, atol=ABS_TOL):
@@ -139,9 +158,15 @@ def _resolve_recorder_tolerance(
     global_rtol: float,
     global_atol: float,
     has_global_override: bool,
+    per_category_overrides: dict,
     per_recorder_overrides: dict,
 ):
-    default_entry = DEFAULT_RECORDER_TOLERANCES.get(rec_type, {})
+    category = RECORDER_TOLERANCE_CATEGORIES.get(rec_type)
+    default_entry = DEFAULT_RECORDER_TOLERANCES.get(rec_type)
+    if default_entry is None and category is not None:
+        default_entry = DEFAULT_RECORDER_CATEGORY_TOLERANCES.get(category, {})
+    if default_entry is None:
+        default_entry = {}
     rtol = float(default_entry.get("rtol", REL_TOL))
     atol = float(default_entry.get("atol", ABS_TOL))
 
@@ -150,6 +175,14 @@ def _resolve_recorder_tolerance(
         # recorder-specific override is provided.
         rtol = float(global_rtol)
         atol = float(global_atol)
+
+    if category is not None:
+        category_override = per_category_overrides.get(category, {})
+        if isinstance(category_override, dict):
+            if "rtol" in category_override:
+                rtol = float(category_override["rtol"])
+            if "atol" in category_override:
+                atol = float(category_override["atol"])
 
     override = per_recorder_overrides.get(rec_type, {})
     if isinstance(override, dict):
@@ -221,6 +254,7 @@ def _load_direct_tcl_case_data(
     manifest = direct_tcl_support.load_direct_tcl_manifest(manifest_path)
     for key in (
         "parity_tolerance",
+        "parity_tolerance_by_category",
         "parity_tolerance_by_recorder",
         "parity_mode",
     ):
@@ -240,6 +274,9 @@ def _compare_output_dirs(data: dict, ref_dir: Path, strut_dir: Path) -> list[str
     tol_by_recorder = data.get("parity_tolerance_by_recorder", {})
     if not isinstance(tol_by_recorder, dict):
         tol_by_recorder = {}
+    tol_by_category = data.get("parity_tolerance_by_category", {})
+    if not isinstance(tol_by_category, dict):
+        tol_by_category = {}
     parity_mode = str(data.get("parity_mode", "step")).strip().lower()
     if parity_mode not in ("step", "max_abs"):
         raise ValueError(
@@ -254,7 +291,12 @@ def _compare_output_dirs(data: dict, ref_dir: Path, strut_dir: Path) -> list[str
             continue
         rec_type = rec["type"]
         rec_rtol, rec_atol = _resolve_recorder_tolerance(
-            rec_type, rtol, atol, has_global_tol_override, tol_by_recorder
+            rec_type,
+            rtol,
+            atol,
+            has_global_tol_override,
+            tol_by_category,
+            tol_by_recorder,
         )
         if rec_type == "node_displacement":
             output = rec.get("output", "node_disp")

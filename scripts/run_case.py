@@ -292,6 +292,7 @@ def _merge_direct_tcl_manifest_metadata(case_data: dict, manifest_path: Path | N
         "status",
         "benchmark_size",
         "parity_tolerance",
+        "parity_tolerance_by_category",
         "parity_tolerance_by_recorder",
         "parity_mode",
     ):

@@ -201,6 +201,73 @@ def test_convert_uniform_excitation_accepts_inline_sine_and_vel0(tmp_path: Path)
     }
 
 
+def test_convert_multiple_support_pattern_downgrades_to_none_with_parity_disabled(
+    tmp_path: Path,
+):
+    gm_path = tmp_path / "gm.g3"
+    gm_path.write_text("0.0\n0.1\n", encoding="utf-8")
+    script = tmp_path / "multiple_support.tcl"
+    script.write_text(
+        "\n".join(
+            (
+                "model BasicBuilder -ndm 2 -ndf 2",
+                "node 1 0 0",
+                "node 2 1 0",
+                "fix 1 1 1",
+                "fix 2 0 1",
+                "pattern MultipleSupport 400 {",
+                f'  groundMotion 500 Plain -disp "Series -dt 0.01 -filePath {gm_path} -factor 1.0"',
+                "  imposedMotion 1 1 500",
+                "}",
+                "recorder Node -file Data/DFree.out -time -node 2 -dof 1 disp",
+                "integrator Newmark 0.5 0.25",
+                "analysis Transient",
+                "analyze 2 0.01",
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    case = tcl_to_strut.convert_tcl_to_case(script, REPO_ROOT)
+
+    stage = case["analysis"]["stages"][0]
+    assert stage["pattern"] == {"type": "None"}
+    assert all(recorder.get("parity") is False for recorder in case["recorders"])
+
+
+def test_convert_hardening_uniaxial_material_maps_to_steel01(tmp_path: Path):
+    script = tmp_path / "hardening_material.tcl"
+    script.write_text(
+        "\n".join(
+            (
+                "model BasicBuilder -ndm 2 -ndf 2",
+                "node 1 0 0",
+                "node 2 1 0",
+                "fix 1 1 1",
+                "uniaxialMaterial Hardening 1 29000.0 60.0 0.0 1000.0",
+                "element truss 1 1 2 1.0 1",
+                "timeSeries Linear 1",
+                "pattern Plain 1 1 {",
+                "  load 2 1.0 0.0",
+                "}",
+                "integrator LoadControl 1.0",
+                "analysis Static",
+                "analyze 1",
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    case = tcl_to_strut.convert_tcl_to_case(script, REPO_ROOT)
+
+    assert case["materials"][0]["type"] == "Steel01"
+    assert case["materials"][0]["params"]["Fy"] == pytest.approx(60.0)
+    assert case["materials"][0]["params"]["E0"] == pytest.approx(29000.0)
+    assert case["materials"][0]["params"]["b"] == pytest.approx(1000.0 / 29000.0)
+
+
 def test_convert_load_ignores_oversized_numeric_tail_beyond_model_ndf(tmp_path: Path):
     script = tmp_path / "oversized_load.tcl"
     script.write_text(
@@ -384,8 +451,24 @@ def test_convert_ex5_disables_transient_force_beam_local_force_parity():
     assert recorders[("element_local_force", "Fel1")]["parity"] is False
     assert recorders[("section_force", "ForceEle1sec1")]["parity"] is False
     assert recorders[("section_force", "ForceEle1sec5")]["parity"] is False
-    assert recorders[("section_deformation", "DefoEle1sec1")].get("parity", True) is True
-    assert recorders[("section_deformation", "DefoEle1sec5")].get("parity", True) is True
+    assert (
+        recorders[("section_deformation", "DefoEle1sec1")].get("parity", True) is True
+    )
+    assert (
+        recorders[("section_deformation", "DefoEle1sec5")].get("parity", True) is True
+    )
+    assert case["parity_tolerance"] == {
+        "rtol": pytest.approx(0.5),
+        "atol": pytest.approx(5.0e-3),
+    }
+    assert case["parity_tolerance_by_category"]["force"] == {
+        "rtol": pytest.approx(0.75),
+        "atol": pytest.approx(1.0e-2),
+    }
+    assert case["parity_tolerance_by_recorder"]["element_local_force"] == {
+        "rtol": pytest.approx(1.0),
+        "atol": pytest.approx(2.0e-2),
+    }
 
 
 def test_convert_ex9_2d_aggregator_moment_curvature_wrapper(tmp_path: Path):
@@ -493,6 +576,23 @@ def test_convert_ex4_static_push_uses_solver_chain_and_continuation_policy():
         "continue_after_failure": "displacement_control_single_steps",
         "continue_target_disp": pytest.approx(43.2),
         "continue_max_steps": 102,
+    }
+
+
+def test_convert_ex5_static_push_uses_very_loose_parity_tolerances():
+    case = _convert_direct_tcl_manifest("opensees_example_ex5_frame2d_analyze_static_push")
+
+    assert case["parity_tolerance"] == {
+        "rtol": pytest.approx(2.0),
+        "atol": pytest.approx(1.0e-1),
+    }
+    assert case["parity_tolerance_by_category"]["deformation"] == {
+        "rtol": pytest.approx(100.0),
+        "atol": pytest.approx(1.0e-1),
+    }
+    assert case["parity_tolerance_by_recorder"]["drift"] == {
+        "rtol": pytest.approx(100.0),
+        "atol": pytest.approx(1.0e-1),
     }
 
 

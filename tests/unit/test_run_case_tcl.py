@@ -190,6 +190,32 @@ def test_run_case_tcl_without_canonical_mapping_uses_slug_case_root(
     assert len(generated_dirs) == 1
 
 
+def test_merge_direct_tcl_manifest_metadata_includes_category_tolerances(
+    tmp_path: Path,
+):
+    case_data = {"recorders": []}
+    manifest_path = tmp_path / "direct_tcl_case.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "parity_tolerance_by_category": {
+                    "force": {"rtol": 0.2, "atol": 1.0e-3}
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    merged = run_case._merge_direct_tcl_manifest_metadata(case_data, manifest_path)
+
+    assert merged["parity_tolerance_by_category"]["force"]["rtol"] == pytest.approx(
+        0.2
+    )
+    assert merged["parity_tolerance_by_category"]["force"]["atol"] == pytest.approx(
+        1.0e-3
+    )
+
+
 def test_prepare_direct_tcl_entry_uses_explicit_source_files_order(
     tmp_path: Path,
 ):

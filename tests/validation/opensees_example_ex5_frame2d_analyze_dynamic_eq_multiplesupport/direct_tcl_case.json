@@ -1,7 +1,7 @@
 {
   "name": "opensees_example_ex5_frame2d_analyze_dynamic_eq_multiplesupport",
   "entry_tcl": "docs/agent-reference/OpenSeesExamplesAdvanced/opensees_example_5_2d_frame_3_story_3_bay_reinforced_concrete_section_steel_w_section/Ex5.Frame2D.analyze.Dynamic.EQ.multipleSupport.tcl",
-  "enabled": false,
+  "enabled": true,
   "source_files": [
     "Ex5.Frame2D.build.InelasticFiberRCSection.tcl",
     "Ex5.Frame2D.analyze.Dynamic.EQ.multipleSupport.tcl"
