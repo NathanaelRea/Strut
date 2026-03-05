@@ -71,6 +71,11 @@ fn reset_force_beam_column2d_scratch(mut scratch: ForceBeamColumn2dScratch):
     scratch.fixed_end_cache = []
 
 
+fn invalidate_force_beam_column2d_load_cache(mut scratch: ForceBeamColumn2dScratch):
+    for i in range(len(scratch.load_valid)):
+        scratch.load_valid[i] = False
+
+
 @always_inline
 fn _beam2d_local_basic_map(col: Int, inv_L: Float64) -> (Float64, Float64, Float64):
     if col == 0:
@@ -258,6 +263,8 @@ fn _copy_force_beam_column2d_states(
     elem_state_count: Int,
     mut uniaxial_states: List[UniMaterialState],
 ):
+    if elem_state_count <= 0:
+        return
     if src_elem_state_offset < 0 or src_elem_state_offset + elem_state_count > len(
         elem_state_ids
     ):
@@ -266,11 +273,28 @@ fn _copy_force_beam_column2d_states(
         elem_state_ids
     ):
         abort("forceBeamColumn2d fiber state destination out of range")
+    var src_state_base = elem_state_ids[src_elem_state_offset]
+    var dst_state_base = elem_state_ids[dst_elem_state_offset]
+    if src_state_base < 0 or src_state_base + elem_state_count > len(uniaxial_states):
+        abort("forceBeamColumn2d fiber state source index out of range")
+    if dst_state_base < 0 or dst_state_base + elem_state_count > len(uniaxial_states):
+        abort("forceBeamColumn2d fiber state destination index out of range")
+
+    var src_last = elem_state_ids[src_elem_state_offset + elem_state_count - 1]
+    var dst_last = elem_state_ids[dst_elem_state_offset + elem_state_count - 1]
+    var src_contiguous = src_last == src_state_base + elem_state_count - 1
+    var dst_contiguous = dst_last == dst_state_base + elem_state_count - 1
+
+    if src_contiguous and dst_contiguous:
+        for i in range(elem_state_count):
+            uniaxial_states[dst_state_base + i] = uniaxial_states[src_state_base + i]
+        return
+
     for i in range(elem_state_count):
         var src_state_index = elem_state_ids[src_elem_state_offset + i]
+        var dst_state_index = elem_state_ids[dst_elem_state_offset + i]
         if src_state_index < 0 or src_state_index >= len(uniaxial_states):
             abort("forceBeamColumn2d fiber state source index out of range")
-        var dst_state_index = elem_state_ids[dst_elem_state_offset + i]
         if dst_state_index < 0 or dst_state_index >= len(uniaxial_states):
             abort("forceBeamColumn2d fiber state destination index out of range")
         uniaxial_states[dst_state_index] = uniaxial_states[src_state_index]
@@ -1318,46 +1342,19 @@ fn force_beam_column2d_global_tangent_and_internal(
     var attempt_2 = remaining_2
     var converged = False
     var all_materials_elastic = _fiber_section2d_all_materials_elastic(sec_def)
-    # Keep a recoverable tangent/internal state at the last compatible point so
-    # the global nonlinear solve can cut back instead of aborting the process.
-    var best_solved = _force_beam_column2d_try_increment(
-        L,
-        scratch.integration_cache.xis,
-        scratch.integration_cache.weights,
-        scratch.section_load_axial,
-        scratch.section_load_moment,
-        sec_def,
-        fibers,
-        uniaxial_defs,
-        uniaxial_states,
-        elem_state_ids,
-        elem_state_offset,
-        fibers_per_section,
-        num_int_pts,
-        force_basic_q_state,
-        force_basic_q_offset,
-        accepted_basic_0,
-        accepted_basic_1,
-        accepted_basic_2,
+    var best_solved = (
+        False,
         0.0,
         0.0,
         0.0,
-        0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
     )
-    _copy_force_beam_column2d_basic_state(
-        force_basic_q_state,
-        basic_backup_offset,
-        force_basic_q_offset,
-        active_basic_count,
-    )
-    if elem_state_count > 0:
-        _copy_force_beam_column2d_states(
-            elem_state_ids,
-            elem_state_backup_offset,
-            elem_state_offset,
-            elem_state_count,
-            uniaxial_states,
-        )
 
     var tolerance = 1.0e-10
     var max_subdivisions = 12
@@ -1577,20 +1574,6 @@ fn force_beam_column2d_global_tangent_and_internal(
                 elem_state_count,
                 uniaxial_states,
             )
-    _copy_force_beam_column2d_basic_state(
-        force_basic_q_state,
-        basic_backup_offset,
-        force_basic_q_offset,
-        active_basic_count,
-    )
-    if elem_state_count > 0:
-        _copy_force_beam_column2d_states(
-            elem_state_ids,
-            elem_state_backup_offset,
-            elem_state_offset,
-            elem_state_count,
-            uniaxial_states,
-        )
     if not best_solved[0]:
         var fallback_tangent = _force_beam_column2d_initial_basic_tangent(
             L,

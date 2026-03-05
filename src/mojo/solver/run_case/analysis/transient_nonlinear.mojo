@@ -2,6 +2,8 @@ from collections import List
 from elements import (
     ForceBeamColumn2dScratch,
     ForceBeamColumn3dScratch,
+    invalidate_force_beam_column2d_load_cache,
+    invalidate_force_beam_column3d_load_cache,
     reset_force_beam_column2d_scratch,
     reset_force_beam_column3d_scratch,
 )
@@ -776,6 +778,11 @@ fn run_transient_nonlinear(
         ndm,
         ndf,
     )
+    var refresh_step_element_load_cache = (
+        pattern_type_tag == PatternTypeTag.Plain
+        and ts_index >= 0
+        and len(pattern_element_loads) > 0
+    )
     reset_force_beam_column2d_scratch(force_beam_column2d_scratch)
     reset_force_beam_column3d_scratch(force_beam_column3d_scratch)
     assemble_global_stiffness_and_internal_soa(
@@ -1137,8 +1144,6 @@ fn run_transient_nonlinear(
                 ndm,
                 ndf,
             )
-            reset_force_beam_column2d_scratch(force_beam_column2d_scratch)
-            reset_force_beam_column3d_scratch(force_beam_column3d_scratch)
             if do_profile:
                 var t_ts_start = Int(time.perf_counter_ns())
                 var ts_start_us = (t_ts_start - t0) // 1000
@@ -1210,8 +1215,6 @@ fn run_transient_nonlinear(
                     ndm,
                     ndf,
                 )
-                reset_force_beam_column2d_scratch(force_beam_column2d_scratch)
-                reset_force_beam_column3d_scratch(force_beam_column3d_scratch)
             else:
                 copy_float64_contiguous(
                     F_ext_step,
@@ -1227,8 +1230,9 @@ fn run_transient_nonlinear(
                     ndm,
                     ndf,
                 )
-                reset_force_beam_column2d_scratch(force_beam_column2d_scratch)
-                reset_force_beam_column3d_scratch(force_beam_column3d_scratch)
+        if refresh_step_element_load_cache:
+            invalidate_force_beam_column2d_load_cache(force_beam_column2d_scratch)
+            invalidate_force_beam_column3d_load_cache(force_beam_column3d_scratch)
         _gather_from_free_simd(free, F_ext_step, P_ext_f)
 
         var converged = False

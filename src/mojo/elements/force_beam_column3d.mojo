@@ -100,6 +100,11 @@ fn reset_force_beam_column3d_scratch(mut scratch: ForceBeamColumn3dScratch):
     scratch.fixed_end_cache = []
 
 
+fn invalidate_force_beam_column3d_load_cache(mut scratch: ForceBeamColumn3dScratch):
+    for i in range(len(scratch.load_valid)):
+        scratch.load_valid[i] = False
+
+
 @always_inline
 fn _mat3_index(row: Int, col: Int) -> Int:
     return row * 3 + col

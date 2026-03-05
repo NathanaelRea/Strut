@@ -39,6 +39,7 @@ from elements.disp_beam_column3d import disp_beam_column3d_global_tangent_and_in
 from elements.force_beam_column2d import (
     ForceBeamColumn2dScratch,
     force_beam_column2d_global_tangent_and_internal,
+    invalidate_force_beam_column2d_load_cache,
     reset_force_beam_column2d_scratch,
 )
 from elements.force_beam_column3d import (
@@ -46,6 +47,7 @@ from elements.force_beam_column3d import (
     force_beam_column3d_fiber_global_tangent_and_internal,
     force_beam_column3d_fiber_section_response,
     force_beam_column3d_global_tangent_and_internal,
+    invalidate_force_beam_column3d_load_cache,
     reset_force_beam_column3d_scratch,
 )
 from elements.link import (
