@@ -1,3 +1,4 @@
+from algorithm import vectorize
 from collections import Dict, List
 from elements import (
     ForceBeamColumn2dScratch,
@@ -130,15 +131,13 @@ fn _scatter_free_vector_to_full_simd_impl[width: Int](
     free: List[Int], src: List[Float64], mut dst: List[Float64]
 ):
     var n = len(free)
-    var i = 0
-    while i + width <= n:
-        scatter_float64_by_index_simd[width](
-            free, i, dst, load_float64_contiguous_simd[width](src, i)
-        )
-        i += width
-    while i < n:
-        dst[free[i]] = src[i]
-        i += 1
+
+    @parameter
+    fn scatter_chunk[chunk: Int](i: Int):
+        var src_vec = load_float64_contiguous_simd[chunk](src, i)
+        scatter_float64_by_index_simd[chunk](free, i, dst, src_vec)
+
+    vectorize[scatter_chunk, width](n)
 
 
 @always_inline
@@ -155,15 +154,13 @@ fn _gather_from_free_simd_impl[width: Int](
     free: List[Int], src: List[Float64], mut dst: List[Float64]
 ):
     var n = len(free)
-    var i = 0
-    while i + width <= n:
-        store_float64_contiguous_simd[width](
-            dst, i, gather_float64_by_index_simd[width](free, i, src)
-        )
-        i += width
-    while i < n:
-        dst[i] = src[free[i]]
-        i += 1
+
+    @parameter
+    fn gather_chunk[chunk: Int](i: Int):
+        var gathered_vec = gather_float64_by_index_simd[chunk](free, i, src)
+        store_float64_contiguous_simd[chunk](dst, i, gathered_vec)
+
+    vectorize[gather_chunk, width](n)
 
 
 @always_inline
@@ -188,27 +185,27 @@ fn _build_trial_state_newmark_simd_impl[width: Int](
     mut v_trial: List[Float64],
 ):
     var n = len(u_f)
-    var i = 0
-    var a0_vec = SIMD[DType.float64, width](a0)
-    var a2_vec = SIMD[DType.float64, width](a2)
-    var a3_vec = SIMD[DType.float64, width](a3)
-    var gamma_vec = SIMD[DType.float64, width](gamma)
-    var one_minus_gamma_vec = SIMD[DType.float64, width](1.0 - gamma)
-    var dt_vec = SIMD[DType.float64, width](dt)
-    while i + width <= n:
-        var u_curr = load_float64_contiguous_simd[width](u_f, i)
-        var u_prev = load_float64_contiguous_simd[width](u_n, i)
-        var v_prev = load_float64_contiguous_simd[width](v_n, i)
-        var a_prev = load_float64_contiguous_simd[width](a_n, i)
-        var a_next = a0_vec * (u_curr - u_prev) - a2_vec * v_prev - a3_vec * a_prev
-        var v_next = v_prev + dt_vec * (one_minus_gamma_vec * a_prev + gamma_vec * a_next)
-        store_float64_contiguous_simd[width](a_trial, i, a_next)
-        store_float64_contiguous_simd[width](v_trial, i, v_next)
-        i += width
-    while i < n:
-        a_trial[i] = a0 * (u_f[i] - u_n[i]) - a2 * v_n[i] - a3 * a_n[i]
-        v_trial[i] = v_n[i] + dt * ((1.0 - gamma) * a_n[i] + gamma * a_trial[i])
-        i += 1
+    var one_minus_gamma = 1.0 - gamma
+
+    @parameter
+    fn build_chunk[chunk: Int](i: Int):
+        var u_curr = load_float64_contiguous_simd[chunk](u_f, i)
+        var u_prev = load_float64_contiguous_simd[chunk](u_n, i)
+        var v_prev = load_float64_contiguous_simd[chunk](v_n, i)
+        var a_prev = load_float64_contiguous_simd[chunk](a_n, i)
+        var a_next = (
+            SIMD[DType.float64, chunk](a0) * (u_curr - u_prev)
+            - SIMD[DType.float64, chunk](a2) * v_prev
+            - SIMD[DType.float64, chunk](a3) * a_prev
+        )
+        var v_next = v_prev + SIMD[DType.float64, chunk](dt) * (
+            SIMD[DType.float64, chunk](one_minus_gamma) * a_prev
+            + SIMD[DType.float64, chunk](gamma) * a_next
+        )
+        store_float64_contiguous_simd[chunk](a_trial, i, a_next)
+        store_float64_contiguous_simd[chunk](v_trial, i, v_next)
+
+    vectorize[build_chunk, width](n)
 
 
 @always_inline
@@ -240,20 +237,21 @@ fn _predict_displacement_newmark_simd_impl[width: Int](
     beta: Float64,
 ):
     var n = len(u_f)
-    var i = 0
-    var dt_vec = SIMD[DType.float64, width](dt)
-    var coeff_vec = SIMD[DType.float64, width](dt * dt * (0.5 - beta))
-    while i + width <= n:
-        var u_prev = load_float64_contiguous_simd[width](u_n, i)
-        var v_prev = load_float64_contiguous_simd[width](v_n, i)
-        var a_prev = load_float64_contiguous_simd[width](a_n, i)
-        var u_pred = u_prev + dt_vec * v_prev + coeff_vec * a_prev
-        store_float64_contiguous_simd[width](u_f, i, u_pred)
-        i += width
     var coeff = dt * dt * (0.5 - beta)
-    while i < n:
-        u_f[i] = u_n[i] + dt * v_n[i] + coeff * a_n[i]
-        i += 1
+
+    @parameter
+    fn predict_chunk[chunk: Int](i: Int):
+        var u_prev = load_float64_contiguous_simd[chunk](u_n, i)
+        var v_prev = load_float64_contiguous_simd[chunk](v_n, i)
+        var a_prev = load_float64_contiguous_simd[chunk](a_n, i)
+        var u_pred = (
+            u_prev
+            + SIMD[DType.float64, chunk](dt) * v_prev
+            + SIMD[DType.float64, chunk](coeff) * a_prev
+        )
+        store_float64_contiguous_simd[chunk](u_f, i, u_pred)
+
+    vectorize[predict_chunk, width](n)
 
 
 @always_inline
@@ -285,29 +283,27 @@ fn _update_post_step_newmark_simd_impl[width: Int](
     mut a_f: List[Float64],
 ):
     var n = len(u_f)
-    var i = 0
-    var a0_vec = SIMD[DType.float64, width](a0)
-    var a2_vec = SIMD[DType.float64, width](a2)
-    var a3_vec = SIMD[DType.float64, width](a3)
-    var gamma_vec = SIMD[DType.float64, width](gamma)
-    var one_minus_gamma_vec = SIMD[DType.float64, width](1.0 - gamma)
-    var dt_vec = SIMD[DType.float64, width](dt)
-    while i + width <= n:
-        var u_curr = load_float64_contiguous_simd[width](u_f, i)
-        var u_prev = load_float64_contiguous_simd[width](u_n, i)
-        var v_prev = load_float64_contiguous_simd[width](v_n, i)
-        var a_prev = load_float64_contiguous_simd[width](a_n, i)
-        var a_next = a0_vec * (u_curr - u_prev) - a2_vec * v_prev - a3_vec * a_prev
-        var v_next = v_prev + dt_vec * (one_minus_gamma_vec * a_prev + gamma_vec * a_next)
-        store_float64_contiguous_simd[width](a_f, i, a_next)
-        store_float64_contiguous_simd[width](v_f, i, v_next)
-        i += width
-    while i < n:
-        var a_next = a0 * (u_f[i] - u_n[i]) - a2 * v_n[i] - a3 * a_n[i]
-        var v_next = v_n[i] + dt * ((1.0 - gamma) * a_n[i] + gamma * a_next)
-        a_f[i] = a_next
-        v_f[i] = v_next
-        i += 1
+    var one_minus_gamma = 1.0 - gamma
+
+    @parameter
+    fn update_chunk[chunk: Int](i: Int):
+        var u_curr = load_float64_contiguous_simd[chunk](u_f, i)
+        var u_prev = load_float64_contiguous_simd[chunk](u_n, i)
+        var v_prev = load_float64_contiguous_simd[chunk](v_n, i)
+        var a_prev = load_float64_contiguous_simd[chunk](a_n, i)
+        var a_next = (
+            SIMD[DType.float64, chunk](a0) * (u_curr - u_prev)
+            - SIMD[DType.float64, chunk](a2) * v_prev
+            - SIMD[DType.float64, chunk](a3) * a_prev
+        )
+        var v_next = v_prev + SIMD[DType.float64, chunk](dt) * (
+            SIMD[DType.float64, chunk](one_minus_gamma) * a_prev
+            + SIMD[DType.float64, chunk](gamma) * a_next
+        )
+        store_float64_contiguous_simd[chunk](a_f, i, a_next)
+        store_float64_contiguous_simd[chunk](v_f, i, v_next)
+
+    vectorize[update_chunk, width](n)
 
 
 @always_inline

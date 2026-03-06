@@ -1,3 +1,4 @@
+from algorithm import vectorize
 from collections import List
 from os import abort
 from python import PythonObject
@@ -207,17 +208,18 @@ fn _fiber_section3d_elastic_response_simd[width: Int](
     var k23 = 0.0
     var k33 = 0.0
 
-    var i = 0
-    var eps0_vec = SIMD[DType.float64, width](eps0)
-    var kappa_y_vec = SIMD[DType.float64, width](kappa_y)
-    var kappa_z_vec = SIMD[DType.float64, width](kappa_z)
-    while i + width <= count:
-        var y_vec = load_float64_contiguous_simd[width](y_rel, i)
-        var z_vec = load_float64_contiguous_simd[width](z_rel, i)
-        var area_vec = load_float64_contiguous_simd[width](area, i)
-        var modulus_vec = load_float64_contiguous_simd[width](modulus, i)
+    @parameter
+    fn accumulate_chunk[chunk: Int](i: Int):
+        var y_vec = load_float64_contiguous_simd[chunk](y_rel, i)
+        var z_vec = load_float64_contiguous_simd[chunk](z_rel, i)
+        var area_vec = load_float64_contiguous_simd[chunk](area, i)
+        var modulus_vec = load_float64_contiguous_simd[chunk](modulus, i)
         var ks_vec = modulus_vec * area_vec
-        var fs_vec = ks_vec * (eps0_vec + z_vec * kappa_y_vec - y_vec * kappa_z_vec)
+        var fs_vec = ks_vec * (
+            SIMD[DType.float64, chunk](eps0)
+            + z_vec * SIMD[DType.float64, chunk](kappa_y)
+            - y_vec * SIMD[DType.float64, chunk](kappa_z)
+        )
         axial_force += fs_vec.reduce_add()
         moment_y += (fs_vec * z_vec).reduce_add()
         moment_z += (-fs_vec * y_vec).reduce_add()
@@ -227,23 +229,8 @@ fn _fiber_section3d_elastic_response_simd[width: Int](
         k22 += (ks_vec * z_vec * z_vec).reduce_add()
         k23 += (-ks_vec * z_vec * y_vec).reduce_add()
         k33 += (ks_vec * y_vec * y_vec).reduce_add()
-        i += width
 
-    while i < count:
-        var y = y_rel[i]
-        var z = z_rel[i]
-        var ks = modulus[i] * area[i]
-        var fs = ks * (eps0 + z * kappa_y - y * kappa_z)
-        axial_force += fs
-        moment_y += fs * z
-        moment_z += -fs * y
-        k11 += ks
-        k12 += ks * z
-        k13 += -ks * y
-        k22 += ks * z * z
-        k23 += -ks * z * y
-        k33 += ks * y * y
-        i += 1
+    vectorize[accumulate_chunk, width](count)
 
     if count > 0:
         var modulus0 = modulus[0]

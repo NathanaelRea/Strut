@@ -1,3 +1,4 @@
+from algorithm import vectorize
 from collections import List
 from os import abort
 from python import PythonObject
@@ -207,32 +208,23 @@ fn _fiber_section2d_elastic_response_simd[width: Int](
     var k12 = 0.0
     var k22 = 0.0
 
-    var i = 0
-    var eps0_vec = SIMD[DType.float64, width](eps0)
-    var kappa_vec = SIMD[DType.float64, width](kappa)
-    while i + width <= count:
-        var y_vec = load_float64_contiguous_simd[width](y_rel, i)
-        var area_vec = load_float64_contiguous_simd[width](area, i)
-        var modulus_vec = load_float64_contiguous_simd[width](modulus, i)
+    @parameter
+    fn accumulate_chunk[chunk: Int](i: Int):
+        var y_vec = load_float64_contiguous_simd[chunk](y_rel, i)
+        var area_vec = load_float64_contiguous_simd[chunk](area, i)
+        var modulus_vec = load_float64_contiguous_simd[chunk](modulus, i)
         var ks_vec = modulus_vec * area_vec
-        var fs_vec = ks_vec * (eps0_vec - y_vec * kappa_vec)
+        var fs_vec = ks_vec * (
+            SIMD[DType.float64, chunk](eps0)
+            - y_vec * SIMD[DType.float64, chunk](kappa)
+        )
         axial_force += fs_vec.reduce_add()
         moment_z += (-fs_vec * y_vec).reduce_add()
         k11 += ks_vec.reduce_add()
         k12 += (-ks_vec * y_vec).reduce_add()
         k22 += (ks_vec * y_vec * y_vec).reduce_add()
-        i += width
 
-    while i < count:
-        var y = y_rel[i]
-        var ks = modulus[i] * area[i]
-        var fs = ks * (eps0 - y * kappa)
-        axial_force += fs
-        moment_z += -fs * y
-        k11 += ks
-        k12 += -ks * y
-        k22 += ks * y * y
-        i += 1
+    vectorize[accumulate_chunk, width](count)
 
     if count > 0:
         var modulus0 = modulus[0]
