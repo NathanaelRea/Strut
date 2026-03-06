@@ -6,7 +6,7 @@ from elements import (
     reset_force_beam_column3d_scratch,
 )
 from math import sqrt
-from materials import UniMaterialDef, UniMaterialState
+from materials import UniMaterialDef, UniMaterialState, uniaxial_commit, uniaxial_revert_trial
 from os import abort
 from python import Python
 
@@ -17,7 +17,6 @@ from solver.run_case.linear_solver_backend import (
     refactor_if_needed,
     solve,
 )
-from materials import uniaxial_commit_all, uniaxial_revert_trial_all
 from solver.assembly import (
     assemble_global_stiffness_and_internal_soa,
     assemble_internal_forces_typed_soa,
@@ -283,6 +282,29 @@ fn _collect_static_solver_chain(
         retry_broyden_counts,
         retry_line_search_etas,
     )
+
+
+fn _uniaxial_revert_trial_active_states(
+    mut uniaxial_states: List[UniMaterialState], elem_uniaxial_state_ids: List[Int]
+):
+    for i in range(len(elem_uniaxial_state_ids)):
+        var state_id = elem_uniaxial_state_ids[i]
+        if state_id < 0 or state_id >= len(uniaxial_states):
+            abort("active uniaxial state id out of range")
+        ref state = uniaxial_states[state_id]
+        uniaxial_revert_trial(state)
+
+
+fn _uniaxial_commit_active_states(
+    mut uniaxial_states: List[UniMaterialState], elem_uniaxial_state_ids: List[Int]
+):
+    for i in range(len(elem_uniaxial_state_ids)):
+        var state_id = elem_uniaxial_state_ids[i]
+        if state_id < 0 or state_id >= len(uniaxial_states):
+            abort("active uniaxial state id out of range")
+        ref state = uniaxial_states[state_id]
+        uniaxial_commit(state)
+
 
 fn run_static_nonlinear_load_control(
     analysis: AnalysisInput,
@@ -569,7 +591,7 @@ fn run_static_nonlinear_load_control(
                 frame_uniaxial_revert_all,
                 revert_start_us,
             )
-        uniaxial_revert_trial_all(uniaxial_states)
+        _uniaxial_revert_trial_active_states(uniaxial_states, elem_uniaxial_state_ids)
         if do_profile:
             var t_revert_end = Int(time.perf_counter_ns())
             var revert_end_us = (t_revert_end - t0) // 1000
@@ -658,6 +680,7 @@ fn run_static_nonlinear_load_control(
         reset_force_beam_column3d_scratch(force_beam_column3d_scratch)
         var u_base = u.copy()
         var force_basic_q_base = force_basic_q.copy()
+        var uniaxial_states_base = uniaxial_states.copy()
         var converged = False
         var attempt_algorithm_tag = primary_algorithm_tag
         var attempt_algorithm_mode = primary_algorithm_mode
@@ -673,6 +696,7 @@ fn run_static_nonlinear_load_control(
                 for i in range(total_dofs):
                     u[i] = u_base[i]
                 force_basic_q = force_basic_q_base.copy()
+                uniaxial_states = uniaxial_states_base.copy()
                 attempt_algorithm_tag = retry_algorithm_tags[attempt]
                 attempt_algorithm_mode = retry_algorithm_modes[attempt]
                 attempt_line_search_eta = retry_line_search_etas[attempt]
@@ -694,27 +718,6 @@ fn run_static_nonlinear_load_control(
                         "O",
                         frame_nonlinear_iter,
                         iter_start_us,
-                    )
-                if do_profile:
-                    var t_revert_start = Int(time.perf_counter_ns())
-                    var revert_start_us = (t_revert_start - t0) // 1000
-                    _append_event(
-                        events,
-                        events_need_comma,
-                        "O",
-                        frame_uniaxial_revert_all,
-                        revert_start_us,
-                    )
-                uniaxial_revert_trial_all(uniaxial_states)
-                if do_profile:
-                    var t_revert_end = Int(time.perf_counter_ns())
-                    var revert_end_us = (t_revert_end - t0) // 1000
-                    _append_event(
-                        events,
-                        events_need_comma,
-                        "C",
-                        frame_uniaxial_revert_all,
-                        revert_end_us,
                     )
                 if do_profile:
                     var t_asm_start = Int(time.perf_counter_ns())
@@ -1076,7 +1079,7 @@ fn run_static_nonlinear_load_control(
                 frame_uniaxial_commit_all,
                 commit_start_us,
             )
-        uniaxial_commit_all(uniaxial_states)
+        _uniaxial_commit_active_states(uniaxial_states, elem_uniaxial_state_ids)
         if do_profile:
             var t_commit_end = Int(time.perf_counter_ns())
             var commit_end_us = (t_commit_end - t0) // 1000
@@ -1907,7 +1910,7 @@ fn run_static_nonlinear_displacement_control(
                 frame_uniaxial_revert_all,
                 revert_start_us,
             )
-        uniaxial_revert_trial_all(uniaxial_states)
+        _uniaxial_revert_trial_active_states(uniaxial_states, elem_uniaxial_state_ids)
         if do_profile:
             var t_revert_end = Int(time.perf_counter_ns())
             var revert_end_us = (t_revert_end - t0) // 1000
@@ -1963,6 +1966,7 @@ fn run_static_nonlinear_displacement_control(
 
             var u_base = u.copy()
             var force_basic_q_base = force_basic_q.copy()
+            var uniaxial_states_base = uniaxial_states.copy()
             var lambda_base = load_factor
             var attempt_du = remaining
             var attempt_ok = False
@@ -1985,6 +1989,7 @@ fn run_static_nonlinear_displacement_control(
                     for i in range(total_dofs):
                         u[i] = u_base[i]
                     force_basic_q = force_basic_q_base.copy()
+                    uniaxial_states = uniaxial_states_base.copy()
                     load_factor = lambda_base
                     if attempt > 0:
                         attempt_algorithm_tag = retry_algorithm_tags[attempt]
@@ -2007,27 +2012,6 @@ fn run_static_nonlinear_displacement_control(
                                 "O",
                                 frame_nonlinear_iter,
                                 iter_start_us,
-                            )
-                        if do_profile:
-                            var t_revert_start = Int(time.perf_counter_ns())
-                            var revert_start_us = (t_revert_start - t0) // 1000
-                            _append_event(
-                                events,
-                                events_need_comma,
-                                "O",
-                                frame_uniaxial_revert_all,
-                                revert_start_us,
-                            )
-                        uniaxial_revert_trial_all(uniaxial_states)
-                        if do_profile:
-                            var t_revert_end = Int(time.perf_counter_ns())
-                            var revert_end_us = (t_revert_end - t0) // 1000
-                            _append_event(
-                                events,
-                                events_need_comma,
-                                "C",
-                                frame_uniaxial_revert_all,
-                                revert_end_us,
                             )
                         if do_profile:
                             var t_asm_start = Int(time.perf_counter_ns())
@@ -2349,6 +2333,7 @@ fn run_static_nonlinear_displacement_control(
                     for i in range(total_dofs):
                         u[i] = u_base[i]
                     force_basic_q = force_basic_q_base.copy()
+                    uniaxial_states = uniaxial_states_base.copy()
                     load_factor = lambda_base
                     continue
                 abort("static_nonlinear did not converge (DisplacementControl)")
@@ -2428,7 +2413,7 @@ fn run_static_nonlinear_displacement_control(
                     frame_uniaxial_commit_all,
                     commit_start_us,
                 )
-            uniaxial_commit_all(uniaxial_states)
+            _uniaxial_commit_active_states(uniaxial_states, elem_uniaxial_state_ids)
             if do_profile:
                 var t_commit_end = Int(time.perf_counter_ns())
                 var commit_end_us = (t_commit_end - t0) // 1000
