@@ -39,6 +39,20 @@ struct ForceBeamColumn2dScratch(Movable):
     var section_load_axial_cache: List[List[Float64]]
     var section_load_moment_cache: List[List[Float64]]
     var fixed_end_cache: List[List[Float64]]
+    var section_vs_eps0: List[Float64]
+    var section_vs_kappa: List[Float64]
+    var section_vs_subdivide_eps0: List[Float64]
+    var section_vs_subdivide_kappa: List[Float64]
+    var section_ssr_axial: List[Float64]
+    var section_ssr_moment: List[Float64]
+    var section_ssr_subdivide_axial: List[Float64]
+    var section_ssr_subdivide_moment: List[Float64]
+    var section_fs00: List[Float64]
+    var section_fs01: List[Float64]
+    var section_fs11: List[Float64]
+    var section_fs_subdivide00: List[Float64]
+    var section_fs_subdivide01: List[Float64]
+    var section_fs_subdivide11: List[Float64]
 
     fn __init__(out self):
         self.integration_cache = BeamIntegrationCache()
@@ -55,6 +69,20 @@ struct ForceBeamColumn2dScratch(Movable):
         self.section_load_axial_cache = []
         self.section_load_moment_cache = []
         self.fixed_end_cache = []
+        self.section_vs_eps0 = []
+        self.section_vs_kappa = []
+        self.section_vs_subdivide_eps0 = []
+        self.section_vs_subdivide_kappa = []
+        self.section_ssr_axial = []
+        self.section_ssr_moment = []
+        self.section_ssr_subdivide_axial = []
+        self.section_ssr_subdivide_moment = []
+        self.section_fs00 = []
+        self.section_fs01 = []
+        self.section_fs11 = []
+        self.section_fs_subdivide00 = []
+        self.section_fs_subdivide01 = []
+        self.section_fs_subdivide11 = []
 
 
 fn reset_force_beam_column2d_scratch(mut scratch: ForceBeamColumn2dScratch):
@@ -69,11 +97,44 @@ fn reset_force_beam_column2d_scratch(mut scratch: ForceBeamColumn2dScratch):
     scratch.section_load_axial_cache = []
     scratch.section_load_moment_cache = []
     scratch.fixed_end_cache = []
+    scratch.section_vs_eps0 = []
+    scratch.section_vs_kappa = []
+    scratch.section_vs_subdivide_eps0 = []
+    scratch.section_vs_subdivide_kappa = []
+    scratch.section_ssr_axial = []
+    scratch.section_ssr_moment = []
+    scratch.section_ssr_subdivide_axial = []
+    scratch.section_ssr_subdivide_moment = []
+    scratch.section_fs00 = []
+    scratch.section_fs01 = []
+    scratch.section_fs11 = []
+    scratch.section_fs_subdivide00 = []
+    scratch.section_fs_subdivide01 = []
+    scratch.section_fs_subdivide11 = []
 
 
 fn invalidate_force_beam_column2d_load_cache(mut scratch: ForceBeamColumn2dScratch):
     for i in range(len(scratch.load_valid)):
         scratch.load_valid[i] = False
+
+
+fn _ensure_force_beam_column2d_section_history_capacity(
+    mut scratch: ForceBeamColumn2dScratch, num_int_pts: Int
+):
+    scratch.section_vs_eps0.resize(num_int_pts, 0.0)
+    scratch.section_vs_kappa.resize(num_int_pts, 0.0)
+    scratch.section_vs_subdivide_eps0.resize(num_int_pts, 0.0)
+    scratch.section_vs_subdivide_kappa.resize(num_int_pts, 0.0)
+    scratch.section_ssr_axial.resize(num_int_pts, 0.0)
+    scratch.section_ssr_moment.resize(num_int_pts, 0.0)
+    scratch.section_ssr_subdivide_axial.resize(num_int_pts, 0.0)
+    scratch.section_ssr_subdivide_moment.resize(num_int_pts, 0.0)
+    scratch.section_fs00.resize(num_int_pts, 0.0)
+    scratch.section_fs01.resize(num_int_pts, 0.0)
+    scratch.section_fs11.resize(num_int_pts, 0.0)
+    scratch.section_fs_subdivide00.resize(num_int_pts, 0.0)
+    scratch.section_fs_subdivide01.resize(num_int_pts, 0.0)
+    scratch.section_fs_subdivide11.resize(num_int_pts, 0.0)
 
 
 @always_inline
@@ -179,54 +240,6 @@ fn _fiber_section2d_set_trial_from_offset(
     )
 
 
-fn _fiber_section2d_solve_for_force(
-    sec_def: FiberSection2dDef,
-    fibers: List[FiberCell],
-    uniaxial_defs: List[UniMaterialDef],
-    mut uniaxial_states: List[UniMaterialState],
-    section_state_ids: List[Int],
-    section_state_offset: Int,
-    section_state_count: Int,
-    axial_force_target: Float64,
-    moment_target: Float64,
-    mut eps0_guess: Float64,
-    mut kappa_guess: Float64,
-    max_iters: Int,
-    tol: Float64,
-) -> (Bool, FiberSection2dResponse, Float64, Float64):
-    var iter = 0
-    var resp = FiberSection2dResponse(0.0, 0.0, 0.0, 0.0, 0.0)
-    while iter < max_iters:
-        resp = _fiber_section2d_set_trial_from_offset(
-            sec_def,
-            fibers,
-            uniaxial_defs,
-            uniaxial_states,
-            section_state_ids,
-            section_state_offset,
-            section_state_count,
-            eps0_guess,
-            kappa_guess,
-        )
-
-        var r_axial = axial_force_target - resp.axial_force
-        var r_moment = moment_target - resp.moment_z
-        if abs(r_axial) <= tol and abs(r_moment) <= tol:
-            return (True, resp, eps0_guess, kappa_guess)
-
-        var det = resp.k11 * resp.k22 - resp.k12 * resp.k12
-        if abs(det) <= 1.0e-40:
-            return (False, resp, eps0_guess, kappa_guess)
-
-        var inv_det = 1.0 / det
-        var de0 = inv_det * (resp.k22 * r_axial - resp.k12 * r_moment)
-        var dkappa = inv_det * (-resp.k12 * r_axial + resp.k11 * r_moment)
-        eps0_guess += de0
-        kappa_guess += dkappa
-        iter += 1
-    return (False, resp, eps0_guess, kappa_guess)
-
-
 fn _fiber_section2d_initial_flexibility(
     sec_def: FiberSection2dDef
 ) -> (Bool, Float64, Float64, Float64):
@@ -256,62 +269,24 @@ fn _fiber_section2d_all_materials_elastic(
     return sec_def.nonlinear_count == 0
 
 
-fn _copy_force_beam_column2d_states(
-    elem_state_ids: List[Int],
-    src_elem_state_offset: Int,
-    dst_elem_state_offset: Int,
-    elem_state_count: Int,
-    mut uniaxial_states: List[UniMaterialState],
-):
-    if elem_state_count <= 0:
-        return
-    if src_elem_state_offset < 0 or src_elem_state_offset + elem_state_count > len(
-        elem_state_ids
-    ):
-        abort("forceBeamColumn2d fiber state source out of range")
-    if dst_elem_state_offset < 0 or dst_elem_state_offset + elem_state_count > len(
-        elem_state_ids
-    ):
-        abort("forceBeamColumn2d fiber state destination out of range")
-    var src_state_base = elem_state_ids[src_elem_state_offset]
-    var dst_state_base = elem_state_ids[dst_elem_state_offset]
-    if src_state_base < 0 or src_state_base + elem_state_count > len(uniaxial_states):
-        abort("forceBeamColumn2d fiber state source index out of range")
-    if dst_state_base < 0 or dst_state_base + elem_state_count > len(uniaxial_states):
-        abort("forceBeamColumn2d fiber state destination index out of range")
-
-    var src_last = elem_state_ids[src_elem_state_offset + elem_state_count - 1]
-    var dst_last = elem_state_ids[dst_elem_state_offset + elem_state_count - 1]
-    var src_contiguous = src_last == src_state_base + elem_state_count - 1
-    var dst_contiguous = dst_last == dst_state_base + elem_state_count - 1
-
-    if src_contiguous and dst_contiguous:
-        for i in range(elem_state_count):
-            uniaxial_states[dst_state_base + i] = uniaxial_states[src_state_base + i]
-        return
-
-    for i in range(elem_state_count):
-        var src_state_index = elem_state_ids[src_elem_state_offset + i]
-        var dst_state_index = elem_state_ids[dst_elem_state_offset + i]
-        if src_state_index < 0 or src_state_index >= len(uniaxial_states):
-            abort("forceBeamColumn2d fiber state source index out of range")
-        if dst_state_index < 0 or dst_state_index >= len(uniaxial_states):
-            abort("forceBeamColumn2d fiber state destination index out of range")
-        uniaxial_states[dst_state_index] = uniaxial_states[src_state_index]
-
-
-fn _copy_force_beam_column2d_basic_state(
+fn _restore_force_beam_column2d_predictor_state(
     mut force_basic_q_state: List[Float64],
-    src_offset: Int,
-    dst_offset: Int,
-    count: Int,
+    force_basic_q_offset: Int,
+    num_int_pts: Int,
+    q0: Float64,
+    q1: Float64,
+    q2: Float64,
+    section_eps0: List[Float64],
+    section_kappa: List[Float64],
 ):
-    if src_offset < 0 or src_offset + count > len(force_basic_q_state):
-        abort("forceBeamColumn2d basic state source out of range")
-    if dst_offset < 0 or dst_offset + count > len(force_basic_q_state):
-        abort("forceBeamColumn2d basic state destination out of range")
-    for i in range(count):
-        force_basic_q_state[dst_offset + i] = force_basic_q_state[src_offset + i]
+    force_basic_q_state[force_basic_q_offset] = q0
+    force_basic_q_state[force_basic_q_offset + 1] = q1
+    force_basic_q_state[force_basic_q_offset + 2] = q2
+    var eps0_offset = force_basic_q_offset + 3
+    var kappa_offset = eps0_offset + num_int_pts
+    for ip in range(num_int_pts):
+        force_basic_q_state[eps0_offset + ip] = section_eps0[ip]
+        force_basic_q_state[kappa_offset + ip] = section_kappa[ip]
 
 
 @always_inline
@@ -769,10 +744,6 @@ fn _force_beam_column2d_initial_basic_tangent(
 
 fn _force_beam_column2d_try_increment(
     L: Float64,
-    xis: List[Float64],
-    weights: List[Float64],
-    section_load_axial: List[Float64],
-    section_load_moment: List[Float64],
     sec_def: FiberSection2dDef,
     fibers: List[FiberCell],
     uniaxial_defs: List[UniMaterialDef],
@@ -783,6 +754,7 @@ fn _force_beam_column2d_try_increment(
     num_int_pts: Int,
     mut force_basic_q_state: List[Float64],
     force_basic_q_offset: Int,
+    mut scratch: ForceBeamColumn2dScratch,
     base_v0: Float64,
     base_v1: Float64,
     base_v2: Float64,
@@ -808,6 +780,10 @@ fn _force_beam_column2d_try_increment(
     var q2 = force_basic_q_state[force_basic_q_offset + 2]
     var eps0_offset = force_basic_q_offset + 3
     var kappa_offset = eps0_offset + num_int_pts
+    ref xis = scratch.integration_cache.xis
+    ref weights = scratch.integration_cache.weights
+    ref section_load_axial = scratch.section_load_axial
+    ref section_load_moment = scratch.section_load_moment
 
     var elem_tol = 1.0e-8
     var max_elem_iters = 80
@@ -830,27 +806,15 @@ fn _force_beam_column2d_try_increment(
     if not initial_sec_flex[0]:
         return (False, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
-    # Start each local solve from the current tangent predictor, matching
-    # OpenSees' SeTrial = Se + kv * dvTrial initialization.
-    var predictor_f00 = 0.0
-    var predictor_f01 = 0.0
-    var predictor_f02 = 0.0
-    var predictor_f10 = 0.0
-    var predictor_f11 = 0.0
-    var predictor_f12 = 0.0
-    var predictor_f20 = 0.0
-    var predictor_f21 = 0.0
-    var predictor_f22 = 0.0
-    var predictor_ok = True
+    _ensure_force_beam_column2d_section_history_capacity(scratch, num_int_pts)
+
     for ip in range(num_int_pts):
-        var xi = xis[ip]
-        var weight = weights[ip]
-        var wL = weight * L
-        var b_mi = xi - 1.0
-        var b_mj = xi
-        var ip_state_offset = elem_state_offset + ip * fibers_per_section
         var eps0 = force_basic_q_state[eps0_offset + ip]
         var kappa = force_basic_q_state[kappa_offset + ip]
+        scratch.section_vs_eps0[ip] = eps0
+        scratch.section_vs_kappa[ip] = kappa
+
+        var ip_state_offset = elem_state_offset + ip * fibers_per_section
         var resp_trial = _fiber_section2d_set_trial_from_offset(
             sec_def,
             fibers,
@@ -862,14 +826,44 @@ fn _force_beam_column2d_try_increment(
             eps0,
             kappa,
         )
+        scratch.section_ssr_axial[ip] = resp_trial.axial_force
+        scratch.section_ssr_moment[ip] = resp_trial.moment_z
         var sec_flex = _fiber_section2d_response_flexibility(resp_trial)
         if not sec_flex[0]:
-            predictor_ok = False
-            break
-        var sec_f00 = sec_flex[1]
-        var sec_f01 = sec_flex[2]
+            return (False, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        scratch.section_fs00[ip] = sec_flex[1]
+        scratch.section_fs01[ip] = sec_flex[2]
+        scratch.section_fs11[ip] = sec_flex[3]
+
+        scratch.section_vs_subdivide_eps0[ip] = eps0
+        scratch.section_vs_subdivide_kappa[ip] = kappa
+        scratch.section_ssr_subdivide_axial[ip] = resp_trial.axial_force
+        scratch.section_ssr_subdivide_moment[ip] = resp_trial.moment_z
+        scratch.section_fs_subdivide00[ip] = sec_flex[1]
+        scratch.section_fs_subdivide01[ip] = sec_flex[2]
+        scratch.section_fs_subdivide11[ip] = sec_flex[3]
+
+    # Start each local solve from the current tangent predictor, matching
+    # OpenSees' SeTrial = Se + kv * dvTrial initialization.
+    var predictor_f00 = 0.0
+    var predictor_f01 = 0.0
+    var predictor_f02 = 0.0
+    var predictor_f10 = 0.0
+    var predictor_f11 = 0.0
+    var predictor_f12 = 0.0
+    var predictor_f20 = 0.0
+    var predictor_f21 = 0.0
+    var predictor_f22 = 0.0
+    for ip in range(num_int_pts):
+        var xi = xis[ip]
+        var weight = weights[ip]
+        var wL = weight * L
+        var b_mi = xi - 1.0
+        var b_mj = xi
+        var sec_f00 = scratch.section_fs00[ip]
+        var sec_f01 = scratch.section_fs01[ip]
         var sec_f10 = sec_f01
-        var sec_f11 = sec_flex[3]
+        var sec_f11 = scratch.section_fs11[ip]
         predictor_f00 += wL * sec_f00
         predictor_f01 += wL * sec_f01 * b_mi
         predictor_f02 += wL * sec_f01 * b_mj
@@ -879,34 +873,33 @@ fn _force_beam_column2d_try_increment(
         predictor_f20 += wL * b_mj * sec_f10
         predictor_f21 += wL * b_mj * sec_f11 * b_mi
         predictor_f22 += wL * b_mj * sec_f11 * b_mj
-    if predictor_ok:
-        var predictor_k = _invert_3x3_values(
-            predictor_f00,
-            predictor_f01,
-            predictor_f02,
-            predictor_f10,
-            predictor_f11,
-            predictor_f12,
-            predictor_f20,
-            predictor_f21,
-            predictor_f22,
+    var predictor_k = _invert_3x3_values(
+        predictor_f00,
+        predictor_f01,
+        predictor_f02,
+        predictor_f10,
+        predictor_f11,
+        predictor_f12,
+        predictor_f20,
+        predictor_f21,
+        predictor_f22,
+    )
+    if predictor_k[0]:
+        q0 += (
+            predictor_k[1] * dv_trial0
+            + predictor_k[2] * dv_trial1
+            + predictor_k[3] * dv_trial2
         )
-        if predictor_k[0]:
-            q0 += (
-                predictor_k[1] * dv_trial0
-                + predictor_k[2] * dv_trial1
-                + predictor_k[3] * dv_trial2
-            )
-            q1 += (
-                predictor_k[4] * dv_trial0
-                + predictor_k[5] * dv_trial1
-                + predictor_k[6] * dv_trial2
-            )
-            q2 += (
-                predictor_k[7] * dv_trial0
-                + predictor_k[8] * dv_trial1
-                + predictor_k[9] * dv_trial2
-            )
+        q1 += (
+            predictor_k[4] * dv_trial0
+            + predictor_k[5] * dv_trial1
+            + predictor_k[6] * dv_trial2
+        )
+        q2 += (
+            predictor_k[7] * dv_trial0
+            + predictor_k[8] * dv_trial1
+            + predictor_k[9] * dv_trial2
+        )
 
     for elem_iter in range(max_elem_iters):
         var f00 = 0.0
@@ -923,18 +916,42 @@ fn _force_beam_column2d_try_increment(
         var vr1 = 0.0
         var vr2 = 0.0
 
+        var use_initial_flex = (
+            use_initial_section_flexibility == 1
+            or (
+                use_initial_section_flexibility == 2
+                and elem_iter == 0
+            )
+        )
         for ip in range(num_int_pts):
             var xi = xis[ip]
             var weight = weights[ip]
             var wL = weight * L
             var b_mi = xi - 1.0
             var b_mj = xi
-            var axial_target = q0 + section_load_axial[ip]
-            var moment_target = b_mi * q1 + b_mj * q2 + section_load_moment[ip]
+            var ss0 = q0 + section_load_axial[ip]
+            var ss1 = b_mi * q1 + b_mj * q2 + section_load_moment[ip]
+            var dss0 = ss0 - scratch.section_ssr_subdivide_axial[ip]
+            var dss1 = ss1 - scratch.section_ssr_subdivide_moment[ip]
+
+            var solve_f00: Float64
+            var solve_f01: Float64
+            var solve_f11: Float64
+            if use_initial_flex:
+                solve_f00 = initial_sec_flex[1]
+                solve_f01 = initial_sec_flex[2]
+                solve_f11 = initial_sec_flex[3]
+            else:
+                solve_f00 = scratch.section_fs_subdivide00[ip]
+                solve_f01 = scratch.section_fs_subdivide01[ip]
+                solve_f11 = scratch.section_fs_subdivide11[ip]
+            var dvs0 = solve_f00 * dss0 + solve_f01 * dss1
+            var dvs1 = solve_f01 * dss0 + solve_f11 * dss1
+
+            var sec_vs0 = scratch.section_vs_subdivide_eps0[ip] + dvs0
+            var sec_vs1 = scratch.section_vs_subdivide_kappa[ip] + dvs1
             var ip_state_offset = elem_state_offset + ip * fibers_per_section
-            var eps0 = force_basic_q_state[eps0_offset + ip]
-            var kappa = force_basic_q_state[kappa_offset + ip]
-            var solved = _fiber_section2d_solve_for_force(
+            var resp_trial = _fiber_section2d_set_trial_from_offset(
                 sec_def,
                 fibers,
                 uniaxial_defs,
@@ -942,43 +959,29 @@ fn _force_beam_column2d_try_increment(
                 elem_state_ids,
                 ip_state_offset,
                 fibers_per_section,
-                axial_target,
-                moment_target,
-                eps0,
-                kappa,
-                80,
-                1.0e-8,
+                sec_vs0,
+                sec_vs1,
             )
-            if not solved[0]:
-                return (False, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-            var resp_trial = solved[1]
-            eps0 = solved[2]
-            kappa = solved[3]
-            force_basic_q_state[eps0_offset + ip] = eps0
-            force_basic_q_state[kappa_offset + ip] = kappa
+            scratch.section_vs_subdivide_eps0[ip] = sec_vs0
+            scratch.section_vs_subdivide_kappa[ip] = sec_vs1
+            scratch.section_ssr_subdivide_axial[ip] = resp_trial.axial_force
+            scratch.section_ssr_subdivide_moment[ip] = resp_trial.moment_z
 
-            var use_initial_flex = (
-                use_initial_section_flexibility == 1
-                or (
-                    use_initial_section_flexibility == 2
-                    and elem_iter == 0
-                )
-            )
-            var sec_f00: Float64
-            var sec_f01: Float64
-            var sec_f11: Float64
-            if use_initial_flex:
-                sec_f00 = initial_sec_flex[1]
-                sec_f01 = initial_sec_flex[2]
-                sec_f11 = initial_sec_flex[3]
-            else:
-                var sec_flex = _fiber_section2d_response_flexibility(resp_trial)
-                if not sec_flex[0]:
-                    return (False, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-                sec_f00 = sec_flex[1]
-                sec_f01 = sec_flex[2]
-                sec_f11 = sec_flex[3]
+            var sec_flex = _fiber_section2d_response_flexibility(resp_trial)
+            if not sec_flex[0]:
+                return (False, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+            var sec_f00 = sec_flex[1]
+            var sec_f01 = sec_flex[2]
+            var sec_f11 = sec_flex[3]
+            scratch.section_fs_subdivide00[ip] = sec_f00
+            scratch.section_fs_subdivide01[ip] = sec_f01
+            scratch.section_fs_subdivide11[ip] = sec_f11
             var sec_f10 = sec_f01
+
+            var dss_res0 = ss0 - scratch.section_ssr_subdivide_axial[ip]
+            var dss_res1 = ss1 - scratch.section_ssr_subdivide_moment[ip]
+            var dvs_res0 = sec_f00 * dss_res0 + sec_f01 * dss_res1
+            var dvs_res1 = sec_f01 * dss_res0 + sec_f11 * dss_res1
 
             f00 += wL * sec_f00
             f01 += wL * sec_f01 * b_mi
@@ -990,9 +993,9 @@ fn _force_beam_column2d_try_increment(
             f21 += wL * b_mj * sec_f11 * b_mi
             f22 += wL * b_mj * sec_f11 * b_mj
 
-            vr0 += wL * eps0
-            vr1 += wL * b_mi * kappa
-            vr2 += wL * b_mj * kappa
+            vr0 += wL * (sec_vs0 + dvs_res0)
+            vr1 += wL * b_mi * (sec_vs1 + dvs_res1)
+            vr2 += wL * b_mj * (sec_vs1 + dvs_res1)
         var k_inv = _invert_3x3_values(f00, f01, f02, f10, f11, f12, f20, f21, f22)
         if not k_inv[0]:
             return (False, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
@@ -1022,6 +1025,16 @@ fn _force_beam_column2d_try_increment(
             force_basic_q_state[force_basic_q_offset] = q0
             force_basic_q_state[force_basic_q_offset + 1] = q1
             force_basic_q_state[force_basic_q_offset + 2] = q2
+            for ip in range(num_int_pts):
+                force_basic_q_state[eps0_offset + ip] = scratch.section_vs_subdivide_eps0[ip]
+                force_basic_q_state[kappa_offset + ip] = scratch.section_vs_subdivide_kappa[ip]
+                scratch.section_vs_eps0[ip] = scratch.section_vs_subdivide_eps0[ip]
+                scratch.section_vs_kappa[ip] = scratch.section_vs_subdivide_kappa[ip]
+                scratch.section_ssr_axial[ip] = scratch.section_ssr_subdivide_axial[ip]
+                scratch.section_ssr_moment[ip] = scratch.section_ssr_subdivide_moment[ip]
+                scratch.section_fs00[ip] = scratch.section_fs_subdivide00[ip]
+                scratch.section_fs01[ip] = scratch.section_fs_subdivide01[ip]
+                scratch.section_fs11[ip] = scratch.section_fs_subdivide11[ip]
             return (True, q0, q1, q2, k00, k01, k02, k10, k11, k12, k22)
 
     return (False, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
@@ -1275,21 +1288,16 @@ fn force_beam_column2d_global_tangent_and_internal(
 
     var predictor_state_count = 3 + 2 * num_int_pts
     var active_basic_count = predictor_state_count + 3
-    if force_basic_q_count < 2 * active_basic_count:
+    if force_basic_q_count < active_basic_count:
         abort("forceBeamColumn2d basic force state count mismatch")
     if (
         force_basic_q_offset < 0
-        or force_basic_q_offset + 2 * active_basic_count > len(force_basic_q_state)
+        or force_basic_q_offset + active_basic_count > len(force_basic_q_state)
     ):
         abort("forceBeamColumn2d basic force state out of range")
+    var eps0_offset = force_basic_q_offset + 3
+    var kappa_offset = eps0_offset + num_int_pts
     var basic_state_offset = force_basic_q_offset + predictor_state_count
-    var basic_backup_offset = force_basic_q_offset + active_basic_count
-    var elem_state_backup_offset = elem_state_offset + elem_state_count
-    if (
-        elem_state_count > 0
-        and elem_state_backup_offset + elem_state_count > len(elem_state_ids)
-    ):
-        abort("forceBeamColumn2d fiber backup state out of range")
 
     var v_basic_0: Float64
     var v_basic_1: Float64
@@ -1315,24 +1323,17 @@ fn force_beam_column2d_global_tangent_and_internal(
     var basic_prev_1 = force_basic_q_state[basic_state_offset + 1]
     var basic_prev_2 = force_basic_q_state[basic_state_offset + 2]
 
-    _copy_force_beam_column2d_basic_state(
-        force_basic_q_state,
-        force_basic_q_offset,
-        basic_backup_offset,
-        active_basic_count,
-    )
-    if elem_state_count > 0:
-        _copy_force_beam_column2d_states(
-            elem_state_ids,
-            elem_state_offset,
-            elem_state_backup_offset,
-            elem_state_count,
-            uniaxial_states,
-        )
+    _ensure_force_beam_column2d_section_history_capacity(scratch, num_int_pts)
 
     var accepted_basic_0 = basic_prev_0
     var accepted_basic_1 = basic_prev_1
     var accepted_basic_2 = basic_prev_2
+    var accepted_q0 = force_basic_q_state[force_basic_q_offset]
+    var accepted_q1 = force_basic_q_state[force_basic_q_offset + 1]
+    var accepted_q2 = force_basic_q_state[force_basic_q_offset + 2]
+    for ip in range(num_int_pts):
+        scratch.section_vs_eps0[ip] = force_basic_q_state[eps0_offset + ip]
+        scratch.section_vs_kappa[ip] = force_basic_q_state[kappa_offset + ip]
 
     var remaining_0 = v_basic_0 - accepted_basic_0
     var remaining_1 = v_basic_1 - accepted_basic_1
@@ -1393,20 +1394,12 @@ fn force_beam_column2d_global_tangent_and_internal(
                 accepted_basic_1,
                 accepted_basic_2,
             )
-            _copy_force_beam_column2d_basic_state(
-                force_basic_q_state,
-                force_basic_q_offset,
-                basic_backup_offset,
-                active_basic_count,
-            )
-            if elem_state_count > 0:
-                _copy_force_beam_column2d_states(
-                    elem_state_ids,
-                    elem_state_offset,
-                    elem_state_backup_offset,
-                    elem_state_count,
-                    uniaxial_states,
-                )
+            accepted_q0 = solved[1]
+            accepted_q1 = solved[2]
+            accepted_q2 = solved[3]
+            for ip in range(num_int_pts):
+                scratch.section_vs_eps0[ip] = force_basic_q_state[eps0_offset + ip]
+                scratch.section_vs_kappa[ip] = force_basic_q_state[kappa_offset + ip]
             converged = True
             remaining_0 = 0.0
             remaining_1 = 0.0
@@ -1415,26 +1408,25 @@ fn force_beam_column2d_global_tangent_and_internal(
 
     if not converged and _max_abs3(remaining_0, remaining_1, remaining_2) <= tolerance:
         for use_initial in range(3):
-            _copy_force_beam_column2d_basic_state(
+            _restore_force_beam_column2d_predictor_state(
                 force_basic_q_state,
-                basic_backup_offset,
                 force_basic_q_offset,
-                active_basic_count,
+                num_int_pts,
+                accepted_q0,
+                accepted_q1,
+                accepted_q2,
+                scratch.section_vs_eps0,
+                scratch.section_vs_kappa,
             )
-            if elem_state_count > 0:
-                _copy_force_beam_column2d_states(
-                    elem_state_ids,
-                    elem_state_backup_offset,
-                    elem_state_offset,
-                    elem_state_count,
-                    uniaxial_states,
-                )
+            _set_force_beam_column2d_trial_basic_deformation(
+                force_basic_q_state,
+                basic_state_offset,
+                accepted_basic_0,
+                accepted_basic_1,
+                accepted_basic_2,
+            )
             var solved = _force_beam_column2d_try_increment(
                 L,
-                scratch.integration_cache.xis,
-                scratch.integration_cache.weights,
-                scratch.section_load_axial,
-                scratch.section_load_moment,
                 sec_def,
                 fibers,
                 uniaxial_defs,
@@ -1445,6 +1437,7 @@ fn force_beam_column2d_global_tangent_and_internal(
                 num_int_pts,
                 force_basic_q_state,
                 force_basic_q_offset,
+                scratch,
                 accepted_basic_0,
                 accepted_basic_1,
                 accepted_basic_2,
@@ -1468,27 +1461,26 @@ fn force_beam_column2d_global_tangent_and_internal(
 
             var scheme_success = False
             for use_initial in range(3):
-                _copy_force_beam_column2d_basic_state(
+                _restore_force_beam_column2d_predictor_state(
                     force_basic_q_state,
-                    basic_backup_offset,
                     force_basic_q_offset,
-                    active_basic_count,
+                    num_int_pts,
+                    accepted_q0,
+                    accepted_q1,
+                    accepted_q2,
+                    scratch.section_vs_eps0,
+                    scratch.section_vs_kappa,
                 )
-                if elem_state_count > 0:
-                    _copy_force_beam_column2d_states(
-                        elem_state_ids,
-                        elem_state_backup_offset,
-                        elem_state_offset,
-                        elem_state_count,
-                        uniaxial_states,
-                    )
+                _set_force_beam_column2d_trial_basic_deformation(
+                    force_basic_q_state,
+                    basic_state_offset,
+                    accepted_basic_0,
+                    accepted_basic_1,
+                    accepted_basic_2,
+                )
 
                 var solved = _force_beam_column2d_try_increment(
                     L,
-                    scratch.integration_cache.xis,
-                    scratch.integration_cache.weights,
-                    scratch.section_load_axial,
-                    scratch.section_load_moment,
                     sec_def,
                     fibers,
                     uniaxial_defs,
@@ -1499,6 +1491,7 @@ fn force_beam_column2d_global_tangent_and_internal(
                     num_int_pts,
                     force_basic_q_state,
                     force_basic_q_offset,
+                    scratch,
                     accepted_basic_0,
                     accepted_basic_1,
                     accepted_basic_2,
@@ -1520,20 +1513,12 @@ fn force_beam_column2d_global_tangent_and_internal(
                     accepted_basic_1,
                     accepted_basic_2,
                 )
-                _copy_force_beam_column2d_basic_state(
-                    force_basic_q_state,
-                    force_basic_q_offset,
-                    basic_backup_offset,
-                    active_basic_count,
-                )
-                if elem_state_count > 0:
-                    _copy_force_beam_column2d_states(
-                        elem_state_ids,
-                        elem_state_offset,
-                        elem_state_backup_offset,
-                        elem_state_count,
-                        uniaxial_states,
-                    )
+                accepted_q0 = solved[1]
+                accepted_q1 = solved[2]
+                accepted_q2 = solved[3]
+                for ip in range(num_int_pts):
+                    scratch.section_vs_eps0[ip] = force_basic_q_state[eps0_offset + ip]
+                    scratch.section_vs_kappa[ip] = force_basic_q_state[kappa_offset + ip]
                 best_solved = solved
                 remaining_0 = v_basic_0 - accepted_basic_0
                 remaining_1 = v_basic_1 - accepted_basic_1
@@ -1560,19 +1545,35 @@ fn force_beam_column2d_global_tangent_and_internal(
             subdivisions += 1
 
     if not converged:
-        _copy_force_beam_column2d_basic_state(
+        _restore_force_beam_column2d_predictor_state(
             force_basic_q_state,
-            basic_backup_offset,
             force_basic_q_offset,
-            active_basic_count,
+            num_int_pts,
+            accepted_q0,
+            accepted_q1,
+            accepted_q2,
+            scratch.section_vs_eps0,
+            scratch.section_vs_kappa,
         )
-        if elem_state_count > 0:
-            _copy_force_beam_column2d_states(
-                elem_state_ids,
-                elem_state_backup_offset,
-                elem_state_offset,
-                elem_state_count,
+        _set_force_beam_column2d_trial_basic_deformation(
+            force_basic_q_state,
+            basic_state_offset,
+            accepted_basic_0,
+            accepted_basic_1,
+            accepted_basic_2,
+        )
+        for ip in range(num_int_pts):
+            var ip_state_offset = elem_state_offset + ip * fibers_per_section
+            _ = _fiber_section2d_set_trial_from_offset(
+                sec_def,
+                fibers,
+                uniaxial_defs,
                 uniaxial_states,
+                elem_state_ids,
+                ip_state_offset,
+                fibers_per_section,
+                scratch.section_vs_eps0[ip],
+                scratch.section_vs_kappa[ip],
             )
     if not best_solved[0]:
         var fallback_tangent = _force_beam_column2d_initial_basic_tangent(

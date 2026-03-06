@@ -1482,7 +1482,7 @@ fn load_case_state_from_input(input: CaseInput) raises -> RunCaseState:
             elif sec.type != "ElasticSection2d":
                 abort(beam_col_type + " requires FiberSection2d or ElasticSection2d")
             var active_basic_count = 3 + predictor_slots
-            force_basic_counts[e] = 2 * active_basic_count
+            force_basic_counts[e] = active_basic_count
             for _ in range(force_basic_counts[e]):
                 force_basic_q.append(0.0)
             if sec.type == "FiberSection2d":
@@ -1515,25 +1515,6 @@ fn load_case_state_from_input(input: CaseInput) raises -> RunCaseState:
                         if not uni_mat_is_elastic(mat_def):
                             used_nonelastic_uniaxial = True
                             force_beam_has_nonelastic = True
-                for _ in range(num_int_pts):
-                    for i in range(sec_def.elastic_count):
-                        var def_index = sec_def.elastic_def_index[i]
-                        if def_index < 0 or def_index >= len(uniaxial_defs):
-                            abort(beam_col_type + " fiber material definition out of range")
-                        var mat_def = uniaxial_defs[def_index]
-                        var state_index = len(uniaxial_states)
-                        uniaxial_states.append(UniMaterialState(mat_def))
-                        uniaxial_state_defs.append(def_index)
-                        elem_uniaxial_state_ids.append(state_index)
-                    for i in range(sec_def.nonlinear_count):
-                        var def_index = sec_def.nonlinear_def_index[i]
-                        if def_index < 0 or def_index >= len(uniaxial_defs):
-                            abort(beam_col_type + " fiber material definition out of range")
-                        var mat_def = uniaxial_defs[def_index]
-                        var state_index = len(uniaxial_states)
-                        uniaxial_states.append(UniMaterialState(mat_def))
-                        uniaxial_state_defs.append(def_index)
-                        elem_uniaxial_state_ids.append(state_index)
             elif sec.type == "ElasticSection2d":
                 elem_uniaxial_counts[e] = 0
             else:

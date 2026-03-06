@@ -12,8 +12,8 @@ from math import sqrt
 from materials import (
     UniMaterialDef,
     UniMaterialState,
-    uniaxial_commit_all,
-    uniaxial_revert_trial_all,
+    uniaxial_commit,
+    uniaxial_revert_trial,
 )
 from os import abort
 from python import Python
@@ -124,6 +124,28 @@ fn _has_zero_length_dampers(elements: List[ElementInput]) -> Bool:
         if elem.type_tag == ElementTypeTag.ZeroLength and elem.damping_tag >= 0:
             return True
     return False
+
+
+fn _uniaxial_revert_trial_active_states(
+    mut uniaxial_states: List[UniMaterialState], elem_uniaxial_state_ids: List[Int]
+):
+    for i in range(len(elem_uniaxial_state_ids)):
+        var state_id = elem_uniaxial_state_ids[i]
+        if state_id < 0 or state_id >= len(uniaxial_states):
+            abort("active uniaxial state id out of range")
+        ref state = uniaxial_states[state_id]
+        uniaxial_revert_trial(state)
+
+
+fn _uniaxial_commit_active_states(
+    mut uniaxial_states: List[UniMaterialState], elem_uniaxial_state_ids: List[Int]
+):
+    for i in range(len(elem_uniaxial_state_ids)):
+        var state_id = elem_uniaxial_state_ids[i]
+        if state_id < 0 or state_id >= len(uniaxial_states):
+            abort("active uniaxial state id out of range")
+        ref state = uniaxial_states[state_id]
+        uniaxial_commit(state)
 
 
 @always_inline
@@ -1008,7 +1030,7 @@ fn run_transient_nonlinear(
             frame_uniaxial_revert_all,
             revert_start_us,
         )
-    uniaxial_revert_trial_all(uniaxial_states)
+    _uniaxial_revert_trial_active_states(uniaxial_states, elem_uniaxial_state_ids)
     if do_profile:
         var t_revert_end = Int(time.perf_counter_ns())
         var revert_end_us = (t_revert_end - t0) // 1000
@@ -1317,6 +1339,7 @@ fn run_transient_nonlinear(
                 )
         copy_float64_contiguous(u_step_base_f, u_f, free_count)
         var force_basic_q_base = force_basic_q.copy()
+        var uniaxial_states_base = uniaxial_states.copy()
 
         var t = Float64(step + 1) * dt
         if pattern_type_tag == PatternTypeTag.UniformExcitation:
@@ -1436,6 +1459,7 @@ fn run_transient_nonlinear(
                 copy_float64_contiguous(u_f, u_step_base_f, free_count)
                 _scatter_free_vector_to_full(free, u_f, u)
                 force_basic_q = force_basic_q_base.copy()
+                uniaxial_states = uniaxial_states_base.copy()
                 attempt_algorithm_tag = retry_algorithm_tags[attempt]
                 attempt_algorithm_mode = retry_algorithm_modes[attempt]
                 attempt_line_search_eta = retry_line_search_etas[attempt]
@@ -1451,27 +1475,6 @@ fn run_transient_nonlinear(
             var k_eff_initialized = False
             var k_eff_factored = False
             for iter_idx in range(attempt_max_iters):
-                if do_profile:
-                    var t_revert_start = Int(time.perf_counter_ns())
-                    var revert_start_us = (t_revert_start - t0) // 1000
-                    _append_event(
-                        events,
-                        events_need_comma,
-                        "O",
-                        frame_uniaxial_revert_all,
-                        revert_start_us,
-                    )
-                uniaxial_revert_trial_all(uniaxial_states)
-                if do_profile:
-                    var t_revert_end = Int(time.perf_counter_ns())
-                    var revert_end_us = (t_revert_end - t0) // 1000
-                    _append_event(
-                        events,
-                        events_need_comma,
-                        "C",
-                        frame_uniaxial_revert_all,
-                        revert_end_us,
-                    )
                 var iter_closed = False
                 if do_profile:
                     var t_iter_start = Int(time.perf_counter_ns())
@@ -2233,7 +2236,7 @@ fn run_transient_nonlinear(
                 frame_uniaxial_commit_all,
                 commit_start_us,
             )
-        uniaxial_commit_all(uniaxial_states)
+        _uniaxial_commit_active_states(uniaxial_states, elem_uniaxial_state_ids)
         if do_profile:
             var t_commit_end = Int(time.perf_counter_ns())
             var commit_end_us = (t_commit_end - t0) // 1000
