@@ -1495,7 +1495,8 @@ def default_strut_solver_path(repo_root: Path, profile: bool) -> Path:
 
 
 def ensure_strut_solver(repo_root: Path, verbose: bool, profile: bool) -> Path:
-    if shutil.which("uv") is None:
+    uv = shutil.which("uv")
+    if uv is None:
         raise SystemExit(
             "uv executable not found on PATH; required to build the Mojo solver."
         )
@@ -1505,7 +1506,12 @@ def ensure_strut_solver(repo_root: Path, verbose: bool, profile: bool) -> Path:
     solver_path = default_strut_solver_path(repo_root, profile)
     solver_path.parent.mkdir(parents=True, exist_ok=True)
     log("Building Mojo solver...")
-    build_cmd = [str(repo_root / "scripts" / "build_mojo_solver.sh")]
+    build_cmd = [
+        uv,
+        "run",
+        "python",
+        str(repo_root / "scripts" / "build_mojo_solver.py"),
+    ]
     build_env = None
     if profile:
         build_env = os.environ.copy()

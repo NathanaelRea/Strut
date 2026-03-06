@@ -104,7 +104,16 @@ def main() -> int:
         env["STRUT_VERBOSE"] = "1"
 
     if not args.skip_build:
-        run([str(repo_root / "scripts" / "build_mojo_solver.sh")], env=env, verbose=args.verbose)
+        run(
+            [
+                "uv",
+                "run",
+                "python",
+                str(repo_root / "scripts" / "build_mojo_solver.py"),
+            ],
+            env=env,
+            verbose=args.verbose,
+        )
 
     run(
         ["uv", "run", "pytest", "-q", "tests/unit", "tests/validation/test_json_cases.py"],

@@ -14,7 +14,7 @@ Important: Never stub functionality, always fully implement if any feature is mi
 ## Non-Standard Commands
 
 - Run unit tests: `uv run run_tests.py`
-- Build/precompile Mojo solver: `scripts/build_mojo_solver.sh`
+- Build/precompile Mojo solver: `uv run python scripts/build_mojo_solver.py`
 
 ## Reference
 

@@ -226,7 +226,12 @@ def main():
             build_env = os.environ.copy()
             build_env["STRUT_PROFILE"] = "1"
         run(
-            [str(repo_root / "scripts" / "build_mojo_solver.sh")],
+            [
+                uv,
+                "run",
+                "python",
+                str(repo_root / "scripts" / "build_mojo_solver.py"),
+            ],
             env=build_env,
             verbose=verbose,
         )

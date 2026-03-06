@@ -305,7 +305,12 @@ def test_ensure_strut_solver_builds_profile_binary_without_overwriting_default(
     )
 
     assert solver_path == tmp_path / "build" / "strut" / "strut_profile"
-    assert calls[0][0] == [str(tmp_path / "scripts" / "build_mojo_solver.sh")]
+    assert calls[0][0] == [
+        "/usr/bin/uv",
+        "run",
+        "python",
+        str(tmp_path / "scripts" / "build_mojo_solver.py"),
+    ]
     assert calls[0][1] is not None
     assert calls[0][1]["STRUT_PROFILE"] == "1"
     assert calls[0][2] is True
