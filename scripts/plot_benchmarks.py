@@ -4,7 +4,7 @@ import json
 import os
 import sys
 import webbrowser
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from statistics import median
 import math
@@ -38,15 +38,19 @@ def parse_timestamp(path: Path, data: dict) -> datetime:
     ts = data.get("generated_at")
     if ts:
         try:
-            return datetime.strptime(ts, "%Y-%m-%dT%H:%M:%SZ")
+            return datetime.strptime(ts, "%Y-%m-%dT%H:%M:%SZ").replace(
+                tzinfo=timezone.utc
+            )
         except ValueError:
             pass
     stem = path.stem
     # Expected format: YYYYmmddTHHMMSSZ-summary
     try:
-        return datetime.strptime(stem.split("-")[0], "%Y%m%dT%H%M%SZ")
+        return datetime.strptime(stem.split("-")[0], "%Y%m%dT%H%M%SZ").replace(
+            tzinfo=timezone.utc
+        )
     except ValueError:
-        return datetime.fromtimestamp(path.stat().st_mtime)
+        return datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
 
 
 def _case_time_seconds(case: dict, engine: str) -> float:
@@ -237,6 +241,8 @@ def collect_archive_trend(
     size_filter: Optional[str],
     medium_threshold: int,
     large_threshold: int,
+    start_timestamp: Optional[datetime] = None,
+    end_timestamp: Optional[datetime] = None,
 ) -> Tuple[List[datetime], Dict[str, List[float]], Dict[str, List[float]]]:
     engine_means: Dict[str, List[float]] = {"opensees": [], "strut": []}
     engine_stds: Dict[str, List[float]] = {"opensees": [], "strut": []}
@@ -249,6 +255,11 @@ def collect_archive_trend(
 
     for path in files:
         data = load_summary(path)
+        timestamp = parse_timestamp(path, data)
+        if start_timestamp is not None and timestamp < start_timestamp:
+            continue
+        if end_timestamp is not None and timestamp > end_timestamp:
+            continue
         run_medians: Dict[str, float] = {}
         cases = _filter_enabled_cases(data.get("cases", []))
         for engine in ("opensees", "strut"):
@@ -270,7 +281,7 @@ def collect_archive_trend(
             else "unknown"
         )
         per_hash_entries.setdefault(hash_key, []).append(
-            (parse_timestamp(path, data), run_medians)
+            (timestamp, run_medians)
         )
 
     def _mean_std(values: List[float]) -> Tuple[float, float]:
@@ -301,22 +312,6 @@ def collect_archive_trend(
             engine_stds[engine].append(std_val)
 
     return timestamps, engine_means, engine_stds
-
-
-def archive_min_timestamp(archive_dir: Path) -> Optional[datetime]:
-    files = sorted(archive_dir.glob("*-summary.json"))
-    if not files:
-        return None
-    min_ts: Optional[datetime] = None
-    for path in files:
-        try:
-            data = load_summary(path)
-        except Exception:
-            continue
-        ts = parse_timestamp(path, data)
-        if min_ts is None or ts < min_ts:
-            min_ts = ts
-    return min_ts
 
 
 def _group_label_from_prefix(name: str) -> str:
@@ -535,6 +530,7 @@ def plot_archive_trend(
     unit_label: str,
     scale: float,
     min_timestamp: Optional[datetime] = None,
+    max_timestamp: Optional[datetime] = None,
 ):
     fig, ax = plt.subplots(figsize=(10, 4))
     if timestamps:
@@ -568,8 +564,8 @@ def plot_archive_trend(
     ax.set_title(title)
     ax.grid(axis="y", linestyle=":", alpha=0.5)
     ax.legend()
-    if min_timestamp is not None:
-        ax.set_xlim(left=min_timestamp)
+    if min_timestamp is not None or max_timestamp is not None:
+        ax.set_xlim(left=min_timestamp, right=max_timestamp)
     fig.autofmt_xdate()
     fig.tight_layout()
     return fig
@@ -585,9 +581,12 @@ def write_plots_pdf(
     group_gap: float = 0.6,
     large_threshold: int = 1_000_000,
     medium_threshold: int = 1_000,
+    cutoff_days: int = 1,
 ) -> Path:
     if not results_path.exists():
         raise SystemExit(f"Missing results summary: {results_path}")
+    if cutoff_days < 0:
+        raise SystemExit("--cutoff-days must be >= 0")
 
     summary = load_summary(results_path)
     cases = _filter_enabled_cases(summary.get("cases", []))
@@ -628,7 +627,8 @@ def write_plots_pdf(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with PdfPages(output_path) as pdf:
         if archive_dir.exists():
-            archive_min_ts = archive_min_timestamp(archive_dir)
+            archive_window_end = datetime.now(timezone.utc)
+            archive_window_start = archive_window_end - timedelta(days=cutoff_days)
             archive_specs = [
                 ("small", "Archive trend (small cases)", "us", 1e6),
                 ("medium", "Archive trend (medium cases)", "ms", 1e3),
@@ -640,6 +640,8 @@ def write_plots_pdf(
                     size_label,
                     medium_threshold,
                     large_threshold,
+                    start_timestamp=archive_window_start,
+                    end_timestamp=archive_window_end,
                 )
                 if timestamps and any(
                     isinstance(v, float) and math.isfinite(v)
@@ -653,7 +655,8 @@ def write_plots_pdf(
                         title,
                         unit_label,
                         scale,
-                        min_timestamp=archive_min_ts,
+                        min_timestamp=archive_window_start,
+                        max_timestamp=archive_window_end,
                     )
                     pdf.savefig(fig)
                     plt.close(fig)
@@ -749,6 +752,12 @@ def main() -> None:
         help="Analysis-time threshold in microseconds to split medium benchmarks (default: 1000).",
     )
     parser.add_argument(
+        "--cutoff-days",
+        type=int,
+        default=1,
+        help="Archive trend window size in days (default: 1).",
+    )
+    parser.add_argument(
         "--open",
         action="store_true",
         help="Open the output after writing (best effort).",
@@ -779,6 +788,7 @@ def main() -> None:
         group_gap=args.group_gap,
         large_threshold=args.large_threshold,
         medium_threshold=args.medium_threshold,
+        cutoff_days=args.cutoff_days,
     )
 
     if args.open:
