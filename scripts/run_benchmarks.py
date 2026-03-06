@@ -1783,21 +1783,14 @@ def _read_runtime_failures(
     results_root: Path,
     run_opensees: bool,
     run_strut: bool,
-    include_compute_only: bool,
 ) -> List[RuntimeFailure]:
     failures: List[RuntimeFailure] = []
     seen = set()
     locations = []
     if run_opensees:
-        locations.append(("opensees", "total", results_root / "opensees"))
+        locations.append(("opensees", "compute-only", results_root / "opensees"))
     if run_strut:
-        locations.append(("strut", "total", results_root / "strut"))
-    if include_compute_only and run_opensees:
-        locations.append(
-            ("opensees", "compute-only", results_root / "opensees_compute")
-        )
-    if include_compute_only and run_strut:
-        locations.append(("strut", "compute-only", results_root / "strut_compute"))
+        locations.append(("strut", "compute-only", results_root / "strut"))
 
     for case_entry in case_entries:
         case_name = case_entry["name"]
@@ -2072,11 +2065,6 @@ def main() -> None:
         help="Skip writing summary archives.",
     )
     parser.add_argument(
-        "--skip-compute-only",
-        action="store_true",
-        help="Skip the second pass that runs without recorders.",
-    )
-    parser.add_argument(
         "--profile",
         default=None,
         metavar="DIR",
@@ -2254,8 +2242,6 @@ def main() -> None:
     for sub in (
         "opensees",
         "strut",
-        "opensees_compute",
-        "strut_compute",
         "tcl",
         ".tmp",
     ):
@@ -2266,7 +2252,6 @@ def main() -> None:
 
     summary_cases = []
     csv_rows = []
-    parity_failures = []
     setup_failures: List[RuntimeFailure] = []
 
     log(f"Running {len(case_specs)} benchmark case(s).")
@@ -2346,30 +2331,27 @@ def main() -> None:
                 tcl_out = results_root / "tcl" / f"{case_name}.tcl"
                 shutil.copy2(generated_tcl, tcl_out)
                 tcl_compute = tcl_out.parent / f"{tcl_out.stem}_compute.tcl"
-                tcl_timed = tcl_out.parent / f"{tcl_out.stem}_timed.tcl"
                 tcl_lines = tcl_out.read_text().splitlines()
+                compute_lines = [
+                    line for line in tcl_lines if not line.lstrip().startswith("recorder ")
+                ]
                 tcl_compute.write_text(
                     "\n".join(
-                        line
-                        for line in tcl_lines
-                        if not line.lstrip().startswith("recorder ")
+                        _inject_opensees_timing(
+                            compute_lines, "analysis_time_us.txt"
+                        )
                     )
                     + "\n",
                     encoding="utf-8",
                 )
-                tcl_timed.write_text(
-                    "\n".join(_inject_opensees_timing(tcl_lines, "analysis_time_us.txt"))
-                    + "\n",
-                    encoding="utf-8",
-                )
                 case_entry["tcl"] = str(tcl_out)
-                case_entry["uses_eigen"] = _tcl_uses_eigen(tcl_timed)
+                case_entry["uses_eigen"] = _tcl_uses_eigen(tcl_compute)
             else:
-                tcl_timed, tcl_compute = _prepare_direct_tcl_wrappers(
+                _, tcl_compute = _prepare_direct_tcl_wrappers(
                     case, case_data, results_root / "tcl"
                 )
-                case_entry["tcl"] = str(tcl_timed)
-                case_entry["uses_eigen"] = _tcl_uses_eigen(tcl_timed)
+                case_entry["tcl"] = str(tcl_compute)
+                case_entry["uses_eigen"] = _tcl_uses_eigen(tcl_compute)
         else:
             case_json = _case_json_path(case)
             tcl_out = _emit_case_tcl(
@@ -2380,24 +2362,20 @@ def main() -> None:
                 verbose,
             )
             tcl_compute = tcl_out.parent / f"{tcl_out.stem}_compute.tcl"
-            tcl_timed = tcl_out.parent / f"{tcl_out.stem}_timed.tcl"
             tcl_lines = tcl_out.read_text().splitlines()
+            compute_lines = [
+                line for line in tcl_lines if not line.lstrip().startswith("recorder ")
+            ]
             tcl_compute.write_text(
                 "\n".join(
-                    line for line in tcl_lines if not line.lstrip().startswith("recorder ")
+                    _inject_opensees_timing(compute_lines, "analysis_time_us.txt")
                 )
                 + "\n",
                 encoding="utf-8",
             )
-            tcl_timed.write_text(
-                "\n".join(_inject_opensees_timing(tcl_lines, "analysis_time_us.txt"))
-                + "\n",
-                encoding="utf-8",
-            )
             case_entry["tcl"] = str(tcl_out)
-            case_entry["uses_eigen"] = _tcl_uses_eigen(tcl_timed)
+            case_entry["uses_eigen"] = _tcl_uses_eigen(tcl_compute)
         case_entry["tcl_compute"] = str(tcl_compute)
-        case_entry["tcl_timed"] = str(tcl_timed)
         return case_entry
 
     runnable_cases = [case for case in case_specs if case.name in prepared_case_data]
@@ -2434,11 +2412,11 @@ def main() -> None:
             )
     case_entries_by_name = {entry["name"]: entry for entry in case_entries}
 
-    def _write_batch_tcl(entries: List[dict], output_root: Path, compute: bool) -> Path:
+    def _write_batch_tcl(entries: List[dict], output_root: Path) -> Path:
         lines = ["# Auto-generated by run_benchmarks.py", "set __strut_repo [pwd]"]
         eigen_warmup_tcl: Optional[Path] = None
         for entry in entries:
-            tcl_path = Path(entry["tcl_compute" if compute else "tcl_timed"])
+            tcl_path = Path(entry["tcl_compute"])
             if _tcl_uses_eigen(tcl_path):
                 eigen_warmup_tcl = tcl_path
                 break
@@ -2459,7 +2437,7 @@ def main() -> None:
         for entry in entries:
             case_name = entry["name"]
             case_out = (output_root / case_name).resolve()
-            tcl_path = Path(entry["tcl_compute" if compute else "tcl_timed"])
+            tcl_path = Path(entry["tcl_compute"])
             lines.append(f"file mkdir {{{case_out}}}")
             lines.append(f"cd {{{case_out}}}")
             lines.append("wipe")
@@ -2480,17 +2458,13 @@ def main() -> None:
             lines.append("}")
             lines.append("cd $__strut_repo")
             lines.append("wipe")
-        batch_path = (
-            results_root
-            / "tcl"
-            / ("batch_opensees_compute.tcl" if compute else "batch_opensees_timed.tcl")
-        )
+        batch_path = results_root / "tcl" / "batch_opensees_compute.tcl"
         batch_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         return batch_path
 
-    def run_opensees_batch(entries: List[dict], output_root: Path, compute: bool) -> bool:
+    def run_opensees_batch(entries: List[dict], output_root: Path) -> bool:
         ensure_clean_dir(output_root)
-        batch_script = _write_batch_tcl(entries, output_root, compute)
+        batch_script = _write_batch_tcl(entries, output_root)
         try:
             run(
                 [
@@ -2512,12 +2486,12 @@ def main() -> None:
         return True
 
     def run_opensees_batch_repeated(
-        entries: List[dict], output_root: Path, compute: bool, repeat: int, warmup: int
+        entries: List[dict], output_root: Path, repeat: int, warmup: int
     ):
         if not entries:
             return [], {}, {}, False
 
-        pass_label = "compute-only" if compute else "total"
+        pass_label = "compute-only"
         n = len(entries)
         names = [entry["name"] for entry in entries]
         analysis_by_case = {name: [] for name in names}
@@ -2528,7 +2502,7 @@ def main() -> None:
             log(f"OpenSees batch {pass_label} warmup {i + 1}/{warmup}...")
             offset = i % n
             rotated = entries[offset:] + entries[:offset]
-            ok = run_opensees_batch(rotated, output_root, compute)
+            ok = run_opensees_batch(rotated, output_root)
             if not ok:
                 had_abort = True
 
@@ -2538,7 +2512,7 @@ def main() -> None:
             offset = i % n
             rotated = entries[offset:] + entries[:offset]
             start = time.perf_counter()
-            ok = run_opensees_batch(rotated, output_root, compute)
+            ok = run_opensees_batch(rotated, output_root)
             end = time.perf_counter()
             if not ok:
                 had_abort = True
@@ -2571,18 +2545,14 @@ def main() -> None:
             run_opensees_batch_repeated(
                 opensees_batch_entries,
                 results_root / "opensees",
-                compute=False,
                 repeat=args.repeat,
                 warmup=args.warmup,
             )
         )
-        _normalize_opensees_output_root(
-            opensees_batch_entries, results_root / "opensees"
-        )
         if opensees_batch_had_abort:
-            log_err("OpenSees batch aborted for one or more cases.")
+            log_err("OpenSees batch compute-only aborted for one or more cases.")
         else:
-            log_ok("OpenSees batch pass OK.")
+            log_ok("OpenSees batch compute-only pass OK.")
         batch_stats = {
             "times_s": opensees_times,
             "mean_s": mean(opensees_times),
@@ -2594,7 +2564,7 @@ def main() -> None:
                 "case": "opensees_batch",
                 "dofs": "",
                 "engine": "opensees",
-                "mode": "total_batch",
+                "mode": "compute_only_batch",
                 "repeat": args.repeat,
                 "warmup": args.warmup,
                 "mean_s": f"{batch_stats['mean_s']:.6f}",
@@ -2614,21 +2584,26 @@ def main() -> None:
             analysis_us = analysis_median
             total_us = total_median
             entry = case_entries_by_name.get(case_name)
-            if entry is not None:
-                batch_entry = entry.setdefault("opensees_batch", {})
-                batch_entry["analysis_us"] = analysis_us
-                batch_entry["total_us"] = total_us
-                batch_entry["analysis_mean_us"] = analysis_mean
-                batch_entry["total_mean_us"] = total_mean
-                batch_entry["analysis_median_us"] = analysis_median
-                batch_entry["total_median_us"] = total_median
-                batch_entry["repeats"] = len(analysis_hist)
+            if entry is None:
+                continue
+            batch_entry = {
+                "times_s": [],
+                "analysis_us": analysis_us,
+                "total_us": total_us,
+                "analysis_mean_us": analysis_mean,
+                "total_mean_us": total_mean,
+                "analysis_median_us": analysis_median,
+                "total_median_us": total_median,
+                "repeats": len(analysis_hist),
+            }
+            entry["opensees"] = dict(batch_entry)
+            entry["opensees_batch"] = dict(batch_entry)
             csv_rows.append(
                 {
                     "case": case_name,
                     "dofs": entry.get("dofs", ""),
                     "engine": "opensees",
-                    "mode": "total_batch_case",
+                    "mode": "compute_only_batch_case",
                     "repeat": "",
                     "warmup": "",
                     "mean_s": (
@@ -2647,80 +2622,17 @@ def main() -> None:
                     "analysis_us": analysis_us,
                 }
             )
-        if not args.skip_compute_only:
-            (
-                opensees_compute,
-                _,
-                _,
-                opensees_compute_had_abort,
-            ) = run_opensees_batch_repeated(
-                opensees_batch_entries,
-                results_root / "opensees_compute",
-                compute=True,
-                repeat=args.repeat,
-                warmup=args.warmup,
-            )
-            if opensees_compute_had_abort:
-                log_err(
-                    "OpenSees batch compute-only aborted for one or more cases."
-                )
-            else:
-                log_ok("OpenSees batch compute-only pass OK.")
-            compute_stats = {
-                "times_s": opensees_compute,
-                "mean_s": mean(opensees_compute),
-                "median_s": median(opensees_compute),
-                "min_s": min(opensees_compute),
-            }
-            csv_rows.append(
-                {
-                    "case": "opensees_batch",
-                    "dofs": "",
-                    "engine": "opensees",
-                    "mode": "compute_only_batch",
-                    "repeat": args.repeat,
-                    "warmup": args.warmup,
-                    "mean_s": f"{compute_stats['mean_s']:.6f}",
-                    "median_s": f"{compute_stats['median_s']:.6f}",
-                    "min_s": f"{compute_stats['min_s']:.6f}",
-                    "analysis_us": "",
-                }
-            )
 
     for case_entry in case_entries:
         case_name = case_entry["name"]
 
         def opensees_cmd(output_dir: Path, last_run: bool) -> None:
-            tcl_timed = Path(case_entry["tcl_timed"])
-            if last_run:
-                ensure_clean_dir(output_dir)
-                target_dir = output_dir
-            else:
-                tmp_dir = results_root / ".tmp" / "opensees" / case_name
-                ensure_clean_dir(tmp_dir)
-                target_dir = tmp_dir
-            run(
-                [
-                    str(repo_root / "scripts" / "run_opensees_wine.sh"),
-                    "--script",
-                    str(tcl_timed),
-                    "--output",
-                    str(target_dir),
-                ],
-                env=env,
-                verbose=verbose,
-                capture_on_error=True,
-            )
-            if not last_run:
-                shutil.rmtree(target_dir, ignore_errors=True)
-
-        def opensees_compute_cmd(output_dir: Path, last_run: bool) -> None:
             tcl_compute = Path(case_entry["tcl_compute"])
             if last_run:
                 ensure_clean_dir(output_dir)
                 target_dir = output_dir
             else:
-                tmp_dir = results_root / ".tmp" / "opensees_compute" / case_name
+                tmp_dir = results_root / ".tmp" / "opensees" / case_name
                 ensure_clean_dir(tmp_dir)
                 target_dir = tmp_dir
             run(
@@ -2753,7 +2665,7 @@ def main() -> None:
                 cmd += ["--input-pickle", str(case_entry["input_pickle"])]
             else:
                 cmd += ["--input", str(case_entry["json"])]
-            cmd += ["--output", str(target_dir)]
+            cmd += ["--compute-only", "--output", str(target_dir)]
             if args.profile and last_run and profile_root is not None:
                 profile_path = profile_root / f"{case_name}.speedscope.json"
                 cmd += ["--profile", str(profile_path)]
@@ -2766,31 +2678,8 @@ def main() -> None:
             if not last_run:
                 shutil.rmtree(target_dir, ignore_errors=True)
 
-        def strut_compute_cmd(output_dir: Path, last_run: bool) -> None:
-            if last_run:
-                ensure_clean_dir(output_dir)
-                target_dir = output_dir
-            else:
-                tmp_dir = results_root / ".tmp" / "strut_compute" / case_name
-                ensure_clean_dir(tmp_dir)
-                target_dir = tmp_dir
-            cmd = [str(strut_solver)]
-            if "input_pickle" in case_entry:
-                cmd += ["--input-pickle", str(case_entry["input_pickle"])]
-            else:
-                cmd += ["--input", str(case_entry["json"])]
-            cmd += ["--compute-only", "--output", str(target_dir)]
-            run(
-                cmd,
-                env=env,
-                verbose=verbose,
-                capture_on_error=True,
-            )
-            if not last_run:
-                shutil.rmtree(target_dir, ignore_errors=True)
-
         if run_opensees_per_case:
-            log(f"[{case_name}] OpenSees total pass...")
+            log(f"[{case_name}] OpenSees compute-only pass...")
             try:
                 opensees_times = run_engine(
                     lambda out, last_run: opensees_cmd(out / case_name, last_run),
@@ -2801,16 +2690,13 @@ def main() -> None:
             except subprocess.CalledProcessError as exc:
                 _write_case_error(
                     results_root / "opensees" / case_name,
-                    _format_subprocess_failure("opensees total pass aborted", exc),
+                    _format_subprocess_failure("opensees compute-only pass aborted", exc),
                 )
                 log_err(
-                    f"[{case_name}] OpenSees total pass aborted (exit {exc.returncode})."
+                    f"[{case_name}] OpenSees compute-only pass aborted (exit {exc.returncode})."
                 )
             else:
-                _normalize_opensees_benchmark_outputs(
-                    case_entry["case_data"], results_root / "opensees" / case_name
-                )
-                log_ok(f"[{case_name}] OpenSees total pass OK.")
+                log_ok(f"[{case_name}] OpenSees compute-only pass OK.")
                 stats = {
                     "times_s": opensees_times,
                     "mean_s": mean(opensees_times),
@@ -2835,7 +2721,7 @@ def main() -> None:
                         "case": case_name,
                         "dofs": case_entry.get("dofs", ""),
                         "engine": "opensees",
-                        "mode": "total",
+                        "mode": "compute_only",
                         "repeat": args.repeat,
                         "warmup": args.warmup,
                         "mean_s": f"{stats['mean_s']:.6f}",
@@ -2844,53 +2730,9 @@ def main() -> None:
                         "analysis_us": case_entry["opensees"]["analysis_us"],
                     }
                 )
-            if not args.skip_compute_only:
-                log(f"[{case_name}] OpenSees compute-only pass...")
-                try:
-                    opensees_compute = run_engine(
-                        lambda out, last_run: opensees_compute_cmd(
-                            out / case_name, last_run
-                        ),
-                        results_root / "opensees_compute",
-                        args.repeat,
-                        args.warmup,
-                    )
-                except subprocess.CalledProcessError as exc:
-                    _write_case_error(
-                        results_root / "opensees_compute" / case_name,
-                        _format_subprocess_failure(
-                            "opensees compute-only pass aborted", exc
-                        ),
-                    )
-                    log_err(
-                        f"[{case_name}] OpenSees compute-only pass aborted (exit {exc.returncode})."
-                    )
-                else:
-                    log_ok(f"[{case_name}] OpenSees compute-only pass OK.")
-                    compute_stats = {
-                        "times_s": opensees_compute,
-                        "mean_s": mean(opensees_compute),
-                        "median_s": median(opensees_compute),
-                        "min_s": min(opensees_compute),
-                    }
-                    case_entry["opensees_compute_only"] = compute_stats
-                    csv_rows.append(
-                        {
-                            "case": case_name,
-                            "dofs": case_entry.get("dofs", ""),
-                            "engine": "opensees",
-                            "mode": "compute_only",
-                            "repeat": args.repeat,
-                            "warmup": args.warmup,
-                            "mean_s": f"{compute_stats['mean_s']:.6f}",
-                            "median_s": f"{compute_stats['median_s']:.6f}",
-                            "min_s": f"{compute_stats['min_s']:.6f}",
-                            "analysis_us": "",
-                        }
-                    )
 
         if run_strut_per_case:
-            log(f"[{case_name}] Mojo total pass...")
+            log(f"[{case_name}] Mojo compute-only pass...")
             try:
                 strut_times = run_engine(
                     lambda out, last_run: strut_cmd(out / case_name, last_run),
@@ -2901,13 +2743,13 @@ def main() -> None:
             except subprocess.CalledProcessError as exc:
                 _write_case_error(
                     results_root / "strut" / case_name,
-                    _format_subprocess_failure("strut total pass aborted", exc),
+                    _format_subprocess_failure("strut compute-only pass aborted", exc),
                 )
                 log_err(
-                    f"[{case_name}] Mojo total pass aborted (exit {exc.returncode})."
+                    f"[{case_name}] Mojo compute-only pass aborted (exit {exc.returncode})."
                 )
             else:
-                log_ok(f"[{case_name}] Mojo total pass OK.")
+                log_ok(f"[{case_name}] Mojo compute-only pass OK.")
                 stats = {
                     "times_s": strut_times,
                     "mean_s": mean(strut_times),
@@ -2924,7 +2766,7 @@ def main() -> None:
                         "case": case_name,
                         "dofs": case_entry.get("dofs", ""),
                         "engine": "strut",
-                        "mode": "total",
+                        "mode": "compute_only",
                         "repeat": args.repeat,
                         "warmup": args.warmup,
                         "mean_s": f"{stats['mean_s']:.6f}",
@@ -2933,617 +2775,6 @@ def main() -> None:
                         "analysis_us": stats["analysis_us"],
                     }
                 )
-            if not args.skip_compute_only:
-                log(f"[{case_name}] Mojo compute-only pass...")
-                try:
-                    strut_compute = run_engine(
-                        lambda out, last_run: strut_compute_cmd(
-                            out / case_name, last_run
-                        ),
-                        results_root / "strut_compute",
-                        args.repeat,
-                        args.warmup,
-                    )
-                except subprocess.CalledProcessError as exc:
-                    _write_case_error(
-                        results_root / "strut_compute" / case_name,
-                        _format_subprocess_failure(
-                            "strut compute-only pass aborted", exc
-                        ),
-                    )
-                    log_err(
-                        f"[{case_name}] Mojo compute-only pass aborted (exit {exc.returncode})."
-                    )
-                else:
-                    log_ok(f"[{case_name}] Mojo compute-only pass OK.")
-                    compute_stats = {
-                        "times_s": strut_compute,
-                        "mean_s": mean(strut_compute),
-                        "median_s": median(strut_compute),
-                        "min_s": min(strut_compute),
-                    }
-                    case_entry["strut_compute_only"] = compute_stats
-                    compute_analysis_file = (
-                        results_root
-                        / "strut_compute"
-                        / case_name
-                        / "analysis_time_us.txt"
-                    )
-                    compute_analysis_us = _read_analysis_us(compute_analysis_file)
-                    csv_rows.append(
-                        {
-                            "case": case_name,
-                            "dofs": case_entry.get("dofs", ""),
-                            "engine": "strut",
-                            "mode": "compute_only",
-                            "repeat": args.repeat,
-                            "warmup": args.warmup,
-                            "mean_s": f"{compute_stats['mean_s']:.6f}",
-                            "median_s": f"{compute_stats['median_s']:.6f}",
-                            "min_s": f"{compute_stats['min_s']:.6f}",
-                            "analysis_us": compute_analysis_us,
-                        }
-                    )
-
-        if (
-            run_opensees
-            and run_strut
-            and "opensees" in case_entry
-            and "strut" in case_entry
-        ):
-            case_data = case_entry["case_data"]
-            case_parity_failures: List[str] = []
-            recorders = case_data.get("recorders", [])
-            analysis = case_data.get("analysis", {})
-            analysis_type = str(analysis.get("type", "static_linear"))
-            is_transient = _analysis_is_transient(analysis)
-            use_last_common_row = analysis_type == "static_nonlinear"
-            tol = case_data.get("parity_tolerance", {})
-            global_rtol = tol.get("rtol", REL_TOL)
-            global_atol = tol.get("atol", ABS_TOL)
-            has_global_override = isinstance(tol, dict) and (
-                "rtol" in tol or "atol" in tol
-            )
-            tol_by_recorder = case_data.get("parity_tolerance_by_recorder", {})
-            if not isinstance(tol_by_recorder, dict):
-                tol_by_recorder = {}
-            tol_by_category = case_data.get("parity_tolerance_by_category", {})
-            if not isinstance(tol_by_category, dict):
-                tol_by_category = {}
-            parity_mode = str(case_data.get("parity_mode", "step")).strip().lower()
-            if parity_mode not in ("step", "max_abs"):
-                raise SystemExit(
-                    f"unsupported parity_mode: {parity_mode} (expected step|max_abs)"
-                )
-            for rec in recorders:
-                if rec.get("parity", True) is False:
-                    continue
-                rec_type = rec.get("type")
-                rec_rtol, rec_atol = _resolve_recorder_tolerance(
-                    rec_type,
-                    global_rtol,
-                    global_atol,
-                    has_global_override,
-                    tol_by_category,
-                    tol_by_recorder,
-                )
-                if rec_type == "node_displacement":
-                    output = rec.get("output", "node_disp")
-                    for node_id in rec.get("nodes", []):
-                        ref_file = (
-                            results_root
-                            / "opensees"
-                            / case_name
-                            / f"{output}_node{node_id}.out"
-                        )
-                        strut_file = (
-                            results_root
-                            / "strut"
-                            / case_name
-                            / f"{output}_node{node_id}.out"
-                        )
-                        if not ref_file.exists():
-                            case_parity_failures.append(
-                                f"{case_name}: missing OpenSees output: {ref_file}"
-                            )
-                            continue
-                        if not strut_file.exists():
-                            case_parity_failures.append(
-                                f"{case_name}: missing Mojo output: {strut_file}"
-                            )
-                            continue
-                        try:
-                            if is_transient:
-                                ref_vals = _load_all_values(ref_file)
-                                strut_vals = _load_all_values(strut_file)
-                            else:
-                                ref_vals, strut_vals = _load_last_comparable_values(
-                                    ref_file,
-                                    strut_file,
-                                    use_last_common_row=use_last_common_row,
-                                )
-                        except ValueError as exc:
-                            case_parity_failures.append(f"{case_name}: {exc}")
-                            continue
-                        if is_transient:
-                            _compare_transient_rows(
-                                ref_vals,
-                                strut_vals,
-                                f"{case_name}: node {node_id}",
-                                case_parity_failures,
-                                rec_rtol,
-                                rec_atol,
-                                parity_mode,
-                            )
-                        else:
-                            ok, errors = _compare_vectors(
-                                ref_vals, strut_vals, rtol=rec_rtol, atol=rec_atol
-                            )
-                            if not ok:
-                                case_parity_failures.append(
-                                    f"{case_name}: node {node_id} mismatch"
-                                )
-                                case_parity_failures.extend(
-                                    [f"  {err}" for err in errors]
-                                )
-                elif rec_type == "element_force":
-                    output = rec.get("output", "element_force")
-                    for elem_id in rec.get("elements", []):
-                        ref_file = (
-                            results_root
-                            / "opensees"
-                            / case_name
-                            / f"{output}_ele{elem_id}.out"
-                        )
-                        strut_file = (
-                            results_root
-                            / "strut"
-                            / case_name
-                            / f"{output}_ele{elem_id}.out"
-                        )
-                        if not ref_file.exists():
-                            case_parity_failures.append(
-                                f"{case_name}: missing OpenSees output: {ref_file}"
-                            )
-                            continue
-                        if not strut_file.exists():
-                            case_parity_failures.append(
-                                f"{case_name}: missing Mojo output: {strut_file}"
-                            )
-                            continue
-                        try:
-                            if is_transient:
-                                ref_vals = _load_all_values(ref_file)
-                                strut_vals = _load_all_values(strut_file)
-                            else:
-                                ref_vals, strut_vals = _load_last_comparable_values(
-                                    ref_file,
-                                    strut_file,
-                                    use_last_common_row=use_last_common_row,
-                                )
-                        except ValueError as exc:
-                            case_parity_failures.append(f"{case_name}: {exc}")
-                            continue
-                        if is_transient:
-                            _compare_transient_rows(
-                                ref_vals,
-                                strut_vals,
-                                f"{case_name}: element {elem_id}",
-                                case_parity_failures,
-                                rec_rtol,
-                                rec_atol,
-                                parity_mode,
-                            )
-                        else:
-                            ok, errors = _compare_vectors(
-                                ref_vals, strut_vals, rtol=rec_rtol, atol=rec_atol
-                            )
-                            if not ok:
-                                case_parity_failures.append(
-                                    f"{case_name}: element {elem_id} mismatch"
-                                )
-                                case_parity_failures.extend(
-                                    [f"  {err}" for err in errors]
-                                )
-                elif rec_type == "node_reaction":
-                    output = rec.get("output", "reaction")
-                    for node_id in rec.get("nodes", []):
-                        ref_file = (
-                            results_root
-                            / "opensees"
-                            / case_name
-                            / f"{output}_node{node_id}.out"
-                        )
-                        strut_file = (
-                            results_root
-                            / "strut"
-                            / case_name
-                            / f"{output}_node{node_id}.out"
-                        )
-                        if not ref_file.exists():
-                            case_parity_failures.append(
-                                f"{case_name}: missing OpenSees output: {ref_file}"
-                            )
-                            continue
-                        if not strut_file.exists():
-                            case_parity_failures.append(
-                                f"{case_name}: missing Mojo output: {strut_file}"
-                            )
-                            continue
-                        try:
-                            if is_transient:
-                                ref_vals = _load_all_values(ref_file)
-                                strut_vals = _load_all_values(strut_file)
-                            else:
-                                ref_vals, strut_vals = _load_last_comparable_values(
-                                    ref_file,
-                                    strut_file,
-                                    use_last_common_row=use_last_common_row,
-                                )
-                        except ValueError as exc:
-                            case_parity_failures.append(f"{case_name}: {exc}")
-                            continue
-                        if is_transient:
-                            _compare_transient_rows(
-                                ref_vals,
-                                strut_vals,
-                                f"{case_name}: reaction node {node_id}",
-                                case_parity_failures,
-                                rec_rtol,
-                                rec_atol,
-                                parity_mode,
-                            )
-                        else:
-                            ok, errors = _compare_vectors(
-                                ref_vals, strut_vals, rtol=rec_rtol, atol=rec_atol
-                            )
-                            if not ok:
-                                case_parity_failures.append(
-                                    f"{case_name}: reaction node {node_id} mismatch"
-                                )
-                                case_parity_failures.extend(
-                                    [f"  {err}" for err in errors]
-                                )
-                elif rec_type == "drift":
-                    output = rec.get("output", "drift")
-                    i_node = int(rec["i_node"])
-                    j_node = int(rec["j_node"])
-                    ref_file = (
-                        results_root
-                        / "opensees"
-                        / case_name
-                        / f"{output}_i{i_node}_j{j_node}.out"
-                    )
-                    strut_file = (
-                        results_root
-                        / "strut"
-                        / case_name
-                        / f"{output}_i{i_node}_j{j_node}.out"
-                    )
-                    if not ref_file.exists():
-                        case_parity_failures.append(
-                            f"{case_name}: missing OpenSees output: {ref_file}"
-                        )
-                        continue
-                    if not strut_file.exists():
-                        case_parity_failures.append(
-                            f"{case_name}: missing Mojo output: {strut_file}"
-                        )
-                        continue
-                    try:
-                        if is_transient:
-                            ref_vals = _load_all_values(ref_file)
-                            strut_vals = _load_all_values(strut_file)
-                        else:
-                            ref_vals, strut_vals = _load_last_comparable_values(
-                                ref_file,
-                                strut_file,
-                                use_last_common_row=use_last_common_row,
-                            )
-                    except ValueError as exc:
-                        case_parity_failures.append(f"{case_name}: {exc}")
-                        continue
-                    if is_transient:
-                        _compare_transient_rows(
-                            ref_vals,
-                            strut_vals,
-                            f"{case_name}: drift i{i_node}-j{j_node}",
-                            case_parity_failures,
-                            rec_rtol,
-                            rec_atol,
-                            parity_mode,
-                        )
-                    else:
-                        ok, errors = _compare_vectors(
-                            ref_vals, strut_vals, rtol=rec_rtol, atol=rec_atol
-                        )
-                        if not ok:
-                            case_parity_failures.append(
-                                f"{case_name}: drift i{i_node}-j{j_node} mismatch"
-                            )
-                            case_parity_failures.extend(
-                                [f"  {err}" for err in errors]
-                            )
-                elif rec_type in ELEMENT_RESPONSE_RECORDER_TYPES:
-                    output = rec.get("output", rec_type)
-                    for elem_id in rec.get("elements", []):
-                        ref_file = (
-                            results_root
-                            / "opensees"
-                            / case_name
-                            / f"{output}_ele{elem_id}.out"
-                        )
-                        strut_file = (
-                            results_root
-                            / "strut"
-                            / case_name
-                            / f"{output}_ele{elem_id}.out"
-                        )
-                        if not ref_file.exists():
-                            case_parity_failures.append(
-                                f"{case_name}: missing OpenSees output: {ref_file}"
-                            )
-                            continue
-                        if not strut_file.exists():
-                            case_parity_failures.append(
-                                f"{case_name}: missing Mojo output: {strut_file}"
-                            )
-                            continue
-                        try:
-                            if is_transient:
-                                ref_vals = _load_all_values(ref_file)
-                                strut_vals = _load_all_values(strut_file)
-                            else:
-                                ref_vals, strut_vals = _load_last_comparable_values(
-                                    ref_file,
-                                    strut_file,
-                                    use_last_common_row=use_last_common_row,
-                                )
-                        except ValueError as exc:
-                            case_parity_failures.append(f"{case_name}: {exc}")
-                            continue
-                        if is_transient:
-                            _compare_transient_rows(
-                                ref_vals,
-                                strut_vals,
-                                f"{case_name}: {rec_type} element {elem_id}",
-                                case_parity_failures,
-                                rec_rtol,
-                                rec_atol,
-                                parity_mode,
-                            )
-                        else:
-                            ok, errors = _compare_vectors(
-                                ref_vals, strut_vals, rtol=rec_rtol, atol=rec_atol
-                            )
-                            if not ok:
-                                case_parity_failures.append(
-                                    f"{case_name}: {rec_type} element {elem_id} mismatch"
-                                )
-                                case_parity_failures.extend(
-                                    [f"  {err}" for err in errors]
-                                )
-                elif rec_type in (
-                    "envelope_element_force",
-                    "envelope_element_local_force",
-                    "envelope_node_displacement",
-                    "envelope_node_acceleration",
-                ):
-                    output = rec.get("output", rec_type)
-                    item_label = "element"
-                    item_ids = rec.get("elements", [])
-                    filename_template = "{output}_ele{item_id}.out"
-                    if rec_type.startswith("envelope_node_"):
-                        item_label = "node"
-                        item_ids = rec.get("nodes", [])
-                        filename_template = "{output}_node{item_id}.out"
-                    for item_id in item_ids:
-                        ref_file = (
-                            results_root
-                            / "opensees"
-                            / case_name
-                            / filename_template.format(output=output, item_id=item_id)
-                        )
-                        strut_file = (
-                            results_root
-                            / "strut"
-                            / case_name
-                            / filename_template.format(output=output, item_id=item_id)
-                        )
-                        if not ref_file.exists():
-                            case_parity_failures.append(
-                                f"{case_name}: missing OpenSees output: {ref_file}"
-                            )
-                            continue
-                        if not strut_file.exists():
-                            case_parity_failures.append(
-                                f"{case_name}: missing Mojo output: {strut_file}"
-                            )
-                            continue
-                        try:
-                            ref_vals = _load_all_values(ref_file)
-                            strut_vals = _load_all_values(strut_file)
-                        except ValueError as exc:
-                            case_parity_failures.append(f"{case_name}: {exc}")
-                            continue
-                        if len(ref_vals) != len(strut_vals):
-                            case_parity_failures.append(
-                                f"{case_name}: envelope {item_label} {item_id} row count mismatch: {len(ref_vals)} != {len(strut_vals)}"
-                            )
-                            continue
-                        for row, (rvec, gvec) in enumerate(
-                            zip(ref_vals, strut_vals), start=1
-                        ):
-                            ok, errors = _compare_vectors(
-                                rvec, gvec, rtol=rec_rtol, atol=rec_atol
-                            )
-                            if not ok:
-                                case_parity_failures.append(
-                                    f"{case_name}: envelope {item_label} {item_id} mismatch at row {row}"
-                                )
-                                case_parity_failures.extend(
-                                    [f"  {err}" for err in errors]
-                                )
-                                break
-                elif rec_type in ("section_force", "section_deformation"):
-                    default_output = (
-                        "section_force"
-                        if rec_type == "section_force"
-                        else "section_deformation"
-                    )
-                    output = rec.get("output", default_output)
-                    sections = rec.get("sections")
-                    if sections is None:
-                        if "section" not in rec:
-                            case_parity_failures.append(
-                                f"{case_name}: {rec_type} recorder missing section/sections"
-                            )
-                            continue
-                        sections = [rec["section"]]
-                    for elem_id in rec.get("elements", []):
-                        for sec_no in sections:
-                            ref_file = (
-                                results_root
-                                / "opensees"
-                                / case_name
-                                / f"{output}_ele{elem_id}_sec{sec_no}.out"
-                            )
-                            strut_file = (
-                                results_root
-                                / "strut"
-                                / case_name
-                                / f"{output}_ele{elem_id}_sec{sec_no}.out"
-                            )
-                            if not ref_file.exists():
-                                case_parity_failures.append(
-                                    f"{case_name}: missing OpenSees output: {ref_file}"
-                                )
-                                continue
-                            if not strut_file.exists():
-                                case_parity_failures.append(
-                                    f"{case_name}: missing Mojo output: {strut_file}"
-                                )
-                                continue
-                            try:
-                                if is_transient:
-                                    ref_vals = _load_all_values(ref_file)
-                                    strut_vals = _load_all_values(strut_file)
-                                else:
-                                    ref_vals, strut_vals = _load_last_comparable_values(
-                                        ref_file,
-                                        strut_file,
-                                        use_last_common_row=use_last_common_row,
-                                    )
-                            except ValueError as exc:
-                                case_parity_failures.append(f"{case_name}: {exc}")
-                                continue
-                            if is_transient:
-                                _compare_transient_rows(
-                                    ref_vals,
-                                    strut_vals,
-                                    f"{case_name}: {rec_type} element {elem_id} section {sec_no}",
-                                    case_parity_failures,
-                                    rec_rtol,
-                                    rec_atol,
-                                    parity_mode,
-                                )
-                            else:
-                                ok, errors = _compare_vectors(
-                                    ref_vals, strut_vals, rtol=rec_rtol, atol=rec_atol
-                                )
-                                if not ok:
-                                    case_parity_failures.append(
-                                        f"{case_name}: {rec_type} element {elem_id} section {sec_no} mismatch"
-                                    )
-                                    case_parity_failures.extend(
-                                        [f"  {err}" for err in errors]
-                                    )
-                elif rec_type == "modal_eigen":
-                    output = rec.get("output", "modal")
-                    eig_ref = (
-                        results_root
-                        / "opensees"
-                        / case_name
-                        / f"{output}_eigenvalues.out"
-                    )
-                    eig_strut = (
-                        results_root / "strut" / case_name / f"{output}_eigenvalues.out"
-                    )
-                    if not eig_ref.exists():
-                        case_parity_failures.append(
-                            f"{case_name}: missing OpenSees output: {eig_ref}"
-                        )
-                        continue
-                    if not eig_strut.exists():
-                        case_parity_failures.append(
-                            f"{case_name}: missing Mojo output: {eig_strut}"
-                        )
-                        continue
-                    try:
-                        ref_rows = _load_all_values(eig_ref)
-                        strut_rows = _load_all_values(eig_strut)
-                    except ValueError as exc:
-                        case_parity_failures.append(f"{case_name}: {exc}")
-                        continue
-                    ref_vals = [row[0] for row in ref_rows]
-                    strut_vals = [row[0] for row in strut_rows]
-                    ok, errors = _compare_vectors(
-                        ref_vals, strut_vals, rtol=rec_rtol, atol=rec_atol
-                    )
-                    if not ok:
-                        case_parity_failures.append(
-                            f"{case_name}: modal eigenvalue mismatch"
-                        )
-                        case_parity_failures.extend([f"  {err}" for err in errors])
-
-                    for mode_no in rec.get("modes", []):
-                        for node_id in rec.get("nodes", []):
-                            ref_file = (
-                                results_root
-                                / "opensees"
-                                / case_name
-                                / f"{output}_mode{int(mode_no)}_node{int(node_id)}.out"
-                            )
-                            strut_file = (
-                                results_root
-                                / "strut"
-                                / case_name
-                                / f"{output}_mode{int(mode_no)}_node{int(node_id)}.out"
-                            )
-                            if not ref_file.exists():
-                                case_parity_failures.append(
-                                    f"{case_name}: missing OpenSees output: {ref_file}"
-                                )
-                                continue
-                            if not strut_file.exists():
-                                case_parity_failures.append(
-                                    f"{case_name}: missing Mojo output: {strut_file}"
-                                )
-                                continue
-                            try:
-                                ref_vec = _load_last_values(ref_file)
-                                strut_vec = _load_last_values(strut_file)
-                            except ValueError as exc:
-                                case_parity_failures.append(f"{case_name}: {exc}")
-                                continue
-                            ok, errors = _compare_mode_shape_vectors(
-                                ref_vec, strut_vec, rtol=rec_rtol, atol=rec_atol
-                            )
-                            if not ok:
-                                case_parity_failures.append(
-                                    f"{case_name}: modal mode shape mismatch mode={mode_no} node={node_id}"
-                                )
-                                case_parity_failures.extend(
-                                    [f"  {err}" for err in errors]
-                                )
-                else:
-                    case_parity_failures.append(
-                        f"{case_name}: unsupported recorder type: {rec_type}"
-                    )
-
-            if case_parity_failures:
-                parity_failures.extend(case_parity_failures)
-
         summary_cases.append(case_entry)
 
     phase_rows: List[dict] = []
@@ -3615,17 +2846,16 @@ def main() -> None:
         results_root,
         run_opensees=run_opensees,
         run_strut=run_strut,
-        include_compute_only=not args.skip_compute_only,
     )
     case_file_map = {entry["name"]: str(entry.get("case_file", "")) for entry in case_entries}
-    if runtime_failures or parity_failures:
+    if runtime_failures:
         log_err("BENCHMARK FAILED")
         for failure in _summarize_benchmark_failures(
-            runtime_failures, parity_failures, case_file_map=case_file_map
+            runtime_failures, [], case_file_map=case_file_map
         ):
             log_err(failure)
         raise SystemExit(1)
-    log_ok("PARITY OK")
+    log_ok("BENCHMARK OK")
 
 
 if __name__ == "__main__":

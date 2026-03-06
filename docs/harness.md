@@ -181,3 +181,4 @@ Per-case overrides:
 - Benchmarks run all `"enabled": true` validation cases by default; `--include-disabled` adds disabled cases too.
 - OpenSees reference outputs are cached by JSON content hash in `tests/validation/<case>/reference/.ref_hash`. Set `STRUT_REFRESH_REFERENCE=1` to regenerate.
 - Benchmarks use `scripts/run_benchmarks.py`. The latest run is written to `benchmark/results/` (`benchmark/results-profile/` when `--profile`), and summary snapshots are archived in `benchmark/archive/` (both ignored by git). Runs with `--profile` default to `--no-archive`.
+- `scripts/run_benchmarks.py` is compute-only and does not run parity comparisons; run `uv run run_tests.py` first when you need correctness gates.

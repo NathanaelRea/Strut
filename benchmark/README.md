@@ -51,15 +51,15 @@ uv run scripts/run_benchmarks.py --cases elastic_truss_basic,elastic_four_node_q
 - Runs with `--profile` write to `benchmark/results-profile/` and default to `--no-archive`.
 - `--profile` builds and reuses a dedicated `build/strut/strut_profile` binary, so switching between normal and profiled runs does not overwrite the default solver.
 - `--profile <DIR>` works in both per-case and batch runs and writes per-case files as `<case>.speedscope.json` into `DIR`.
-- Compute-only outputs are written to `benchmark/results/opensees_compute/` and `benchmark/results/strut_compute/` (or the `results-profile` equivalents when profiling).
+- Compute-only outputs are written to `benchmark/results/opensees/` and `benchmark/results/strut/` (or the `results-profile` equivalents when profiling).
 - `metadata.json` records machine/build/run metadata for reproducible baseline/perf comparisons.
 - `uv run scripts/compare_benchmarks.py` compares two `summary.json` files and can fail on regressions or unmet improvement targets.
 - Use `--min-regression-us` to ignore tiny absolute timing swings on very small cases.
 - `phase_summary.csv` records per-case phase timing columns (parse/model-build/assembly/solve/output).
 - `phase_rollup.csv` records phase-level aggregates (mean/median/min/max).
 - `benchmark/archive/` contains timestamped summary snapshots.
-- When running both engines, the runner compares outputs and fails on mismatch.
-- The runner performs a second pass without recorders to estimate compute-only time.
+- The benchmark runner is compute-only and does not perform parity checks. Run `uv run run_tests.py` for parity validation before benchmarking.
+- OpenSees and Mojo are timed from recorder-stripped inputs in both batch and non-batch modes.
 - The runner prints progress per case and pass while running.
 - `analysis_time_us.txt` is solve-only for both engines (OpenSees `analyze/eigen`, Mojo solve phase).
 - Batch mode is enabled for both engines by default; use `--no-batch` for single-case process timings.

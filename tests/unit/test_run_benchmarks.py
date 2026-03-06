@@ -1171,7 +1171,7 @@ def test_read_runtime_failures_collects_case_error_files(tmp_path: Path):
     case_dir = tmp_path / "results" / "opensees" / "beam_case"
     case_dir.mkdir(parents=True, exist_ok=True)
     (case_dir / "case_error.txt").write_text(
-        "opensees total pass aborted (exit 1)\ncmd=run\nstderr=bad\n",
+        "opensees compute-only pass aborted (exit 1)\ncmd=run\nstderr=bad\n",
         encoding="utf-8",
     )
 
@@ -1182,7 +1182,6 @@ def test_read_runtime_failures_collects_case_error_files(tmp_path: Path):
         results_root=tmp_path / "results",
         run_opensees=True,
         run_strut=False,
-        include_compute_only=False,
     )
 
     assert failures == [
@@ -1190,8 +1189,8 @@ def test_read_runtime_failures_collects_case_error_files(tmp_path: Path):
             case_name="beam_case",
             case_file="/tmp/cases/beam_case.json",
             engine="opensees",
-            phase="total",
-            detail="opensees total pass aborted (exit 1) | cmd=run | stderr=bad",
+            phase="compute-only",
+            detail="opensees compute-only pass aborted (exit 1) | cmd=run | stderr=bad",
             error_file=str(case_dir / "case_error.txt"),
         )
     ]
