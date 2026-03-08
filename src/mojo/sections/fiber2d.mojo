@@ -8,18 +8,26 @@ from materials import (
     UniMaterialState,
     uni_mat_is_elastic,
     uni_mat_initial_tangent,
-    uniaxial_commit,
-    uniaxial_revert_trial,
-    uniaxial_set_trial_strain_concrete01,
-    uniaxial_set_trial_strain_concrete02,
-    uniaxial_set_trial_strain,
-    uniaxial_set_trial_strain_steel01,
-    uniaxial_set_trial_strain_steel02,
 )
+from materials.uniaxial.concrete01 import _concrete01_reload
+from materials.uniaxial.concrete02 import _concrete02_compr_envlp, _concrete02_tens_envlp
+from materials.uniaxial.core import _abs, _pow_abs, _sign
 from solver.run_case.input_types import FiberLayerInput, FiberPatchInput, SectionInput
-from solver.simd_contiguous import FLOAT64_SIMD_WIDTH, load_float64_contiguous_simd
+from solver.simd_contiguous import (
+    FLOAT64_SIMD_WIDTH,
+    copy_float64_contiguous_simd,
+    load_float64_contiguous_simd,
+    store_float64_contiguous_simd,
+)
 from strut_io import py_len
 from tag_types import UniMaterialTypeTag
+
+
+@always_inline
+fn _fiber_section2d_padded_family_count(count: Int) -> Int:
+    if count <= 0:
+        return 0
+    return ((count + FLOAT64_SIMD_WIDTH - 1) // FLOAT64_SIMD_WIDTH) * FLOAT64_SIMD_WIDTH
 
 
 struct FiberCell(Defaultable, Movable, ImplicitlyCopyable):
@@ -61,11 +69,81 @@ struct FiberSection2dDef(Defaultable, Movable, ImplicitlyCopyable):
     var nonlinear_area: List[Float64]
     var nonlinear_def_index: List[Int]
     var nonlinear_mat_defs: List[UniMaterialDef]
+    var steel02_y_rel: List[Float64]
+    var steel02_area: List[Float64]
+    var steel02_mat_defs: List[UniMaterialDef]
+    var steel02_single_definition: Bool
+    var steel02_single_mat_def: UniMaterialDef
+    var concrete02_y_rel: List[Float64]
+    var concrete02_area: List[Float64]
+    var concrete02_mat_defs: List[UniMaterialDef]
+    var concrete02_single_definition: Bool
+    var concrete02_single_mat_def: UniMaterialDef
     var steel01_nonlinear_indices: List[Int]
     var concrete01_nonlinear_indices: List[Int]
     var steel02_nonlinear_indices: List[Int]
+    var steel02_family_position_by_nonlinear_index: List[Int]
+    var steel02_count: Int
+    var steel02_padded_count: Int
+    var steel02_instance_stride: Int
     var concrete02_nonlinear_indices: List[Int]
+    var concrete02_family_position_by_nonlinear_index: List[Int]
+    var concrete02_count: Int
+    var concrete02_padded_count: Int
+    var concrete02_instance_stride: Int
     var other_nonlinear_indices: List[Int]
+    var runtime_state_offset_base: Int
+    var runtime_state_count: Int
+    var runtime_s2_state_count: Int
+    var runtime_c2_state_count: Int
+    var runtime_eps_c: List[Float64]
+    var runtime_sig_c: List[Float64]
+    var runtime_tangent_c: List[Float64]
+    var runtime_eps_p_c: List[Float64]
+    var runtime_alpha_c: List[Float64]
+    var runtime_eps_t: List[Float64]
+    var runtime_sig_t: List[Float64]
+    var runtime_tangent_t: List[Float64]
+    var runtime_eps_p_t: List[Float64]
+    var runtime_alpha_t: List[Float64]
+    var runtime_min_strain_c: List[Float64]
+    var runtime_end_strain_c: List[Float64]
+    var runtime_unload_slope_c: List[Float64]
+    var runtime_min_strain_t: List[Float64]
+    var runtime_end_strain_t: List[Float64]
+    var runtime_unload_slope_t: List[Float64]
+    var runtime_s2_eps_c: List[Float64]
+    var runtime_s2_sig_c: List[Float64]
+    var runtime_s2_tangent_c: List[Float64]
+    var runtime_s2_epsmin_c: List[Float64]
+    var runtime_s2_epsmax_c: List[Float64]
+    var runtime_s2_epspl_c: List[Float64]
+    var runtime_s2_epss0_c: List[Float64]
+    var runtime_s2_sigs0_c: List[Float64]
+    var runtime_s2_epsr_c: List[Float64]
+    var runtime_s2_sigr_c: List[Float64]
+    var runtime_s2_kon_c: List[Int]
+    var runtime_s2_eps_t: List[Float64]
+    var runtime_s2_sig_t: List[Float64]
+    var runtime_s2_tangent_t: List[Float64]
+    var runtime_s2_epsmin_t: List[Float64]
+    var runtime_s2_epsmax_t: List[Float64]
+    var runtime_s2_epspl_t: List[Float64]
+    var runtime_s2_epss0_t: List[Float64]
+    var runtime_s2_sigs0_t: List[Float64]
+    var runtime_s2_epsr_t: List[Float64]
+    var runtime_s2_sigr_t: List[Float64]
+    var runtime_s2_kon_t: List[Int]
+    var runtime_c2_eps_c: List[Float64]
+    var runtime_c2_sig_c: List[Float64]
+    var runtime_c2_tangent_c: List[Float64]
+    var runtime_c2_eps_t: List[Float64]
+    var runtime_c2_sig_t: List[Float64]
+    var runtime_c2_tangent_t: List[Float64]
+    var runtime_c2_ecmin_c: List[Float64]
+    var runtime_c2_dept_c: List[Float64]
+    var runtime_c2_ecmin_t: List[Float64]
+    var runtime_c2_dept_t: List[Float64]
 
     fn __init__(out self):
         self.fiber_offset = 0
@@ -85,11 +163,81 @@ struct FiberSection2dDef(Defaultable, Movable, ImplicitlyCopyable):
         self.nonlinear_area = []
         self.nonlinear_def_index = []
         self.nonlinear_mat_defs = []
+        self.steel02_y_rel = []
+        self.steel02_area = []
+        self.steel02_mat_defs = []
+        self.steel02_single_definition = False
+        self.steel02_single_mat_def = UniMaterialDef()
+        self.concrete02_y_rel = []
+        self.concrete02_area = []
+        self.concrete02_mat_defs = []
+        self.concrete02_single_definition = False
+        self.concrete02_single_mat_def = UniMaterialDef()
         self.steel01_nonlinear_indices = []
         self.concrete01_nonlinear_indices = []
         self.steel02_nonlinear_indices = []
+        self.steel02_family_position_by_nonlinear_index = []
+        self.steel02_count = 0
+        self.steel02_padded_count = 0
+        self.steel02_instance_stride = 0
         self.concrete02_nonlinear_indices = []
+        self.concrete02_family_position_by_nonlinear_index = []
+        self.concrete02_count = 0
+        self.concrete02_padded_count = 0
+        self.concrete02_instance_stride = 0
         self.other_nonlinear_indices = []
+        self.runtime_state_offset_base = 0
+        self.runtime_state_count = 0
+        self.runtime_s2_state_count = 0
+        self.runtime_c2_state_count = 0
+        self.runtime_eps_c = []
+        self.runtime_sig_c = []
+        self.runtime_tangent_c = []
+        self.runtime_eps_p_c = []
+        self.runtime_alpha_c = []
+        self.runtime_eps_t = []
+        self.runtime_sig_t = []
+        self.runtime_tangent_t = []
+        self.runtime_eps_p_t = []
+        self.runtime_alpha_t = []
+        self.runtime_min_strain_c = []
+        self.runtime_end_strain_c = []
+        self.runtime_unload_slope_c = []
+        self.runtime_min_strain_t = []
+        self.runtime_end_strain_t = []
+        self.runtime_unload_slope_t = []
+        self.runtime_s2_eps_c = []
+        self.runtime_s2_sig_c = []
+        self.runtime_s2_tangent_c = []
+        self.runtime_s2_epsmin_c = []
+        self.runtime_s2_epsmax_c = []
+        self.runtime_s2_epspl_c = []
+        self.runtime_s2_epss0_c = []
+        self.runtime_s2_sigs0_c = []
+        self.runtime_s2_epsr_c = []
+        self.runtime_s2_sigr_c = []
+        self.runtime_s2_kon_c = []
+        self.runtime_s2_eps_t = []
+        self.runtime_s2_sig_t = []
+        self.runtime_s2_tangent_t = []
+        self.runtime_s2_epsmin_t = []
+        self.runtime_s2_epsmax_t = []
+        self.runtime_s2_epspl_t = []
+        self.runtime_s2_epss0_t = []
+        self.runtime_s2_sigs0_t = []
+        self.runtime_s2_epsr_t = []
+        self.runtime_s2_sigr_t = []
+        self.runtime_s2_kon_t = []
+        self.runtime_c2_eps_c = []
+        self.runtime_c2_sig_c = []
+        self.runtime_c2_tangent_c = []
+        self.runtime_c2_eps_t = []
+        self.runtime_c2_sig_t = []
+        self.runtime_c2_tangent_t = []
+        self.runtime_c2_ecmin_c = []
+        self.runtime_c2_dept_c = []
+        self.runtime_c2_ecmin_t = []
+        self.runtime_c2_dept_t = []
 
     fn __init__(out self, fiber_offset: Int, fiber_count: Int, y_bar: Float64):
         self.fiber_offset = fiber_offset
@@ -109,11 +257,81 @@ struct FiberSection2dDef(Defaultable, Movable, ImplicitlyCopyable):
         self.nonlinear_area = []
         self.nonlinear_def_index = []
         self.nonlinear_mat_defs = []
+        self.steel02_y_rel = []
+        self.steel02_area = []
+        self.steel02_mat_defs = []
+        self.steel02_single_definition = False
+        self.steel02_single_mat_def = UniMaterialDef()
+        self.concrete02_y_rel = []
+        self.concrete02_area = []
+        self.concrete02_mat_defs = []
+        self.concrete02_single_definition = False
+        self.concrete02_single_mat_def = UniMaterialDef()
         self.steel01_nonlinear_indices = []
         self.concrete01_nonlinear_indices = []
         self.steel02_nonlinear_indices = []
+        self.steel02_family_position_by_nonlinear_index = []
+        self.steel02_count = 0
+        self.steel02_padded_count = 0
+        self.steel02_instance_stride = 0
         self.concrete02_nonlinear_indices = []
+        self.concrete02_family_position_by_nonlinear_index = []
+        self.concrete02_count = 0
+        self.concrete02_padded_count = 0
+        self.concrete02_instance_stride = 0
         self.other_nonlinear_indices = []
+        self.runtime_state_offset_base = 0
+        self.runtime_state_count = 0
+        self.runtime_s2_state_count = 0
+        self.runtime_c2_state_count = 0
+        self.runtime_eps_c = []
+        self.runtime_sig_c = []
+        self.runtime_tangent_c = []
+        self.runtime_eps_p_c = []
+        self.runtime_alpha_c = []
+        self.runtime_eps_t = []
+        self.runtime_sig_t = []
+        self.runtime_tangent_t = []
+        self.runtime_eps_p_t = []
+        self.runtime_alpha_t = []
+        self.runtime_min_strain_c = []
+        self.runtime_end_strain_c = []
+        self.runtime_unload_slope_c = []
+        self.runtime_min_strain_t = []
+        self.runtime_end_strain_t = []
+        self.runtime_unload_slope_t = []
+        self.runtime_s2_eps_c = []
+        self.runtime_s2_sig_c = []
+        self.runtime_s2_tangent_c = []
+        self.runtime_s2_epsmin_c = []
+        self.runtime_s2_epsmax_c = []
+        self.runtime_s2_epspl_c = []
+        self.runtime_s2_epss0_c = []
+        self.runtime_s2_sigs0_c = []
+        self.runtime_s2_epsr_c = []
+        self.runtime_s2_sigr_c = []
+        self.runtime_s2_kon_c = []
+        self.runtime_s2_eps_t = []
+        self.runtime_s2_sig_t = []
+        self.runtime_s2_tangent_t = []
+        self.runtime_s2_epsmin_t = []
+        self.runtime_s2_epsmax_t = []
+        self.runtime_s2_epspl_t = []
+        self.runtime_s2_epss0_t = []
+        self.runtime_s2_sigs0_t = []
+        self.runtime_s2_epsr_t = []
+        self.runtime_s2_sigr_t = []
+        self.runtime_s2_kon_t = []
+        self.runtime_c2_eps_c = []
+        self.runtime_c2_sig_c = []
+        self.runtime_c2_tangent_c = []
+        self.runtime_c2_eps_t = []
+        self.runtime_c2_sig_t = []
+        self.runtime_c2_tangent_t = []
+        self.runtime_c2_ecmin_c = []
+        self.runtime_c2_dept_c = []
+        self.runtime_c2_ecmin_t = []
+        self.runtime_c2_dept_t = []
 
     fn __copyinit__(out self, existing: Self):
         self.fiber_offset = existing.fiber_offset
@@ -133,11 +351,85 @@ struct FiberSection2dDef(Defaultable, Movable, ImplicitlyCopyable):
         self.nonlinear_area = existing.nonlinear_area.copy()
         self.nonlinear_def_index = existing.nonlinear_def_index.copy()
         self.nonlinear_mat_defs = existing.nonlinear_mat_defs.copy()
+        self.steel02_y_rel = existing.steel02_y_rel.copy()
+        self.steel02_area = existing.steel02_area.copy()
+        self.steel02_mat_defs = existing.steel02_mat_defs.copy()
+        self.steel02_single_definition = existing.steel02_single_definition
+        self.steel02_single_mat_def = existing.steel02_single_mat_def
+        self.concrete02_y_rel = existing.concrete02_y_rel.copy()
+        self.concrete02_area = existing.concrete02_area.copy()
+        self.concrete02_mat_defs = existing.concrete02_mat_defs.copy()
+        self.concrete02_single_definition = existing.concrete02_single_definition
+        self.concrete02_single_mat_def = existing.concrete02_single_mat_def
         self.steel01_nonlinear_indices = existing.steel01_nonlinear_indices.copy()
         self.concrete01_nonlinear_indices = existing.concrete01_nonlinear_indices.copy()
         self.steel02_nonlinear_indices = existing.steel02_nonlinear_indices.copy()
+        self.steel02_family_position_by_nonlinear_index = (
+            existing.steel02_family_position_by_nonlinear_index.copy()
+        )
+        self.steel02_count = existing.steel02_count
+        self.steel02_padded_count = existing.steel02_padded_count
+        self.steel02_instance_stride = existing.steel02_instance_stride
         self.concrete02_nonlinear_indices = existing.concrete02_nonlinear_indices.copy()
+        self.concrete02_family_position_by_nonlinear_index = (
+            existing.concrete02_family_position_by_nonlinear_index.copy()
+        )
+        self.concrete02_count = existing.concrete02_count
+        self.concrete02_padded_count = existing.concrete02_padded_count
+        self.concrete02_instance_stride = existing.concrete02_instance_stride
         self.other_nonlinear_indices = existing.other_nonlinear_indices.copy()
+        self.runtime_state_offset_base = existing.runtime_state_offset_base
+        self.runtime_state_count = existing.runtime_state_count
+        self.runtime_s2_state_count = existing.runtime_s2_state_count
+        self.runtime_c2_state_count = existing.runtime_c2_state_count
+        self.runtime_eps_c = existing.runtime_eps_c.copy()
+        self.runtime_sig_c = existing.runtime_sig_c.copy()
+        self.runtime_tangent_c = existing.runtime_tangent_c.copy()
+        self.runtime_eps_p_c = existing.runtime_eps_p_c.copy()
+        self.runtime_alpha_c = existing.runtime_alpha_c.copy()
+        self.runtime_eps_t = existing.runtime_eps_t.copy()
+        self.runtime_sig_t = existing.runtime_sig_t.copy()
+        self.runtime_tangent_t = existing.runtime_tangent_t.copy()
+        self.runtime_eps_p_t = existing.runtime_eps_p_t.copy()
+        self.runtime_alpha_t = existing.runtime_alpha_t.copy()
+        self.runtime_min_strain_c = existing.runtime_min_strain_c.copy()
+        self.runtime_end_strain_c = existing.runtime_end_strain_c.copy()
+        self.runtime_unload_slope_c = existing.runtime_unload_slope_c.copy()
+        self.runtime_min_strain_t = existing.runtime_min_strain_t.copy()
+        self.runtime_end_strain_t = existing.runtime_end_strain_t.copy()
+        self.runtime_unload_slope_t = existing.runtime_unload_slope_t.copy()
+        self.runtime_s2_eps_c = existing.runtime_s2_eps_c.copy()
+        self.runtime_s2_sig_c = existing.runtime_s2_sig_c.copy()
+        self.runtime_s2_tangent_c = existing.runtime_s2_tangent_c.copy()
+        self.runtime_s2_epsmin_c = existing.runtime_s2_epsmin_c.copy()
+        self.runtime_s2_epsmax_c = existing.runtime_s2_epsmax_c.copy()
+        self.runtime_s2_epspl_c = existing.runtime_s2_epspl_c.copy()
+        self.runtime_s2_epss0_c = existing.runtime_s2_epss0_c.copy()
+        self.runtime_s2_sigs0_c = existing.runtime_s2_sigs0_c.copy()
+        self.runtime_s2_epsr_c = existing.runtime_s2_epsr_c.copy()
+        self.runtime_s2_sigr_c = existing.runtime_s2_sigr_c.copy()
+        self.runtime_s2_kon_c = existing.runtime_s2_kon_c.copy()
+        self.runtime_s2_eps_t = existing.runtime_s2_eps_t.copy()
+        self.runtime_s2_sig_t = existing.runtime_s2_sig_t.copy()
+        self.runtime_s2_tangent_t = existing.runtime_s2_tangent_t.copy()
+        self.runtime_s2_epsmin_t = existing.runtime_s2_epsmin_t.copy()
+        self.runtime_s2_epsmax_t = existing.runtime_s2_epsmax_t.copy()
+        self.runtime_s2_epspl_t = existing.runtime_s2_epspl_t.copy()
+        self.runtime_s2_epss0_t = existing.runtime_s2_epss0_t.copy()
+        self.runtime_s2_sigs0_t = existing.runtime_s2_sigs0_t.copy()
+        self.runtime_s2_epsr_t = existing.runtime_s2_epsr_t.copy()
+        self.runtime_s2_sigr_t = existing.runtime_s2_sigr_t.copy()
+        self.runtime_s2_kon_t = existing.runtime_s2_kon_t.copy()
+        self.runtime_c2_eps_c = existing.runtime_c2_eps_c.copy()
+        self.runtime_c2_sig_c = existing.runtime_c2_sig_c.copy()
+        self.runtime_c2_tangent_c = existing.runtime_c2_tangent_c.copy()
+        self.runtime_c2_eps_t = existing.runtime_c2_eps_t.copy()
+        self.runtime_c2_sig_t = existing.runtime_c2_sig_t.copy()
+        self.runtime_c2_tangent_t = existing.runtime_c2_tangent_t.copy()
+        self.runtime_c2_ecmin_c = existing.runtime_c2_ecmin_c.copy()
+        self.runtime_c2_dept_c = existing.runtime_c2_dept_c.copy()
+        self.runtime_c2_ecmin_t = existing.runtime_c2_ecmin_t.copy()
+        self.runtime_c2_dept_t = existing.runtime_c2_dept_t.copy()
 
 
 struct FiberSection2dResponse(Defaultable, Movable, ImplicitlyCopyable):
@@ -377,6 +669,521 @@ fn _fiber_section2d_batch_profile_note_flags(
 
 
 @always_inline
+fn _fiber_section2d_runtime_local_offset(
+    sec_def: FiberSection2dDef, section_state_offset: Int, section_state_count: Int
+) -> Int:
+    if section_state_count != sec_def.fiber_count:
+        abort("FiberSection2d section state count mismatch")
+    var local_offset = section_state_offset - sec_def.runtime_state_offset_base
+    if local_offset < 0 or local_offset + section_state_count > sec_def.runtime_state_count:
+        abort("FiberSection2d section states out of range")
+    return local_offset
+
+
+fn _fiber_section2d_runtime_ensure_capacity(mut sec_def: FiberSection2dDef, new_count: Int):
+    sec_def.runtime_eps_c.resize(new_count, 0.0)
+    sec_def.runtime_sig_c.resize(new_count, 0.0)
+    sec_def.runtime_tangent_c.resize(new_count, 0.0)
+    sec_def.runtime_eps_p_c.resize(new_count, 0.0)
+    sec_def.runtime_alpha_c.resize(new_count, 0.0)
+    sec_def.runtime_eps_t.resize(new_count, 0.0)
+    sec_def.runtime_sig_t.resize(new_count, 0.0)
+    sec_def.runtime_tangent_t.resize(new_count, 0.0)
+    sec_def.runtime_eps_p_t.resize(new_count, 0.0)
+    sec_def.runtime_alpha_t.resize(new_count, 0.0)
+    sec_def.runtime_min_strain_c.resize(new_count, 0.0)
+    sec_def.runtime_end_strain_c.resize(new_count, 0.0)
+    sec_def.runtime_unload_slope_c.resize(new_count, 0.0)
+    sec_def.runtime_min_strain_t.resize(new_count, 0.0)
+    sec_def.runtime_end_strain_t.resize(new_count, 0.0)
+    sec_def.runtime_unload_slope_t.resize(new_count, 0.0)
+
+
+fn _fiber_section2d_runtime_ensure_steel02_capacity(
+    mut sec_def: FiberSection2dDef, new_count: Int
+):
+    sec_def.runtime_s2_eps_c.resize(new_count, 0.0)
+    sec_def.runtime_s2_sig_c.resize(new_count, 0.0)
+    sec_def.runtime_s2_tangent_c.resize(new_count, 0.0)
+    sec_def.runtime_s2_epsmin_c.resize(new_count, 0.0)
+    sec_def.runtime_s2_epsmax_c.resize(new_count, 0.0)
+    sec_def.runtime_s2_epspl_c.resize(new_count, 0.0)
+    sec_def.runtime_s2_epss0_c.resize(new_count, 0.0)
+    sec_def.runtime_s2_sigs0_c.resize(new_count, 0.0)
+    sec_def.runtime_s2_epsr_c.resize(new_count, 0.0)
+    sec_def.runtime_s2_sigr_c.resize(new_count, 0.0)
+    sec_def.runtime_s2_kon_c.resize(new_count, 0)
+    sec_def.runtime_s2_eps_t.resize(new_count, 0.0)
+    sec_def.runtime_s2_sig_t.resize(new_count, 0.0)
+    sec_def.runtime_s2_tangent_t.resize(new_count, 0.0)
+    sec_def.runtime_s2_epsmin_t.resize(new_count, 0.0)
+    sec_def.runtime_s2_epsmax_t.resize(new_count, 0.0)
+    sec_def.runtime_s2_epspl_t.resize(new_count, 0.0)
+    sec_def.runtime_s2_epss0_t.resize(new_count, 0.0)
+    sec_def.runtime_s2_sigs0_t.resize(new_count, 0.0)
+    sec_def.runtime_s2_epsr_t.resize(new_count, 0.0)
+    sec_def.runtime_s2_sigr_t.resize(new_count, 0.0)
+    sec_def.runtime_s2_kon_t.resize(new_count, 0)
+
+
+fn _fiber_section2d_runtime_ensure_concrete02_capacity(
+    mut sec_def: FiberSection2dDef, new_count: Int
+):
+    sec_def.runtime_c2_eps_c.resize(new_count, 0.0)
+    sec_def.runtime_c2_sig_c.resize(new_count, 0.0)
+    sec_def.runtime_c2_tangent_c.resize(new_count, 0.0)
+    sec_def.runtime_c2_eps_t.resize(new_count, 0.0)
+    sec_def.runtime_c2_sig_t.resize(new_count, 0.0)
+    sec_def.runtime_c2_tangent_t.resize(new_count, 0.0)
+    sec_def.runtime_c2_ecmin_c.resize(new_count, 0.0)
+    sec_def.runtime_c2_dept_c.resize(new_count, 0.0)
+    sec_def.runtime_c2_ecmin_t.resize(new_count, 0.0)
+    sec_def.runtime_c2_dept_t.resize(new_count, 0.0)
+
+
+fn _fiber_section2d_runtime_init_slot(
+    mut sec_def: FiberSection2dDef, slot: Int, mat_def: UniMaterialDef
+):
+    var state = UniMaterialState(mat_def)
+    sec_def.runtime_eps_c[slot] = state.eps_c
+    sec_def.runtime_sig_c[slot] = state.sig_c
+    sec_def.runtime_tangent_c[slot] = state.tangent_c
+    sec_def.runtime_eps_p_c[slot] = state.eps_p_c
+    sec_def.runtime_alpha_c[slot] = state.alpha_c
+    sec_def.runtime_eps_t[slot] = state.eps_t
+    sec_def.runtime_sig_t[slot] = state.sig_t
+    sec_def.runtime_tangent_t[slot] = state.tangent_t
+    sec_def.runtime_eps_p_t[slot] = state.eps_p_t
+    sec_def.runtime_alpha_t[slot] = state.alpha_t
+    sec_def.runtime_min_strain_c[slot] = state.min_strain_c
+    sec_def.runtime_end_strain_c[slot] = state.end_strain_c
+    sec_def.runtime_unload_slope_c[slot] = state.unload_slope_c
+    sec_def.runtime_min_strain_t[slot] = state.min_strain_t
+    sec_def.runtime_end_strain_t[slot] = state.end_strain_t
+    sec_def.runtime_unload_slope_t[slot] = state.unload_slope_t
+
+
+fn _fiber_section2d_runtime_init_steel02_slot(
+    mut sec_def: FiberSection2dDef, slot: Int, mat_def: UniMaterialDef
+):
+    var state = UniMaterialState(mat_def)
+    sec_def.runtime_s2_eps_c[slot] = state.eps_c
+    sec_def.runtime_s2_sig_c[slot] = state.sig_c
+    sec_def.runtime_s2_tangent_c[slot] = state.tangent_c
+    sec_def.runtime_s2_epsmin_c[slot] = state.s2_epsmin_c
+    sec_def.runtime_s2_epsmax_c[slot] = state.s2_epsmax_c
+    sec_def.runtime_s2_epspl_c[slot] = state.s2_epspl_c
+    sec_def.runtime_s2_epss0_c[slot] = state.s2_epss0_c
+    sec_def.runtime_s2_sigs0_c[slot] = state.s2_sigs0_c
+    sec_def.runtime_s2_epsr_c[slot] = state.s2_epsr_c
+    sec_def.runtime_s2_sigr_c[slot] = state.s2_sigr_c
+    sec_def.runtime_s2_kon_c[slot] = state.s2_kon_c
+    sec_def.runtime_s2_eps_t[slot] = state.eps_t
+    sec_def.runtime_s2_sig_t[slot] = state.sig_t
+    sec_def.runtime_s2_tangent_t[slot] = state.tangent_t
+    sec_def.runtime_s2_epsmin_t[slot] = state.s2_epsmin_t
+    sec_def.runtime_s2_epsmax_t[slot] = state.s2_epsmax_t
+    sec_def.runtime_s2_epspl_t[slot] = state.s2_epspl_t
+    sec_def.runtime_s2_epss0_t[slot] = state.s2_epss0_t
+    sec_def.runtime_s2_sigs0_t[slot] = state.s2_sigs0_t
+    sec_def.runtime_s2_epsr_t[slot] = state.s2_epsr_t
+    sec_def.runtime_s2_sigr_t[slot] = state.s2_sigr_t
+    sec_def.runtime_s2_kon_t[slot] = state.s2_kon_t
+
+
+fn _fiber_section2d_runtime_init_concrete02_slot(
+    mut sec_def: FiberSection2dDef, slot: Int, mat_def: UniMaterialDef
+):
+    var state = UniMaterialState(mat_def)
+    sec_def.runtime_c2_eps_c[slot] = state.eps_c
+    sec_def.runtime_c2_sig_c[slot] = state.sig_c
+    sec_def.runtime_c2_tangent_c[slot] = state.tangent_c
+    sec_def.runtime_c2_eps_t[slot] = state.eps_t
+    sec_def.runtime_c2_sig_t[slot] = state.sig_t
+    sec_def.runtime_c2_tangent_t[slot] = state.tangent_t
+    sec_def.runtime_c2_ecmin_c[slot] = state.c2_ecmin_c
+    sec_def.runtime_c2_dept_c[slot] = state.c2_dept_c
+    sec_def.runtime_c2_ecmin_t[slot] = state.c2_ecmin_t
+    sec_def.runtime_c2_dept_t[slot] = state.c2_dept_t
+
+
+fn fiber_section2d_runtime_alloc_instances(
+    mut sec_def: FiberSection2dDef, instance_count: Int
+) -> Int:
+    if instance_count <= 0:
+        return sec_def.runtime_state_offset_base + sec_def.runtime_state_count
+    if sec_def.runtime_state_count == 0:
+        sec_def.runtime_state_offset_base = 0
+    var old_count = sec_def.runtime_state_count
+    var new_count = old_count + instance_count * sec_def.fiber_count
+    var old_s2_count = sec_def.runtime_s2_state_count
+    var new_s2_count = old_s2_count + instance_count * sec_def.steel02_instance_stride
+    var old_c2_count = sec_def.runtime_c2_state_count
+    var new_c2_count = old_c2_count + instance_count * sec_def.concrete02_instance_stride
+    _fiber_section2d_runtime_ensure_capacity(sec_def, new_count)
+    _fiber_section2d_runtime_ensure_steel02_capacity(sec_def, new_s2_count)
+    _fiber_section2d_runtime_ensure_concrete02_capacity(sec_def, new_c2_count)
+    for inst in range(instance_count):
+        var instance_offset = old_count + inst * sec_def.fiber_count
+        var steel02_instance_offset = (
+            old_s2_count + inst * sec_def.steel02_instance_stride
+        )
+        var concrete02_instance_offset = (
+            old_c2_count + inst * sec_def.concrete02_instance_stride
+        )
+        for i in range(sec_def.nonlinear_count):
+            var mat_def = sec_def.nonlinear_mat_defs[i]
+            if mat_def.mat_type == UniMaterialTypeTag.Steel02:
+                var steel02_pos = sec_def.steel02_family_position_by_nonlinear_index[i]
+                _fiber_section2d_runtime_init_steel02_slot(
+                    sec_def, steel02_instance_offset + steel02_pos, mat_def
+                )
+            elif mat_def.mat_type == UniMaterialTypeTag.Concrete02:
+                var concrete02_pos = sec_def.concrete02_family_position_by_nonlinear_index[
+                    i
+                ]
+                _fiber_section2d_runtime_init_concrete02_slot(
+                    sec_def, concrete02_instance_offset + concrete02_pos, mat_def
+                )
+            else:
+                _fiber_section2d_runtime_init_slot(
+                    sec_def, instance_offset + sec_def.elastic_count + i, mat_def
+                )
+    sec_def.runtime_state_count = new_count
+    sec_def.runtime_s2_state_count = new_s2_count
+    sec_def.runtime_c2_state_count = new_c2_count
+    return sec_def.runtime_state_offset_base + old_count
+
+
+@always_inline
+fn _fiber_section2d_runtime_apply_elastic(
+    mat_def: UniMaterialDef, mut sec_def: FiberSection2dDef, slot: Int, eps: Float64
+):
+    sec_def.runtime_eps_t[slot] = eps
+    sec_def.runtime_sig_t[slot] = mat_def.p0 * eps
+    sec_def.runtime_tangent_t[slot] = mat_def.p0
+    sec_def.runtime_eps_p_t[slot] = sec_def.runtime_eps_p_c[slot]
+    sec_def.runtime_alpha_t[slot] = sec_def.runtime_alpha_c[slot]
+
+
+@always_inline
+fn _fiber_section2d_runtime_apply_steel01(
+    mat_def: UniMaterialDef, mut sec_def: FiberSection2dDef, slot: Int, eps: Float64
+):
+    var Fy = mat_def.p0
+    var E0 = mat_def.p1
+    var b = mat_def.p2
+    var H = (b * E0) / (1.0 - b)
+    var eps_p = sec_def.runtime_eps_p_c[slot]
+    var alpha = sec_def.runtime_alpha_c[slot]
+    var sigma_trial = E0 * (eps - eps_p)
+    var xi = sigma_trial - alpha
+    var f = _abs(xi) - Fy
+    sec_def.runtime_eps_t[slot] = eps
+    if f <= 0.0:
+        sec_def.runtime_sig_t[slot] = sigma_trial
+        sec_def.runtime_tangent_t[slot] = E0
+        sec_def.runtime_eps_p_t[slot] = eps_p
+        sec_def.runtime_alpha_t[slot] = alpha
+        return
+    var dg = f / (E0 + H)
+    var sgn = _sign(xi)
+    sec_def.runtime_eps_p_t[slot] = eps_p + dg * sgn
+    sec_def.runtime_alpha_t[slot] = alpha + H * dg * sgn
+    sec_def.runtime_sig_t[slot] = sigma_trial - E0 * dg * sgn
+    sec_def.runtime_tangent_t[slot] = (E0 * H) / (E0 + H)
+
+
+@always_inline
+fn _fiber_section2d_runtime_apply_concrete01(
+    mat_def: UniMaterialDef, mut sec_def: FiberSection2dDef, slot: Int, eps: Float64
+):
+    var fpc = mat_def.p0
+    var epsc0 = mat_def.p1
+    var fpcu = mat_def.p2
+    var epscu = mat_def.p3
+    var d_strain = eps - sec_def.runtime_eps_c[slot]
+    sec_def.runtime_eps_t[slot] = eps
+    if _abs(d_strain) < 1.0e-14:
+        sec_def.runtime_sig_t[slot] = sec_def.runtime_sig_c[slot]
+        sec_def.runtime_tangent_t[slot] = sec_def.runtime_tangent_c[slot]
+        sec_def.runtime_min_strain_t[slot] = sec_def.runtime_min_strain_c[slot]
+        sec_def.runtime_end_strain_t[slot] = sec_def.runtime_end_strain_c[slot]
+        sec_def.runtime_unload_slope_t[slot] = sec_def.runtime_unload_slope_c[slot]
+        return
+    var min_strain = sec_def.runtime_min_strain_c[slot]
+    var end_strain = sec_def.runtime_end_strain_c[slot]
+    var unload_slope = sec_def.runtime_unload_slope_c[slot]
+    sec_def.runtime_min_strain_t[slot] = min_strain
+    sec_def.runtime_end_strain_t[slot] = end_strain
+    sec_def.runtime_unload_slope_t[slot] = unload_slope
+    if eps > 0.0:
+        sec_def.runtime_sig_t[slot] = 0.0
+        sec_def.runtime_tangent_t[slot] = 0.0
+        return
+    var temp_stress = (
+        sec_def.runtime_sig_c[slot]
+        + sec_def.runtime_unload_slope_t[slot] * eps
+        - sec_def.runtime_unload_slope_t[slot] * sec_def.runtime_eps_c[slot]
+    )
+    if eps <= sec_def.runtime_eps_c[slot]:
+        var reload = _concrete01_reload(
+            fpc,
+            epsc0,
+            fpcu,
+            epscu,
+            eps,
+            sec_def.runtime_min_strain_t[slot],
+            sec_def.runtime_end_strain_t[slot],
+            sec_def.runtime_unload_slope_t[slot],
+        )
+        sec_def.runtime_sig_t[slot] = reload.stress
+        sec_def.runtime_tangent_t[slot] = reload.tangent
+        if temp_stress > sec_def.runtime_sig_t[slot]:
+            sec_def.runtime_sig_t[slot] = temp_stress
+            sec_def.runtime_tangent_t[slot] = sec_def.runtime_unload_slope_t[slot]
+    elif temp_stress <= 0.0:
+        sec_def.runtime_sig_t[slot] = temp_stress
+        sec_def.runtime_tangent_t[slot] = sec_def.runtime_unload_slope_t[slot]
+    else:
+        sec_def.runtime_sig_t[slot] = 0.0
+        sec_def.runtime_tangent_t[slot] = 0.0
+
+
+@always_inline
+fn _fiber_section2d_runtime_apply_steel02(
+    mat_def: UniMaterialDef, mut sec_def: FiberSection2dDef, slot: Int, trial_eps: Float64
+):
+    var Fy = mat_def.p0
+    var E0 = mat_def.p1
+    var b = mat_def.p2
+    var R0 = mat_def.p3
+    var cR1 = mat_def.p4
+    var cR2 = mat_def.p5
+    var a1 = mat_def.p6
+    var a2 = mat_def.p7
+    var a3 = mat_def.p8
+    var a4 = mat_def.p9
+    var sigini = mat_def.p10
+
+    var Esh = b * E0
+    var epsy = Fy / E0
+    var eps = trial_eps
+    if sigini != 0.0:
+        eps += sigini / E0
+    sec_def.runtime_s2_eps_t[slot] = eps
+    var deps = eps - sec_def.runtime_s2_eps_c[slot]
+    var epsmax = sec_def.runtime_s2_epsmax_c[slot]
+    var epsmin = sec_def.runtime_s2_epsmin_c[slot]
+    var epspl = sec_def.runtime_s2_epspl_c[slot]
+    var epss0 = sec_def.runtime_s2_epss0_c[slot]
+    var sigs0 = sec_def.runtime_s2_sigs0_c[slot]
+    var epsr = sec_def.runtime_s2_epsr_c[slot]
+    var sigr = sec_def.runtime_s2_sigr_c[slot]
+    var kon = sec_def.runtime_s2_kon_c[slot]
+    if kon == 0 or kon == 3:
+        if _abs(deps) < 2.220446049250313e-15:
+            sec_def.runtime_s2_tangent_t[slot] = E0
+            sec_def.runtime_s2_sig_t[slot] = sigini
+            sec_def.runtime_s2_kon_t[slot] = 3
+            sec_def.runtime_s2_epsmin_t[slot] = epsmin
+            sec_def.runtime_s2_epsmax_t[slot] = epsmax
+            sec_def.runtime_s2_epspl_t[slot] = epspl
+            sec_def.runtime_s2_epss0_t[slot] = epss0
+            sec_def.runtime_s2_sigs0_t[slot] = sigs0
+            sec_def.runtime_s2_epsr_t[slot] = epsr
+            sec_def.runtime_s2_sigr_t[slot] = sigr
+            return
+        epsmax = epsy
+        epsmin = -epsy
+        if deps < 0.0:
+            kon = 2
+            epss0 = epsmin
+            sigs0 = -Fy
+            epspl = epsmin
+        else:
+            kon = 1
+            epss0 = epsmax
+            sigs0 = Fy
+            epspl = epsmax
+    if kon == 2 and deps > 0.0:
+        kon = 1
+        epsr = sec_def.runtime_s2_eps_c[slot]
+        sigr = sec_def.runtime_s2_sig_c[slot]
+        if sec_def.runtime_s2_eps_c[slot] < epsmin:
+            epsmin = sec_def.runtime_s2_eps_c[slot]
+        var d1 = (epsmax - epsmin) / (2.0 * (a4 * epsy))
+        var shft = 1.0 + a3 * (d1 ** 0.8)
+        epss0 = (Fy * shft - Esh * epsy * shft - sigr + E0 * epsr) / (E0 - Esh)
+        sigs0 = Fy * shft + Esh * (epss0 - epsy * shft)
+        epspl = epsmax
+    elif kon == 1 and deps < 0.0:
+        kon = 2
+        epsr = sec_def.runtime_s2_eps_c[slot]
+        sigr = sec_def.runtime_s2_sig_c[slot]
+        if sec_def.runtime_s2_eps_c[slot] > epsmax:
+            epsmax = sec_def.runtime_s2_eps_c[slot]
+        var d1 = (epsmax - epsmin) / (2.0 * (a2 * epsy))
+        var shft = 1.0 + a1 * (d1 ** 0.8)
+        epss0 = (-Fy * shft + Esh * epsy * shft - sigr + E0 * epsr) / (E0 - Esh)
+        sigs0 = -Fy * shft + Esh * (epss0 + epsy * shft)
+        epspl = epsmin
+    var xi = _abs((epspl - epss0) / epsy)
+    var R = R0 * (1.0 - (cR1 * xi) / (cR2 + xi))
+    var epsrat = (eps - epsr) / (epss0 - epsr)
+    var dum1 = 1.0 + _pow_abs(epsrat, R)
+    var dum2 = dum1 ** (1.0 / R)
+    var sig = b * epsrat + (1.0 - b) * epsrat / dum2
+    sig = sig * (sigs0 - sigr) + sigr
+    var e = b + (1.0 - b) / (dum1 * dum2)
+    e = e * (sigs0 - sigr) / (epss0 - epsr)
+    sec_def.runtime_s2_sig_t[slot] = sig
+    sec_def.runtime_s2_tangent_t[slot] = e
+    sec_def.runtime_s2_epsmin_t[slot] = epsmin
+    sec_def.runtime_s2_epsmax_t[slot] = epsmax
+    sec_def.runtime_s2_epspl_t[slot] = epspl
+    sec_def.runtime_s2_epss0_t[slot] = epss0
+    sec_def.runtime_s2_sigs0_t[slot] = sigs0
+    sec_def.runtime_s2_epsr_t[slot] = epsr
+    sec_def.runtime_s2_sigr_t[slot] = sigr
+    sec_def.runtime_s2_kon_t[slot] = kon
+
+
+@always_inline
+fn _fiber_section2d_runtime_apply_concrete02(
+    mat_def: UniMaterialDef, mut sec_def: FiberSection2dDef, slot: Int, strain: Float64
+):
+    var fc = mat_def.p0
+    var epsc0 = mat_def.p1
+    var fcu = mat_def.p2
+    var epscu = mat_def.p3
+    var rat = mat_def.p4
+    var ft = mat_def.p5
+    var Ets = mat_def.p6
+    var Ec0 = (2.0 * fc) / epsc0
+
+    sec_def.runtime_c2_ecmin_t[slot] = sec_def.runtime_c2_ecmin_c[slot]
+    sec_def.runtime_c2_dept_t[slot] = sec_def.runtime_c2_dept_c[slot]
+    sec_def.runtime_c2_eps_t[slot] = strain
+    var deps = strain - sec_def.runtime_c2_eps_c[slot]
+    if _abs(deps) < 2.220446049250313e-16:
+        sec_def.runtime_c2_sig_t[slot] = sec_def.runtime_c2_sig_c[slot]
+        sec_def.runtime_c2_tangent_t[slot] = sec_def.runtime_c2_tangent_c[slot]
+        return
+    if strain < sec_def.runtime_c2_ecmin_t[slot]:
+        var env = _concrete02_compr_envlp(fc, epsc0, fcu, epscu, strain)
+        sec_def.runtime_c2_sig_t[slot] = env.stress
+        sec_def.runtime_c2_tangent_t[slot] = env.tangent
+        sec_def.runtime_c2_ecmin_t[slot] = strain
+        return
+    var epsr = (fcu - rat * Ec0 * epscu) / (Ec0 * (1.0 - rat))
+    var sigmr = Ec0 * epsr
+    var sigmm_env = _concrete02_compr_envlp(
+        fc, epsc0, fcu, epscu, sec_def.runtime_c2_ecmin_t[slot]
+    )
+    var sigmm = sigmm_env.stress
+    var er = (sigmm - sigmr) / (sec_def.runtime_c2_ecmin_t[slot] - epsr)
+    var ept = sec_def.runtime_c2_ecmin_t[slot] - sigmm / er
+    if strain <= ept:
+        var sigmin = sigmm + er * (strain - sec_def.runtime_c2_ecmin_t[slot])
+        var sigmax = 0.5 * er * (strain - ept)
+        sec_def.runtime_c2_sig_t[slot] = sec_def.runtime_c2_sig_c[slot] + Ec0 * deps
+        sec_def.runtime_c2_tangent_t[slot] = Ec0
+        if sec_def.runtime_c2_sig_t[slot] <= sigmin:
+            sec_def.runtime_c2_sig_t[slot] = sigmin
+            sec_def.runtime_c2_tangent_t[slot] = er
+        if sec_def.runtime_c2_sig_t[slot] >= sigmax:
+            sec_def.runtime_c2_sig_t[slot] = sigmax
+            sec_def.runtime_c2_tangent_t[slot] = 0.5 * er
+        return
+    var epn = ept + sec_def.runtime_c2_dept_t[slot]
+    if strain <= epn:
+        var sicn_env = _concrete02_tens_envlp(
+            fc, epsc0, ft, Ets, sec_def.runtime_c2_dept_t[slot]
+        )
+        var e = Ec0
+        if sec_def.runtime_c2_dept_t[slot] != 0.0:
+            e = sicn_env.stress / sec_def.runtime_c2_dept_t[slot]
+        sec_def.runtime_c2_tangent_t[slot] = e
+        sec_def.runtime_c2_sig_t[slot] = e * (strain - ept)
+    else:
+        var env = _concrete02_tens_envlp(fc, epsc0, ft, Ets, strain - ept)
+        sec_def.runtime_c2_sig_t[slot] = env.stress
+        sec_def.runtime_c2_tangent_t[slot] = env.tangent
+        sec_def.runtime_c2_dept_t[slot] = strain - ept
+
+
+@always_inline
+fn _fiber_section2d_runtime_steel02_slot(
+    sec_def: FiberSection2dDef, local_offset: Int, nonlinear_index: Int
+) -> Int:
+    var steel02_pos = sec_def.steel02_family_position_by_nonlinear_index[
+        nonlinear_index
+    ]
+    if steel02_pos < 0:
+        abort("FiberSection2d Steel02 family slot missing")
+    return (
+        local_offset // sec_def.fiber_count
+    ) * sec_def.steel02_instance_stride + steel02_pos
+
+
+@always_inline
+fn _fiber_section2d_runtime_concrete02_slot(
+    sec_def: FiberSection2dDef, local_offset: Int, nonlinear_index: Int
+) -> Int:
+    var concrete02_pos = sec_def.concrete02_family_position_by_nonlinear_index[
+        nonlinear_index
+    ]
+    if concrete02_pos < 0:
+        abort("FiberSection2d Concrete02 family slot missing")
+    return (
+        local_offset // sec_def.fiber_count
+    ) * sec_def.concrete02_instance_stride + concrete02_pos
+
+
+@always_inline
+fn _fiber_section2d_runtime_set_trial(
+    mat_def: UniMaterialDef, mut sec_def: FiberSection2dDef, slot: Int, eps: Float64
+):
+    if mat_def.mat_type == UniMaterialTypeTag.Elastic:
+        _fiber_section2d_runtime_apply_elastic(mat_def, sec_def, slot, eps)
+        return
+    if mat_def.mat_type == UniMaterialTypeTag.Steel01:
+        _fiber_section2d_runtime_apply_steel01(mat_def, sec_def, slot, eps)
+        return
+    if mat_def.mat_type == UniMaterialTypeTag.Concrete01:
+        _fiber_section2d_runtime_apply_concrete01(mat_def, sec_def, slot, eps)
+        return
+    if mat_def.mat_type == UniMaterialTypeTag.Steel02:
+        abort("Steel02 requires dedicated family runtime slot")
+    if mat_def.mat_type == UniMaterialTypeTag.Concrete02:
+        abort("Concrete02 requires dedicated family runtime slot")
+    abort("unsupported uniaxial material")
+
+
+fn _fiber_section2d_runtime_commit_slot(mut sec_def: FiberSection2dDef, slot: Int):
+    sec_def.runtime_eps_c[slot] = sec_def.runtime_eps_t[slot]
+    sec_def.runtime_sig_c[slot] = sec_def.runtime_sig_t[slot]
+    sec_def.runtime_tangent_c[slot] = sec_def.runtime_tangent_t[slot]
+    sec_def.runtime_eps_p_c[slot] = sec_def.runtime_eps_p_t[slot]
+    sec_def.runtime_alpha_c[slot] = sec_def.runtime_alpha_t[slot]
+    sec_def.runtime_min_strain_c[slot] = sec_def.runtime_min_strain_t[slot]
+    sec_def.runtime_end_strain_c[slot] = sec_def.runtime_end_strain_t[slot]
+    sec_def.runtime_unload_slope_c[slot] = sec_def.runtime_unload_slope_t[slot]
+
+
+fn _fiber_section2d_runtime_revert_slot(mut sec_def: FiberSection2dDef, slot: Int):
+    sec_def.runtime_eps_t[slot] = sec_def.runtime_eps_c[slot]
+    sec_def.runtime_sig_t[slot] = sec_def.runtime_sig_c[slot]
+    sec_def.runtime_tangent_t[slot] = sec_def.runtime_tangent_c[slot]
+    sec_def.runtime_eps_p_t[slot] = sec_def.runtime_eps_p_c[slot]
+    sec_def.runtime_alpha_t[slot] = sec_def.runtime_alpha_c[slot]
+    sec_def.runtime_min_strain_t[slot] = sec_def.runtime_min_strain_c[slot]
+    sec_def.runtime_end_strain_t[slot] = sec_def.runtime_end_strain_c[slot]
+    sec_def.runtime_unload_slope_t[slot] = sec_def.runtime_unload_slope_c[slot]
+
+
+@always_inline
 fn _fiber_section2d_batch_accumulate_nonlinear_response(
     y_rel: Float64,
     area: Float64,
@@ -393,8 +1200,954 @@ fn _fiber_section2d_batch_accumulate_nonlinear_response(
     resp.k22 += ks * y_rel * y_rel
 
 
+@always_inline
+fn _fiber_section2d_apply_steel01_family_from_offset(
+    mut sec_def: FiberSection2dDef,
+    local_offset: Int,
+    eps0: Float64,
+    kappa: Float64,
+    mut axial_force: Float64,
+    mut moment_z: Float64,
+    mut k11: Float64,
+    mut k12: Float64,
+    mut k22: Float64,
+):
+    if len(sec_def.steel01_nonlinear_indices) <= 0:
+        return
+    var nonlinear_state_offset = local_offset + sec_def.elastic_count
+    for j in range(len(sec_def.steel01_nonlinear_indices)):
+        var i = sec_def.steel01_nonlinear_indices[j]
+        var y_rel = sec_def.nonlinear_y_rel[i]
+        var area = sec_def.nonlinear_area[i]
+        var state_index = nonlinear_state_offset + i
+        var mat_def = sec_def.nonlinear_mat_defs[i]
+        _fiber_section2d_runtime_apply_steel01(
+            mat_def, sec_def, state_index, eps0 - y_rel * kappa
+        )
+        var fs = sec_def.runtime_sig_t[state_index] * area
+        var ks = sec_def.runtime_tangent_t[state_index] * area
+        axial_force += fs
+        moment_z += -fs * y_rel
+        k11 += ks
+        k12 += -ks * y_rel
+        k22 += ks * y_rel * y_rel
+
+
+@always_inline
+fn _fiber_section2d_apply_concrete01_family_from_offset(
+    mut sec_def: FiberSection2dDef,
+    local_offset: Int,
+    eps0: Float64,
+    kappa: Float64,
+    mut axial_force: Float64,
+    mut moment_z: Float64,
+    mut k11: Float64,
+    mut k12: Float64,
+    mut k22: Float64,
+):
+    if len(sec_def.concrete01_nonlinear_indices) <= 0:
+        return
+    var nonlinear_state_offset = local_offset + sec_def.elastic_count
+    for j in range(len(sec_def.concrete01_nonlinear_indices)):
+        var i = sec_def.concrete01_nonlinear_indices[j]
+        var y_rel = sec_def.nonlinear_y_rel[i]
+        var area = sec_def.nonlinear_area[i]
+        var state_index = nonlinear_state_offset + i
+        var mat_def = sec_def.nonlinear_mat_defs[i]
+        _fiber_section2d_runtime_apply_concrete01(
+            mat_def, sec_def, state_index, eps0 - y_rel * kappa
+        )
+        var fs = sec_def.runtime_sig_t[state_index] * area
+        var ks = sec_def.runtime_tangent_t[state_index] * area
+        axial_force += fs
+        moment_z += -fs * y_rel
+        k11 += ks
+        k12 += -ks * y_rel
+        k22 += ks * y_rel * y_rel
+
+
+@always_inline
+fn _fiber_section2d_apply_other_nonlinear_fallback_from_offset(
+    mut sec_def: FiberSection2dDef,
+    local_offset: Int,
+    eps0: Float64,
+    kappa: Float64,
+    mut axial_force: Float64,
+    mut moment_z: Float64,
+    mut k11: Float64,
+    mut k12: Float64,
+    mut k22: Float64,
+):
+    if len(sec_def.other_nonlinear_indices) <= 0:
+        return
+    var nonlinear_state_offset = local_offset + sec_def.elastic_count
+    for j in range(len(sec_def.other_nonlinear_indices)):
+        var i = sec_def.other_nonlinear_indices[j]
+        var y_rel = sec_def.nonlinear_y_rel[i]
+        var area = sec_def.nonlinear_area[i]
+        var state_index = nonlinear_state_offset + i
+        var mat_def = sec_def.nonlinear_mat_defs[i]
+        _fiber_section2d_runtime_set_trial(
+            mat_def, sec_def, state_index, eps0 - y_rel * kappa
+        )
+        var fs = sec_def.runtime_sig_t[state_index] * area
+        var ks = sec_def.runtime_tangent_t[state_index] * area
+        axial_force += fs
+        moment_z += -fs * y_rel
+        k11 += ks
+        k12 += -ks * y_rel
+        k22 += ks * y_rel * y_rel
+
+
+@always_inline
+fn _fiber_section2d_copy_float64_range_simd[width: Int](
+    mut dst: List[Float64], dst_start: Int, src: List[Float64], src_start: Int, count: Int
+):
+    if count <= 0:
+        return
+    if dst_start == 0 and src_start == 0:
+        copy_float64_contiguous_simd[width](dst, src, count)
+        return
+
+    @parameter
+    fn copy_chunk[chunk: Int](i: Int):
+        var value_vec = load_float64_contiguous_simd[chunk](src, src_start + i)
+        store_float64_contiguous_simd[chunk](dst, dst_start + i, value_vec)
+
+    vectorize[copy_chunk, width](count)
+
+
+@always_inline
+fn _fiber_section2d_copy_int_range(
+    mut dst: List[Int], dst_start: Int, src: List[Int], src_start: Int, count: Int
+):
+    for i in range(count):
+        dst[dst_start + i] = src[src_start + i]
+
+
+@always_inline
+fn _simd_abs_float64[width: Int](
+    x: SIMD[DType.float64, width]
+) -> SIMD[DType.float64, width]:
+    return x.lt(0.0).select(-x, x)
+
+
+@always_inline
+fn _concrete02_compr_envlp_simd[width: Int](
+    fc: SIMD[DType.float64, width],
+    epsc0: SIMD[DType.float64, width],
+    fcu: SIMD[DType.float64, width],
+    epscu: SIMD[DType.float64, width],
+    strain: SIMD[DType.float64, width],
+) -> (SIMD[DType.float64, width], SIMD[DType.float64, width]):
+    var ec0 = (SIMD[DType.float64, width](2.0) * fc) / epsc0
+    var rat = strain / epsc0
+    var sig = fc * rat * (SIMD[DType.float64, width](2.0) - rat)
+    var tangent = ec0 * (SIMD[DType.float64, width](1.0) - rat)
+
+    var softening_sig = (fcu - fc) * (strain - epsc0) / (epscu - epsc0) + fc
+    var softening_tangent = (fcu - fc) / (epscu - epsc0)
+    var peak_mask = strain.ge(epsc0)
+    sig = peak_mask.select(sig, softening_sig)
+    tangent = peak_mask.select(tangent, softening_tangent)
+
+    var crush_mask = strain.le(epscu)
+    sig = crush_mask.select(fcu, sig)
+    tangent = crush_mask.select(SIMD[DType.float64, width](1.0e-10), tangent)
+    return (sig, tangent)
+
+
+@always_inline
+fn _concrete02_tens_envlp_simd[width: Int](
+    fc: SIMD[DType.float64, width],
+    epsc0: SIMD[DType.float64, width],
+    ft: SIMD[DType.float64, width],
+    ets: SIMD[DType.float64, width],
+    strain: SIMD[DType.float64, width],
+) -> (SIMD[DType.float64, width], SIMD[DType.float64, width]):
+    var ec0 = (SIMD[DType.float64, width](2.0) * fc) / epsc0
+    var eps0 = ft / ec0
+    var epsu = ft * (
+        SIMD[DType.float64, width](1.0) / ets + SIMD[DType.float64, width](1.0) / ec0
+    )
+    var sig = strain * ec0
+    var tangent = ec0
+
+    var softening_mask = strain.gt(eps0)
+    var softening_sig = ft - ets * (strain - eps0)
+    sig = softening_mask.select(softening_sig, sig)
+    tangent = softening_mask.select(-ets, tangent)
+
+    var zero_mask = strain.gt(epsu)
+    sig = zero_mask.select(SIMD[DType.float64, width](0.0), sig)
+    tangent = zero_mask.select(SIMD[DType.float64, width](1.0e-10), tangent)
+    return (sig, tangent)
+
+
+@always_inline
+fn _fiber_section2d_runtime_apply_concrete02_range_simd_mixed[width: Int](
+    mut sec_def: FiberSection2dDef,
+    slot_start: Int,
+    count: Int,
+    eps0: Float64,
+    kappa: Float64,
+    mut axial_force: Float64,
+    mut moment_z: Float64,
+    mut k11: Float64,
+    mut k12: Float64,
+    mut k22: Float64,
+):
+    if count <= 0:
+        return
+
+    var i = 0
+    while i < count:
+        var y_vec = load_float64_contiguous_simd[width](sec_def.concrete02_y_rel, i)
+        var area_vec = load_float64_contiguous_simd[width](sec_def.concrete02_area, i)
+        var strain = SIMD[DType.float64, width](eps0) - y_vec * SIMD[DType.float64, width](kappa)
+        var slot = slot_start + i
+
+        var eps_c = load_float64_contiguous_simd[width](sec_def.runtime_c2_eps_c, slot)
+        var sig_c = load_float64_contiguous_simd[width](sec_def.runtime_c2_sig_c, slot)
+        var tangent_c = load_float64_contiguous_simd[width](
+            sec_def.runtime_c2_tangent_c, slot
+        )
+        var ecmin_c = load_float64_contiguous_simd[width](sec_def.runtime_c2_ecmin_c, slot)
+        var dept_c = load_float64_contiguous_simd[width](sec_def.runtime_c2_dept_c, slot)
+
+        var fc = SIMD[DType.float64, width](0.0)
+        var epsc0 = SIMD[DType.float64, width](0.0)
+        var fcu = SIMD[DType.float64, width](0.0)
+        var epscu = SIMD[DType.float64, width](0.0)
+        var rat = SIMD[DType.float64, width](0.0)
+        var ft = SIMD[DType.float64, width](0.0)
+        var ets = SIMD[DType.float64, width](0.0)
+        for lane in range(width):
+            var mat_def = sec_def.concrete02_mat_defs[i + lane]
+            fc[lane] = mat_def.p0
+            epsc0[lane] = mat_def.p1
+            fcu[lane] = mat_def.p2
+            epscu[lane] = mat_def.p3
+            rat[lane] = mat_def.p4
+            ft[lane] = mat_def.p5
+            ets[lane] = mat_def.p6
+
+        var ec0 = (SIMD[DType.float64, width](2.0) * fc) / epsc0
+        var deps = strain - eps_c
+        var tol = SIMD[DType.float64, width](2.220446049250313e-16)
+
+        var eps_t = strain
+        var sig_t = sig_c
+        var tangent_t = tangent_c
+        var ecmin_t = ecmin_c
+        var dept_t = dept_c
+
+        var no_change_mask = _simd_abs_float64[width](deps).lt(tol)
+        var compression_mask = strain.lt(ecmin_t) & ~no_change_mask
+        var compr_env = _concrete02_compr_envlp_simd[width](fc, epsc0, fcu, epscu, strain)
+        sig_t = compression_mask.select(compr_env[0], sig_t)
+        tangent_t = compression_mask.select(compr_env[1], tangent_t)
+        ecmin_t = compression_mask.select(strain, ecmin_t)
+
+        var remaining_mask = ~(no_change_mask | compression_mask)
+        var one = SIMD[DType.float64, width](1.0)
+        var half = SIMD[DType.float64, width](0.5)
+        var epsr = (fcu - rat * ec0 * epscu) / (ec0 * (one - rat))
+        var sigmr = ec0 * epsr
+        var sigmm_env = _concrete02_compr_envlp_simd[width](fc, epsc0, fcu, epscu, ecmin_t)
+        var sigmm = sigmm_env[0]
+        var er = (sigmm - sigmr) / (ecmin_t - epsr)
+        var ept = ecmin_t - sigmm / er
+
+        var reload_mask = remaining_mask & strain.le(ept)
+        var sig_trial = sig_c + ec0 * deps
+        var tangent_trial = ec0
+        var sigmin = sigmm + er * (strain - ecmin_t)
+        var sigmax = half * er * (strain - ept)
+        var reload_low_mask = reload_mask & sig_trial.le(sigmin)
+        var reload_high_mask = reload_mask & sig_trial.ge(sigmax)
+        sig_trial = reload_low_mask.select(sigmin, sig_trial)
+        tangent_trial = reload_low_mask.select(er, tangent_trial)
+        sig_trial = reload_high_mask.select(sigmax, sig_trial)
+        tangent_trial = reload_high_mask.select(half * er, tangent_trial)
+        sig_t = reload_mask.select(sig_trial, sig_t)
+        tangent_t = reload_mask.select(tangent_trial, tangent_t)
+
+        var tension_mask = remaining_mask & ~reload_mask
+        var epn = ept + dept_t
+        var pre_tension_mask = tension_mask & strain.le(epn)
+        var sicn_env = _concrete02_tens_envlp_simd[width](fc, epsc0, ft, ets, dept_t)
+        var dept_nonzero_mask = dept_t.ne(0.0)
+        var e = dept_nonzero_mask.select(sicn_env[0] / dept_t, ec0)
+        var sig_pre_tension = e * (strain - ept)
+        sig_t = pre_tension_mask.select(sig_pre_tension, sig_t)
+        tangent_t = pre_tension_mask.select(e, tangent_t)
+
+        var tension_env_mask = tension_mask & ~pre_tension_mask
+        var tens_env = _concrete02_tens_envlp_simd[width](
+            fc, epsc0, ft, ets, strain - ept
+        )
+        sig_t = tension_env_mask.select(tens_env[0], sig_t)
+        tangent_t = tension_env_mask.select(tens_env[1], tangent_t)
+        dept_t = tension_env_mask.select(strain - ept, dept_t)
+
+        store_float64_contiguous_simd[width](sec_def.runtime_c2_eps_t, slot, eps_t)
+        store_float64_contiguous_simd[width](sec_def.runtime_c2_sig_t, slot, sig_t)
+        store_float64_contiguous_simd[width](
+            sec_def.runtime_c2_tangent_t, slot, tangent_t
+        )
+        store_float64_contiguous_simd[width](sec_def.runtime_c2_ecmin_t, slot, ecmin_t)
+        store_float64_contiguous_simd[width](sec_def.runtime_c2_dept_t, slot, dept_t)
+
+        var fs_vec = sig_t * area_vec
+        var ks_vec = tangent_t * area_vec
+        axial_force += fs_vec.reduce_add()
+        moment_z += (-fs_vec * y_vec).reduce_add()
+        k11 += ks_vec.reduce_add()
+        k12 += (-ks_vec * y_vec).reduce_add()
+        k22 += (ks_vec * y_vec * y_vec).reduce_add()
+        i += width
+
+
+@always_inline
+fn _fiber_section2d_runtime_apply_concrete02_range_simd_homogeneous[width: Int](
+    mut sec_def: FiberSection2dDef,
+    slot_start: Int,
+    count: Int,
+    mat_def: UniMaterialDef,
+    eps0: Float64,
+    kappa: Float64,
+    mut axial_force: Float64,
+    mut moment_z: Float64,
+    mut k11: Float64,
+    mut k12: Float64,
+    mut k22: Float64,
+):
+    if count <= 0:
+        return
+
+    var fc = SIMD[DType.float64, width](mat_def.p0)
+    var epsc0 = SIMD[DType.float64, width](mat_def.p1)
+    var fcu = SIMD[DType.float64, width](mat_def.p2)
+    var epscu = SIMD[DType.float64, width](mat_def.p3)
+    var rat = SIMD[DType.float64, width](mat_def.p4)
+    var ft = SIMD[DType.float64, width](mat_def.p5)
+    var ets = SIMD[DType.float64, width](mat_def.p6)
+    var ec0 = (SIMD[DType.float64, width](2.0) * fc) / epsc0
+    var tol = SIMD[DType.float64, width](2.220446049250313e-16)
+    var one = SIMD[DType.float64, width](1.0)
+    var half = SIMD[DType.float64, width](0.5)
+
+    var i = 0
+    while i < count:
+        var y_vec = load_float64_contiguous_simd[width](sec_def.concrete02_y_rel, i)
+        var area_vec = load_float64_contiguous_simd[width](sec_def.concrete02_area, i)
+        var strain = SIMD[DType.float64, width](eps0) - y_vec * SIMD[DType.float64, width](kappa)
+        var slot = slot_start + i
+
+        var eps_c = load_float64_contiguous_simd[width](sec_def.runtime_c2_eps_c, slot)
+        var sig_c = load_float64_contiguous_simd[width](sec_def.runtime_c2_sig_c, slot)
+        var tangent_c = load_float64_contiguous_simd[width](
+            sec_def.runtime_c2_tangent_c, slot
+        )
+        var ecmin_c = load_float64_contiguous_simd[width](sec_def.runtime_c2_ecmin_c, slot)
+        var dept_c = load_float64_contiguous_simd[width](sec_def.runtime_c2_dept_c, slot)
+
+        var deps = strain - eps_c
+        var eps_t = strain
+        var sig_t = sig_c
+        var tangent_t = tangent_c
+        var ecmin_t = ecmin_c
+        var dept_t = dept_c
+
+        var no_change_mask = _simd_abs_float64[width](deps).lt(tol)
+        var compression_mask = strain.lt(ecmin_t) & ~no_change_mask
+        var compr_env = _concrete02_compr_envlp_simd[width](fc, epsc0, fcu, epscu, strain)
+        sig_t = compression_mask.select(compr_env[0], sig_t)
+        tangent_t = compression_mask.select(compr_env[1], tangent_t)
+        ecmin_t = compression_mask.select(strain, ecmin_t)
+
+        var remaining_mask = ~(no_change_mask | compression_mask)
+        var epsr = (fcu - rat * ec0 * epscu) / (ec0 * (one - rat))
+        var sigmr = ec0 * epsr
+        var sigmm_env = _concrete02_compr_envlp_simd[width](fc, epsc0, fcu, epscu, ecmin_t)
+        var sigmm = sigmm_env[0]
+        var er = (sigmm - sigmr) / (ecmin_t - epsr)
+        var ept = ecmin_t - sigmm / er
+
+        var reload_mask = remaining_mask & strain.le(ept)
+        var sig_trial = sig_c + ec0 * deps
+        var tangent_trial = ec0
+        var sigmin = sigmm + er * (strain - ecmin_t)
+        var sigmax = half * er * (strain - ept)
+        var reload_low_mask = reload_mask & sig_trial.le(sigmin)
+        var reload_high_mask = reload_mask & sig_trial.ge(sigmax)
+        sig_trial = reload_low_mask.select(sigmin, sig_trial)
+        tangent_trial = reload_low_mask.select(er, tangent_trial)
+        sig_trial = reload_high_mask.select(sigmax, sig_trial)
+        tangent_trial = reload_high_mask.select(half * er, tangent_trial)
+        sig_t = reload_mask.select(sig_trial, sig_t)
+        tangent_t = reload_mask.select(tangent_trial, tangent_t)
+
+        var tension_mask = remaining_mask & ~reload_mask
+        var epn = ept + dept_t
+        var pre_tension_mask = tension_mask & strain.le(epn)
+        var sicn_env = _concrete02_tens_envlp_simd[width](fc, epsc0, ft, ets, dept_t)
+        var dept_nonzero_mask = dept_t.ne(0.0)
+        var e = dept_nonzero_mask.select(sicn_env[0] / dept_t, ec0)
+        var sig_pre_tension = e * (strain - ept)
+        sig_t = pre_tension_mask.select(sig_pre_tension, sig_t)
+        tangent_t = pre_tension_mask.select(e, tangent_t)
+
+        var tension_env_mask = tension_mask & ~pre_tension_mask
+        var tens_env = _concrete02_tens_envlp_simd[width](
+            fc, epsc0, ft, ets, strain - ept
+        )
+        sig_t = tension_env_mask.select(tens_env[0], sig_t)
+        tangent_t = tension_env_mask.select(tens_env[1], tangent_t)
+        dept_t = tension_env_mask.select(strain - ept, dept_t)
+
+        store_float64_contiguous_simd[width](sec_def.runtime_c2_eps_t, slot, eps_t)
+        store_float64_contiguous_simd[width](sec_def.runtime_c2_sig_t, slot, sig_t)
+        store_float64_contiguous_simd[width](
+            sec_def.runtime_c2_tangent_t, slot, tangent_t
+        )
+        store_float64_contiguous_simd[width](sec_def.runtime_c2_ecmin_t, slot, ecmin_t)
+        store_float64_contiguous_simd[width](sec_def.runtime_c2_dept_t, slot, dept_t)
+
+        var fs_vec = sig_t * area_vec
+        var ks_vec = tangent_t * area_vec
+        axial_force += fs_vec.reduce_add()
+        moment_z += (-fs_vec * y_vec).reduce_add()
+        k11 += ks_vec.reduce_add()
+        k12 += (-ks_vec * y_vec).reduce_add()
+        k22 += (ks_vec * y_vec * y_vec).reduce_add()
+        i += width
+
+
+@always_inline
+fn _fiber_section2d_runtime_apply_concrete02_range_simd[width: Int](
+    mut sec_def: FiberSection2dDef,
+    slot_start: Int,
+    count: Int,
+    eps0: Float64,
+    kappa: Float64,
+    mut axial_force: Float64,
+    mut moment_z: Float64,
+    mut k11: Float64,
+    mut k12: Float64,
+    mut k22: Float64,
+):
+    if sec_def.concrete02_single_definition:
+        var mat_def = sec_def.concrete02_single_mat_def
+        _fiber_section2d_runtime_apply_concrete02_range_simd_homogeneous[width](
+            sec_def,
+            slot_start,
+            count,
+            mat_def,
+            eps0,
+            kappa,
+            axial_force,
+            moment_z,
+            k11,
+            k12,
+            k22,
+        )
+        return
+    _fiber_section2d_runtime_apply_concrete02_range_simd_mixed[width](
+        sec_def, slot_start, count, eps0, kappa, axial_force, moment_z, k11, k12, k22
+    )
+
+
+@always_inline
+fn _fiber_section2d_runtime_apply_steel02_range_simd_mixed[width: Int](
+    mut sec_def: FiberSection2dDef,
+    slot_start: Int,
+    count: Int,
+    eps0: Float64,
+    kappa: Float64,
+    mut axial_force: Float64,
+    mut moment_z: Float64,
+    mut k11: Float64,
+    mut k12: Float64,
+    mut k22: Float64,
+):
+    if count <= 0:
+        return
+
+    var i = 0
+    while i < count:
+        var y_vec = load_float64_contiguous_simd[width](sec_def.steel02_y_rel, i)
+        var area_vec = load_float64_contiguous_simd[width](sec_def.steel02_area, i)
+        var trial_eps = SIMD[DType.float64, width](eps0) - y_vec * SIMD[
+            DType.float64, width
+        ](kappa)
+        var slot = slot_start + i
+
+        var eps_c = load_float64_contiguous_simd[width](sec_def.runtime_s2_eps_c, slot)
+        var sig_c = load_float64_contiguous_simd[width](sec_def.runtime_s2_sig_c, slot)
+        var epsmin_c = load_float64_contiguous_simd[width](
+            sec_def.runtime_s2_epsmin_c, slot
+        )
+        var epsmax_c = load_float64_contiguous_simd[width](
+            sec_def.runtime_s2_epsmax_c, slot
+        )
+        var epspl_c = load_float64_contiguous_simd[width](
+            sec_def.runtime_s2_epspl_c, slot
+        )
+        var epss0_c = load_float64_contiguous_simd[width](
+            sec_def.runtime_s2_epss0_c, slot
+        )
+        var sigs0_c = load_float64_contiguous_simd[width](
+            sec_def.runtime_s2_sigs0_c, slot
+        )
+        var epsr_c = load_float64_contiguous_simd[width](sec_def.runtime_s2_epsr_c, slot)
+        var sigr_c = load_float64_contiguous_simd[width](sec_def.runtime_s2_sigr_c, slot)
+
+        var fy = SIMD[DType.float64, width](0.0)
+        var e0 = SIMD[DType.float64, width](0.0)
+        var b = SIMD[DType.float64, width](0.0)
+        var r0 = SIMD[DType.float64, width](0.0)
+        var cr1 = SIMD[DType.float64, width](0.0)
+        var cr2 = SIMD[DType.float64, width](0.0)
+        var a1 = SIMD[DType.float64, width](0.0)
+        var a2 = SIMD[DType.float64, width](0.0)
+        var a3 = SIMD[DType.float64, width](0.0)
+        var a4 = SIMD[DType.float64, width](0.0)
+        var sigini = SIMD[DType.float64, width](0.0)
+        var kon_c = SIMD[DType.int32, width](0)
+        for lane in range(width):
+            var mat_def = sec_def.steel02_mat_defs[i + lane]
+            fy[lane] = mat_def.p0
+            e0[lane] = mat_def.p1
+            b[lane] = mat_def.p2
+            r0[lane] = mat_def.p3
+            cr1[lane] = mat_def.p4
+            cr2[lane] = mat_def.p5
+            a1[lane] = mat_def.p6
+            a2[lane] = mat_def.p7
+            a3[lane] = mat_def.p8
+            a4[lane] = mat_def.p9
+            sigini[lane] = mat_def.p10
+            kon_c[lane] = Int32(sec_def.runtime_s2_kon_c[slot + lane])
+
+        var esh = b * e0
+        var epsy = fy / e0
+        var eps = sigini.ne(0.0).select(trial_eps + sigini / e0, trial_eps)
+        var deps = eps - eps_c
+
+        var epsmin_t = epsmin_c
+        var epsmax_t = epsmax_c
+        var epspl_t = epspl_c
+        var epss0_t = epss0_c
+        var sigs0_t = sigs0_c
+        var epsr_t = epsr_c
+        var sigr_t = sigr_c
+        var kon_t = kon_c
+        var sig_t = sig_c
+        var tangent_t = load_float64_contiguous_simd[width](
+            sec_def.runtime_s2_tangent_c, slot
+        )
+
+        var tol = SIMD[DType.float64, width](2.220446049250313e-15)
+        var no_change_mask = (kon_c.eq(0) | kon_c.eq(3)) & _simd_abs_float64[width](
+            deps
+        ).lt(tol)
+        sig_t = no_change_mask.select(sigini, sig_t)
+        tangent_t = no_change_mask.select(e0, tangent_t)
+        kon_t = no_change_mask.select(SIMD[DType.int32, width](3), kon_t)
+
+        var active_mask = ~no_change_mask
+        var initial_mask = active_mask & (kon_c.eq(0) | kon_c.eq(3))
+        epsmax_t = initial_mask.select(epsy, epsmax_t)
+        epsmin_t = initial_mask.select(-epsy, epsmin_t)
+
+        var initial_neg_mask = initial_mask & deps.lt(0.0)
+        var initial_pos_mask = initial_mask & ~deps.lt(0.0)
+        kon_t = initial_neg_mask.select(SIMD[DType.int32, width](2), kon_t)
+        epss0_t = initial_neg_mask.select(epsmin_t, epss0_t)
+        sigs0_t = initial_neg_mask.select(-fy, sigs0_t)
+        epspl_t = initial_neg_mask.select(epsmin_t, epspl_t)
+
+        kon_t = initial_pos_mask.select(SIMD[DType.int32, width](1), kon_t)
+        epss0_t = initial_pos_mask.select(epsmax_t, epss0_t)
+        sigs0_t = initial_pos_mask.select(fy, sigs0_t)
+        epspl_t = initial_pos_mask.select(epsmax_t, epspl_t)
+
+        var pos_reversal_mask = active_mask & kon_t.eq(2) & deps.gt(0.0)
+        var epsmin_after_pos = eps_c.lt(epsmin_t).select(eps_c, epsmin_t)
+        var d1_pos = (epsmax_t - epsmin_after_pos) / (
+            SIMD[DType.float64, width](2.0) * (a4 * epsy)
+        )
+        var shft_pos = SIMD[DType.float64, width](1.0) + a3 * (d1_pos ** SIMD[
+            DType.float64, width
+        ](0.8))
+        var epss0_pos = (
+            fy * shft_pos - esh * epsy * shft_pos - sig_c + e0 * eps_c
+        ) / (e0 - esh)
+        var sigs0_pos = fy * shft_pos + esh * (epss0_pos - epsy * shft_pos)
+        kon_t = pos_reversal_mask.select(SIMD[DType.int32, width](1), kon_t)
+        epsr_t = pos_reversal_mask.select(eps_c, epsr_t)
+        sigr_t = pos_reversal_mask.select(sig_c, sigr_t)
+        epsmin_t = pos_reversal_mask.select(epsmin_after_pos, epsmin_t)
+        epss0_t = pos_reversal_mask.select(epss0_pos, epss0_t)
+        sigs0_t = pos_reversal_mask.select(sigs0_pos, sigs0_t)
+        epspl_t = pos_reversal_mask.select(epsmax_t, epspl_t)
+
+        var neg_reversal_mask = active_mask & kon_t.eq(1) & deps.lt(0.0)
+        var epsmax_after_neg = eps_c.gt(epsmax_t).select(eps_c, epsmax_t)
+        var d1_neg = (epsmax_after_neg - epsmin_t) / (
+            SIMD[DType.float64, width](2.0) * (a2 * epsy)
+        )
+        var shft_neg = SIMD[DType.float64, width](1.0) + a1 * (d1_neg ** SIMD[
+            DType.float64, width
+        ](0.8))
+        var epss0_neg = (
+            -fy * shft_neg + esh * epsy * shft_neg - sig_c + e0 * eps_c
+        ) / (e0 - esh)
+        var sigs0_neg = -fy * shft_neg + esh * (epss0_neg + epsy * shft_neg)
+        kon_t = neg_reversal_mask.select(SIMD[DType.int32, width](2), kon_t)
+        epsr_t = neg_reversal_mask.select(eps_c, epsr_t)
+        sigr_t = neg_reversal_mask.select(sig_c, sigr_t)
+        epsmax_t = neg_reversal_mask.select(epsmax_after_neg, epsmax_t)
+        epss0_t = neg_reversal_mask.select(epss0_neg, epss0_t)
+        sigs0_t = neg_reversal_mask.select(sigs0_neg, sigs0_t)
+        epspl_t = neg_reversal_mask.select(epsmin_t, epspl_t)
+
+        var xi = _simd_abs_float64[width]((epspl_t - epss0_t) / epsy)
+        var r = r0 * (
+            SIMD[DType.float64, width](1.0) - (cr1 * xi) / (cr2 + xi)
+        )
+        var epsrat = (eps - epsr_t) / (epss0_t - epsr_t)
+        var dum1 = SIMD[DType.float64, width](1.0) + (
+            _simd_abs_float64[width](epsrat) ** r
+        )
+        var dum2 = dum1 ** (SIMD[DType.float64, width](1.0) / r)
+
+        var sig_active = b * epsrat + (SIMD[DType.float64, width](1.0) - b) * epsrat / dum2
+        sig_active = sig_active * (sigs0_t - sigr_t) + sigr_t
+        var tangent_active = b + (SIMD[DType.float64, width](1.0) - b) / (dum1 * dum2)
+        tangent_active = tangent_active * (sigs0_t - sigr_t) / (epss0_t - epsr_t)
+        sig_t = active_mask.select(sig_active, sig_t)
+        tangent_t = active_mask.select(tangent_active, tangent_t)
+
+        store_float64_contiguous_simd[width](sec_def.runtime_s2_eps_t, slot, eps)
+        store_float64_contiguous_simd[width](sec_def.runtime_s2_sig_t, slot, sig_t)
+        store_float64_contiguous_simd[width](
+            sec_def.runtime_s2_tangent_t, slot, tangent_t
+        )
+        store_float64_contiguous_simd[width](
+            sec_def.runtime_s2_epsmin_t, slot, epsmin_t
+        )
+        store_float64_contiguous_simd[width](
+            sec_def.runtime_s2_epsmax_t, slot, epsmax_t
+        )
+        store_float64_contiguous_simd[width](sec_def.runtime_s2_epspl_t, slot, epspl_t)
+        store_float64_contiguous_simd[width](sec_def.runtime_s2_epss0_t, slot, epss0_t)
+        store_float64_contiguous_simd[width](
+            sec_def.runtime_s2_sigs0_t, slot, sigs0_t
+        )
+        store_float64_contiguous_simd[width](sec_def.runtime_s2_epsr_t, slot, epsr_t)
+        store_float64_contiguous_simd[width](sec_def.runtime_s2_sigr_t, slot, sigr_t)
+        for lane in range(width):
+            sec_def.runtime_s2_kon_t[slot + lane] = Int(kon_t[lane])
+
+        var fs_vec = sig_t * area_vec
+        var ks_vec = tangent_t * area_vec
+        axial_force += fs_vec.reduce_add()
+        moment_z += (-fs_vec * y_vec).reduce_add()
+        k11 += ks_vec.reduce_add()
+        k12 += (-ks_vec * y_vec).reduce_add()
+        k22 += (ks_vec * y_vec * y_vec).reduce_add()
+        i += width
+
+
+@always_inline
+fn _fiber_section2d_runtime_apply_steel02_range_simd_homogeneous[width: Int](
+    mut sec_def: FiberSection2dDef,
+    slot_start: Int,
+    count: Int,
+    mat_def: UniMaterialDef,
+    eps0: Float64,
+    kappa: Float64,
+    mut axial_force: Float64,
+    mut moment_z: Float64,
+    mut k11: Float64,
+    mut k12: Float64,
+    mut k22: Float64,
+):
+    if count <= 0:
+        return
+
+    var fy = SIMD[DType.float64, width](mat_def.p0)
+    var e0 = SIMD[DType.float64, width](mat_def.p1)
+    var b = SIMD[DType.float64, width](mat_def.p2)
+    var r0 = SIMD[DType.float64, width](mat_def.p3)
+    var cr1 = SIMD[DType.float64, width](mat_def.p4)
+    var cr2 = SIMD[DType.float64, width](mat_def.p5)
+    var a1 = SIMD[DType.float64, width](mat_def.p6)
+    var a2 = SIMD[DType.float64, width](mat_def.p7)
+    var a3 = SIMD[DType.float64, width](mat_def.p8)
+    var a4 = SIMD[DType.float64, width](mat_def.p9)
+    var sigini = SIMD[DType.float64, width](mat_def.p10)
+    var esh = b * e0
+    var epsy = fy / e0
+    var tol = SIMD[DType.float64, width](2.220446049250313e-15)
+
+    var i = 0
+    while i < count:
+        var y_vec = load_float64_contiguous_simd[width](sec_def.steel02_y_rel, i)
+        var area_vec = load_float64_contiguous_simd[width](sec_def.steel02_area, i)
+        var trial_eps = SIMD[DType.float64, width](eps0) - y_vec * SIMD[
+            DType.float64, width
+        ](kappa)
+        var slot = slot_start + i
+
+        var eps_c = load_float64_contiguous_simd[width](sec_def.runtime_s2_eps_c, slot)
+        var sig_c = load_float64_contiguous_simd[width](sec_def.runtime_s2_sig_c, slot)
+        var epsmin_c = load_float64_contiguous_simd[width](
+            sec_def.runtime_s2_epsmin_c, slot
+        )
+        var epsmax_c = load_float64_contiguous_simd[width](
+            sec_def.runtime_s2_epsmax_c, slot
+        )
+        var epspl_c = load_float64_contiguous_simd[width](
+            sec_def.runtime_s2_epspl_c, slot
+        )
+        var epss0_c = load_float64_contiguous_simd[width](
+            sec_def.runtime_s2_epss0_c, slot
+        )
+        var sigs0_c = load_float64_contiguous_simd[width](
+            sec_def.runtime_s2_sigs0_c, slot
+        )
+        var epsr_c = load_float64_contiguous_simd[width](sec_def.runtime_s2_epsr_c, slot)
+        var sigr_c = load_float64_contiguous_simd[width](sec_def.runtime_s2_sigr_c, slot)
+        var kon_c = SIMD[DType.int32, width](0)
+        for lane in range(width):
+            kon_c[lane] = Int32(sec_def.runtime_s2_kon_c[slot + lane])
+
+        var eps = sigini.ne(0.0).select(trial_eps + sigini / e0, trial_eps)
+        var deps = eps - eps_c
+
+        var epsmin_t = epsmin_c
+        var epsmax_t = epsmax_c
+        var epspl_t = epspl_c
+        var epss0_t = epss0_c
+        var sigs0_t = sigs0_c
+        var epsr_t = epsr_c
+        var sigr_t = sigr_c
+        var kon_t = kon_c
+        var sig_t = sig_c
+        var tangent_t = load_float64_contiguous_simd[width](
+            sec_def.runtime_s2_tangent_c, slot
+        )
+
+        var no_change_mask = (kon_c.eq(0) | kon_c.eq(3)) & _simd_abs_float64[width](
+            deps
+        ).lt(tol)
+        sig_t = no_change_mask.select(sigini, sig_t)
+        tangent_t = no_change_mask.select(e0, tangent_t)
+        kon_t = no_change_mask.select(SIMD[DType.int32, width](3), kon_t)
+
+        var active_mask = ~no_change_mask
+        var initial_mask = active_mask & (kon_c.eq(0) | kon_c.eq(3))
+        epsmax_t = initial_mask.select(epsy, epsmax_t)
+        epsmin_t = initial_mask.select(-epsy, epsmin_t)
+
+        var initial_neg_mask = initial_mask & deps.lt(0.0)
+        var initial_pos_mask = initial_mask & ~deps.lt(0.0)
+        kon_t = initial_neg_mask.select(SIMD[DType.int32, width](2), kon_t)
+        epss0_t = initial_neg_mask.select(epsmin_t, epss0_t)
+        sigs0_t = initial_neg_mask.select(-fy, sigs0_t)
+        epspl_t = initial_neg_mask.select(epsmin_t, epspl_t)
+
+        kon_t = initial_pos_mask.select(SIMD[DType.int32, width](1), kon_t)
+        epss0_t = initial_pos_mask.select(epsmax_t, epss0_t)
+        sigs0_t = initial_pos_mask.select(fy, sigs0_t)
+        epspl_t = initial_pos_mask.select(epsmax_t, epspl_t)
+
+        var pos_reversal_mask = active_mask & kon_t.eq(2) & deps.gt(0.0)
+        var epsmin_after_pos = eps_c.lt(epsmin_t).select(eps_c, epsmin_t)
+        var d1_pos = (epsmax_t - epsmin_after_pos) / (
+            SIMD[DType.float64, width](2.0) * (a4 * epsy)
+        )
+        var shft_pos = SIMD[DType.float64, width](1.0) + a3 * (d1_pos ** SIMD[
+            DType.float64, width
+        ](0.8))
+        var epss0_pos = (
+            fy * shft_pos - esh * epsy * shft_pos - sig_c + e0 * eps_c
+        ) / (e0 - esh)
+        var sigs0_pos = fy * shft_pos + esh * (epss0_pos - epsy * shft_pos)
+        kon_t = pos_reversal_mask.select(SIMD[DType.int32, width](1), kon_t)
+        epsr_t = pos_reversal_mask.select(eps_c, epsr_t)
+        sigr_t = pos_reversal_mask.select(sig_c, sigr_t)
+        epsmin_t = pos_reversal_mask.select(epsmin_after_pos, epsmin_t)
+        epss0_t = pos_reversal_mask.select(epss0_pos, epss0_t)
+        sigs0_t = pos_reversal_mask.select(sigs0_pos, sigs0_t)
+        epspl_t = pos_reversal_mask.select(epsmax_t, epspl_t)
+
+        var neg_reversal_mask = active_mask & kon_t.eq(1) & deps.lt(0.0)
+        var epsmax_after_neg = eps_c.gt(epsmax_t).select(eps_c, epsmax_t)
+        var d1_neg = (epsmax_after_neg - epsmin_t) / (
+            SIMD[DType.float64, width](2.0) * (a2 * epsy)
+        )
+        var shft_neg = SIMD[DType.float64, width](1.0) + a1 * (d1_neg ** SIMD[
+            DType.float64, width
+        ](0.8))
+        var epss0_neg = (
+            -fy * shft_neg + esh * epsy * shft_neg - sig_c + e0 * eps_c
+        ) / (e0 - esh)
+        var sigs0_neg = -fy * shft_neg + esh * (epss0_neg + epsy * shft_neg)
+        kon_t = neg_reversal_mask.select(SIMD[DType.int32, width](2), kon_t)
+        epsr_t = neg_reversal_mask.select(eps_c, epsr_t)
+        sigr_t = neg_reversal_mask.select(sig_c, sigr_t)
+        epsmax_t = neg_reversal_mask.select(epsmax_after_neg, epsmax_t)
+        epss0_t = neg_reversal_mask.select(epss0_neg, epss0_t)
+        sigs0_t = neg_reversal_mask.select(sigs0_neg, sigs0_t)
+        epspl_t = neg_reversal_mask.select(epsmin_t, epspl_t)
+
+        var xi = _simd_abs_float64[width]((epspl_t - epss0_t) / epsy)
+        var r = r0 * (
+            SIMD[DType.float64, width](1.0) - (cr1 * xi) / (cr2 + xi)
+        )
+        var epsrat = (eps - epsr_t) / (epss0_t - epsr_t)
+        var dum1 = SIMD[DType.float64, width](1.0) + (
+            _simd_abs_float64[width](epsrat) ** r
+        )
+        var dum2 = dum1 ** (SIMD[DType.float64, width](1.0) / r)
+
+        var sig_active = b * epsrat + (SIMD[DType.float64, width](1.0) - b) * epsrat / dum2
+        sig_active = sig_active * (sigs0_t - sigr_t) + sigr_t
+        var tangent_active = b + (SIMD[DType.float64, width](1.0) - b) / (dum1 * dum2)
+        tangent_active = tangent_active * (sigs0_t - sigr_t) / (epss0_t - epsr_t)
+        sig_t = active_mask.select(sig_active, sig_t)
+        tangent_t = active_mask.select(tangent_active, tangent_t)
+
+        store_float64_contiguous_simd[width](sec_def.runtime_s2_eps_t, slot, eps)
+        store_float64_contiguous_simd[width](sec_def.runtime_s2_sig_t, slot, sig_t)
+        store_float64_contiguous_simd[width](
+            sec_def.runtime_s2_tangent_t, slot, tangent_t
+        )
+        store_float64_contiguous_simd[width](
+            sec_def.runtime_s2_epsmin_t, slot, epsmin_t
+        )
+        store_float64_contiguous_simd[width](
+            sec_def.runtime_s2_epsmax_t, slot, epsmax_t
+        )
+        store_float64_contiguous_simd[width](sec_def.runtime_s2_epspl_t, slot, epspl_t)
+        store_float64_contiguous_simd[width](sec_def.runtime_s2_epss0_t, slot, epss0_t)
+        store_float64_contiguous_simd[width](
+            sec_def.runtime_s2_sigs0_t, slot, sigs0_t
+        )
+        store_float64_contiguous_simd[width](sec_def.runtime_s2_epsr_t, slot, epsr_t)
+        store_float64_contiguous_simd[width](sec_def.runtime_s2_sigr_t, slot, sigr_t)
+        for lane in range(width):
+            sec_def.runtime_s2_kon_t[slot + lane] = Int(kon_t[lane])
+
+        var fs_vec = sig_t * area_vec
+        var ks_vec = tangent_t * area_vec
+        axial_force += fs_vec.reduce_add()
+        moment_z += (-fs_vec * y_vec).reduce_add()
+        k11 += ks_vec.reduce_add()
+        k12 += (-ks_vec * y_vec).reduce_add()
+        k22 += (ks_vec * y_vec * y_vec).reduce_add()
+        i += width
+
+
+@always_inline
+fn _fiber_section2d_runtime_apply_steel02_range_simd[width: Int](
+    mut sec_def: FiberSection2dDef,
+    slot_start: Int,
+    count: Int,
+    eps0: Float64,
+    kappa: Float64,
+    mut axial_force: Float64,
+    mut moment_z: Float64,
+    mut k11: Float64,
+    mut k12: Float64,
+    mut k22: Float64,
+):
+    if sec_def.steel02_single_definition:
+        var mat_def = sec_def.steel02_single_mat_def
+        _fiber_section2d_runtime_apply_steel02_range_simd_homogeneous[width](
+            sec_def,
+            slot_start,
+            count,
+            mat_def,
+            eps0,
+            kappa,
+            axial_force,
+            moment_z,
+            k11,
+            k12,
+            k22,
+        )
+        return
+    _fiber_section2d_runtime_apply_steel02_range_simd_mixed[width](
+        sec_def, slot_start, count, eps0, kappa, axial_force, moment_z, k11, k12, k22
+    )
+
+
+@always_inline
+fn _fiber_section2d_apply_steel02_range[width: Int](
+    mut sec_def: FiberSection2dDef,
+    local_offset: Int,
+    eps0: Float64,
+    kappa: Float64,
+    mut axial_force: Float64,
+    mut moment_z: Float64,
+    mut k11: Float64,
+    mut k12: Float64,
+    mut k22: Float64,
+):
+    var slot_start = (
+        local_offset // sec_def.fiber_count
+    ) * sec_def.steel02_instance_stride
+    _fiber_section2d_runtime_apply_steel02_range_simd[width](
+        sec_def,
+        slot_start,
+        sec_def.steel02_padded_count,
+        eps0,
+        kappa,
+        axial_force,
+        moment_z,
+        k11,
+        k12,
+        k22,
+    )
+
+
+@always_inline
+fn _fiber_section2d_apply_concrete02_range[width: Int](
+    mut sec_def: FiberSection2dDef,
+    local_offset: Int,
+    eps0: Float64,
+    kappa: Float64,
+    mut axial_force: Float64,
+    mut moment_z: Float64,
+    mut k11: Float64,
+    mut k12: Float64,
+    mut k22: Float64,
+):
+    var slot_start = (
+        local_offset // sec_def.fiber_count
+    ) * sec_def.concrete02_instance_stride
+    _fiber_section2d_runtime_apply_concrete02_range_simd[width](
+        sec_def,
+        slot_start,
+        sec_def.concrete02_padded_count,
+        eps0,
+        kappa,
+        axial_force,
+        moment_z,
+        k11,
+        k12,
+        k22,
+    )
+
+
 fn _fiber_section2d_batch_apply_steel01_family(
-    sec_def: FiberSection2dDef,
+    mut sec_def: FiberSection2dDef,
     subgroup_indices: List[Int],
     points: List[FiberSection2dBatchPoint],
     mut uniaxial_states: List[UniMaterialState],
@@ -407,21 +2160,22 @@ fn _fiber_section2d_batch_apply_steel01_family(
         var mat_def = sec_def.nonlinear_mat_defs[nonlinear_index]
         for i in range(len(points)):
             var point = points[i]
-            var state_index = point.section_state_offset + sec_def.elastic_count + nonlinear_index
-            ref state = uniaxial_states[state_index]
+            var state_index = _fiber_section2d_runtime_local_offset(
+                sec_def, point.section_state_offset, point.section_state_count
+            ) + sec_def.elastic_count + nonlinear_index
             var eps = point.eps0 - y_rel * point.kappa
-            uniaxial_set_trial_strain_steel01(mat_def, state, eps)
+            _fiber_section2d_runtime_apply_steel01(mat_def, sec_def, state_index, eps)
             _fiber_section2d_batch_accumulate_nonlinear_response(
                 y_rel,
                 area,
-                state.sig_t,
-                state.tangent_t,
+                sec_def.runtime_sig_t[state_index],
+                sec_def.runtime_tangent_t[state_index],
                 results[i].response,
             )
 
 
 fn _fiber_section2d_batch_apply_concrete01_family(
-    sec_def: FiberSection2dDef,
+    mut sec_def: FiberSection2dDef,
     subgroup_indices: List[Int],
     points: List[FiberSection2dBatchPoint],
     mut uniaxial_states: List[UniMaterialState],
@@ -434,21 +2188,22 @@ fn _fiber_section2d_batch_apply_concrete01_family(
         var mat_def = sec_def.nonlinear_mat_defs[nonlinear_index]
         for i in range(len(points)):
             var point = points[i]
-            var state_index = point.section_state_offset + sec_def.elastic_count + nonlinear_index
-            ref state = uniaxial_states[state_index]
+            var state_index = _fiber_section2d_runtime_local_offset(
+                sec_def, point.section_state_offset, point.section_state_count
+            ) + sec_def.elastic_count + nonlinear_index
             var eps = point.eps0 - y_rel * point.kappa
-            uniaxial_set_trial_strain_concrete01(mat_def, state, eps)
+            _fiber_section2d_runtime_apply_concrete01(mat_def, sec_def, state_index, eps)
             _fiber_section2d_batch_accumulate_nonlinear_response(
                 y_rel,
                 area,
-                state.sig_t,
-                state.tangent_t,
+                sec_def.runtime_sig_t[state_index],
+                sec_def.runtime_tangent_t[state_index],
                 results[i].response,
             )
 
 
 fn _fiber_section2d_batch_apply_steel02_family(
-    sec_def: FiberSection2dDef,
+    mut sec_def: FiberSection2dDef,
     subgroup_indices: List[Int],
     points: List[FiberSection2dBatchPoint],
     mut uniaxial_states: List[UniMaterialState],
@@ -461,21 +2216,28 @@ fn _fiber_section2d_batch_apply_steel02_family(
         var mat_def = sec_def.nonlinear_mat_defs[nonlinear_index]
         for i in range(len(points)):
             var point = points[i]
-            var state_index = point.section_state_offset + sec_def.elastic_count + nonlinear_index
-            ref state = uniaxial_states[state_index]
-            var eps = point.eps0 - y_rel * point.kappa
-            uniaxial_set_trial_strain_steel02(mat_def, state, eps)
+        var local_offset = _fiber_section2d_runtime_local_offset(
+            sec_def, point.section_state_offset, point.section_state_count
+        )
+        var state_index = _fiber_section2d_runtime_steel02_slot(
+            sec_def, local_offset, nonlinear_index
+        )
+        var eps = point.eps0 - y_rel * point.kappa
+        var family_mat_def = mat_def
+        _fiber_section2d_runtime_apply_steel02(
+            family_mat_def, sec_def, state_index, eps
+        )
             _fiber_section2d_batch_accumulate_nonlinear_response(
                 y_rel,
                 area,
-                state.sig_t,
-                state.tangent_t,
+                sec_def.runtime_s2_sig_t[state_index],
+                sec_def.runtime_s2_tangent_t[state_index],
                 results[i].response,
             )
 
 
 fn _fiber_section2d_batch_apply_concrete02_family(
-    sec_def: FiberSection2dDef,
+    mut sec_def: FiberSection2dDef,
     subgroup_indices: List[Int],
     points: List[FiberSection2dBatchPoint],
     mut uniaxial_states: List[UniMaterialState],
@@ -488,21 +2250,28 @@ fn _fiber_section2d_batch_apply_concrete02_family(
         var mat_def = sec_def.nonlinear_mat_defs[nonlinear_index]
         for i in range(len(points)):
             var point = points[i]
-            var state_index = point.section_state_offset + sec_def.elastic_count + nonlinear_index
-            ref state = uniaxial_states[state_index]
+            var local_offset = _fiber_section2d_runtime_local_offset(
+                sec_def, point.section_state_offset, point.section_state_count
+            )
+            var state_index = _fiber_section2d_runtime_concrete02_slot(
+                sec_def, local_offset, nonlinear_index
+            )
             var eps = point.eps0 - y_rel * point.kappa
-            uniaxial_set_trial_strain_concrete02(mat_def, state, eps)
+            var family_mat_def = mat_def
+            _fiber_section2d_runtime_apply_concrete02(
+                family_mat_def, sec_def, state_index, eps
+            )
             _fiber_section2d_batch_accumulate_nonlinear_response(
                 y_rel,
                 area,
-                state.sig_t,
-                state.tangent_t,
+                sec_def.runtime_c2_sig_t[state_index],
+                sec_def.runtime_c2_tangent_t[state_index],
                 results[i].response,
             )
 
 
 fn _fiber_section2d_batch_apply_other_family(
-    sec_def: FiberSection2dDef,
+    mut sec_def: FiberSection2dDef,
     subgroup_indices: List[Int],
     points: List[FiberSection2dBatchPoint],
     mut uniaxial_states: List[UniMaterialState],
@@ -515,21 +2284,282 @@ fn _fiber_section2d_batch_apply_other_family(
         var mat_def = sec_def.nonlinear_mat_defs[nonlinear_index]
         for i in range(len(points)):
             var point = points[i]
-            var state_index = point.section_state_offset + sec_def.elastic_count + nonlinear_index
-            ref state = uniaxial_states[state_index]
+            var state_index = _fiber_section2d_runtime_local_offset(
+                sec_def, point.section_state_offset, point.section_state_count
+            ) + sec_def.elastic_count + nonlinear_index
             var eps = point.eps0 - y_rel * point.kappa
-            uniaxial_set_trial_strain(mat_def, state, eps)
+            _fiber_section2d_runtime_set_trial(mat_def, sec_def, state_index, eps)
             _fiber_section2d_batch_accumulate_nonlinear_response(
                 y_rel,
                 area,
-                state.sig_t,
-                state.tangent_t,
+                sec_def.runtime_sig_t[state_index],
+                sec_def.runtime_tangent_t[state_index],
                 results[i].response,
             )
 
 
+@always_inline
+fn _fiber_section2d_commit_response_slot(mut sec_def: FiberSection2dDef, slot: Int):
+    sec_def.runtime_eps_c[slot] = sec_def.runtime_eps_t[slot]
+    sec_def.runtime_sig_c[slot] = sec_def.runtime_sig_t[slot]
+    sec_def.runtime_tangent_c[slot] = sec_def.runtime_tangent_t[slot]
+
+
+@always_inline
+fn _fiber_section2d_revert_response_slot(mut sec_def: FiberSection2dDef, slot: Int):
+    sec_def.runtime_eps_t[slot] = sec_def.runtime_eps_c[slot]
+    sec_def.runtime_sig_t[slot] = sec_def.runtime_sig_c[slot]
+    sec_def.runtime_tangent_t[slot] = sec_def.runtime_tangent_c[slot]
+
+
+@always_inline
+fn _fiber_section2d_commit_steel01_slot(mut sec_def: FiberSection2dDef, slot: Int):
+    _fiber_section2d_commit_response_slot(sec_def, slot)
+    sec_def.runtime_eps_p_c[slot] = sec_def.runtime_eps_p_t[slot]
+    sec_def.runtime_alpha_c[slot] = sec_def.runtime_alpha_t[slot]
+
+
+@always_inline
+fn _fiber_section2d_revert_steel01_slot(mut sec_def: FiberSection2dDef, slot: Int):
+    _fiber_section2d_revert_response_slot(sec_def, slot)
+    sec_def.runtime_eps_p_t[slot] = sec_def.runtime_eps_p_c[slot]
+    sec_def.runtime_alpha_t[slot] = sec_def.runtime_alpha_c[slot]
+
+
+@always_inline
+fn _fiber_section2d_commit_concrete01_slot(mut sec_def: FiberSection2dDef, slot: Int):
+    _fiber_section2d_commit_response_slot(sec_def, slot)
+    sec_def.runtime_min_strain_c[slot] = sec_def.runtime_min_strain_t[slot]
+    sec_def.runtime_end_strain_c[slot] = sec_def.runtime_end_strain_t[slot]
+    sec_def.runtime_unload_slope_c[slot] = sec_def.runtime_unload_slope_t[slot]
+
+
+@always_inline
+fn _fiber_section2d_revert_concrete01_slot(mut sec_def: FiberSection2dDef, slot: Int):
+    _fiber_section2d_revert_response_slot(sec_def, slot)
+    sec_def.runtime_min_strain_t[slot] = sec_def.runtime_min_strain_c[slot]
+    sec_def.runtime_end_strain_t[slot] = sec_def.runtime_end_strain_c[slot]
+    sec_def.runtime_unload_slope_t[slot] = sec_def.runtime_unload_slope_c[slot]
+
+
+@always_inline
+fn _fiber_section2d_commit_steel02_slot(mut sec_def: FiberSection2dDef, slot: Int):
+    sec_def.runtime_s2_eps_c[slot] = sec_def.runtime_s2_eps_t[slot]
+    sec_def.runtime_s2_sig_c[slot] = sec_def.runtime_s2_sig_t[slot]
+    sec_def.runtime_s2_tangent_c[slot] = sec_def.runtime_s2_tangent_t[slot]
+    sec_def.runtime_s2_epsmin_c[slot] = sec_def.runtime_s2_epsmin_t[slot]
+    sec_def.runtime_s2_epsmax_c[slot] = sec_def.runtime_s2_epsmax_t[slot]
+    sec_def.runtime_s2_epspl_c[slot] = sec_def.runtime_s2_epspl_t[slot]
+    sec_def.runtime_s2_epss0_c[slot] = sec_def.runtime_s2_epss0_t[slot]
+    sec_def.runtime_s2_sigs0_c[slot] = sec_def.runtime_s2_sigs0_t[slot]
+    sec_def.runtime_s2_epsr_c[slot] = sec_def.runtime_s2_epsr_t[slot]
+    sec_def.runtime_s2_sigr_c[slot] = sec_def.runtime_s2_sigr_t[slot]
+    sec_def.runtime_s2_kon_c[slot] = sec_def.runtime_s2_kon_t[slot]
+
+
+@always_inline
+fn _fiber_section2d_revert_steel02_slot(mut sec_def: FiberSection2dDef, slot: Int):
+    sec_def.runtime_s2_eps_t[slot] = sec_def.runtime_s2_eps_c[slot]
+    sec_def.runtime_s2_sig_t[slot] = sec_def.runtime_s2_sig_c[slot]
+    sec_def.runtime_s2_tangent_t[slot] = sec_def.runtime_s2_tangent_c[slot]
+    sec_def.runtime_s2_epsmin_t[slot] = sec_def.runtime_s2_epsmin_c[slot]
+    sec_def.runtime_s2_epsmax_t[slot] = sec_def.runtime_s2_epsmax_c[slot]
+    sec_def.runtime_s2_epspl_t[slot] = sec_def.runtime_s2_epspl_c[slot]
+    sec_def.runtime_s2_epss0_t[slot] = sec_def.runtime_s2_epss0_c[slot]
+    sec_def.runtime_s2_sigs0_t[slot] = sec_def.runtime_s2_sigs0_c[slot]
+    sec_def.runtime_s2_epsr_t[slot] = sec_def.runtime_s2_epsr_c[slot]
+    sec_def.runtime_s2_sigr_t[slot] = sec_def.runtime_s2_sigr_c[slot]
+    sec_def.runtime_s2_kon_t[slot] = sec_def.runtime_s2_kon_c[slot]
+
+
+@always_inline
+fn _fiber_section2d_commit_concrete02_slot(mut sec_def: FiberSection2dDef, slot: Int):
+    sec_def.runtime_c2_eps_c[slot] = sec_def.runtime_c2_eps_t[slot]
+    sec_def.runtime_c2_sig_c[slot] = sec_def.runtime_c2_sig_t[slot]
+    sec_def.runtime_c2_tangent_c[slot] = sec_def.runtime_c2_tangent_t[slot]
+    sec_def.runtime_c2_ecmin_c[slot] = sec_def.runtime_c2_ecmin_t[slot]
+    sec_def.runtime_c2_dept_c[slot] = sec_def.runtime_c2_dept_t[slot]
+
+
+@always_inline
+fn _fiber_section2d_revert_concrete02_slot(mut sec_def: FiberSection2dDef, slot: Int):
+    sec_def.runtime_c2_eps_t[slot] = sec_def.runtime_c2_eps_c[slot]
+    sec_def.runtime_c2_sig_t[slot] = sec_def.runtime_c2_sig_c[slot]
+    sec_def.runtime_c2_tangent_t[slot] = sec_def.runtime_c2_tangent_c[slot]
+    sec_def.runtime_c2_ecmin_t[slot] = sec_def.runtime_c2_ecmin_c[slot]
+    sec_def.runtime_c2_dept_t[slot] = sec_def.runtime_c2_dept_c[slot]
+
+
+@always_inline
+fn _fiber_section2d_commit_steel02_family_simd[width: Int](
+    mut sec_def: FiberSection2dDef, slot_start: Int, count: Int
+):
+    if count <= 0:
+        return
+    _fiber_section2d_copy_float64_range_simd[width](
+        sec_def.runtime_s2_eps_c, slot_start, sec_def.runtime_s2_eps_t, slot_start, count
+    )
+    _fiber_section2d_copy_float64_range_simd[width](
+        sec_def.runtime_s2_sig_c, slot_start, sec_def.runtime_s2_sig_t, slot_start, count
+    )
+    _fiber_section2d_copy_float64_range_simd[width](
+        sec_def.runtime_s2_tangent_c,
+        slot_start,
+        sec_def.runtime_s2_tangent_t,
+        slot_start,
+        count,
+    )
+    _fiber_section2d_copy_float64_range_simd[width](
+        sec_def.runtime_s2_epsmin_c,
+        slot_start,
+        sec_def.runtime_s2_epsmin_t,
+        slot_start,
+        count,
+    )
+    _fiber_section2d_copy_float64_range_simd[width](
+        sec_def.runtime_s2_epsmax_c,
+        slot_start,
+        sec_def.runtime_s2_epsmax_t,
+        slot_start,
+        count,
+    )
+    _fiber_section2d_copy_float64_range_simd[width](
+        sec_def.runtime_s2_epspl_c, slot_start, sec_def.runtime_s2_epspl_t, slot_start, count
+    )
+    _fiber_section2d_copy_float64_range_simd[width](
+        sec_def.runtime_s2_epss0_c, slot_start, sec_def.runtime_s2_epss0_t, slot_start, count
+    )
+    _fiber_section2d_copy_float64_range_simd[width](
+        sec_def.runtime_s2_sigs0_c,
+        slot_start,
+        sec_def.runtime_s2_sigs0_t,
+        slot_start,
+        count,
+    )
+    _fiber_section2d_copy_float64_range_simd[width](
+        sec_def.runtime_s2_epsr_c, slot_start, sec_def.runtime_s2_epsr_t, slot_start, count
+    )
+    _fiber_section2d_copy_float64_range_simd[width](
+        sec_def.runtime_s2_sigr_c, slot_start, sec_def.runtime_s2_sigr_t, slot_start, count
+    )
+    _fiber_section2d_copy_int_range(
+        sec_def.runtime_s2_kon_c, slot_start, sec_def.runtime_s2_kon_t, slot_start, count
+    )
+
+
+@always_inline
+fn _fiber_section2d_revert_steel02_family_simd[width: Int](
+    mut sec_def: FiberSection2dDef, slot_start: Int, count: Int
+):
+    if count <= 0:
+        return
+    _fiber_section2d_copy_float64_range_simd[width](
+        sec_def.runtime_s2_eps_t, slot_start, sec_def.runtime_s2_eps_c, slot_start, count
+    )
+    _fiber_section2d_copy_float64_range_simd[width](
+        sec_def.runtime_s2_sig_t, slot_start, sec_def.runtime_s2_sig_c, slot_start, count
+    )
+    _fiber_section2d_copy_float64_range_simd[width](
+        sec_def.runtime_s2_tangent_t,
+        slot_start,
+        sec_def.runtime_s2_tangent_c,
+        slot_start,
+        count,
+    )
+    _fiber_section2d_copy_float64_range_simd[width](
+        sec_def.runtime_s2_epsmin_t,
+        slot_start,
+        sec_def.runtime_s2_epsmin_c,
+        slot_start,
+        count,
+    )
+    _fiber_section2d_copy_float64_range_simd[width](
+        sec_def.runtime_s2_epsmax_t,
+        slot_start,
+        sec_def.runtime_s2_epsmax_c,
+        slot_start,
+        count,
+    )
+    _fiber_section2d_copy_float64_range_simd[width](
+        sec_def.runtime_s2_epspl_t, slot_start, sec_def.runtime_s2_epspl_c, slot_start, count
+    )
+    _fiber_section2d_copy_float64_range_simd[width](
+        sec_def.runtime_s2_epss0_t, slot_start, sec_def.runtime_s2_epss0_c, slot_start, count
+    )
+    _fiber_section2d_copy_float64_range_simd[width](
+        sec_def.runtime_s2_sigs0_t,
+        slot_start,
+        sec_def.runtime_s2_sigs0_c,
+        slot_start,
+        count,
+    )
+    _fiber_section2d_copy_float64_range_simd[width](
+        sec_def.runtime_s2_epsr_t, slot_start, sec_def.runtime_s2_epsr_c, slot_start, count
+    )
+    _fiber_section2d_copy_float64_range_simd[width](
+        sec_def.runtime_s2_sigr_t, slot_start, sec_def.runtime_s2_sigr_c, slot_start, count
+    )
+    _fiber_section2d_copy_int_range(
+        sec_def.runtime_s2_kon_t, slot_start, sec_def.runtime_s2_kon_c, slot_start, count
+    )
+
+
+@always_inline
+fn _fiber_section2d_commit_concrete02_family_simd[width: Int](
+    mut sec_def: FiberSection2dDef, slot_start: Int, count: Int
+):
+    if count <= 0:
+        return
+    _fiber_section2d_copy_float64_range_simd[width](
+        sec_def.runtime_c2_eps_c, slot_start, sec_def.runtime_c2_eps_t, slot_start, count
+    )
+    _fiber_section2d_copy_float64_range_simd[width](
+        sec_def.runtime_c2_sig_c, slot_start, sec_def.runtime_c2_sig_t, slot_start, count
+    )
+    _fiber_section2d_copy_float64_range_simd[width](
+        sec_def.runtime_c2_tangent_c,
+        slot_start,
+        sec_def.runtime_c2_tangent_t,
+        slot_start,
+        count,
+    )
+    _fiber_section2d_copy_float64_range_simd[width](
+        sec_def.runtime_c2_ecmin_c, slot_start, sec_def.runtime_c2_ecmin_t, slot_start, count
+    )
+    _fiber_section2d_copy_float64_range_simd[width](
+        sec_def.runtime_c2_dept_c, slot_start, sec_def.runtime_c2_dept_t, slot_start, count
+    )
+
+
+@always_inline
+fn _fiber_section2d_revert_concrete02_family_simd[width: Int](
+    mut sec_def: FiberSection2dDef, slot_start: Int, count: Int
+):
+    if count <= 0:
+        return
+    _fiber_section2d_copy_float64_range_simd[width](
+        sec_def.runtime_c2_eps_t, slot_start, sec_def.runtime_c2_eps_c, slot_start, count
+    )
+    _fiber_section2d_copy_float64_range_simd[width](
+        sec_def.runtime_c2_sig_t, slot_start, sec_def.runtime_c2_sig_c, slot_start, count
+    )
+    _fiber_section2d_copy_float64_range_simd[width](
+        sec_def.runtime_c2_tangent_t,
+        slot_start,
+        sec_def.runtime_c2_tangent_c,
+        slot_start,
+        count,
+    )
+    _fiber_section2d_copy_float64_range_simd[width](
+        sec_def.runtime_c2_ecmin_t, slot_start, sec_def.runtime_c2_ecmin_c, slot_start, count
+    )
+    _fiber_section2d_copy_float64_range_simd[width](
+        sec_def.runtime_c2_dept_t, slot_start, sec_def.runtime_c2_dept_c, slot_start, count
+    )
+
+
 fn fiber_section2d_batch_eval_same_def(
-    sec_def: FiberSection2dDef,
+    mut sec_def: FiberSection2dDef,
     mut uniaxial_states: List[UniMaterialState],
     points: List[FiberSection2dBatchPoint],
     mut results: List[FiberSection2dBatchResult],
@@ -542,104 +2572,24 @@ fn fiber_section2d_batch_eval_same_def(
 
     _fiber_section2d_batch_profile_note_batch_size(batch_size, profile)
     profile.homogeneous_batches += 1
+    # Batch sizes in forceBeamColumn2d are typically small, so point-major
+    # traversal preserves contiguous per-section state access and avoids
+    # repeated local-offset resolution inside family-major inner loops.
     if batch_size <= 1:
         profile.scalar_fallback_batches += 1
-        results.resize(batch_size, FiberSection2dBatchResult())
-        for i in range(batch_size):
-            var point = points[i]
-            _fiber_section2d_batch_profile_note_flags(point.flags, profile)
-            profile.section_point_evals += 1
-            var resp = fiber_section2d_set_trial_from_offset(
-                sec_def,
-                uniaxial_states,
-                point.section_state_offset,
-                point.section_state_count,
-                point.eps0,
-                point.kappa,
-            )
-            var det = resp.k11 * resp.k22 - resp.k12 * resp.k12
-            if abs(det) <= 1.0e-40:
-                results[i] = FiberSection2dBatchResult(resp, False, 0.0, 0.0, 0.0)
-                return False
-            var inv_det = 1.0 / det
-            results[i] = FiberSection2dBatchResult(
-                resp,
-                True,
-                resp.k22 * inv_det,
-                -resp.k12 * inv_det,
-                resp.k11 * inv_det,
-            )
-        return True
-
     results.resize(batch_size, FiberSection2dBatchResult())
     for i in range(batch_size):
         var point = points[i]
-        if point.section_state_count != sec_def.fiber_count:
-            abort("FiberSection2d section state count mismatch")
-        if point.section_state_offset + point.section_state_count > len(uniaxial_states):
-            abort("FiberSection2d section states out of range")
         _fiber_section2d_batch_profile_note_flags(point.flags, profile)
         profile.section_point_evals += 1
-        var elastic_resp = _fiber_section2d_elastic_response_simd[FLOAT64_SIMD_WIDTH](
-            sec_def.elastic_y_rel,
-            sec_def.elastic_area,
-            sec_def.elastic_modulus,
-            sec_def.elastic_count,
+        var resp = fiber_section2d_set_trial_from_offset(
+            sec_def,
+            uniaxial_states,
+            point.section_state_offset,
+            point.section_state_count,
             point.eps0,
             point.kappa,
         )
-        results[i] = FiberSection2dBatchResult(
-            FiberSection2dResponse(
-                elastic_resp[0],
-                elastic_resp[1],
-                elastic_resp[2],
-                elastic_resp[3],
-                elastic_resp[4],
-            ),
-            False,
-            0.0,
-            0.0,
-            0.0,
-        )
-
-    _fiber_section2d_batch_apply_steel01_family(
-        sec_def,
-        sec_def.steel01_nonlinear_indices,
-        points,
-        uniaxial_states,
-        results,
-    )
-    _fiber_section2d_batch_apply_concrete01_family(
-        sec_def,
-        sec_def.concrete01_nonlinear_indices,
-        points,
-        uniaxial_states,
-        results,
-    )
-    _fiber_section2d_batch_apply_steel02_family(
-        sec_def,
-        sec_def.steel02_nonlinear_indices,
-        points,
-        uniaxial_states,
-        results,
-    )
-    _fiber_section2d_batch_apply_concrete02_family(
-        sec_def,
-        sec_def.concrete02_nonlinear_indices,
-        points,
-        uniaxial_states,
-        results,
-    )
-    _fiber_section2d_batch_apply_other_family(
-        sec_def,
-        sec_def.other_nonlinear_indices,
-        points,
-        uniaxial_states,
-        results,
-    )
-
-    for i in range(batch_size):
-        var resp = results[i].response
         var det = resp.k11 * resp.k22 - resp.k12 * resp.k12
         if abs(det) <= 1.0e-40:
             results[i] = FiberSection2dBatchResult(resp, False, 0.0, 0.0, 0.0)
@@ -656,7 +2606,7 @@ fn fiber_section2d_batch_eval_same_def(
 
 
 fn fiber_section2d_batch_eval(
-    defs: List[FiberSection2dDef],
+    mut defs: List[FiberSection2dDef],
     mut uniaxial_states: List[UniMaterialState],
     points: List[FiberSection2dBatchPoint],
     mut results: List[FiberSection2dBatchResult],
@@ -677,8 +2627,9 @@ fn fiber_section2d_batch_eval(
     if homogeneous:
         if def_index0 < 0 or def_index0 >= len(defs):
             abort("FiberSection2d batch section definition out of range")
+        ref sec_def = defs[def_index0]
         return fiber_section2d_batch_eval_same_def(
-            defs[def_index0],
+            sec_def,
             uniaxial_states,
             points,
             results,
@@ -698,7 +2649,7 @@ fn fiber_section2d_batch_eval(
             abort("FiberSection2d batch section definition out of range")
         _fiber_section2d_batch_profile_note_flags(point.flags, profile)
         profile.section_point_evals += 1
-        var sec_def = defs[def_index]
+        ref sec_def = defs[def_index]
         var resp = fiber_section2d_set_trial_from_offset(
             sec_def,
             uniaxial_states,
@@ -730,6 +2681,34 @@ fn _resolve_uniaxial_def_index(
     if mat_id >= len(uniaxial_def_by_id) or uniaxial_def_by_id[mat_id] < 0:
         abort("FiberSection2d requires uniaxial material for all fibers")
     return uniaxial_def_by_id[mat_id]
+
+
+fn _fiber_section2d_pad_family_arrays(
+    mut y_rel: List[Float64],
+    mut area: List[Float64],
+    mut mat_defs: List[UniMaterialDef],
+    padded_count: Int,
+):
+    var count = len(y_rel)
+    if count <= 0 or padded_count <= count:
+        return
+    var pad_mat_def = mat_defs[0]
+    for _ in range(count, padded_count):
+        y_rel.append(0.0)
+        area.append(0.0)
+        mat_defs.append(pad_mat_def)
+
+
+fn _fiber_section2d_is_single_definition_family(
+    nonlinear_indices: List[Int], nonlinear_def_index: List[Int]
+) -> Bool:
+    if len(nonlinear_indices) <= 0:
+        return False
+    var first_def_index = nonlinear_def_index[nonlinear_indices[0]]
+    for i in range(1, len(nonlinear_indices)):
+        if nonlinear_def_index[nonlinear_indices[i]] != first_def_index:
+            return False
+    return True
 
 
 fn _build_fiber_section2d_def(
@@ -765,18 +2744,64 @@ fn _build_fiber_section2d_def(
             sec_def.nonlinear_area.append(cell.area)
             sec_def.nonlinear_def_index.append(def_index)
             sec_def.nonlinear_mat_defs.append(mat_def)
+            sec_def.steel02_family_position_by_nonlinear_index.append(-1)
+            sec_def.concrete02_family_position_by_nonlinear_index.append(-1)
             if mat_def.mat_type == UniMaterialTypeTag.Steel01:
                 sec_def.steel01_nonlinear_indices.append(nonlinear_index)
             elif mat_def.mat_type == UniMaterialTypeTag.Concrete01:
                 sec_def.concrete01_nonlinear_indices.append(nonlinear_index)
             elif mat_def.mat_type == UniMaterialTypeTag.Steel02:
+                sec_def.steel02_y_rel.append(y_rel)
+                sec_def.steel02_area.append(cell.area)
+                sec_def.steel02_mat_defs.append(mat_def)
+                sec_def.steel02_family_position_by_nonlinear_index[nonlinear_index] = (
+                    len(sec_def.steel02_nonlinear_indices)
+                )
                 sec_def.steel02_nonlinear_indices.append(nonlinear_index)
             elif mat_def.mat_type == UniMaterialTypeTag.Concrete02:
+                sec_def.concrete02_y_rel.append(y_rel)
+                sec_def.concrete02_area.append(cell.area)
+                sec_def.concrete02_mat_defs.append(mat_def)
+                sec_def.concrete02_family_position_by_nonlinear_index[nonlinear_index] = (
+                    len(sec_def.concrete02_nonlinear_indices)
+                )
                 sec_def.concrete02_nonlinear_indices.append(nonlinear_index)
             else:
                 sec_def.other_nonlinear_indices.append(nonlinear_index)
     sec_def.elastic_count = len(sec_def.elastic_y_rel)
     sec_def.nonlinear_count = len(sec_def.nonlinear_y_rel)
+    sec_def.steel02_count = len(sec_def.steel02_nonlinear_indices)
+    sec_def.concrete02_count = len(sec_def.concrete02_nonlinear_indices)
+    sec_def.steel02_single_definition = _fiber_section2d_is_single_definition_family(
+        sec_def.steel02_nonlinear_indices, sec_def.nonlinear_def_index
+    )
+    if sec_def.steel02_single_definition:
+        sec_def.steel02_single_mat_def = sec_def.steel02_mat_defs[0]
+    sec_def.concrete02_single_definition = _fiber_section2d_is_single_definition_family(
+        sec_def.concrete02_nonlinear_indices, sec_def.nonlinear_def_index
+    )
+    if sec_def.concrete02_single_definition:
+        sec_def.concrete02_single_mat_def = sec_def.concrete02_mat_defs[0]
+    sec_def.steel02_padded_count = _fiber_section2d_padded_family_count(
+        sec_def.steel02_count
+    )
+    sec_def.steel02_instance_stride = sec_def.steel02_padded_count
+    sec_def.concrete02_padded_count = _fiber_section2d_padded_family_count(
+        sec_def.concrete02_count
+    )
+    sec_def.concrete02_instance_stride = sec_def.concrete02_padded_count
+    _fiber_section2d_pad_family_arrays(
+        sec_def.steel02_y_rel,
+        sec_def.steel02_area,
+        sec_def.steel02_mat_defs,
+        sec_def.steel02_padded_count,
+    )
+    _fiber_section2d_pad_family_arrays(
+        sec_def.concrete02_y_rel,
+        sec_def.concrete02_area,
+        sec_def.concrete02_mat_defs,
+        sec_def.concrete02_padded_count,
+    )
     var det = initial_k11 * initial_k22 - initial_k12 * initial_k12
     if abs(det) > 1.0e-40:
         var inv_det = 1.0 / det
@@ -1246,7 +3271,7 @@ fn append_fiber_section2d_from_input(
 
 
 fn fiber_section2d_init_states(
-    defs: List[FiberSection2dDef],
+    mut defs: List[FiberSection2dDef],
     fibers: List[FiberCell],
     uniaxial_defs: List[UniMaterialDef],
     mut uniaxial_states: List[UniMaterialState],
@@ -1259,8 +3284,8 @@ fn fiber_section2d_init_states(
     var used_nonelastic = False
 
     for s in range(len(defs)):
-        var sec_def = defs[s]
-        section_uniaxial_offsets[s] = len(uniaxial_states)
+        ref sec_def = defs[s]
+        section_uniaxial_offsets[s] = fiber_section2d_runtime_alloc_instances(sec_def, 1)
         section_uniaxial_counts[s] = sec_def.fiber_count
         if sec_def.fiber_offset < 0 or sec_def.fiber_offset + sec_def.fiber_count > len(
             fibers
@@ -1270,22 +3295,11 @@ fn fiber_section2d_init_states(
             var def_index = sec_def.elastic_def_index[i]
             if def_index < 0 or def_index >= len(uniaxial_defs):
                 abort("FiberSection2d fiber material definition out of range")
-            var mat_def = uniaxial_defs[def_index]
-            var state_index = len(uniaxial_states)
-            uniaxial_states.append(UniMaterialState(mat_def))
             uniaxial_state_defs.append(def_index)
-            if state_index != section_uniaxial_offsets[s] + i:
-                abort("FiberSection2d elastic state layout must be contiguous")
         for i in range(sec_def.nonlinear_count):
             var mat_def = sec_def.nonlinear_mat_defs[i]
             var def_index = sec_def.nonlinear_def_index[i]
-            var state_index = len(uniaxial_states)
-            uniaxial_states.append(UniMaterialState(mat_def))
             uniaxial_state_defs.append(def_index)
-            if state_index != (
-                section_uniaxial_offsets[s] + sec_def.elastic_count + i
-            ):
-                abort("FiberSection2d nonlinear state layout must be contiguous")
             if not uni_mat_is_elastic(mat_def):
                 used_nonelastic = True
 
@@ -1293,17 +3307,16 @@ fn fiber_section2d_init_states(
 
 
 fn fiber_section2d_set_trial_from_offset(
-    sec_def: FiberSection2dDef,
+    mut sec_def: FiberSection2dDef,
     mut uniaxial_states: List[UniMaterialState],
     section_state_offset: Int,
     section_state_count: Int,
     eps0: Float64,
     kappa: Float64,
 ) -> FiberSection2dResponse:
-    if section_state_count != sec_def.fiber_count:
-        abort("FiberSection2d section state count mismatch")
-    if section_state_offset + section_state_count > len(uniaxial_states):
-        abort("FiberSection2d section states out of range")
+    var local_offset = _fiber_section2d_runtime_local_offset(
+        sec_def, section_state_offset, section_state_count
+    )
 
     var elastic_resp = _fiber_section2d_elastic_response_simd[FLOAT64_SIMD_WIDTH](
         sec_def.elastic_y_rel,
@@ -1319,30 +3332,28 @@ fn fiber_section2d_set_trial_from_offset(
     var k12 = elastic_resp[3]
     var k22 = elastic_resp[4]
 
-    var nonlinear_state_offset = section_state_offset + sec_def.elastic_count
-    for i in range(sec_def.nonlinear_count):
-        var y_rel = sec_def.nonlinear_y_rel[i]
-        var eps = eps0 - y_rel * kappa
-        var state_index = nonlinear_state_offset + i
-        var mat_def = sec_def.nonlinear_mat_defs[i]
-        ref state = uniaxial_states[state_index]
-        uniaxial_set_trial_strain(mat_def, state, eps)
-
-        var area = sec_def.nonlinear_area[i]
-        var fs = state.sig_t * area
-        var ks = state.tangent_t * area
-        axial_force += fs
-        moment_z += -fs * y_rel
-        k11 += ks
-        k12 += -ks * y_rel
-        k22 += ks * y_rel * y_rel
+    _fiber_section2d_apply_steel02_range[FLOAT64_SIMD_WIDTH](
+        sec_def, local_offset, eps0, kappa, axial_force, moment_z, k11, k12, k22
+    )
+    _fiber_section2d_apply_concrete02_range[FLOAT64_SIMD_WIDTH](
+        sec_def, local_offset, eps0, kappa, axial_force, moment_z, k11, k12, k22
+    )
+    _fiber_section2d_apply_steel01_family_from_offset(
+        sec_def, local_offset, eps0, kappa, axial_force, moment_z, k11, k12, k22
+    )
+    _fiber_section2d_apply_concrete01_family_from_offset(
+        sec_def, local_offset, eps0, kappa, axial_force, moment_z, k11, k12, k22
+    )
+    _fiber_section2d_apply_other_nonlinear_fallback_from_offset(
+        sec_def, local_offset, eps0, kappa, axial_force, moment_z, k11, k12, k22
+    )
 
     return FiberSection2dResponse(axial_force, moment_z, k11, k12, k22)
 
 
 fn fiber_section2d_set_trial(
     section_index: Int,
-    defs: List[FiberSection2dDef],
+    mut defs: List[FiberSection2dDef],
     section_uniaxial_offsets: List[Int],
     section_uniaxial_counts: List[Int],
     mut uniaxial_states: List[UniMaterialState],
@@ -1356,7 +3367,7 @@ fn fiber_section2d_set_trial(
     ):
         abort("FiberSection2d section state mapping missing")
 
-    var sec_def = defs[section_index]
+    ref sec_def = defs[section_index]
     var offset = section_uniaxial_offsets[section_index]
     var count = section_uniaxial_counts[section_index]
     if count != sec_def.fiber_count:
@@ -1373,31 +3384,80 @@ fn fiber_section2d_set_trial(
 
 
 fn fiber_section2d_commit_from_offset(
+    mut sec_def: FiberSection2dDef,
     mut uniaxial_states: List[UniMaterialState],
     section_state_offset: Int,
     section_state_count: Int,
 ):
-    if section_state_offset + section_state_count > len(uniaxial_states):
-        abort("FiberSection2d section states out of range")
-    for i in range(section_state_count):
-        ref state = uniaxial_states[section_state_offset + i]
-        uniaxial_commit(state)
+    var local_offset = _fiber_section2d_runtime_local_offset(
+        sec_def, section_state_offset, section_state_count
+    )
+    var nonlinear_state_offset = local_offset + sec_def.elastic_count
+    for j in range(len(sec_def.steel01_nonlinear_indices)):
+        _fiber_section2d_commit_steel01_slot(
+            sec_def, nonlinear_state_offset + sec_def.steel01_nonlinear_indices[j]
+        )
+    for j in range(len(sec_def.concrete01_nonlinear_indices)):
+        _fiber_section2d_commit_concrete01_slot(
+            sec_def, nonlinear_state_offset + sec_def.concrete01_nonlinear_indices[j]
+        )
+    if sec_def.steel02_padded_count > 0:
+        _fiber_section2d_commit_steel02_family_simd[FLOAT64_SIMD_WIDTH](
+            sec_def,
+            (local_offset // sec_def.fiber_count) * sec_def.steel02_instance_stride,
+            sec_def.steel02_padded_count,
+        )
+    if sec_def.concrete02_padded_count > 0:
+        _fiber_section2d_commit_concrete02_family_simd[FLOAT64_SIMD_WIDTH](
+            sec_def,
+            (local_offset // sec_def.fiber_count) * sec_def.concrete02_instance_stride,
+            sec_def.concrete02_padded_count,
+        )
+    for j in range(len(sec_def.other_nonlinear_indices)):
+        _fiber_section2d_runtime_commit_slot(
+            sec_def, nonlinear_state_offset + sec_def.other_nonlinear_indices[j]
+        )
 
 
 fn fiber_section2d_revert_trial_from_offset(
+    mut sec_def: FiberSection2dDef,
     mut uniaxial_states: List[UniMaterialState],
     section_state_offset: Int,
     section_state_count: Int,
 ):
-    if section_state_offset + section_state_count > len(uniaxial_states):
-        abort("FiberSection2d section states out of range")
-    for i in range(section_state_count):
-        ref state = uniaxial_states[section_state_offset + i]
-        uniaxial_revert_trial(state)
+    var local_offset = _fiber_section2d_runtime_local_offset(
+        sec_def, section_state_offset, section_state_count
+    )
+    var nonlinear_state_offset = local_offset + sec_def.elastic_count
+    for j in range(len(sec_def.steel01_nonlinear_indices)):
+        _fiber_section2d_revert_steel01_slot(
+            sec_def, nonlinear_state_offset + sec_def.steel01_nonlinear_indices[j]
+        )
+    for j in range(len(sec_def.concrete01_nonlinear_indices)):
+        _fiber_section2d_revert_concrete01_slot(
+            sec_def, nonlinear_state_offset + sec_def.concrete01_nonlinear_indices[j]
+        )
+    if sec_def.steel02_padded_count > 0:
+        _fiber_section2d_revert_steel02_family_simd[FLOAT64_SIMD_WIDTH](
+            sec_def,
+            (local_offset // sec_def.fiber_count) * sec_def.steel02_instance_stride,
+            sec_def.steel02_padded_count,
+        )
+    if sec_def.concrete02_padded_count > 0:
+        _fiber_section2d_revert_concrete02_family_simd[FLOAT64_SIMD_WIDTH](
+            sec_def,
+            (local_offset // sec_def.fiber_count) * sec_def.concrete02_instance_stride,
+            sec_def.concrete02_padded_count,
+        )
+    for j in range(len(sec_def.other_nonlinear_indices)):
+        _fiber_section2d_runtime_revert_slot(
+            sec_def, nonlinear_state_offset + sec_def.other_nonlinear_indices[j]
+        )
 
 
 fn fiber_section2d_commit(
     section_index: Int,
+    mut defs: List[FiberSection2dDef],
     section_uniaxial_offsets: List[Int],
     section_uniaxial_counts: List[Int],
     mut uniaxial_states: List[UniMaterialState],
@@ -1409,11 +3469,13 @@ fn fiber_section2d_commit(
 
     var offset = section_uniaxial_offsets[section_index]
     var count = section_uniaxial_counts[section_index]
-    fiber_section2d_commit_from_offset(uniaxial_states, offset, count)
+    ref sec_def = defs[section_index]
+    fiber_section2d_commit_from_offset(sec_def, uniaxial_states, offset, count)
 
 
 fn fiber_section2d_revert_trial(
     section_index: Int,
+    mut defs: List[FiberSection2dDef],
     section_uniaxial_offsets: List[Int],
     section_uniaxial_counts: List[Int],
     mut uniaxial_states: List[UniMaterialState],
@@ -1425,24 +3487,93 @@ fn fiber_section2d_revert_trial(
 
     var offset = section_uniaxial_offsets[section_index]
     var count = section_uniaxial_counts[section_index]
-    fiber_section2d_revert_trial_from_offset(uniaxial_states, offset, count)
+    ref sec_def = defs[section_index]
+    fiber_section2d_revert_trial_from_offset(sec_def, uniaxial_states, offset, count)
 
 
 fn fiber_section2d_commit_all(
+    mut defs: List[FiberSection2dDef],
     section_uniaxial_offsets: List[Int],
     section_uniaxial_counts: List[Int],
     mut uniaxial_states: List[UniMaterialState],
 ):
     for i in range(len(section_uniaxial_offsets)):
-        fiber_section2d_commit(i, section_uniaxial_offsets, section_uniaxial_counts, uniaxial_states)
+        fiber_section2d_commit(
+            i, defs, section_uniaxial_offsets, section_uniaxial_counts, uniaxial_states
+        )
 
 
 fn fiber_section2d_revert_trial_all(
+    mut defs: List[FiberSection2dDef],
     section_uniaxial_offsets: List[Int],
     section_uniaxial_counts: List[Int],
     mut uniaxial_states: List[UniMaterialState],
 ):
     for i in range(len(section_uniaxial_offsets)):
         fiber_section2d_revert_trial(
-            i, section_uniaxial_offsets, section_uniaxial_counts, uniaxial_states
+            i, defs, section_uniaxial_offsets, section_uniaxial_counts, uniaxial_states
         )
+
+
+fn fiber_section2d_commit_runtime_all(mut defs: List[FiberSection2dDef]):
+    for s in range(len(defs)):
+        ref sec_def = defs[s]
+        if sec_def.fiber_count <= 0:
+            continue
+        var instance_count = sec_def.runtime_state_count // sec_def.fiber_count
+        for inst in range(instance_count):
+            var base = inst * sec_def.fiber_count + sec_def.elastic_count
+            for j in range(len(sec_def.steel01_nonlinear_indices)):
+                _fiber_section2d_commit_steel01_slot(
+                    sec_def, base + sec_def.steel01_nonlinear_indices[j]
+                )
+            for j in range(len(sec_def.concrete01_nonlinear_indices)):
+                _fiber_section2d_commit_concrete01_slot(
+                    sec_def, base + sec_def.concrete01_nonlinear_indices[j]
+                )
+            _fiber_section2d_commit_steel02_family_simd[FLOAT64_SIMD_WIDTH](
+                sec_def,
+                inst * sec_def.steel02_instance_stride,
+                sec_def.steel02_padded_count,
+            )
+            _fiber_section2d_commit_concrete02_family_simd[FLOAT64_SIMD_WIDTH](
+                sec_def,
+                inst * sec_def.concrete02_instance_stride,
+                sec_def.concrete02_padded_count,
+            )
+            for j in range(len(sec_def.other_nonlinear_indices)):
+                _fiber_section2d_runtime_commit_slot(
+                    sec_def, base + sec_def.other_nonlinear_indices[j]
+                )
+
+
+fn fiber_section2d_revert_trial_runtime_all(mut defs: List[FiberSection2dDef]):
+    for s in range(len(defs)):
+        ref sec_def = defs[s]
+        if sec_def.fiber_count <= 0:
+            continue
+        var instance_count = sec_def.runtime_state_count // sec_def.fiber_count
+        for inst in range(instance_count):
+            var base = inst * sec_def.fiber_count + sec_def.elastic_count
+            for j in range(len(sec_def.steel01_nonlinear_indices)):
+                _fiber_section2d_revert_steel01_slot(
+                    sec_def, base + sec_def.steel01_nonlinear_indices[j]
+                )
+            for j in range(len(sec_def.concrete01_nonlinear_indices)):
+                _fiber_section2d_revert_concrete01_slot(
+                    sec_def, base + sec_def.concrete01_nonlinear_indices[j]
+                )
+            _fiber_section2d_revert_steel02_family_simd[FLOAT64_SIMD_WIDTH](
+                sec_def,
+                inst * sec_def.steel02_instance_stride,
+                sec_def.steel02_padded_count,
+            )
+            _fiber_section2d_revert_concrete02_family_simd[FLOAT64_SIMD_WIDTH](
+                sec_def,
+                inst * sec_def.concrete02_instance_stride,
+                sec_def.concrete02_padded_count,
+            )
+            for j in range(len(sec_def.other_nonlinear_indices)):
+                _fiber_section2d_runtime_revert_slot(
+                    sec_def, base + sec_def.other_nonlinear_indices[j]
+                )

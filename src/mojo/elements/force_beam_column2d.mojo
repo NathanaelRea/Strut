@@ -190,7 +190,7 @@ fn _append_force_beam_column2d_section_batch_point(
 
 
 fn _evaluate_force_beam_column2d_section_batch(
-    sec_def: FiberSection2dDef,
+    mut sec_def: FiberSection2dDef,
     mut uniaxial_states: List[UniMaterialState],
     mut scratch: ForceBeamColumn2dScratch,
 ) -> Bool:
@@ -283,7 +283,7 @@ fn _max_abs3(a: Float64, b: Float64, c: Float64) -> Float64:
 
 
 fn _fiber_section2d_set_trial_from_offset(
-    sec_def: FiberSection2dDef,
+    mut sec_def: FiberSection2dDef,
     mut uniaxial_states: List[UniMaterialState],
     section_state_offset: Int,
     section_state_count: Int,
@@ -609,7 +609,7 @@ fn _force_beam_column2d_exact_elastic_state(
     weights: List[Float64],
     section_load_axial: List[Float64],
     section_load_moment: List[Float64],
-    sec_def: FiberSection2dDef,
+    mut sec_def: FiberSection2dDef,
     fibers: List[FiberCell],
     uniaxial_defs: List[UniMaterialDef],
     mut uniaxial_states: List[UniMaterialState],
@@ -734,7 +734,7 @@ fn _force_beam_column2d_initial_basic_tangent(
     L: Float64,
     xis: List[Float64],
     weights: List[Float64],
-    sec_def: FiberSection2dDef,
+    mut sec_def: FiberSection2dDef,
     fibers: List[FiberCell],
     uniaxial_defs: List[UniMaterialDef],
 ) -> (
@@ -801,7 +801,7 @@ fn _force_beam_column2d_initial_basic_tangent(
 
 fn _force_beam_column2d_try_increment(
     L: Float64,
-    sec_def: FiberSection2dDef,
+    mut sec_def: FiberSection2dDef,
     fibers: List[FiberCell],
     uniaxial_defs: List[UniMaterialDef],
     mut uniaxial_states: List[UniMaterialState],
@@ -1139,7 +1139,7 @@ fn force_beam_column2d_global_tangent_and_internal(
     x2: Float64,
     y2: Float64,
     u_elem_global: List[Float64],
-    sec_def: FiberSection2dDef,
+    mut sec_def: FiberSection2dDef,
     fibers: List[FiberCell],
     uniaxial_defs: List[UniMaterialDef],
     mut uniaxial_states: List[UniMaterialState],
@@ -1195,7 +1195,7 @@ fn force_beam_column2d_global_tangent_and_internal(
     x2: Float64,
     y2: Float64,
     u_elem_global: List[Float64],
-    sec_def: FiberSection2dDef,
+    mut sec_def: FiberSection2dDef,
     fibers: List[FiberCell],
     uniaxial_defs: List[UniMaterialDef],
     mut uniaxial_states: List[UniMaterialState],
@@ -1248,7 +1248,7 @@ fn force_beam_column2d_global_tangent_and_internal(
     elem_load_offsets: List[Int],
     elem_load_pool: List[Int],
     load_scale: Float64,
-    sec_def: FiberSection2dDef,
+    mut sec_def: FiberSection2dDef,
     fibers: List[FiberCell],
     uniaxial_defs: List[UniMaterialDef],
     mut uniaxial_states: List[UniMaterialState],
@@ -1306,7 +1306,7 @@ fn force_beam_column2d_global_tangent_and_internal(
     elem_load_offsets: List[Int],
     elem_load_pool: List[Int],
     load_scale: Float64,
-    sec_def: FiberSection2dDef,
+    mut sec_def: FiberSection2dDef,
     fibers: List[FiberCell],
     uniaxial_defs: List[UniMaterialDef],
     mut uniaxial_states: List[UniMaterialState],

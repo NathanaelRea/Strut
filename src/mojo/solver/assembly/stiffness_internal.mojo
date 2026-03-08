@@ -88,7 +88,7 @@ fn assemble_global_stiffness_typed(
     force_basic_offsets: List[Int],
     force_basic_counts: List[Int],
     mut force_basic_q: List[Float64],
-    fiber_section_defs: List[FiberSection2dDef],
+    mut fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
     fiber_section3d_defs: List[FiberSection3dDef],
@@ -153,7 +153,7 @@ fn assemble_global_stiffness_typed(
     force_basic_offsets: List[Int],
     force_basic_counts: List[Int],
     mut force_basic_q: List[Float64],
-    fiber_section_defs: List[FiberSection2dDef],
+    mut fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
     fiber_section3d_defs: List[FiberSection3dDef],
@@ -222,7 +222,7 @@ fn assemble_link_stiffness_typed(
     force_basic_offsets: List[Int],
     force_basic_counts: List[Int],
     mut force_basic_q: List[Float64],
-    fiber_section_defs: List[FiberSection2dDef],
+    mut fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
     fiber_section3d_defs: List[FiberSection3dDef],
@@ -327,7 +327,7 @@ fn assemble_internal_forces_typed_soa(
     force_basic_offsets: List[Int],
     force_basic_counts: List[Int],
     mut force_basic_q: List[Float64],
-    fiber_section_defs: List[FiberSection2dDef],
+    mut fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
     fiber_section3d_defs: List[FiberSection3dDef],
@@ -438,7 +438,7 @@ fn assemble_internal_forces_typed_soa(
     force_basic_offsets: List[Int],
     force_basic_counts: List[Int],
     mut force_basic_q: List[Float64],
-    fiber_section_defs: List[FiberSection2dDef],
+    mut fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
     fiber_section3d_defs: List[FiberSection3dDef],
@@ -550,7 +550,7 @@ fn assemble_internal_forces_typed_soa(
     force_basic_offsets: List[Int],
     force_basic_counts: List[Int],
     mut force_basic_q: List[Float64],
-    fiber_section_defs: List[FiberSection2dDef],
+    mut fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
     fiber_section3d_defs: List[FiberSection3dDef],
@@ -660,7 +660,7 @@ fn assemble_internal_forces_typed(
     force_basic_offsets: List[Int],
     force_basic_counts: List[Int],
     mut force_basic_q: List[Float64],
-    fiber_section_defs: List[FiberSection2dDef],
+    mut fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
     fiber_section3d_defs: List[FiberSection3dDef],
@@ -725,7 +725,7 @@ fn assemble_internal_forces_typed(
     force_basic_offsets: List[Int],
     force_basic_counts: List[Int],
     mut force_basic_q: List[Float64],
-    fiber_section_defs: List[FiberSection2dDef],
+    mut fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
     fiber_section3d_defs: List[FiberSection3dDef],
@@ -821,7 +821,7 @@ fn assemble_global_stiffness_typed_soa(
     force_basic_offsets: List[Int],
     force_basic_counts: List[Int],
     mut force_basic_q: List[Float64],
-    fiber_section_defs: List[FiberSection2dDef],
+    mut fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
     fiber_section3d_defs: List[FiberSection3dDef],
@@ -933,7 +933,7 @@ fn assemble_global_stiffness_typed_soa(
     force_basic_offsets: List[Int],
     force_basic_counts: List[Int],
     mut force_basic_q: List[Float64],
-    fiber_section_defs: List[FiberSection2dDef],
+    mut fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
     fiber_section3d_defs: List[FiberSection3dDef],
@@ -1070,7 +1070,7 @@ fn assemble_global_stiffness_and_internal_soa(
     force_basic_offsets: List[Int],
     force_basic_counts: List[Int],
     mut force_basic_q: List[Float64],
-    fiber_section_defs: List[FiberSection2dDef],
+    mut fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
     fiber_section3d_defs: List[FiberSection3dDef],
@@ -1204,7 +1204,7 @@ fn assemble_global_stiffness_and_internal_soa(
     force_basic_offsets: List[Int],
     force_basic_counts: List[Int],
     mut force_basic_q: List[Float64],
-    fiber_section_defs: List[FiberSection2dDef],
+    mut fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
     fiber_section3d_defs: List[FiberSection3dDef],
@@ -1612,7 +1612,7 @@ fn assemble_global_stiffness_and_internal_soa(
             var sec_index = fiber_section_index_by_id[elem_section_ids[e]]
             if sec_index < 0 or sec_index >= len(fiber_section_defs):
                 abort("zeroLengthSection fiber section not found")
-            var sec_def = fiber_section_defs[sec_index]
+            ref sec_def = fiber_section_defs[sec_index]
             var elem_offset = elem_uniaxial_offsets[e]
             var elem_state_count = elem_uniaxial_counts[e]
             if elem_state_count != sec_def.fiber_count:
@@ -1751,7 +1751,7 @@ fn assemble_global_stiffness_and_internal(
     force_basic_offsets: List[Int],
     force_basic_counts: List[Int],
     mut force_basic_q: List[Float64],
-    fiber_section_defs: List[FiberSection2dDef],
+    mut fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
     fiber_section3d_defs: List[FiberSection3dDef],
@@ -1820,7 +1820,7 @@ fn assemble_global_stiffness_and_internal(
     force_basic_offsets: List[Int],
     force_basic_counts: List[Int],
     mut force_basic_q: List[Float64],
-    fiber_section_defs: List[FiberSection2dDef],
+    mut fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
     fiber_section3d_defs: List[FiberSection3dDef],
@@ -1893,7 +1893,7 @@ fn assemble_global_stiffness_and_internal(
     force_basic_offsets: List[Int],
     force_basic_counts: List[Int],
     mut force_basic_q: List[Float64],
-    fiber_section_defs: List[FiberSection2dDef],
+    mut fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
     fiber_section3d_defs: List[FiberSection3dDef],
@@ -1972,7 +1972,7 @@ fn assemble_global_stiffness_and_internal(
     force_basic_offsets: List[Int],
     force_basic_counts: List[Int],
     mut force_basic_q: List[Float64],
-    fiber_section_defs: List[FiberSection2dDef],
+    mut fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
     fiber_section3d_defs: List[FiberSection3dDef],
@@ -2049,7 +2049,7 @@ fn _assemble_global_stiffness_and_internal_filtered(
     force_basic_offsets: List[Int],
     force_basic_counts: List[Int],
     mut force_basic_q: List[Float64],
-    fiber_section_defs: List[FiberSection2dDef],
+    mut fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
     fiber_section3d_defs: List[FiberSection3dDef],
@@ -2321,7 +2321,7 @@ fn _assemble_global_stiffness_and_internal_filtered(
                 var sec_index = fiber_section_index_by_id[elem.section]
                 if sec_index < 0 or sec_index >= len(fiber_section_defs):
                     abort("zeroLengthSection fiber section not found")
-                var sec_def = fiber_section_defs[sec_index]
+                ref sec_def = fiber_section_defs[sec_index]
                 var elem_offset = elem_uniaxial_offsets[e]
                 var elem_state_count = elem_uniaxial_counts[e]
                 if elem_state_count != sec_def.fiber_count:

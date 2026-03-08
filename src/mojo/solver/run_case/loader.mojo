@@ -40,6 +40,7 @@ from sections import (
     FiberSection3dDef,
     append_fiber_section2d_from_input,
     append_fiber_section3d_from_input,
+    fiber_section2d_runtime_alloc_instances,
 )
 from strut_io import py_len
 from tag_types import (
@@ -1489,32 +1490,20 @@ fn load_case_state_from_input(input: CaseInput) raises -> RunCaseState:
                 var sec_index = fiber_section_index_by_id[sec_id]
                 if sec_index < 0 or sec_index >= len(fiber_section_defs):
                     abort(beam_col_type + " fiber section not found")
-                var sec_def = fiber_section_defs[sec_index]
+                ref sec_def = fiber_section_defs[sec_index]
                 var num_int_pts = elem.num_int_pts
                 var state_count = num_int_pts * sec_def.fiber_count
+                elem_uniaxial_offsets[e] = fiber_section2d_runtime_alloc_instances(
+                    sec_def, num_int_pts
+                )
                 elem_uniaxial_counts[e] = state_count
-                for _ in range(num_int_pts):
-                    for i in range(sec_def.elastic_count):
-                        var def_index = sec_def.elastic_def_index[i]
-                        if def_index < 0 or def_index >= len(uniaxial_defs):
-                            abort(beam_col_type + " fiber material definition out of range")
-                        var mat_def = uniaxial_defs[def_index]
-                        var state_index = len(uniaxial_states)
-                        uniaxial_states.append(UniMaterialState(mat_def))
-                        uniaxial_state_defs.append(def_index)
-                        elem_uniaxial_state_ids.append(state_index)
-                    for i in range(sec_def.nonlinear_count):
-                        var def_index = sec_def.nonlinear_def_index[i]
-                        if def_index < 0 or def_index >= len(uniaxial_defs):
-                            abort(beam_col_type + " fiber material definition out of range")
-                        var mat_def = uniaxial_defs[def_index]
-                        var state_index = len(uniaxial_states)
-                        uniaxial_states.append(UniMaterialState(mat_def))
-                        uniaxial_state_defs.append(def_index)
-                        elem_uniaxial_state_ids.append(state_index)
-                        if not uni_mat_is_elastic(mat_def):
-                            used_nonelastic_uniaxial = True
-                            force_beam_has_nonelastic = True
+                for _ in range(state_count):
+                    elem_uniaxial_state_ids.append(-1)
+                for i in range(sec_def.nonlinear_count):
+                    var mat_def = sec_def.nonlinear_mat_defs[i]
+                    if not uni_mat_is_elastic(mat_def):
+                        used_nonelastic_uniaxial = True
+                        force_beam_has_nonelastic = True
             elif sec.type == "ElasticSection2d":
                 elem_uniaxial_counts[e] = 0
             else:
@@ -1528,32 +1517,20 @@ fn load_case_state_from_input(input: CaseInput) raises -> RunCaseState:
                 var sec_index = fiber_section_index_by_id[sec_id]
                 if sec_index < 0 or sec_index >= len(fiber_section_defs):
                     abort(beam_col_type + " fiber section not found")
-                var sec_def = fiber_section_defs[sec_index]
+                ref sec_def = fiber_section_defs[sec_index]
                 var num_int_pts = elem.num_int_pts
                 var state_count = num_int_pts * sec_def.fiber_count
+                elem_uniaxial_offsets[e] = fiber_section2d_runtime_alloc_instances(
+                    sec_def, num_int_pts
+                )
                 elem_uniaxial_counts[e] = state_count
-                for _ in range(num_int_pts):
-                    for i in range(sec_def.elastic_count):
-                        var def_index = sec_def.elastic_def_index[i]
-                        if def_index < 0 or def_index >= len(uniaxial_defs):
-                            abort(beam_col_type + " fiber material definition out of range")
-                        var mat_def = uniaxial_defs[def_index]
-                        var state_index = len(uniaxial_states)
-                        uniaxial_states.append(UniMaterialState(mat_def))
-                        uniaxial_state_defs.append(def_index)
-                        elem_uniaxial_state_ids.append(state_index)
-                    for i in range(sec_def.nonlinear_count):
-                        var def_index = sec_def.nonlinear_def_index[i]
-                        if def_index < 0 or def_index >= len(uniaxial_defs):
-                            abort(beam_col_type + " fiber material definition out of range")
-                        var mat_def = uniaxial_defs[def_index]
-                        var state_index = len(uniaxial_states)
-                        uniaxial_states.append(UniMaterialState(mat_def))
-                        uniaxial_state_defs.append(def_index)
-                        elem_uniaxial_state_ids.append(state_index)
-                        if not uni_mat_is_elastic(mat_def):
-                            used_nonelastic_uniaxial = True
-                            force_beam_has_nonelastic = True
+                for _ in range(state_count):
+                    elem_uniaxial_state_ids.append(-1)
+                for i in range(sec_def.nonlinear_count):
+                    var mat_def = sec_def.nonlinear_mat_defs[i]
+                    if not uni_mat_is_elastic(mat_def):
+                        used_nonelastic_uniaxial = True
+                        force_beam_has_nonelastic = True
             elif sec.type == "ElasticSection2d":
                 elem_uniaxial_counts[e] = 0
             else:
@@ -1615,27 +1592,16 @@ fn load_case_state_from_input(input: CaseInput) raises -> RunCaseState:
                 var sec_index = fiber_section_index_by_id[sec_id]
                 if sec_index < 0 or sec_index >= len(fiber_section_defs):
                     abort("zeroLengthSection fiber section not found")
-                var sec_def = fiber_section_defs[sec_index]
+                ref sec_def = fiber_section_defs[sec_index]
                 var state_count = sec_def.fiber_count
+                elem_uniaxial_offsets[e] = fiber_section2d_runtime_alloc_instances(
+                    sec_def, 1
+                )
                 elem_uniaxial_counts[e] = state_count
-                for i in range(sec_def.elastic_count):
-                    var def_index = sec_def.elastic_def_index[i]
-                    if def_index < 0 or def_index >= len(uniaxial_defs):
-                        abort("zeroLengthSection fiber material definition out of range")
-                    var mat_def = uniaxial_defs[def_index]
-                    var state_index = len(uniaxial_states)
-                    uniaxial_states.append(UniMaterialState(mat_def))
-                    uniaxial_state_defs.append(def_index)
-                    elem_uniaxial_state_ids.append(state_index)
+                for _ in range(state_count):
+                    elem_uniaxial_state_ids.append(-1)
                 for i in range(sec_def.nonlinear_count):
-                    var def_index = sec_def.nonlinear_def_index[i]
-                    if def_index < 0 or def_index >= len(uniaxial_defs):
-                        abort("zeroLengthSection fiber material definition out of range")
-                    var mat_def = uniaxial_defs[def_index]
-                    var state_index = len(uniaxial_states)
-                    uniaxial_states.append(UniMaterialState(mat_def))
-                    uniaxial_state_defs.append(def_index)
-                    elem_uniaxial_state_ids.append(state_index)
+                    var mat_def = sec_def.nonlinear_mat_defs[i]
                     if not uni_mat_is_elastic(mat_def):
                         used_nonelastic_uniaxial = True
             elif sec.type == "AggregatorSection2d":

@@ -46,7 +46,7 @@ fn _beam2d_curvature_shape(
 
 
 fn _fiber_section2d_set_trial_from_offset(
-    sec_def: FiberSection2dDef,
+    mut sec_def: FiberSection2dDef,
     mut uniaxial_states: List[UniMaterialState],
     section_state_offset: Int,
     section_state_count: Int,
@@ -69,7 +69,7 @@ fn disp_beam_column2d_global_tangent_and_internal(
     x2: Float64,
     y2: Float64,
     u_elem_global: List[Float64],
-    sec_def: FiberSection2dDef,
+    mut sec_def: FiberSection2dDef,
     fibers: List[FiberCell],
     uniaxial_defs: List[UniMaterialDef],
     mut uniaxial_states: List[UniMaterialState],
@@ -122,7 +122,7 @@ fn disp_beam_column2d_global_tangent_and_internal(
     elem_load_offsets: List[Int],
     elem_load_pool: List[Int],
     load_scale: Float64,
-    sec_def: FiberSection2dDef,
+    mut sec_def: FiberSection2dDef,
     fibers: List[FiberCell],
     uniaxial_defs: List[UniMaterialDef],
     mut uniaxial_states: List[UniMaterialState],

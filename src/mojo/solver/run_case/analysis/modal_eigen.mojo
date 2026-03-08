@@ -66,7 +66,7 @@ fn run_modal_eigen(
     force_basic_offsets: List[Int],
     force_basic_counts: List[Int],
     mut force_basic_q: List[Float64],
-    fiber_section_defs: List[FiberSection2dDef],
+    mut fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
     fiber_section3d_defs: List[FiberSection3dDef],

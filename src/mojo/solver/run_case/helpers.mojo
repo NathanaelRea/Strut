@@ -1258,7 +1258,7 @@ fn _force_beam_column2d_element_force_global(
     sections_by_id: List[SectionInput],
     ndf: Int,
     u: List[Float64],
-    fiber_section_defs: List[FiberSection2dDef],
+    mut fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
     uniaxial_defs: List[UniMaterialDef],
@@ -1305,7 +1305,7 @@ fn _force_beam_column2d_element_force_global(
     sections_by_id: List[SectionInput],
     ndf: Int,
     u: List[Float64],
-    fiber_section_defs: List[FiberSection2dDef],
+    mut fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
     uniaxial_defs: List[UniMaterialDef],
@@ -1414,7 +1414,7 @@ fn _force_beam_column2d_element_force_global(
     var sec_index = fiber_section_index_by_id[sec_id]
     if sec_index < 0 or sec_index >= len(fiber_section_defs):
         abort(beam_col_type + " fiber section not found")
-    var sec_def = fiber_section_defs[sec_index]
+    ref sec_def = fiber_section_defs[sec_index]
 
     var elem_offset = elem_uniaxial_offsets[elem_index]
     var elem_state_count = elem_uniaxial_counts[elem_index]
@@ -1604,7 +1604,7 @@ fn _disp_beam_column2d_element_force_global(
     sections_by_id: List[SectionInput],
     ndf: Int,
     u: List[Float64],
-    fiber_section_defs: List[FiberSection2dDef],
+    mut fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
     uniaxial_defs: List[UniMaterialDef],
@@ -1645,7 +1645,7 @@ fn _disp_beam_column2d_element_force_global(
     sections_by_id: List[SectionInput],
     ndf: Int,
     u: List[Float64],
-    fiber_section_defs: List[FiberSection2dDef],
+    mut fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
     uniaxial_defs: List[UniMaterialDef],
@@ -1745,7 +1745,7 @@ fn _disp_beam_column2d_element_force_global(
     var sec_index = fiber_section_index_by_id[sec_id]
     if sec_index < 0 or sec_index >= len(fiber_section_defs):
         abort(beam_col_type + " fiber section not found")
-    var sec_def = fiber_section_defs[sec_index]
+    ref sec_def = fiber_section_defs[sec_index]
 
     var elem_offset = elem_uniaxial_offsets[elem_index]
     var elem_state_count = elem_uniaxial_counts[elem_index]
@@ -1837,7 +1837,7 @@ fn _sync_force_beam_column2d_committed_basic_states(
 
 
 fn _fiber_section_force_from_offset(
-    sec_def: FiberSection2dDef,
+    mut sec_def: FiberSection2dDef,
     fibers: List[FiberCell],
     uniaxial_defs: List[UniMaterialDef],
     mut uniaxial_states: List[UniMaterialState],
@@ -1868,7 +1868,7 @@ fn _force_beam_column2d_section_response(
     load_scale: Float64,
     nodes: List[NodeInput],
     sections_by_id: List[SectionInput],
-    fiber_section_defs: List[FiberSection2dDef],
+    mut fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
     uniaxial_defs: List[UniMaterialDef],
@@ -2008,7 +2008,7 @@ fn _disp_beam_column2d_section_response(
     load_scale: Float64,
     nodes: List[NodeInput],
     sections_by_id: List[SectionInput],
-    fiber_section_defs: List[FiberSection2dDef],
+    mut fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
     uniaxial_defs: List[UniMaterialDef],
@@ -2089,7 +2089,7 @@ fn _disp_beam_column2d_section_response(
     var sec_index = fiber_section_index_by_id[sec_id]
     if sec_index < 0 or sec_index >= len(fiber_section_defs):
         abort("section recorder fiber section not found")
-    var sec_def = fiber_section_defs[sec_index]
+    ref sec_def = fiber_section_defs[sec_index]
     var elem_offset = elem_uniaxial_offsets[elem_index]
     var fibers_per_section = sec_def.fiber_count
     var ip_offset = elem_offset + ip * fibers_per_section
@@ -2376,7 +2376,7 @@ fn _section_response_for_recorder(
     load_scale: Float64,
     nodes: List[NodeInput],
     sections_by_id: List[SectionInput],
-    fiber_section_defs: List[FiberSection2dDef],
+    mut fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
     fiber_section3d_defs: List[FiberSection3dDef],
@@ -2551,7 +2551,7 @@ fn _element_force_global_for_recorder(
     u: List[Float64],
     nodes: List[NodeInput],
     sections_by_id: List[SectionInput],
-    fiber_section_defs: List[FiberSection2dDef],
+    mut fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
     fiber_section3d_defs: List[FiberSection3dDef],
@@ -2610,7 +2610,7 @@ fn _element_force_global_for_recorder(
     load_scale: Float64,
     nodes: List[NodeInput],
     sections_by_id: List[SectionInput],
-    fiber_section_defs: List[FiberSection2dDef],
+    mut fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
     fiber_section3d_defs: List[FiberSection3dDef],
@@ -2773,7 +2773,7 @@ fn _element_local_force_for_recorder(
     u: List[Float64],
     nodes: List[NodeInput],
     sections_by_id: List[SectionInput],
-    fiber_section_defs: List[FiberSection2dDef],
+    mut fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
     fiber_section3d_defs: List[FiberSection3dDef],

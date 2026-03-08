@@ -10,7 +10,12 @@ from elements import (
 from materials import UniMaterialDef, UniMaterialState, uniaxial_commit_all
 from os import abort
 from python import Python
-from sections import FiberCell, FiberSection2dDef, FiberSection3dDef
+from sections import (
+    FiberCell,
+    FiberSection2dDef,
+    FiberSection3dDef,
+    fiber_section2d_commit_runtime_all,
+)
 from sys import simd_width_of
 
 from solver.run_case.linear_solver_backend import (
@@ -379,7 +384,7 @@ fn run_transient_linear(
     recorder_dofs_pool: List[Int],
     recorder_sections_pool: List[Int],
     elem_id_to_index: List[Int],
-    fiber_section_defs: List[FiberSection2dDef],
+    mut fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
     fiber_section3d_defs: List[FiberSection3dDef],
@@ -1620,6 +1625,7 @@ fn run_transient_linear(
                     commit_start_us,
                 )
             uniaxial_commit_all(uniaxial_states)
+            fiber_section2d_commit_runtime_all(fiber_section_defs)
             if do_profile:
                 var t_commit_end = Int(time.perf_counter_ns())
                 var commit_end_us = (t_commit_end - t0) // 1000

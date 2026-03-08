@@ -63,7 +63,7 @@ fn _assemble_frame2d_soa_indices(
     force_basic_offsets: List[Int],
     force_basic_counts: List[Int],
     mut force_basic_q: List[Float64],
-    fiber_section_defs: List[FiberSection2dDef],
+    mut fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
     mut force_beam_column2d_scratch: ForceBeamColumn2dScratch,
@@ -188,7 +188,7 @@ fn _assemble_frame2d_soa_indices(
             continue
 
         var sec_index = fiber_section_index_by_id[elem_section_ids[e]]
-        var sec_def = fiber_section_defs[sec_index]
+        ref sec_def = fiber_section_defs[sec_index]
         var elem_offset = elem_uniaxial_offsets[e]
         var elem_state_count = elem_uniaxial_counts[e]
         var geom_name = _geom_transf_name_from_tag(elem_geom_tags[e])
@@ -333,7 +333,7 @@ fn _assemble_frame2d_element(
     force_basic_offsets: List[Int],
     force_basic_counts: List[Int],
     mut force_basic_q: List[Float64],
-    fiber_section_defs: List[FiberSection2dDef],
+    mut fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
     mut force_beam_column2d_scratch: ForceBeamColumn2dScratch,
@@ -482,7 +482,7 @@ fn _assemble_frame2d_element(
         return
 
     var sec_index = fiber_section_index_by_id[elem.section]
-    var sec_def = fiber_section_defs[sec_index]
+    ref sec_def = fiber_section_defs[sec_index]
     var elem_offset = elem_uniaxial_offsets[e]
     var elem_state_count = elem_uniaxial_counts[e]
     var k_elem6: List[List[Float64]] = []

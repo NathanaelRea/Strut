@@ -36,7 +36,13 @@ from solver.run_case.input_types import (
     SolverAttemptInput,
 )
 from solver.time_series import TimeSeriesInput, eval_time_series_input, find_time_series_input
-from sections import FiberCell, FiberSection2dDef, FiberSection3dDef
+from sections import (
+    FiberCell,
+    FiberSection2dDef,
+    FiberSection3dDef,
+    fiber_section2d_commit_runtime_all,
+    fiber_section2d_revert_trial_runtime_all,
+)
 from tag_types import (
     AnalysisAlgorithmTag,
     AnalysisSystemTag,
@@ -222,7 +228,7 @@ fn _static_load_control_residual(
     force_basic_offsets: List[Int],
     force_basic_counts: List[Int],
     mut force_basic_q: List[Float64],
-    fiber_section_defs: List[FiberSection2dDef],
+    mut fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
     fiber_section3d_defs: List[FiberSection3dDef],
@@ -341,7 +347,7 @@ fn _static_displacement_control_residual(
     force_basic_offsets: List[Int],
     force_basic_counts: List[Int],
     mut force_basic_q: List[Float64],
-    fiber_section_defs: List[FiberSection2dDef],
+    mut fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
     fiber_section3d_defs: List[FiberSection3dDef],
@@ -599,7 +605,9 @@ fn _uniaxial_revert_trial_active_states(
 ):
     for i in range(len(elem_uniaxial_state_ids)):
         var state_id = elem_uniaxial_state_ids[i]
-        if state_id < 0 or state_id >= len(uniaxial_states):
+        if state_id < 0:
+            continue
+        if state_id >= len(uniaxial_states):
             abort("active uniaxial state id out of range")
         ref state = uniaxial_states[state_id]
         uniaxial_revert_trial(state)
@@ -610,7 +618,9 @@ fn _uniaxial_commit_active_states(
 ):
     for i in range(len(elem_uniaxial_state_ids)):
         var state_id = elem_uniaxial_state_ids[i]
-        if state_id < 0 or state_id >= len(uniaxial_states):
+        if state_id < 0:
+            continue
+        if state_id >= len(uniaxial_states):
             abort("active uniaxial state id out of range")
         ref state = uniaxial_states[state_id]
         uniaxial_commit(state)
@@ -667,7 +677,7 @@ fn run_static_nonlinear_load_control(
     force_basic_offsets: List[Int],
     force_basic_counts: List[Int],
     mut force_basic_q: List[Float64],
-    fiber_section_defs: List[FiberSection2dDef],
+    mut fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
     fiber_section3d_defs: List[FiberSection3dDef],
@@ -917,6 +927,7 @@ fn run_static_nonlinear_load_control(
                 revert_start_us,
             )
         _uniaxial_revert_trial_active_states(uniaxial_states, elem_uniaxial_state_ids)
+        fiber_section2d_revert_trial_runtime_all(fiber_section_defs)
         if do_profile:
             var t_revert_end = Int(time.perf_counter_ns())
             var revert_end_us = (t_revert_end - t0) // 1000
@@ -1039,6 +1050,7 @@ fn run_static_nonlinear_load_control(
                     u[i] = u_base[i]
                 force_basic_q = force_basic_q_base.copy()
                 uniaxial_states = uniaxial_states_base.copy()
+                fiber_section2d_revert_trial_runtime_all(fiber_section_defs)
                 attempt_algorithm_tag = retry_algorithm_tags[attempt]
                 attempt_algorithm_mode = retry_algorithm_modes[attempt]
                 attempt_line_search_eta = retry_line_search_etas[attempt]
@@ -1599,6 +1611,7 @@ fn run_static_nonlinear_load_control(
                 commit_start_us,
             )
         _uniaxial_commit_active_states(uniaxial_states, elem_uniaxial_state_ids)
+        fiber_section2d_commit_runtime_all(fiber_section_defs)
         if do_profile:
             var t_commit_end = Int(time.perf_counter_ns())
             var commit_end_us = (t_commit_end - t0) // 1000
@@ -2098,7 +2111,7 @@ fn run_static_nonlinear_displacement_control(
     force_basic_offsets: List[Int],
     force_basic_counts: List[Int],
     mut force_basic_q: List[Float64],
-    fiber_section_defs: List[FiberSection2dDef],
+    mut fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
     fiber_section3d_defs: List[FiberSection3dDef],
@@ -2445,6 +2458,7 @@ fn run_static_nonlinear_displacement_control(
                 revert_start_us,
             )
         _uniaxial_revert_trial_active_states(uniaxial_states, elem_uniaxial_state_ids)
+        fiber_section2d_revert_trial_runtime_all(fiber_section_defs)
         if do_profile:
             var t_revert_end = Int(time.perf_counter_ns())
             var revert_end_us = (t_revert_end - t0) // 1000
@@ -2523,6 +2537,7 @@ fn run_static_nonlinear_displacement_control(
                         u[i] = u_base[i]
                     force_basic_q = force_basic_q_base.copy()
                     uniaxial_states = uniaxial_states_base.copy()
+                    fiber_section2d_revert_trial_runtime_all(fiber_section_defs)
                     load_factor = lambda_base
                     if attempt > 0:
                         attempt_algorithm_tag = retry_algorithm_tags[attempt]
@@ -3073,6 +3088,7 @@ fn run_static_nonlinear_displacement_control(
                         u[i] = u_base[i]
                     force_basic_q = force_basic_q_base.copy()
                     uniaxial_states = uniaxial_states_base.copy()
+                    fiber_section2d_revert_trial_runtime_all(fiber_section_defs)
                     load_factor = lambda_base
                     continue
                 abort("static_nonlinear did not converge (DisplacementControl)")
@@ -3153,6 +3169,7 @@ fn run_static_nonlinear_displacement_control(
                     commit_start_us,
                 )
             _uniaxial_commit_active_states(uniaxial_states, elem_uniaxial_state_ids)
+            fiber_section2d_commit_runtime_all(fiber_section_defs)
             if do_profile:
                 var t_commit_end = Int(time.perf_counter_ns())
                 var commit_end_us = (t_commit_end - t0) // 1000

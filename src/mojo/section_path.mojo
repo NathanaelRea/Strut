@@ -247,6 +247,7 @@ def run_section_path():
             )
             fiber_section2d_commit(
                 0,
+                defs,
                 section_uniaxial_offsets,
                 section_uniaxial_counts,
                 uniaxial_states,
