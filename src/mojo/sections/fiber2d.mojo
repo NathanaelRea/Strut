@@ -55,6 +55,7 @@ struct FiberSection2dDef(Defaultable, Movable, ImplicitlyCopyable):
     var nonlinear_y_rel: List[Float64]
     var nonlinear_area: List[Float64]
     var nonlinear_def_index: List[Int]
+    var nonlinear_mat_defs: List[UniMaterialDef]
 
     fn __init__(out self):
         self.fiber_offset = 0
@@ -73,6 +74,7 @@ struct FiberSection2dDef(Defaultable, Movable, ImplicitlyCopyable):
         self.nonlinear_y_rel = []
         self.nonlinear_area = []
         self.nonlinear_def_index = []
+        self.nonlinear_mat_defs = []
 
     fn __init__(out self, fiber_offset: Int, fiber_count: Int, y_bar: Float64):
         self.fiber_offset = fiber_offset
@@ -91,6 +93,7 @@ struct FiberSection2dDef(Defaultable, Movable, ImplicitlyCopyable):
         self.nonlinear_y_rel = []
         self.nonlinear_area = []
         self.nonlinear_def_index = []
+        self.nonlinear_mat_defs = []
 
     fn __copyinit__(out self, existing: Self):
         self.fiber_offset = existing.fiber_offset
@@ -109,6 +112,7 @@ struct FiberSection2dDef(Defaultable, Movable, ImplicitlyCopyable):
         self.nonlinear_y_rel = existing.nonlinear_y_rel.copy()
         self.nonlinear_area = existing.nonlinear_area.copy()
         self.nonlinear_def_index = existing.nonlinear_def_index.copy()
+        self.nonlinear_mat_defs = existing.nonlinear_mat_defs.copy()
 
 
 struct FiberSection2dResponse(Defaultable, Movable, ImplicitlyCopyable):
@@ -181,6 +185,7 @@ fn _build_fiber_section2d_def(
             sec_def.nonlinear_y_rel.append(y_rel)
             sec_def.nonlinear_area.append(cell.area)
             sec_def.nonlinear_def_index.append(def_index)
+            sec_def.nonlinear_mat_defs.append(mat_def)
     sec_def.elastic_count = len(sec_def.elastic_y_rel)
     sec_def.nonlinear_count = len(sec_def.nonlinear_y_rel)
     var det = initial_k11 * initial_k22 - initial_k12 * initial_k12
@@ -659,7 +664,6 @@ fn fiber_section2d_init_states(
     mut uniaxial_state_defs: List[Int],
     mut section_uniaxial_offsets: List[Int],
     mut section_uniaxial_counts: List[Int],
-    mut section_uniaxial_state_ids: List[Int],
 ) -> Bool:
     section_uniaxial_offsets.resize(len(defs), 0)
     section_uniaxial_counts.resize(len(defs), 0)
@@ -667,7 +671,7 @@ fn fiber_section2d_init_states(
 
     for s in range(len(defs)):
         var sec_def = defs[s]
-        section_uniaxial_offsets[s] = len(section_uniaxial_state_ids)
+        section_uniaxial_offsets[s] = len(uniaxial_states)
         section_uniaxial_counts[s] = sec_def.fiber_count
         if sec_def.fiber_offset < 0 or sec_def.fiber_offset + sec_def.fiber_count > len(
             fibers
@@ -681,16 +685,18 @@ fn fiber_section2d_init_states(
             var state_index = len(uniaxial_states)
             uniaxial_states.append(UniMaterialState(mat_def))
             uniaxial_state_defs.append(def_index)
-            section_uniaxial_state_ids.append(state_index)
+            if state_index != section_uniaxial_offsets[s] + i:
+                abort("FiberSection2d elastic state layout must be contiguous")
         for i in range(sec_def.nonlinear_count):
+            var mat_def = sec_def.nonlinear_mat_defs[i]
             var def_index = sec_def.nonlinear_def_index[i]
-            if def_index < 0 or def_index >= len(uniaxial_defs):
-                abort("FiberSection2d fiber material definition out of range")
-            var mat_def = uniaxial_defs[def_index]
             var state_index = len(uniaxial_states)
             uniaxial_states.append(UniMaterialState(mat_def))
             uniaxial_state_defs.append(def_index)
-            section_uniaxial_state_ids.append(state_index)
+            if state_index != (
+                section_uniaxial_offsets[s] + sec_def.elastic_count + i
+            ):
+                abort("FiberSection2d nonlinear state layout must be contiguous")
             if not uni_mat_is_elastic(mat_def):
                 used_nonelastic = True
 
@@ -699,8 +705,6 @@ fn fiber_section2d_init_states(
 
 fn fiber_section2d_set_trial_from_offset(
     sec_def: FiberSection2dDef,
-    fibers: List[FiberCell],
-    uniaxial_defs: List[UniMaterialDef],
     mut uniaxial_states: List[UniMaterialState],
     section_state_offset: Int,
     section_state_count: Int,
@@ -709,10 +713,6 @@ fn fiber_section2d_set_trial_from_offset(
 ) -> FiberSection2dResponse:
     if section_state_count != sec_def.fiber_count:
         abort("FiberSection2d section state count mismatch")
-    if sec_def.fiber_offset < 0 or sec_def.fiber_offset + sec_def.fiber_count > len(
-        fibers
-    ):
-        abort("FiberSection2d fiber data out of range")
     if section_state_offset + section_state_count > len(uniaxial_states):
         abort("FiberSection2d section states out of range")
 
@@ -735,11 +735,7 @@ fn fiber_section2d_set_trial_from_offset(
         var y_rel = sec_def.nonlinear_y_rel[i]
         var eps = eps0 - y_rel * kappa
         var state_index = nonlinear_state_offset + i
-        var def_index = sec_def.nonlinear_def_index[i]
-        if def_index < 0 or def_index >= len(uniaxial_defs):
-            abort("FiberSection2d uniaxial definition index out of range")
-
-        var mat_def = uniaxial_defs[def_index]
+        var mat_def = sec_def.nonlinear_mat_defs[i]
         ref state = uniaxial_states[state_index]
         uniaxial_set_trial_strain(mat_def, state, eps)
 
@@ -758,11 +754,8 @@ fn fiber_section2d_set_trial_from_offset(
 fn fiber_section2d_set_trial(
     section_index: Int,
     defs: List[FiberSection2dDef],
-    fibers: List[FiberCell],
-    uniaxial_defs: List[UniMaterialDef],
     section_uniaxial_offsets: List[Int],
     section_uniaxial_counts: List[Int],
-    section_uniaxial_state_ids: List[Int],
     mut uniaxial_states: List[UniMaterialState],
     eps0: Float64,
     kappa: Float64,
@@ -779,13 +772,9 @@ fn fiber_section2d_set_trial(
     var count = section_uniaxial_counts[section_index]
     if count != sec_def.fiber_count:
         abort("FiberSection2d section state count mismatch")
-    if offset + count > len(section_uniaxial_state_ids):
-        abort("FiberSection2d section state ids out of range")
 
     return fiber_section2d_set_trial_from_offset(
         sec_def,
-        fibers,
-        uniaxial_defs,
         uniaxial_states,
         offset,
         count,
@@ -795,15 +784,10 @@ fn fiber_section2d_set_trial(
 
 
 fn fiber_section2d_commit_from_offset(
-    section_state_ids: List[Int],
     mut uniaxial_states: List[UniMaterialState],
     section_state_offset: Int,
     section_state_count: Int,
 ):
-    if section_state_offset < 0 or section_state_offset + section_state_count > len(
-        section_state_ids
-    ):
-        abort("FiberSection2d section state ids out of range")
     if section_state_offset + section_state_count > len(uniaxial_states):
         abort("FiberSection2d section states out of range")
     for i in range(section_state_count):
@@ -812,15 +796,10 @@ fn fiber_section2d_commit_from_offset(
 
 
 fn fiber_section2d_revert_trial_from_offset(
-    section_state_ids: List[Int],
     mut uniaxial_states: List[UniMaterialState],
     section_state_offset: Int,
     section_state_count: Int,
 ):
-    if section_state_offset < 0 or section_state_offset + section_state_count > len(
-        section_state_ids
-    ):
-        abort("FiberSection2d section state ids out of range")
     if section_state_offset + section_state_count > len(uniaxial_states):
         abort("FiberSection2d section states out of range")
     for i in range(section_state_count):
@@ -832,7 +811,6 @@ fn fiber_section2d_commit(
     section_index: Int,
     section_uniaxial_offsets: List[Int],
     section_uniaxial_counts: List[Int],
-    section_uniaxial_state_ids: List[Int],
     mut uniaxial_states: List[UniMaterialState],
 ):
     if section_index < 0 or section_index >= len(section_uniaxial_offsets):
@@ -842,22 +820,13 @@ fn fiber_section2d_commit(
 
     var offset = section_uniaxial_offsets[section_index]
     var count = section_uniaxial_counts[section_index]
-    if offset + count > len(section_uniaxial_state_ids):
-        abort("FiberSection2d section state ids out of range")
-
-    fiber_section2d_commit_from_offset(
-        section_uniaxial_state_ids,
-        uniaxial_states,
-        offset,
-        count,
-    )
+    fiber_section2d_commit_from_offset(uniaxial_states, offset, count)
 
 
 fn fiber_section2d_revert_trial(
     section_index: Int,
     section_uniaxial_offsets: List[Int],
     section_uniaxial_counts: List[Int],
-    section_uniaxial_state_ids: List[Int],
     mut uniaxial_states: List[UniMaterialState],
 ):
     if section_index < 0 or section_index >= len(section_uniaxial_offsets):
@@ -867,44 +836,24 @@ fn fiber_section2d_revert_trial(
 
     var offset = section_uniaxial_offsets[section_index]
     var count = section_uniaxial_counts[section_index]
-    if offset + count > len(section_uniaxial_state_ids):
-        abort("FiberSection2d section state ids out of range")
-
-    fiber_section2d_revert_trial_from_offset(
-        section_uniaxial_state_ids,
-        uniaxial_states,
-        offset,
-        count,
-    )
+    fiber_section2d_revert_trial_from_offset(uniaxial_states, offset, count)
 
 
 fn fiber_section2d_commit_all(
     section_uniaxial_offsets: List[Int],
     section_uniaxial_counts: List[Int],
-    section_uniaxial_state_ids: List[Int],
     mut uniaxial_states: List[UniMaterialState],
 ):
     for i in range(len(section_uniaxial_offsets)):
-        fiber_section2d_commit(
-            i,
-            section_uniaxial_offsets,
-            section_uniaxial_counts,
-            section_uniaxial_state_ids,
-            uniaxial_states,
-        )
+        fiber_section2d_commit(i, section_uniaxial_offsets, section_uniaxial_counts, uniaxial_states)
 
 
 fn fiber_section2d_revert_trial_all(
     section_uniaxial_offsets: List[Int],
     section_uniaxial_counts: List[Int],
-    section_uniaxial_state_ids: List[Int],
     mut uniaxial_states: List[UniMaterialState],
 ):
     for i in range(len(section_uniaxial_offsets)):
         fiber_section2d_revert_trial(
-            i,
-            section_uniaxial_offsets,
-            section_uniaxial_counts,
-            section_uniaxial_state_ids,
-            uniaxial_states,
+            i, section_uniaxial_offsets, section_uniaxial_counts, uniaxial_states
         )

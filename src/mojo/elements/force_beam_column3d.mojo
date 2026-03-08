@@ -832,8 +832,6 @@ fn _ensure_force_beam_column3d_load_cache(
 
 fn _fiber_section3d_set_trial_from_offset(
     sec_def: FiberSection3dDef,
-    fibers: List[FiberCell],
-    uniaxial_defs: List[UniMaterialDef],
     mut uniaxial_states: List[UniMaterialState],
     section_state_offset: Int,
     section_state_count: Int,
@@ -843,8 +841,6 @@ fn _fiber_section3d_set_trial_from_offset(
 ) -> FiberSection3dResponse:
     return fiber_section3d_set_trial_from_offset(
         sec_def,
-        fibers,
-        uniaxial_defs,
         uniaxial_states,
         section_state_offset,
         section_state_count,
@@ -875,8 +871,6 @@ fn _fiber_section3d_solve_for_force(
     while iter < max_iters:
         resp = _fiber_section3d_set_trial_from_offset(
             sec_def,
-            fibers,
-            uniaxial_defs,
             uniaxial_states,
             section_state_offset,
             section_state_count,
@@ -1094,8 +1088,6 @@ fn _force_beam_column3d_try_increment(
         var ip_state_offset = elem_state_offset + ip * fibers_per_section
         var resp_trial = _fiber_section3d_set_trial_from_offset(
             sec_def,
-            fibers,
-            uniaxial_defs,
             uniaxial_states,
             ip_state_offset,
             fibers_per_section,
@@ -1131,8 +1123,6 @@ fn _force_beam_column3d_try_increment(
 
         var init_resp = _fiber_section3d_set_trial_from_offset(
             sec_def,
-            fibers,
-            uniaxial_defs,
             uniaxial_states,
             ip_state_offset,
             fibers_per_section,
@@ -1280,8 +1270,6 @@ fn _force_beam_column3d_try_increment(
             var ip_state_offset = elem_state_offset + ip * fibers_per_section
             var resp_trial = _fiber_section3d_set_trial_from_offset(
                 sec_def,
-                fibers,
-                uniaxial_defs,
                 uniaxial_states,
                 ip_state_offset,
                 fibers_per_section,

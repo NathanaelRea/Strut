@@ -1633,8 +1633,6 @@ fn assemble_global_stiffness_and_internal_soa(
             )
             var resp = fiber_section2d_set_trial_from_offset(
                 sec_def,
-                fiber_section_cells,
-                uniaxial_defs,
                 uniaxial_states,
                 elem_offset,
                 elem_state_count,
@@ -2334,8 +2332,6 @@ fn _assemble_global_stiffness_and_internal_filtered(
                     abort("zeroLengthSection fiber state range out of bounds")
                 var resp = fiber_section2d_set_trial_from_offset(
                     sec_def,
-                    fiber_section_cells,
-                    uniaxial_defs,
                     uniaxial_states,
                     elem_offset,
                     elem_state_count,

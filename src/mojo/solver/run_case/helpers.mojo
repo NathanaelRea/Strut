@@ -1848,8 +1848,6 @@ fn _fiber_section_force_from_offset(
 ) raises -> List[Float64]:
     var resp = fiber_section2d_set_trial_from_offset(
         sec_def,
-        fibers,
-        uniaxial_defs,
         uniaxial_states,
         state_offset,
         state_count,

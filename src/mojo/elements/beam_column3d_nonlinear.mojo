@@ -123,8 +123,6 @@ fn _beam3d_add_axial_geometric_stiffness(
 
 fn _fiber_section3d_set_trial_from_offset(
     sec_def: FiberSection3dDef,
-    fibers: List[FiberCell],
-    uniaxial_defs: List[UniMaterialDef],
     mut uniaxial_states: List[UniMaterialState],
     section_state_offset: Int,
     section_state_count: Int,
@@ -134,8 +132,6 @@ fn _fiber_section3d_set_trial_from_offset(
 ) -> FiberSection3dResponse:
     return fiber_section3d_set_trial_from_offset(
         sec_def,
-        fibers,
-        uniaxial_defs,
         uniaxial_states,
         section_state_offset,
         section_state_count,
@@ -332,8 +328,6 @@ fn beam_column3d_fiber_global_tangent_and_internal(
 
         var resp = _fiber_section3d_set_trial_from_offset(
             sec_def,
-            fibers,
-            uniaxial_defs,
             uniaxial_states,
             elem_state_offset + ip * fibers_per_section,
             fibers_per_section,
@@ -528,8 +522,6 @@ fn beam_column3d_fiber_section_response(
 
     var resp = _fiber_section3d_set_trial_from_offset(
         sec_def,
-        fibers,
-        uniaxial_defs,
         uniaxial_states,
         elem_state_offset + ip * fibers_per_section,
         fibers_per_section,

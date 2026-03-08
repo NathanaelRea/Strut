@@ -47,8 +47,6 @@ fn _beam2d_curvature_shape(
 
 fn _fiber_section2d_set_trial_from_offset(
     sec_def: FiberSection2dDef,
-    fibers: List[FiberCell],
-    uniaxial_defs: List[UniMaterialDef],
     mut uniaxial_states: List[UniMaterialState],
     section_state_offset: Int,
     section_state_count: Int,
@@ -57,8 +55,6 @@ fn _fiber_section2d_set_trial_from_offset(
 ) -> FiberSection2dResponse:
     return fiber_section2d_set_trial_from_offset(
         sec_def,
-        fibers,
-        uniaxial_defs,
         uniaxial_states,
         section_state_offset,
         section_state_count,
@@ -184,8 +180,6 @@ fn disp_beam_column2d_global_tangent_and_internal(
         var ip_state_offset = elem_state_offset + ip * fibers_per_section
         var resp = _fiber_section2d_set_trial_from_offset(
             sec_def,
-            fibers,
-            uniaxial_defs,
             uniaxial_states,
             ip_state_offset,
             fibers_per_section,

@@ -204,7 +204,6 @@ def run_section_path():
         var uniaxial_state_defs: List[Int] = []
         var section_uniaxial_offsets: List[Int] = []
         var section_uniaxial_counts: List[Int] = []
-        var section_uniaxial_state_ids: List[Int] = []
         _ = fiber_section2d_init_states(
             defs,
             fibers,
@@ -213,7 +212,6 @@ def run_section_path():
             uniaxial_state_defs,
             section_uniaxial_offsets,
             section_uniaxial_counts,
-            section_uniaxial_state_ids,
         )
 
         out = String("eps0,kappa,N,Mz,k11,k12,k22\n")
@@ -224,11 +222,8 @@ def run_section_path():
             var resp = fiber_section2d_set_trial(
                 0,
                 defs,
-                fibers,
-                uniaxial_defs,
                 section_uniaxial_offsets,
                 section_uniaxial_counts,
-                section_uniaxial_state_ids,
                 uniaxial_states,
                 eps0,
                 kappa,
@@ -254,7 +249,6 @@ def run_section_path():
                 0,
                 section_uniaxial_offsets,
                 section_uniaxial_counts,
-                section_uniaxial_state_ids,
                 uniaxial_states,
             )
     elif sec_type == "FiberSection3d":
@@ -270,7 +264,6 @@ def run_section_path():
         var uniaxial_state_defs3d: List[Int] = []
         var section_uniaxial_offsets3d: List[Int] = []
         var section_uniaxial_counts3d: List[Int] = []
-        var section_uniaxial_state_ids3d: List[Int] = []
         _ = fiber_section3d_init_states(
             defs3d,
             fibers3d,
@@ -279,7 +272,6 @@ def run_section_path():
             uniaxial_state_defs3d,
             section_uniaxial_offsets3d,
             section_uniaxial_counts3d,
-            section_uniaxial_state_ids3d,
         )
 
         out = String("eps0,ky,kz,N,My,Mz,k11,k12,k13,k22,k23,k33\n")
@@ -293,11 +285,8 @@ def run_section_path():
             var resp = fiber_section3d_set_trial(
                 0,
                 defs3d,
-                fibers3d,
-                uniaxial_defs,
                 section_uniaxial_offsets3d,
                 section_uniaxial_counts3d,
-                section_uniaxial_state_ids3d,
                 uniaxial_states3d,
                 eps0,
                 ky,
@@ -334,7 +323,6 @@ def run_section_path():
                 0,
                 section_uniaxial_offsets3d,
                 section_uniaxial_counts3d,
-                section_uniaxial_state_ids3d,
                 uniaxial_states3d,
             )
     else:
