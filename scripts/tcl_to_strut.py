@@ -2944,8 +2944,6 @@ class TclStrutBuilder:
             "max_iters": analysis.get("max_iters", 20),
             "tol": analysis.get("tol", 1.0e-10),
         }
-        if "rel_tol" in analysis:
-            attempt["rel_tol"] = analysis["rel_tol"]
         if "algorithm_options" in analysis:
             attempt["algorithm_options"] = dict(analysis["algorithm_options"])
         return attempt
@@ -2965,10 +2963,6 @@ class TclStrutBuilder:
             ),
             "tol": attempt.get("fallback_tol", analysis.get("tol", 1.0e-10)),
         }
-        if "fallback_rel_tol" in attempt:
-            retry_attempt["rel_tol"] = attempt["fallback_rel_tol"]
-        elif "rel_tol" in analysis:
-            retry_attempt["rel_tol"] = analysis["rel_tol"]
         if "fallback_broyden_count" in attempt:
             retry_attempt["algorithm_options"] = {
                 "max_iters": attempt["fallback_broyden_count"]
@@ -3071,44 +3065,6 @@ class TclStrutBuilder:
                     analysis["step_retry"] = step_retry_payload
                     if self.integrator["type"] == "DisplacementControl":
                         analysis["integrator"]["max_cutbacks"] = 0
-            elif (
-                analysis["type"] == "static_nonlinear"
-                and self.integrator["type"] == "DisplacementControl"
-                and self.algorithm_name in {"Newton", "ModifiedNewton"}
-            ):
-                self._set_solver_chain_with_fallback(
-                    analysis,
-                    fallback_algorithm="ModifiedNewtonInitial",
-                    fallback_test_type="NormDispIncr",
-                    fallback_tol=self.current_test["tol"]
-                    if self.current_test
-                    else 1.0e-8,
-                    fallback_max_iters=max(
-                        2000,
-                        int(self.current_test["max_iters"])
-                        if self.current_test
-                        else 100,
-                    ),
-                )
-            if (
-                analysis["type"] == "static_nonlinear"
-                and self.integrator["type"] == "DisplacementControl"
-                and analysis["steps"] >= 500
-            ):
-                # Long displacement-controlled pushover stages (e.g., Ex5 static push)
-                # are highly sensitive to overly strict nonlinear tolerances.
-                analysis["integrator"]["max_cutbacks"] = max(
-                    int(analysis["integrator"].get("max_cutbacks", 8)), 12
-                )
-                if "tol" in analysis:
-                    analysis["tol"] = max(float(analysis["tol"]), 1.0e-6)
-                if "max_iters" in analysis:
-                    analysis["max_iters"] = max(int(analysis["max_iters"]), 20)
-                for attempt in analysis.get("solver_chain", []):
-                    if "tol" in attempt:
-                        attempt["tol"] = max(float(attempt["tol"]), 1.0e-6)
-                    if attempt.get("algorithm") != "ModifiedNewtonInitial" and "max_iters" in attempt:
-                        attempt["max_iters"] = max(int(attempt["max_iters"]), 20)
             stage = {"analysis": analysis}
             if self.current_pattern is not None:
                 stage["pattern"] = {
@@ -3220,21 +3176,6 @@ class TclStrutBuilder:
                         for attempt in step_retry.attempts
                     ],
                 ]
-            elif self.algorithm_name in {"ModifiedNewton", "Newton"}:
-                self._set_solver_chain_with_fallback(
-                    stage["analysis"],
-                    fallback_algorithm="ModifiedNewtonInitial",
-                    fallback_test_type="NormDispIncr",
-                    fallback_tol=self.current_test["tol"]
-                    if self.current_test
-                    else 1.0e-8,
-                    fallback_max_iters=max(
-                        1000,
-                        int(self.current_test["max_iters"])
-                        if self.current_test
-                        else 1000,
-                    ),
-                )
             if self.current_rayleigh is not None:
                 stage["rayleigh"] = dict(self.current_rayleigh)
             if self.pending_initialize:

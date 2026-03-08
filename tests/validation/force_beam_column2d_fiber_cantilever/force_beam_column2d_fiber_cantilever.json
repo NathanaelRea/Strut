@@ -58,7 +58,6 @@
     "steps": 3,
     "max_iters": 40,
     "tol": 1.0e-8,
-    "rel_tol": 1.0e-8,
     "integrator": {
       "type": "DisplacementControl",
       "node": 2,

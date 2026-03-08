@@ -66,8 +66,7 @@
     "type": "static_nonlinear",
     "steps": 5,
     "max_iters": 30,
-    "tol": 1.0e-10,
-    "rel_tol": 1.0e-8
+    "tol": 1.0e-10
   },
   "recorders": [
     {

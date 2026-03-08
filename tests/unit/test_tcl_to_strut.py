@@ -499,7 +499,7 @@ def test_convert_ex9_2d_aggregator_moment_curvature_wrapper(tmp_path: Path):
     assert recorders["node_displacement"]["raw_path"] == "data/Mphi.out"
 
 
-def test_convert_rcframepushover_preserves_explicit_step_retry():
+def test_convert_rcframepushover_preserves_runtime_test_without_injected_fallback():
     entry = (
         REPO_ROOT
         / "docs/agent-reference/OpenSeesExamplesBasic"
@@ -520,6 +520,10 @@ def test_convert_rcframepushover_preserves_explicit_step_retry():
     assert pushover["integrator"]["type"] == "DisplacementControl"
     assert pushover["algorithm"] == "Newton"
     assert "step_retry" not in pushover
+    assert pushover["test_type"] == "NormDispIncr"
+    assert pushover["tol"] == pytest.approx(1.0e-12)
+    assert pushover["max_iters"] == 10
+    assert pushover["test_print_flag"] == 3
     assert pushover["solver_chain"] == [
         {
             "algorithm": "Newton",

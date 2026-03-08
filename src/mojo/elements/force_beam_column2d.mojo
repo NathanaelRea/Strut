@@ -785,8 +785,8 @@ fn _force_beam_column2d_try_increment(
     ref section_load_axial = scratch.section_load_axial
     ref section_load_moment = scratch.section_load_moment
 
-    var elem_tol = 1.0e-8
-    var max_elem_iters = 80
+    var elem_tol = 1.0e-12
+    var max_elem_iters = 10
 
     var target_v0 = base_v0 + dv_trial0
     var target_v1 = base_v1 + dv_trial1
@@ -901,7 +901,12 @@ fn _force_beam_column2d_try_increment(
             + predictor_k[9] * dv_trial2
         )
 
-    for elem_iter in range(max_elem_iters):
+    var num_elem_iters = max_elem_iters
+    if use_initial_section_flexibility == 1:
+        # OpenSees gives the all-initial-tangent scheme a 10x iteration budget.
+        num_elem_iters = 10 * max_elem_iters
+
+    for elem_iter in range(num_elem_iters):
         var f00 = 0.0
         var f01 = 0.0
         var f02 = 0.0
@@ -1021,7 +1026,7 @@ fn _force_beam_column2d_try_increment(
         q1 += dq1
         q2 += dq2
 
-        if work_norm <= elem_tol or _max_abs3(residual_0, residual_1, residual_2) <= elem_tol:
+        if work_norm < elem_tol:
             force_basic_q_state[force_basic_q_offset] = q0
             force_basic_q_state[force_basic_q_offset + 1] = q1
             force_basic_q_state[force_basic_q_offset + 2] = q2
@@ -1357,9 +1362,9 @@ fn force_beam_column2d_global_tangent_and_internal(
         0.0,
     )
 
-    var tolerance = 1.0e-10
-    var max_subdivisions = 12
-    var subdivisions = 0
+    var tolerance = 1.0e-12
+    var max_subdivisions = 4
+    var num_subdivide = 1
     var cutback_factor = 10.0
 
     if all_materials_elastic:
@@ -1406,7 +1411,7 @@ fn force_beam_column2d_global_tangent_and_internal(
             remaining_2 = 0.0
             best_solved = solved
 
-    if not converged and _max_abs3(remaining_0, remaining_1, remaining_2) <= tolerance:
+    if not converged and _max_abs3(remaining_0, remaining_1, remaining_2) <= 1.0e-16:
         for use_initial in range(3):
             _restore_force_beam_column2d_predictor_state(
                 force_basic_q_state,
@@ -1453,7 +1458,7 @@ fn force_beam_column2d_global_tangent_and_internal(
             break
     elif not converged:
         while True:
-            if subdivisions > max_subdivisions:
+            if num_subdivide > max_subdivisions:
                 break
             var target_v0 = accepted_basic_0 + attempt_0
             var target_v1 = accepted_basic_1 + attempt_1
@@ -1530,7 +1535,7 @@ fn force_beam_column2d_global_tangent_and_internal(
                     attempt_0 = remaining_0
                     attempt_1 = remaining_1
                     attempt_2 = remaining_2
-                    subdivisions = 0
+                    num_subdivide = 1
                 scheme_success = True
                 break
 
@@ -1542,7 +1547,7 @@ fn force_beam_column2d_global_tangent_and_internal(
             attempt_0 /= cutback_factor
             attempt_1 /= cutback_factor
             attempt_2 /= cutback_factor
-            subdivisions += 1
+            num_subdivide += 1
 
     if not converged:
         _restore_force_beam_column2d_predictor_state(

@@ -462,9 +462,9 @@ def _validate_static_nonlinear_algorithm(algorithm_name, label):
 
 
 def _validate_static_nonlinear_test_type(test_type, label):
-    if test_type not in ("MaxDispIncr", "NormDispIncr", "NormUnbalance", "EnergyIncr"):
+    if test_type not in ("NormDispIncr", "NormUnbalance", "EnergyIncr"):
         raise ValueError(
-            f"{label} test_type must be MaxDispIncr, NormDispIncr, NormUnbalance, or EnergyIncr"
+            f"{label} test_type must be NormDispIncr, NormUnbalance, or EnergyIncr"
         )
 
 
@@ -489,10 +489,16 @@ def _validate_displacement_control_cutback(integrator, label):
 
 
 def _tcl_static_nonlinear_test_type(test_type):
-    # OpenSees Tcl exposes NormDispIncr but not MaxDispIncr for static analysis.
-    if test_type == "MaxDispIncr":
-        return "NormDispIncr"
     return test_type
+
+
+def _test_command_line(test_type, tol, max_iters, print_flag=None, extra_args=None):
+    words = ["test", str(test_type), str(tol), str(int(max_iters))]
+    if print_flag is not None:
+        words.append(str(int(print_flag)))
+    if extra_args:
+        words.extend(str(arg) for arg in extra_args)
+    return " ".join(words)
 
 
 def _normalize_nonlinear_solver_chain(
@@ -510,6 +516,10 @@ def _normalize_nonlinear_solver_chain(
     base_test_type = analysis.get("test_type", default_test_type)
     base_tol = analysis.get("tol", default_tol)
     base_max_iters = analysis.get("max_iters", default_max_iters)
+    if "rel_tol" in analysis:
+        raise ValueError(f"{analysis_label} rel_tol is not representable in Tcl/OpenSees")
+    base_print_flag = analysis.get("test_print_flag")
+    base_extra_args = analysis.get("test_extra_args")
     solver_chain = analysis.get("solver_chain")
     attempts = []
 
@@ -529,6 +539,12 @@ def _normalize_nonlinear_solver_chain(
             validate_test_type(test_type, f"{analysis_label} solver_chain[{index}]")
             tol = attempt.get("tol", base_tol)
             max_iters = attempt.get("max_iters", base_max_iters)
+            if "rel_tol" in attempt:
+                raise ValueError(
+                    f"{analysis_label} solver_chain[{index}] rel_tol is not representable in Tcl/OpenSees"
+                )
+            print_flag = attempt.get("test_print_flag", base_print_flag)
+            extra_args = attempt.get("test_extra_args", base_extra_args)
             attempts.append(
                 {
                     "algorithm": algorithm,
@@ -537,6 +553,8 @@ def _normalize_nonlinear_solver_chain(
                     "tcl_test_type": tcl_test_type(test_type),
                     "tol": tol,
                     "max_iters": max_iters,
+                    "test_print_flag": print_flag,
+                    "test_extra_args": extra_args,
                 }
             )
         return attempts
@@ -551,6 +569,8 @@ def _normalize_nonlinear_solver_chain(
             "tcl_test_type": tcl_test_type(base_test_type),
             "tol": base_tol,
             "max_iters": base_max_iters,
+            "test_print_flag": base_print_flag,
+            "test_extra_args": base_extra_args,
         }
     )
     return attempts
@@ -571,7 +591,14 @@ def _append_solver_chain_retry_lines(
     for attempt in solver_chain[1:]:
         lines.append(f"{indent}if {{${ok_var} != 0}} {{")
         lines.append(
-            f"{indent}  test {attempt['tcl_test_type']} {attempt['tol']} {attempt['max_iters']}"
+            f"{indent}  "
+            + _test_command_line(
+                attempt["tcl_test_type"],
+                attempt["tol"],
+                attempt["max_iters"],
+                attempt.get("test_print_flag"),
+                attempt.get("test_extra_args"),
+            )
         )
         lines.append(f"{indent}  algorithm {attempt['algorithm_cmd']}")
         if retry_integrator_line is not None:
@@ -579,7 +606,14 @@ def _append_solver_chain_retry_lines(
         lines.append(f"{indent}  set {ok_var} [{analyze_cmd}]")
         lines.append(f"{indent}}}")
     lines.append(
-        f"{indent}test {primary_attempt['tcl_test_type']} {primary_attempt['tol']} {primary_attempt['max_iters']}"
+        f"{indent}"
+        + _test_command_line(
+            primary_attempt["tcl_test_type"],
+            primary_attempt["tol"],
+            primary_attempt["max_iters"],
+            primary_attempt.get("test_print_flag"),
+            primary_attempt.get("test_extra_args"),
+        )
     )
     lines.append(f"{indent}algorithm {primary_attempt['algorithm_cmd']}")
 
@@ -1539,7 +1573,7 @@ def main():
                         stage_analysis,
                         analysis_label="static_nonlinear",
                         default_algorithm="Newton",
-                        default_test_type="MaxDispIncr",
+                        default_test_type="NormUnbalance",
                         default_tol=1.0e-10,
                         default_max_iters=20,
                         validate_test_type=_validate_static_nonlinear_test_type,
@@ -1547,7 +1581,14 @@ def main():
                     )
                     primary_attempt = solver_chain[0]
                     f.write(
-                        f"test {primary_attempt['tcl_test_type']} {primary_attempt['tol']} {primary_attempt['max_iters']}\n"
+                        _test_command_line(
+                            primary_attempt["tcl_test_type"],
+                            primary_attempt["tol"],
+                            primary_attempt["max_iters"],
+                            primary_attempt.get("test_print_flag"),
+                            primary_attempt.get("test_extra_args"),
+                        )
+                        + "\n"
                     )
                     f.write(f"algorithm {primary_attempt['algorithm_cmd']}\n")
                     integrator = stage_analysis.get("integrator", {"type": "LoadControl"})
@@ -1675,7 +1716,14 @@ def main():
                     beta = integrator.get("beta", 0.25)
                     primary_attempt = solver_chain[0]
                     f.write(
-                        f"test {primary_attempt['tcl_test_type']} {primary_attempt['tol']} {primary_attempt['max_iters']}\n"
+                        _test_command_line(
+                            primary_attempt["tcl_test_type"],
+                            primary_attempt["tol"],
+                            primary_attempt["max_iters"],
+                            primary_attempt.get("test_print_flag"),
+                            primary_attempt.get("test_extra_args"),
+                        )
+                        + "\n"
                     )
                     f.write(f"algorithm {primary_attempt['algorithm_cmd']}\n")
                     f.write(f"integrator Newmark {gamma} {beta}\n")
@@ -1773,7 +1821,7 @@ def main():
                 analysis,
                 analysis_label="static_nonlinear",
                 default_algorithm="Newton",
-                default_test_type="MaxDispIncr",
+                default_test_type="NormUnbalance",
                 default_tol=1.0e-10,
                 default_max_iters=20,
                 validate_test_type=_validate_static_nonlinear_test_type,
@@ -1781,7 +1829,14 @@ def main():
             )
             primary_attempt = solver_chain[0]
             f.write(
-                f"test {primary_attempt['tcl_test_type']} {primary_attempt['tol']} {primary_attempt['max_iters']}\n"
+                _test_command_line(
+                    primary_attempt["tcl_test_type"],
+                    primary_attempt["tol"],
+                    primary_attempt["max_iters"],
+                    primary_attempt.get("test_print_flag"),
+                    primary_attempt.get("test_extra_args"),
+                )
+                + "\n"
             )
             f.write(f"algorithm {primary_attempt['algorithm_cmd']}\n")
             integrator = analysis.get("integrator", {"type": "LoadControl"})
@@ -1890,7 +1945,14 @@ def main():
             beta = integrator.get("beta", 0.25)
             primary_attempt = solver_chain[0]
             f.write(
-                f"test {primary_attempt['tcl_test_type']} {primary_attempt['tol']} {primary_attempt['max_iters']}\n"
+                _test_command_line(
+                    primary_attempt["tcl_test_type"],
+                    primary_attempt["tol"],
+                    primary_attempt["max_iters"],
+                    primary_attempt.get("test_print_flag"),
+                    primary_attempt.get("test_extra_args"),
+                )
+                + "\n"
             )
             f.write(f"algorithm {primary_attempt['algorithm_cmd']}\n")
             f.write(f"integrator Newmark {gamma} {beta}\n")

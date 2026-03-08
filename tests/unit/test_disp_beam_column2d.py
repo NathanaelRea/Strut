@@ -235,6 +235,7 @@ def test_disp_beam_column2d_fiber_pdelta_geom_changes_response():
         "analysis": {
             "type": "static_nonlinear",
             "steps": 3,
+            "test_type": "NormDispIncr",
             "max_iters": 30,
             "tol": 1e-9,
             "integrator": {"type": "LoadControl"},

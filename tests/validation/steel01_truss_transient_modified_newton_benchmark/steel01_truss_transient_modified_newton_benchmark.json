@@ -76,7 +76,6 @@
     },
     "algorithm": "ModifiedNewton",
     "tol": 1.0e-8,
-    "rel_tol": 1.0e-6,
     "max_iters": 30
   },
   "parity_tolerance": {

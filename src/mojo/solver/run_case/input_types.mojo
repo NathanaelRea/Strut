@@ -548,7 +548,6 @@ struct AnalysisInput(Movable, ImplicitlyCopyable):
     var algorithm_tag: Int
     var max_iters: Int
     var tol: Float64
-    var rel_tol: Float64
     var test_type: String
     var test_type_tag: Int
     var step_retry_enabled: Bool
@@ -612,9 +611,8 @@ struct AnalysisInput(Movable, ImplicitlyCopyable):
         self.algorithm_tag = AnalysisAlgorithmTag.Newton
         self.max_iters = 20
         self.tol = 1.0e-10
-        self.rel_tol = 1.0e-8
-        self.test_type = "MaxDispIncr"
-        self.test_type_tag = NonlinearTestTypeTag.MaxDispIncr
+        self.test_type = "NormUnbalance"
+        self.test_type_tag = NonlinearTestTypeTag.NormUnbalance
         self.step_retry_enabled = False
         self.step_retry_restore_primary_after_success = True
         self.step_retry_continue_after_failure = False
@@ -658,18 +656,16 @@ struct SolverAttemptInput(Movable, ImplicitlyCopyable):
     var test_type_tag: Int
     var max_iters: Int
     var tol: Float64
-    var rel_tol: Float64
 
     fn __init__(out self):
         self.algorithm = ""
         self.algorithm_tag = AnalysisAlgorithmTag.Unknown
         self.broyden_count = 0
         self.line_search_eta = 1.0
-        self.test_type = "MaxDispIncr"
-        self.test_type_tag = NonlinearTestTypeTag.MaxDispIncr
+        self.test_type = "NormUnbalance"
+        self.test_type_tag = NonlinearTestTypeTag.NormUnbalance
         self.max_iters = 20
         self.tol = 1.0e-10
-        self.rel_tol = 1.0e-8
 
 
 struct MPConstraintInput(Movable, ImplicitlyCopyable):
@@ -1250,8 +1246,6 @@ fn analysis_algorithm_tag(algorithm_name: String) -> Int:
 
 
 fn nonlinear_test_type_tag(test_type_name: String) -> Int:
-    if test_type_name == "MaxDispIncr":
-        return NonlinearTestTypeTag.MaxDispIncr
     if test_type_name == "NormDispIncr":
         return NonlinearTestTypeTag.NormDispIncr
     if test_type_name == "NormUnbalance":
@@ -1343,8 +1337,9 @@ fn parse_analysis_input_from_raw(
     analysis.algorithm_tag = analysis_algorithm_tag(analysis.algorithm)
     analysis.max_iters = Int(analysis_raw.get("max_iters", 20))
     analysis.tol = Float64(analysis_raw.get("tol", 1.0e-10))
-    analysis.rel_tol = Float64(analysis_raw.get("rel_tol", 1.0e-8))
-    analysis.test_type = String(analysis_raw.get("test_type", "MaxDispIncr"))
+    if analysis_raw.__contains__("rel_tol"):
+        abort("analysis rel_tol is unsupported")
+    analysis.test_type = String(analysis_raw.get("test_type", "NormUnbalance"))
     analysis.test_type_tag = nonlinear_test_type_tag(analysis.test_type)
     var step_retry_raw = analysis_raw.get("step_retry", {})
     analysis.step_retry_restore_primary_after_success = Bool(
@@ -1484,9 +1479,8 @@ fn parse_analysis_input_from_raw(
                 attempt_raw.get("max_iters", analysis.max_iters)
             )
             attempt.tol = Float64(attempt_raw.get("tol", analysis.tol))
-            attempt.rel_tol = Float64(
-                attempt_raw.get("rel_tol", analysis.rel_tol)
-            )
+            if attempt_raw.__contains__("rel_tol"):
+                abort("solver_chain rel_tol is unsupported")
             solver_chain_pool.append(attempt^)
             analysis.solver_chain_count += 1
     else:
@@ -1503,7 +1497,6 @@ fn parse_analysis_input_from_raw(
         primary_attempt.test_type_tag = analysis.test_type_tag
         primary_attempt.max_iters = analysis.max_iters
         primary_attempt.tol = analysis.tol
-        primary_attempt.rel_tol = analysis.rel_tol
         solver_chain_pool.append(primary_attempt^)
         analysis.solver_chain_count += 1
     return analysis^

@@ -177,6 +177,53 @@ def test_force_beam_column2d_smoke_static_nonlinear_modified_newton():
     assert all(math.isfinite(value) for row in rows for value in row)
 
 
+def test_force_beam_column2d_newton_variants_match_on_elastic_case():
+    base_case = _base_force_beam_case(
+        {"id": 1, "type": "Elastic", "params": {"E": 30000000000.0}}
+    )
+    base_case["analysis"] = {
+        "type": "static_nonlinear",
+        "steps": 3,
+        "max_iters": 20,
+        "tol": 1e-10,
+        "system": "FullGeneral",
+        "integrator": {"type": "LoadControl"},
+    }
+    base_case["recorders"] = [
+        {"type": "element_force", "elements": [1], "output": "element_force"},
+        {"type": "node_displacement", "nodes": [2], "dofs": [2], "output": "disp"},
+    ]
+
+    results = {}
+    algorithm_options = {
+        "Newton": {},
+        "Broyden": {"broyden_count": 3},
+        "NewtonLineSearch": {"line_search_eta": 0.8},
+    }
+    for algorithm, extra in algorithm_options.items():
+        case_data = json.loads(json.dumps(base_case))
+        case_data["analysis"]["algorithm"] = algorithm
+        case_data["analysis"].update(extra)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            _run_strut_case(case_data, out_dir)
+            results[algorithm] = {
+                "forces": _read_rows(out_dir / "element_force_ele1.out"),
+                "disp": _read_rows(out_dir / "disp_node2.out"),
+            }
+
+    for algorithm in ("Broyden", "NewtonLineSearch"):
+        for got_row, ref_row in zip(
+            results[algorithm]["forces"], results["Newton"]["forces"], strict=True
+        ):
+            assert got_row == pytest.approx(ref_row, abs=1e-12, rel=1e-12)
+        for got_row, ref_row in zip(
+            results[algorithm]["disp"], results["Newton"]["disp"], strict=True
+        ):
+            assert got_row == pytest.approx(ref_row, abs=1e-12, rel=1e-12)
+
+
 def test_force_beam_column2d_dense_modified_newton_load_control_matches_newton():
     base_case = _base_force_beam_case(
         {
@@ -199,7 +246,6 @@ def test_force_beam_column2d_dense_modified_newton_load_control_matches_newton()
             "steps": 2,
             "max_iters": 10,
             "tol": 1e-8,
-            "rel_tol": 1e-8,
             "algorithm": algorithm,
             "system": "FullGeneral",
             "integrator": {"type": "LoadControl"},
@@ -237,7 +283,7 @@ def test_force_beam_column2d_displacement_control_uses_static_fallback_controls(
         "solver_chain": [
             {
                 "algorithm": "Newton",
-                "test_type": "MaxDispIncr",
+                "test_type": "NormDispIncr",
                 "tol": 1e-9,
                 "max_iters": 1,
             },
@@ -356,7 +402,7 @@ def test_force_beam_column2d_staged_displacement_control_commits_final_force_sta
                     "solver_chain": [
                         {
                             "algorithm": "Newton",
-                            "test_type": "MaxDispIncr",
+                            "test_type": "NormDispIncr",
                             "tol": 1e-10,
                             "max_iters": 20,
                         }
@@ -374,7 +420,7 @@ def test_force_beam_column2d_staged_displacement_control_commits_final_force_sta
                     "solver_chain": [
                         {
                             "algorithm": "Newton",
-                            "test_type": "MaxDispIncr",
+                            "test_type": "NormDispIncr",
                             "tol": 1e-10,
                             "max_iters": 20,
                         },

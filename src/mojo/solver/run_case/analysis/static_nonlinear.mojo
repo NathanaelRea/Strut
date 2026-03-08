@@ -85,7 +85,8 @@ fn _static_nonlinear_algorithm_mode(algorithm_tag: Int, algorithm: String, label
         algorithm_tag == AnalysisAlgorithmTag.Broyden
         or algorithm_tag == AnalysisAlgorithmTag.NewtonLineSearch
     ):
-        # Mapped alternative: currently follows Newton tangent refresh behavior.
+        # These algorithms still use Newton tangents, but add their own
+        # per-iteration correction logic below.
         return NonlinearAlgorithmMode.Newton
     abort("unsupported " + label + " algorithm: " + algorithm)
     return NonlinearAlgorithmMode.Unknown
@@ -104,6 +105,329 @@ fn _static_nonlinear_test_mode(test_type_tag: Int, test_type: String, label: Str
     return -1
 
 
+@always_inline
+fn _default_broyden_count(count: Int) -> Int:
+    if count < 1:
+        return 10
+    return count
+
+
+@always_inline
+fn _default_line_search_tol(tol: Float64) -> Float64:
+    if tol <= 0.0:
+        return 0.8
+    return tol
+
+
+@always_inline
+fn _update_initial_interpolated_eta(
+    s0: Float64, s: Float64, r: Float64, r0: Float64, eta_prev: Float64
+) -> Float64:
+    var denom = s0 - s
+    if abs(denom) <= 1.0e-16:
+        return eta_prev
+    var eta = eta_prev * s0 / denom
+    if eta > 10.0:
+        eta = 10.0
+    if r > r0:
+        eta = 1.0
+    if eta < 0.1:
+        eta = 0.1
+    return eta
+
+
+fn _copy_vector(src: List[Float64], count: Int) -> List[Float64]:
+    var dst: List[Float64] = []
+    dst.resize(count, 0.0)
+    for i in range(count):
+        dst[i] = src[i]
+    return dst^
+
+
+fn _broyden_update_direction(
+    mut du: List[Float64],
+    history_s: List[List[Float64]],
+    history_z: List[List[Float64]],
+    mut current_z: List[Float64],
+    count: Int,
+):
+    var eps = 1.0e-16
+    for i in range(count):
+        var p = -dot_float64_contiguous(history_s[i], history_z[i], len(du))
+        if abs(p) < eps:
+            break
+        var sdotz = dot_float64_contiguous(history_s[i], current_z, len(du))
+        for j in range(len(du)):
+            current_z[j] += ((history_s[i][j] + history_z[i][j]) * sdotz) / p
+    var current_pair = count
+    for i in range(current_pair):
+        var p = -dot_float64_contiguous(history_s[i], history_z[i], len(du))
+        if abs(p) < eps:
+            break
+        var sdotdu = dot_float64_contiguous(history_s[i], du, len(du))
+        for j in range(len(du)):
+            du[j] += ((history_s[i][j] + history_z[i][j]) * sdotdu) / p
+    var current_p = -dot_float64_contiguous(history_s[current_pair], current_z, len(du))
+    if abs(current_p) >= eps:
+        var current_sdotdu = dot_float64_contiguous(history_s[current_pair], du, len(du))
+        for j in range(len(du)):
+            du[j] += (
+                ((history_s[current_pair][j] + current_z[j]) * current_sdotdu)
+                / current_p
+            )
+
+
+fn _static_load_control_residual(
+    typed_nodes: List[NodeInput],
+    typed_elements: List[ElementInput],
+    node_x: List[Float64],
+    node_y: List[Float64],
+    node_z: List[Float64],
+    elem_dof_offsets: List[Int],
+    elem_dof_pool: List[Int],
+    elem_node_offsets: List[Int],
+    elem_node_pool: List[Int],
+    elem_primary_material_ids: List[Int],
+    elem_type_tags: List[Int],
+    elem_geom_tags: List[Int],
+    elem_section_ids: List[Int],
+    elem_integration_tags: List[Int],
+    elem_num_int_pts: List[Int],
+    elem_area: List[Float64],
+    elem_thickness: List[Float64],
+    frame2d_elem_indices: List[Int],
+    frame3d_elem_indices: List[Int],
+    truss_elem_indices: List[Int],
+    zero_length_elem_indices: List[Int],
+    two_node_link_elem_indices: List[Int],
+    zero_length_section_elem_indices: List[Int],
+    quad_elem_indices: List[Int],
+    shell_elem_indices: List[Int],
+    active_element_load_state_element_loads: List[ElementLoadInput],
+    active_element_load_state_elem_load_offsets: List[Int],
+    active_element_load_state_elem_load_pool: List[Int],
+    typed_sections_by_id: List[SectionInput],
+    typed_materials_by_id: List[MaterialInput],
+    id_to_index: List[Int],
+    node_count: Int,
+    ndf: Int,
+    ndm: Int,
+    u: List[Float64],
+    uniaxial_defs: List[UniMaterialDef],
+    uniaxial_state_defs: List[Int],
+    mut uniaxial_states: List[UniMaterialState],
+    elem_uniaxial_offsets: List[Int],
+    elem_uniaxial_counts: List[Int],
+    elem_uniaxial_state_ids: List[Int],
+    force_basic_offsets: List[Int],
+    force_basic_counts: List[Int],
+    mut force_basic_q: List[Float64],
+    fiber_section_defs: List[FiberSection2dDef],
+    fiber_section_cells: List[FiberCell],
+    fiber_section_index_by_id: List[Int],
+    fiber_section3d_defs: List[FiberSection3dDef],
+    fiber_section3d_cells: List[FiberCell],
+    fiber_section3d_index_by_id: List[Int],
+    mut force_beam_column2d_scratch: ForceBeamColumn2dScratch,
+    mut force_beam_column3d_scratch: ForceBeamColumn3dScratch,
+    F_step: List[Float64],
+    free: List[Int],
+    free_count: Int,
+    has_transformation_mpc: Bool,
+    rep_dof: List[Int],
+    mut residual: List[Float64],
+) raises:
+    var F_int = assemble_internal_forces_typed_soa(
+        typed_nodes,
+        typed_elements,
+        node_x,
+        node_y,
+        node_z,
+        elem_dof_offsets,
+        elem_dof_pool,
+        elem_node_offsets,
+        elem_node_pool,
+        elem_primary_material_ids,
+        elem_type_tags,
+        elem_geom_tags,
+        elem_section_ids,
+        elem_integration_tags,
+        elem_num_int_pts,
+        elem_area,
+        elem_thickness,
+        frame2d_elem_indices,
+        frame3d_elem_indices,
+        truss_elem_indices,
+        zero_length_elem_indices,
+        two_node_link_elem_indices,
+        zero_length_section_elem_indices,
+        quad_elem_indices,
+        shell_elem_indices,
+        active_element_load_state_element_loads,
+        active_element_load_state_elem_load_offsets,
+        active_element_load_state_elem_load_pool,
+        1.0,
+        typed_sections_by_id,
+        typed_materials_by_id,
+        id_to_index,
+        node_count,
+        ndf,
+        ndm,
+        u,
+        uniaxial_defs,
+        uniaxial_state_defs,
+        uniaxial_states,
+        elem_uniaxial_offsets,
+        elem_uniaxial_counts,
+        elem_uniaxial_state_ids,
+        force_basic_offsets,
+        force_basic_counts,
+        force_basic_q,
+        fiber_section_defs,
+        fiber_section_cells,
+        fiber_section_index_by_id,
+        fiber_section3d_defs,
+        fiber_section3d_cells,
+        fiber_section3d_index_by_id,
+        force_beam_column2d_scratch,
+        force_beam_column3d_scratch,
+    )
+    if has_transformation_mpc:
+        F_int = _collapse_vector_by_rep(F_int, rep_dof)
+    for i in range(free_count):
+        var row_i = free[i]
+        residual[i] = F_step[row_i] - F_int[row_i]
+
+
+fn _static_displacement_control_residual(
+    typed_nodes: List[NodeInput],
+    typed_elements: List[ElementInput],
+    node_x: List[Float64],
+    node_y: List[Float64],
+    node_z: List[Float64],
+    elem_dof_offsets: List[Int],
+    elem_dof_pool: List[Int],
+    elem_node_offsets: List[Int],
+    elem_node_pool: List[Int],
+    elem_primary_material_ids: List[Int],
+    elem_type_tags: List[Int],
+    elem_geom_tags: List[Int],
+    elem_section_ids: List[Int],
+    elem_integration_tags: List[Int],
+    elem_num_int_pts: List[Int],
+    elem_area: List[Float64],
+    elem_thickness: List[Float64],
+    frame2d_elem_indices: List[Int],
+    frame3d_elem_indices: List[Int],
+    truss_elem_indices: List[Int],
+    zero_length_elem_indices: List[Int],
+    two_node_link_elem_indices: List[Int],
+    zero_length_section_elem_indices: List[Int],
+    quad_elem_indices: List[Int],
+    shell_elem_indices: List[Int],
+    typed_sections_by_id: List[SectionInput],
+    typed_materials_by_id: List[MaterialInput],
+    id_to_index: List[Int],
+    node_count: Int,
+    ndf: Int,
+    ndm: Int,
+    u: List[Float64],
+    uniaxial_defs: List[UniMaterialDef],
+    uniaxial_state_defs: List[Int],
+    mut uniaxial_states: List[UniMaterialState],
+    elem_uniaxial_offsets: List[Int],
+    elem_uniaxial_counts: List[Int],
+    elem_uniaxial_state_ids: List[Int],
+    force_basic_offsets: List[Int],
+    force_basic_counts: List[Int],
+    mut force_basic_q: List[Float64],
+    fiber_section_defs: List[FiberSection2dDef],
+    fiber_section_cells: List[FiberCell],
+    fiber_section_index_by_id: List[Int],
+    fiber_section3d_defs: List[FiberSection3dDef],
+    fiber_section3d_cells: List[FiberCell],
+    fiber_section3d_index_by_id: List[Int],
+    mut force_beam_column2d_scratch: ForceBeamColumn2dScratch,
+    mut force_beam_column3d_scratch: ForceBeamColumn3dScratch,
+    free: List[Int],
+    free_count: Int,
+    has_transformation_mpc: Bool,
+    rep_dof: List[Int],
+    F_const_free: List[Float64],
+    F_pattern_free: List[Float64],
+    load_factor: Float64,
+    attempt_du: Float64,
+    control_idx: Int,
+    u_base: List[Float64],
+    mut residual_aug: List[Float64],
+) raises:
+    var empty_element_loads: List[ElementLoadInput] = []
+    var empty_offsets: List[Int] = []
+    var empty_pool: List[Int] = []
+    var F_int = assemble_internal_forces_typed_soa(
+        typed_nodes,
+        typed_elements,
+        node_x,
+        node_y,
+        node_z,
+        elem_dof_offsets,
+        elem_dof_pool,
+        elem_node_offsets,
+        elem_node_pool,
+        elem_primary_material_ids,
+        elem_type_tags,
+        elem_geom_tags,
+        elem_section_ids,
+        elem_integration_tags,
+        elem_num_int_pts,
+        elem_area,
+        elem_thickness,
+        frame2d_elem_indices,
+        frame3d_elem_indices,
+        truss_elem_indices,
+        zero_length_elem_indices,
+        two_node_link_elem_indices,
+        zero_length_section_elem_indices,
+        quad_elem_indices,
+        shell_elem_indices,
+        empty_element_loads,
+        empty_offsets,
+        empty_pool,
+        1.0,
+        typed_sections_by_id,
+        typed_materials_by_id,
+        id_to_index,
+        node_count,
+        ndf,
+        ndm,
+        u,
+        uniaxial_defs,
+        uniaxial_state_defs,
+        uniaxial_states,
+        elem_uniaxial_offsets,
+        elem_uniaxial_counts,
+        elem_uniaxial_state_ids,
+        force_basic_offsets,
+        force_basic_counts,
+        force_basic_q,
+        fiber_section_defs,
+        fiber_section_cells,
+        fiber_section_index_by_id,
+        fiber_section3d_defs,
+        fiber_section3d_cells,
+        fiber_section3d_index_by_id,
+        force_beam_column2d_scratch,
+        force_beam_column3d_scratch,
+    )
+    if has_transformation_mpc:
+        F_int = _collapse_vector_by_rep(F_int, rep_dof)
+    for i in range(free_count):
+        residual_aug[i] = (
+            F_const_free[i] + load_factor * F_pattern_free[i] - F_int[free[i]]
+        )
+    residual_aug[free_count] = attempt_du - (u[control_idx] - u_base[control_idx])
+
+
 fn _append_static_retry_attempt(
     algorithm: String,
     algorithm_tag: Int,
@@ -113,14 +437,12 @@ fn _append_static_retry_attempt(
     test_type_tag: Int,
     max_iters: Int,
     tol: Float64,
-    rel_tol: Float64,
     label: String,
     mut retry_algorithm_tags: List[Int],
     mut retry_algorithm_modes: List[Int],
     mut retry_test_modes: List[Int],
     mut retry_max_iters: List[Int],
     mut retry_tols: List[Float64],
-    mut retry_rel_tols: List[Float64],
     mut retry_broyden_counts: List[Int],
     mut retry_line_search_etas: List[Float64],
 ):
@@ -135,7 +457,6 @@ fn _append_static_retry_attempt(
         abort(label + "_max_iters must be >= 1")
     retry_max_iters.append(max_iters)
     retry_tols.append(tol)
-    retry_rel_tols.append(rel_tol)
     retry_broyden_counts.append(broyden_count)
     retry_line_search_etas.append(line_search_eta)
 
@@ -148,7 +469,6 @@ fn _append_static_retry_attempt_from_input(
     mut retry_test_modes: List[Int],
     mut retry_max_iters: List[Int],
     mut retry_tols: List[Float64],
-    mut retry_rel_tols: List[Float64],
     mut retry_broyden_counts: List[Int],
     mut retry_line_search_etas: List[Float64],
 ):
@@ -161,14 +481,12 @@ fn _append_static_retry_attempt_from_input(
         attempt.test_type_tag,
         attempt.max_iters,
         attempt.tol,
-        attempt.rel_tol,
         label,
         retry_algorithm_tags,
         retry_algorithm_modes,
         retry_test_modes,
         retry_max_iters,
         retry_tols,
-        retry_rel_tols,
         retry_broyden_counts,
         retry_line_search_etas,
     )
@@ -184,7 +502,6 @@ fn _collect_static_solver_chain(
     mut retry_test_modes: List[Int],
     mut retry_max_iters: List[Int],
     mut retry_tols: List[Float64],
-    mut retry_rel_tols: List[Float64],
     mut retry_broyden_counts: List[Int],
     mut retry_line_search_etas: List[Float64],
 ):
@@ -197,7 +514,6 @@ fn _collect_static_solver_chain(
             retry_test_modes,
             retry_max_iters,
             retry_tols,
-            retry_rel_tols,
             retry_broyden_counts,
             retry_line_search_etas,
         )
@@ -211,14 +527,12 @@ fn _collect_static_solver_chain(
             analysis.test_type_tag,
             analysis.max_iters,
             analysis.tol,
-            analysis.rel_tol,
             "static_nonlinear primary",
             retry_algorithm_tags,
             retry_algorithm_modes,
             retry_test_modes,
             retry_max_iters,
             retry_tols,
-            retry_rel_tols,
             retry_broyden_counts,
             retry_line_search_etas,
         )
@@ -232,7 +546,6 @@ fn _collect_static_solver_chain(
     var auto_test_type_tag = analysis.test_type_tag
     var auto_max_iters = retry_max_iters[0]
     var auto_tol = retry_tols[0]
-    var auto_rel_tol = retry_rel_tols[0]
     if has_force_beam_column2d and (
         primary_algorithm_mode == NonlinearAlgorithmMode.Newton
         or primary_algorithm_mode == NonlinearAlgorithmMode.ModifiedNewton
@@ -256,7 +569,6 @@ fn _collect_static_solver_chain(
         auto_tol = retry_tols[0]
         if not prefer_modified_newton_initial and auto_tol < 1.0e-10:
             auto_tol = 1.0e-10
-        auto_rel_tol = retry_rel_tols[0]
     elif primary_algorithm_mode != NonlinearAlgorithmMode.Newton:
         auto_algorithm = "Newton"
         auto_algorithm_tag = AnalysisAlgorithmTag.Newton
@@ -271,14 +583,12 @@ fn _collect_static_solver_chain(
         auto_test_type_tag,
         auto_max_iters,
         auto_tol,
-        auto_rel_tol,
         "static_nonlinear auto_fallback",
         retry_algorithm_tags,
         retry_algorithm_modes,
         retry_test_modes,
         retry_max_iters,
         retry_tols,
-        retry_rel_tols,
         retry_broyden_counts,
         retry_line_search_etas,
     )
@@ -409,7 +719,6 @@ fn run_static_nonlinear_load_control(
     var retry_test_modes: List[Int] = []
     var retry_max_iters: List[Int] = []
     var retry_tols: List[Float64] = []
-    var retry_rel_tols: List[Float64] = []
     var retry_broyden_counts: List[Int] = []
     var retry_line_search_etas: List[Float64] = []
     _collect_static_solver_chain(
@@ -422,7 +731,6 @@ fn run_static_nonlinear_load_control(
         retry_test_modes,
         retry_max_iters,
         retry_tols,
-        retry_rel_tols,
         retry_broyden_counts,
         retry_line_search_etas,
     )
@@ -434,7 +742,6 @@ fn run_static_nonlinear_load_control(
     var primary_test_mode = retry_test_modes[0]
     var max_iters = retry_max_iters[0]
     var tol = retry_tols[0]
-    var rel_tol = retry_rel_tols[0]
     var primary_broyden_count = retry_broyden_counts[0]
     var primary_line_search_eta = retry_line_search_etas[0]
     var free_count = len(free)
@@ -688,7 +995,6 @@ fn run_static_nonlinear_load_control(
         var attempt_test_mode = primary_test_mode
         var attempt_max_iters = max_iters
         var attempt_tol = tol
-        var attempt_rel_tol = rel_tol
         var attempt_broyden_count = primary_broyden_count
         var step_converged_iters = 0
         for attempt in range(retry_attempt_count):
@@ -703,11 +1009,14 @@ fn run_static_nonlinear_load_control(
                 attempt_test_mode = retry_test_modes[attempt]
                 attempt_max_iters = retry_max_iters[attempt]
                 attempt_tol = retry_tols[attempt]
-                attempt_rel_tol = retry_rel_tols[attempt]
                 attempt_broyden_count = retry_broyden_counts[attempt]
 
             var tangent_initialized = False
             var tangent_factored = False
+            var broyden_history_s: List[List[Float64]] = []
+            var broyden_history_z: List[List[Float64]] = []
+            var broyden_prev_residual: List[Float64] = []
+            var has_broyden_prev_residual = False
             for iter_idx in range(attempt_max_iters):
                 if do_profile:
                     var t_iter_start = Int(time.perf_counter_ns())
@@ -814,19 +1123,16 @@ fn run_static_nonlinear_load_control(
                     _append_event(
                         events, events_need_comma, "O", frame_kff_extract, kff_start_us
                     )
-                var broyden_refresh_interval = attempt_broyden_count
-                if (
-                    attempt_algorithm_tag == AnalysisAlgorithmTag.Broyden
-                    and broyden_refresh_interval < 1
-                ):
-                    broyden_refresh_interval = 8
+                var broyden_refresh_interval = _default_broyden_count(
+                    attempt_broyden_count
+                )
                 var refresh_tangent: Bool
                 if attempt_algorithm_mode == NonlinearAlgorithmMode.Newton:
                     if attempt_algorithm_tag == AnalysisAlgorithmTag.Broyden:
                         refresh_tangent = (
                             not tangent_initialized
                             or broyden_refresh_interval <= 1
-                            or (iter_idx % broyden_refresh_interval == 0)
+                            or len(broyden_history_s) >= broyden_refresh_interval
                         )
                     else:
                         refresh_tangent = True
@@ -945,12 +1251,42 @@ fn run_static_nonlinear_load_control(
                         lu_rhs[i] = F_f[i]
                     solve(backend, lu_rhs, u_f_work)
                     u_f = u_f_work.copy()
-                    if attempt_algorithm_tag == AnalysisAlgorithmTag.NewtonLineSearch:
-                        var update_eta = attempt_line_search_eta
-                        if update_eta <= 0.0:
-                            update_eta = 0.8
+                if attempt_algorithm_tag == AnalysisAlgorithmTag.Broyden:
+                    if refresh_tangent:
+                        broyden_history_s = []
+                        broyden_history_z = []
+                        broyden_prev_residual = []
+                        has_broyden_prev_residual = False
+                    elif has_broyden_prev_residual and len(broyden_history_s) > len(
+                        broyden_history_z
+                    ):
+                        var delta_residual: List[Float64] = []
+                        delta_residual.resize(free_count, 0.0)
                         for i in range(free_count):
-                            u_f[i] *= update_eta
+                            delta_residual[i] = F_f[i] - broyden_prev_residual[i]
+                        var current_z: List[Float64]
+                        if use_banded_loadcontrol:
+                            var width = bw_nl * 2 + 1
+                            for i in range(free_count):
+                                banded_rhs[i] = delta_residual[i]
+                                for j in range(width):
+                                    K_ff_banded_step[i][j] = K_ff_banded[i][j]
+                            current_z = banded_gaussian_elimination(
+                                K_ff_banded_step, bw_nl, banded_rhs
+                            )
+                        else:
+                            for i in range(free_count):
+                                lu_rhs[i] = delta_residual[i]
+                            solve(backend, lu_rhs, u_f_work)
+                            current_z = u_f_work.copy()
+                        _broyden_update_direction(
+                            u_f,
+                            broyden_history_s,
+                            broyden_history_z,
+                            current_z,
+                            len(broyden_history_z),
+                        )
+                        broyden_history_z.append(current_z^)
                 if do_profile:
                     var t_solve_nl_end = Int(time.perf_counter_ns())
                     var solve_nl_end_us = (t_solve_nl_end - t0) // 1000
@@ -976,12 +1312,159 @@ fn run_static_nonlinear_load_control(
                         max_u = abs_val
                 if has_transformation_mpc:
                     _enforce_equal_dof_values(u, rep_dof, constrained)
+                if attempt_algorithm_tag == AnalysisAlgorithmTag.NewtonLineSearch:
+                    var line_search_tol = _default_line_search_tol(attempt_line_search_eta)
+                    var s0 = -dot_float64_contiguous(u_f, F_f, free_count)
+                    if abs(s0) > 0.0:
+                        _static_load_control_residual(
+                            typed_nodes,
+                            typed_elements,
+                            node_x,
+                            node_y,
+                            node_z,
+                            elem_dof_offsets,
+                            elem_dof_pool,
+                            elem_node_offsets,
+                            elem_node_pool,
+                            elem_primary_material_ids,
+                            elem_type_tags,
+                            elem_geom_tags,
+                            elem_section_ids,
+                            elem_integration_tags,
+                            elem_num_int_pts,
+                            elem_area,
+                            elem_thickness,
+                            frame2d_elem_indices,
+                            frame3d_elem_indices,
+                            truss_elem_indices,
+                            zero_length_elem_indices,
+                            two_node_link_elem_indices,
+                            zero_length_section_elem_indices,
+                            quad_elem_indices,
+                            shell_elem_indices,
+                            active_element_load_state.element_loads,
+                            active_element_load_state.elem_load_offsets,
+                            active_element_load_state.elem_load_pool,
+                            typed_sections_by_id,
+                            typed_materials_by_id,
+                            id_to_index,
+                            node_count,
+                            ndf,
+                            ndm,
+                            u,
+                            uniaxial_defs,
+                            uniaxial_state_defs,
+                            uniaxial_states,
+                            elem_uniaxial_offsets,
+                            elem_uniaxial_counts,
+                            elem_uniaxial_state_ids,
+                            force_basic_offsets,
+                            force_basic_counts,
+                            force_basic_q,
+                            fiber_section_defs,
+                            fiber_section_cells,
+                            fiber_section_index_by_id,
+                            fiber_section3d_defs,
+                            fiber_section3d_cells,
+                            fiber_section3d_index_by_id,
+                            force_beam_column2d_scratch,
+                            force_beam_column3d_scratch,
+                            F_step,
+                            free,
+                            free_count,
+                            has_transformation_mpc,
+                            rep_dof,
+                            F_f,
+                        )
+                        var s = -dot_float64_contiguous(u_f, F_f, free_count)
+                        var r0 = abs(s / s0)
+                        var r = r0
+                        var eta_prev = 1.0
+                        var line_search_iter = 0
+                        while r > line_search_tol and line_search_iter < 10:
+                            line_search_iter += 1
+                            var eta = _update_initial_interpolated_eta(
+                                s0, s, r, r0, eta_prev
+                            )
+                            if eta == eta_prev:
+                                break
+                            var delta_eta = eta - eta_prev
+                            for i in range(free_count):
+                                u[free[i]] += delta_eta * u_f[i]
+                            if has_transformation_mpc:
+                                _enforce_equal_dof_values(u, rep_dof, constrained)
+                            _static_load_control_residual(
+                                typed_nodes,
+                                typed_elements,
+                                node_x,
+                                node_y,
+                                node_z,
+                                elem_dof_offsets,
+                                elem_dof_pool,
+                                elem_node_offsets,
+                                elem_node_pool,
+                                elem_primary_material_ids,
+                                elem_type_tags,
+                                elem_geom_tags,
+                                elem_section_ids,
+                                elem_integration_tags,
+                                elem_num_int_pts,
+                                elem_area,
+                                elem_thickness,
+                                frame2d_elem_indices,
+                                frame3d_elem_indices,
+                                truss_elem_indices,
+                                zero_length_elem_indices,
+                                two_node_link_elem_indices,
+                                zero_length_section_elem_indices,
+                                quad_elem_indices,
+                                shell_elem_indices,
+                                active_element_load_state.element_loads,
+                                active_element_load_state.elem_load_offsets,
+                                active_element_load_state.elem_load_pool,
+                                typed_sections_by_id,
+                                typed_materials_by_id,
+                                id_to_index,
+                                node_count,
+                                ndf,
+                                ndm,
+                                u,
+                                uniaxial_defs,
+                                uniaxial_state_defs,
+                                uniaxial_states,
+                                elem_uniaxial_offsets,
+                                elem_uniaxial_counts,
+                                elem_uniaxial_state_ids,
+                                force_basic_offsets,
+                                force_basic_counts,
+                                force_basic_q,
+                                fiber_section_defs,
+                                fiber_section_cells,
+                                fiber_section_index_by_id,
+                                fiber_section3d_defs,
+                                fiber_section3d_cells,
+                                fiber_section3d_index_by_id,
+                                force_beam_column2d_scratch,
+                                force_beam_column3d_scratch,
+                                F_step,
+                                free,
+                                free_count,
+                                has_transformation_mpc,
+                                rep_dof,
+                                F_f,
+                            )
+                            s = dot_float64_contiguous(u_f, F_f, free_count)
+                            r = abs(s / s0)
+                            eta_prev = eta
+                        for i in range(free_count):
+                            u_f[i] *= eta_prev
+                if attempt_algorithm_tag == AnalysisAlgorithmTag.Broyden:
+                    broyden_history_s.append(_copy_vector(u_f, free_count))
+                    broyden_prev_residual = _copy_vector(F_f, free_count)
+                    has_broyden_prev_residual = True
                 var disp_incr_norm = sqrt(sum_sq_float64_contiguous(u_f, free_count))
                 var energy_incr = abs(dot_float64_contiguous(u_f, F_f, free_count))
-                var scale_tol = attempt_rel_tol * max_u
-                if scale_tol < attempt_rel_tol:
-                    scale_tol = attempt_rel_tol
-                var converged_iter = max_diff <= attempt_tol or max_diff <= scale_tol
+                var converged_iter = max_diff <= attempt_tol
                 if attempt_test_mode == 1:
                     converged_iter = disp_incr_norm <= attempt_tol
                 elif attempt_test_mode == 3:
@@ -1645,7 +2128,6 @@ fn run_static_nonlinear_displacement_control(
     var retry_test_modes: List[Int] = []
     var retry_max_iters: List[Int] = []
     var retry_tols: List[Float64] = []
-    var retry_rel_tols: List[Float64] = []
     var retry_broyden_counts: List[Int] = []
     var retry_line_search_etas: List[Float64] = []
     _collect_static_solver_chain(
@@ -1658,7 +2140,6 @@ fn run_static_nonlinear_displacement_control(
         retry_test_modes,
         retry_max_iters,
         retry_tols,
-        retry_rel_tols,
         retry_broyden_counts,
         retry_line_search_etas,
     )
@@ -1670,7 +2151,6 @@ fn run_static_nonlinear_displacement_control(
     var primary_test_mode = retry_test_modes[0]
     var max_iters = retry_max_iters[0]
     var tol = retry_tols[0]
-    var rel_tol = retry_rel_tols[0]
     var primary_broyden_count = retry_broyden_counts[0]
     var primary_line_search_eta = retry_line_search_etas[0]
     var free_count = len(free)
@@ -1980,7 +2460,6 @@ fn run_static_nonlinear_displacement_control(
                 var attempt_test_mode = primary_test_mode
                 var attempt_max_iters = max_iters
                 var attempt_tol = tol
-                var attempt_rel_tol = rel_tol
                 var attempt_broyden_count = primary_broyden_count
                 var current_retry_attempt_count = retry_attempt_count
                 if not continuation_active:
@@ -1998,10 +2477,13 @@ fn run_static_nonlinear_displacement_control(
                         attempt_test_mode = retry_test_modes[attempt]
                         attempt_max_iters = retry_max_iters[attempt]
                         attempt_tol = retry_tols[attempt]
-                        attempt_rel_tol = retry_rel_tols[attempt]
                         attempt_broyden_count = retry_broyden_counts[attempt]
 
                     var tangent_initialized = False
+                    var broyden_history_s: List[List[Float64]] = []
+                    var broyden_history_z: List[List[Float64]] = []
+                    var broyden_prev_residual: List[Float64] = []
+                    var has_broyden_prev_residual = False
                     for iter_idx in range(attempt_max_iters):
                         if do_profile:
                             var t_iter_start = Int(time.perf_counter_ns())
@@ -2125,19 +2607,16 @@ fn run_static_nonlinear_displacement_control(
                                 frame_kff_extract,
                                 kff_start_us,
                             )
-                        var broyden_refresh_interval = attempt_broyden_count
-                        if (
-                            attempt_algorithm_tag == AnalysisAlgorithmTag.Broyden
-                            and broyden_refresh_interval < 1
-                        ):
-                            broyden_refresh_interval = 8
+                        var broyden_refresh_interval = _default_broyden_count(
+                            attempt_broyden_count
+                        )
                         var refresh_tangent: Bool
                         if attempt_algorithm_mode == NonlinearAlgorithmMode.Newton:
                             if attempt_algorithm_tag == AnalysisAlgorithmTag.Broyden:
                                 refresh_tangent = (
                                     not tangent_initialized
                                     or broyden_refresh_interval <= 1
-                                    or (iter_idx % broyden_refresh_interval == 0)
+                                    or len(broyden_history_s) >= broyden_refresh_interval
                                 )
                             else:
                                 refresh_tangent = True
@@ -2264,14 +2743,39 @@ fn run_static_nonlinear_displacement_control(
                             )
                         if not solved:
                             break
+                        if attempt_algorithm_tag == AnalysisAlgorithmTag.Broyden:
+                            if refresh_tangent:
+                                broyden_history_s = []
+                                broyden_history_z = []
+                                broyden_prev_residual = []
+                                has_broyden_prev_residual = False
+                            elif has_broyden_prev_residual and len(
+                                broyden_history_s
+                            ) > len(broyden_history_z):
+                                var delta_residual_aug: List[Float64] = []
+                                delta_residual_aug.resize(free_count + 1, 0.0)
+                                for i in range(free_count + 1):
+                                    delta_residual_aug[i] = (
+                                        rhs_aug[i] - broyden_prev_residual[i]
+                                    )
+                                var z_aug: List[Float64] = []
+                                z_aug.resize(free_count + 1, 0.0)
+                                var z_ok = _solve_linear_system(
+                                    K_aug, delta_residual_aug, z_aug
+                                )
+                                if z_ok:
+                                    _broyden_update_direction(
+                                        sol_aug,
+                                        broyden_history_s,
+                                        broyden_history_z,
+                                        z_aug,
+                                        len(broyden_history_z),
+                                    )
+                                    broyden_history_z.append(z_aug^)
 
                         var max_diff = 0.0
                         var max_u = 0.0
                         var update_eta = 1.0
-                        if attempt_algorithm_tag == AnalysisAlgorithmTag.NewtonLineSearch:
-                            update_eta = attempt_line_search_eta
-                            if update_eta <= 0.0:
-                                update_eta = 0.8
                         for i in range(free_count):
                             var idx = free[i]
                             var du = sol_aug[i] * update_eta
@@ -2286,15 +2790,178 @@ fn run_static_nonlinear_displacement_control(
                         load_factor += sol_aug[free_count] * update_eta
                         if has_transformation_mpc:
                             _enforce_equal_dof_values(u, rep_dof, constrained)
-                        if update_eta != 1.0:
-                            for i in range(free_count):
-                                sol_aug[i] *= update_eta
+                        if attempt_algorithm_tag == AnalysisAlgorithmTag.NewtonLineSearch:
+                            var line_search_tol = _default_line_search_tol(
+                                attempt_line_search_eta
+                            )
+                            var s0 = -dot_float64_contiguous(
+                                sol_aug, rhs_aug, free_count + 1
+                            )
+                            if abs(s0) > 0.0:
+                                _static_displacement_control_residual(
+                                    typed_nodes,
+                                    typed_elements,
+                                    node_x,
+                                    node_y,
+                                    node_z,
+                                    elem_dof_offsets,
+                                    elem_dof_pool,
+                                    elem_node_offsets,
+                                    elem_node_pool,
+                                    elem_primary_material_ids,
+                                    elem_type_tags,
+                                    elem_geom_tags,
+                                    elem_section_ids,
+                                    elem_integration_tags,
+                                    elem_num_int_pts,
+                                    elem_area,
+                                    elem_thickness,
+                                    frame2d_elem_indices,
+                                    frame3d_elem_indices,
+                                    truss_elem_indices,
+                                    zero_length_elem_indices,
+                                    two_node_link_elem_indices,
+                                    zero_length_section_elem_indices,
+                                    quad_elem_indices,
+                                    shell_elem_indices,
+                                    typed_sections_by_id,
+                                    typed_materials_by_id,
+                                    id_to_index,
+                                    node_count,
+                                    ndf,
+                                    ndm,
+                                    u,
+                                    uniaxial_defs,
+                                    uniaxial_state_defs,
+                                    uniaxial_states,
+                                    elem_uniaxial_offsets,
+                                    elem_uniaxial_counts,
+                                    elem_uniaxial_state_ids,
+                                    force_basic_offsets,
+                                    force_basic_counts,
+                                    force_basic_q,
+                                    fiber_section_defs,
+                                    fiber_section_cells,
+                                    fiber_section_index_by_id,
+                                    fiber_section3d_defs,
+                                    fiber_section3d_cells,
+                                    fiber_section3d_index_by_id,
+                                    force_beam_column2d_scratch,
+                                    force_beam_column3d_scratch,
+                                    free,
+                                    free_count,
+                                    has_transformation_mpc,
+                                    rep_dof,
+                                    F_const_free,
+                                    F_pattern_free,
+                                    load_factor,
+                                    attempt_du,
+                                    control_idx,
+                                    u_base,
+                                    rhs_aug,
+                                )
+                                var s = -dot_float64_contiguous(
+                                    sol_aug, rhs_aug, free_count + 1
+                                )
+                                var r0 = abs(s / s0)
+                                var r = r0
+                                var eta_prev = 1.0
+                                var line_search_iter = 0
+                                while r > line_search_tol and line_search_iter < 10:
+                                    line_search_iter += 1
+                                    var eta = _update_initial_interpolated_eta(
+                                        s0, s, r, r0, eta_prev
+                                    )
+                                    if eta == eta_prev:
+                                        break
+                                    var delta_eta = eta - eta_prev
+                                    for i in range(free_count):
+                                        u[free[i]] += delta_eta * sol_aug[i]
+                                    load_factor += delta_eta * sol_aug[free_count]
+                                    if has_transformation_mpc:
+                                        _enforce_equal_dof_values(
+                                            u, rep_dof, constrained
+                                        )
+                                    _static_displacement_control_residual(
+                                        typed_nodes,
+                                        typed_elements,
+                                        node_x,
+                                        node_y,
+                                        node_z,
+                                        elem_dof_offsets,
+                                        elem_dof_pool,
+                                        elem_node_offsets,
+                                        elem_node_pool,
+                                        elem_primary_material_ids,
+                                        elem_type_tags,
+                                        elem_geom_tags,
+                                        elem_section_ids,
+                                        elem_integration_tags,
+                                        elem_num_int_pts,
+                                        elem_area,
+                                        elem_thickness,
+                                        frame2d_elem_indices,
+                                        frame3d_elem_indices,
+                                        truss_elem_indices,
+                                        zero_length_elem_indices,
+                                        two_node_link_elem_indices,
+                                        zero_length_section_elem_indices,
+                                        quad_elem_indices,
+                                        shell_elem_indices,
+                                        typed_sections_by_id,
+                                        typed_materials_by_id,
+                                        id_to_index,
+                                        node_count,
+                                        ndf,
+                                        ndm,
+                                        u,
+                                        uniaxial_defs,
+                                        uniaxial_state_defs,
+                                        uniaxial_states,
+                                        elem_uniaxial_offsets,
+                                        elem_uniaxial_counts,
+                                        elem_uniaxial_state_ids,
+                                        force_basic_offsets,
+                                        force_basic_counts,
+                                        force_basic_q,
+                                        fiber_section_defs,
+                                        fiber_section_cells,
+                                        fiber_section_index_by_id,
+                                        fiber_section3d_defs,
+                                        fiber_section3d_cells,
+                                        fiber_section3d_index_by_id,
+                                        force_beam_column2d_scratch,
+                                        force_beam_column3d_scratch,
+                                        free,
+                                        free_count,
+                                        has_transformation_mpc,
+                                        rep_dof,
+                                        F_const_free,
+                                        F_pattern_free,
+                                        load_factor,
+                                        attempt_du,
+                                        control_idx,
+                                        u_base,
+                                        rhs_aug,
+                                    )
+                                    s = dot_float64_contiguous(
+                                        sol_aug, rhs_aug, free_count + 1
+                                    )
+                                    r = abs(s / s0)
+                                    eta_prev = eta
+                                for i in range(free_count + 1):
+                                    sol_aug[i] *= eta_prev
+                        if attempt_algorithm_tag == AnalysisAlgorithmTag.Broyden:
+                            broyden_history_s.append(
+                                _copy_vector(sol_aug, free_count + 1)
+                            )
+                            broyden_prev_residual = _copy_vector(
+                                rhs_aug, free_count + 1
+                            )
+                            has_broyden_prev_residual = True
                         var disp_incr_norm = sqrt(sum_sq_float64_contiguous(sol_aug, free_count))
                         var energy_incr = abs(dot_float64_contiguous(sol_aug, rhs_aug, free_count))
-                        var scale_tol = attempt_rel_tol * max_u
-                        if scale_tol < attempt_rel_tol:
-                            scale_tol = attempt_rel_tol
-                        var converged_iter = max_diff <= attempt_tol or max_diff <= scale_tol
+                        var converged_iter = max_diff <= attempt_tol
                         if attempt_test_mode == 1:
                             converged_iter = disp_incr_norm <= attempt_tol
                         elif attempt_test_mode == 3:

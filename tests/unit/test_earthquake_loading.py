@@ -27,6 +27,24 @@ def _run_strut_case(case_data, out_dir: Path):
     )
 
 
+def _run_strut_case_proc(case_data, out_dir: Path):
+    out_dir.mkdir(parents=True, exist_ok=True)
+    input_path = out_dir / "input.json"
+    input_path.write_text(json.dumps(case_data), encoding="utf-8")
+    return subprocess.run(
+        [
+            sys.executable,
+            str(repo_root / "scripts" / "run_strut_case.py"),
+            "--input",
+            str(input_path),
+            "--output",
+            str(out_dir),
+        ],
+        capture_output=True,
+        text=True,
+    )
+
+
 def _read_rows(path: Path):
     rows = []
     for line in path.read_text(encoding="utf-8").splitlines():
@@ -270,6 +288,60 @@ def test_zero_length_damp_mats_add_element_damping():
     assert with_tail < without_tail
 
 
+def test_transient_nonlinear_newton_variants_match_on_elastic_truss():
+    base = _base_truss_dynamic_case(
+        {"id": 1, "type": "Elastic", "params": {"E": 100.0}}
+    )
+    base["time_series"] = [
+        {
+            "type": "Path",
+            "tag": 1,
+            "dt": 0.02,
+            "values": [0.0, 1.0, 1.0, 0.5, 0.0, 0.0],
+        }
+    ]
+    base["pattern"] = {"type": "Plain", "tag": 1, "time_series": 1}
+    base["loads"] = [{"node": 2, "dof": 1, "value": 1.0}]
+    base["analysis"] = {
+        "type": "transient_nonlinear",
+        "steps": 6,
+        "dt": 0.02,
+        "max_iters": 20,
+        "tol": 1e-10,
+        "system": "FullGeneral",
+        "integrator": {"type": "Newmark", "gamma": 0.5, "beta": 0.25},
+    }
+
+    results = {}
+    algorithm_options = {
+        "Newton": {},
+        "Broyden": {"broyden_count": 3},
+        "NewtonLineSearch": {"line_search_eta": 0.8},
+    }
+    for algorithm, extra in algorithm_options.items():
+        case_data = json.loads(json.dumps(base))
+        case_data["analysis"]["algorithm"] = algorithm
+        case_data["analysis"].update(extra)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            _run_strut_case(case_data, out_dir)
+            results[algorithm] = {
+                "disp": _read_rows(out_dir / "node_disp_node2.out"),
+                "force": _read_rows(out_dir / "element_force_ele1.out"),
+            }
+
+    for algorithm in ("Broyden", "NewtonLineSearch"):
+        for got_row, ref_row in zip(
+            results[algorithm]["disp"], results["Newton"]["disp"], strict=True
+        ):
+            assert got_row == pytest.approx(ref_row, abs=1e-10, rel=1e-10)
+        for got_row, ref_row in zip(
+            results[algorithm]["force"], results["Newton"]["force"], strict=True
+        ):
+            assert got_row == pytest.approx(ref_row, abs=1e-10, rel=1e-10)
+
+
 def test_zero_length_damp_adds_element_damping():
     with tempfile.TemporaryDirectory() as tmp:
         out_dir = Path(tmp)
@@ -419,7 +491,6 @@ def test_transient_nonlinear_newmark_newton_smoke():
         "integrator": {"type": "Newmark", "gamma": 0.5, "beta": 0.25},
         "algorithm": "Newton",
         "tol": 1.0e-8,
-        "rel_tol": 1.0e-6,
         "max_iters": 30,
     }
 
@@ -455,7 +526,6 @@ def test_transient_nonlinear_modified_newton_smoke():
         "integrator": {"type": "Newmark", "gamma": 0.5, "beta": 0.25},
         "algorithm": "ModifiedNewton",
         "tol": 1.0e-8,
-        "rel_tol": 1.0e-6,
         "max_iters": 30,
     }
 
@@ -498,6 +568,37 @@ def test_transient_nonlinear_newton_without_fallback_can_fail():
             _run_strut_case(case_data, out_dir)
 
 
+def test_transient_nonlinear_rejects_rel_tol():
+    case_data = _base_truss_dynamic_case(
+        {"id": 1, "type": "Steel01", "params": {"Fy": 10.0, "E0": 100.0, "b": 0.01}}
+    )
+    case_data["time_series"] = [
+        {"type": "Path", "tag": 5, "dt": 0.02, "values": [1.0, 1.0, 0.5, 0.0, 0.0, 0.0]}
+    ]
+    case_data["pattern"] = {
+        "type": "UniformExcitation",
+        "tag": 5,
+        "direction": 1,
+        "accel": 5,
+    }
+    case_data["analysis"] = {
+        "type": "transient_nonlinear",
+        "steps": 6,
+        "dt": 0.02,
+        "integrator": {"type": "Newmark", "gamma": 0.5, "beta": 0.25},
+        "algorithm": "Newton",
+        "tol": 1.0e-8,
+        "rel_tol": 1.0e-6,
+        "max_iters": 30,
+    }
+
+    with tempfile.TemporaryDirectory() as tmp:
+        out_dir = Path(tmp)
+        proc = _run_strut_case_proc(case_data, out_dir)
+
+    assert proc.returncode != 0
+
+
 def test_transient_nonlinear_newton_fallback_modified_initial_smoke():
     case_data = _base_truss_dynamic_case(
         {"id": 1, "type": "Steel01", "params": {"Fy": 10.0, "E0": 100.0, "b": 0.01}}
@@ -525,9 +626,8 @@ def test_transient_nonlinear_newton_fallback_modified_initial_smoke():
             },
             {
                 "algorithm": "ModifiedNewtonInitial",
-                "test_type": "MaxDispIncr",
+                "test_type": "NormDispIncr",
                 "tol": 1.0,
-                "rel_tol": 0.0,
                 "max_iters": 10,
             },
         ],

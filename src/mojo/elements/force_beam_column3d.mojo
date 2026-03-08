@@ -57,6 +57,30 @@ struct ForceBeamColumn3dScratch(Movable):
     var section_load_my_cache: List[List[Float64]]
     var section_load_mz_cache: List[List[Float64]]
     var fixed_end_cache: List[Beam3dVec10]
+    var section_vs_eps0: List[Float64]
+    var section_vs_ky: List[Float64]
+    var section_vs_kz: List[Float64]
+    var section_ssr_axial: List[Float64]
+    var section_ssr_my: List[Float64]
+    var section_ssr_mz: List[Float64]
+    var section_fs11: List[Float64]
+    var section_fs12: List[Float64]
+    var section_fs13: List[Float64]
+    var section_fs22: List[Float64]
+    var section_fs23: List[Float64]
+    var section_fs33: List[Float64]
+    var section_vs_subdivide_eps0: List[Float64]
+    var section_vs_subdivide_ky: List[Float64]
+    var section_vs_subdivide_kz: List[Float64]
+    var section_ssr_subdivide_axial: List[Float64]
+    var section_ssr_subdivide_my: List[Float64]
+    var section_ssr_subdivide_mz: List[Float64]
+    var section_fs_subdivide11: List[Float64]
+    var section_fs_subdivide12: List[Float64]
+    var section_fs_subdivide13: List[Float64]
+    var section_fs_subdivide22: List[Float64]
+    var section_fs_subdivide23: List[Float64]
+    var section_fs_subdivide33: List[Float64]
 
     fn __init__(out self):
         self.integration_cache = BeamIntegrationCache()
@@ -84,6 +108,30 @@ struct ForceBeamColumn3dScratch(Movable):
         self.section_load_my_cache = []
         self.section_load_mz_cache = []
         self.fixed_end_cache = []
+        self.section_vs_eps0 = []
+        self.section_vs_ky = []
+        self.section_vs_kz = []
+        self.section_ssr_axial = []
+        self.section_ssr_my = []
+        self.section_ssr_mz = []
+        self.section_fs11 = []
+        self.section_fs12 = []
+        self.section_fs13 = []
+        self.section_fs22 = []
+        self.section_fs23 = []
+        self.section_fs33 = []
+        self.section_vs_subdivide_eps0 = []
+        self.section_vs_subdivide_ky = []
+        self.section_vs_subdivide_kz = []
+        self.section_ssr_subdivide_axial = []
+        self.section_ssr_subdivide_my = []
+        self.section_ssr_subdivide_mz = []
+        self.section_fs_subdivide11 = []
+        self.section_fs_subdivide12 = []
+        self.section_fs_subdivide13 = []
+        self.section_fs_subdivide22 = []
+        self.section_fs_subdivide23 = []
+        self.section_fs_subdivide33 = []
 
 
 fn reset_force_beam_column3d_scratch(mut scratch: ForceBeamColumn3dScratch):
@@ -871,6 +919,532 @@ fn _fiber_section3d_solve_for_force(
     return (resp, eps0_guess, kappa_y_guess, kappa_z_guess)
 
 
+fn _fiber_section3d_response_flexibility(
+    resp: FiberSection3dResponse
+) -> (Bool, Float64, Float64, Float64, Float64, Float64, Float64):
+    var inv_sec = _invert_3x3_values(
+        resp.k11,
+        resp.k12,
+        resp.k13,
+        resp.k12,
+        resp.k22,
+        resp.k23,
+        resp.k13,
+        resp.k23,
+        resp.k33,
+    )
+    if not inv_sec[0]:
+        return (False, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    return (
+        True,
+        inv_sec[1],
+        inv_sec[2],
+        inv_sec[3],
+        inv_sec[5],
+        inv_sec[6],
+        inv_sec[9],
+    )
+
+
+fn _ensure_force_beam_column3d_section_history_capacity(
+    mut scratch: ForceBeamColumn3dScratch, num_int_pts: Int
+):
+    scratch.section_vs_eps0.resize(num_int_pts, 0.0)
+    scratch.section_vs_ky.resize(num_int_pts, 0.0)
+    scratch.section_vs_kz.resize(num_int_pts, 0.0)
+    scratch.section_ssr_axial.resize(num_int_pts, 0.0)
+    scratch.section_ssr_my.resize(num_int_pts, 0.0)
+    scratch.section_ssr_mz.resize(num_int_pts, 0.0)
+    scratch.section_fs11.resize(num_int_pts, 0.0)
+    scratch.section_fs12.resize(num_int_pts, 0.0)
+    scratch.section_fs13.resize(num_int_pts, 0.0)
+    scratch.section_fs22.resize(num_int_pts, 0.0)
+    scratch.section_fs23.resize(num_int_pts, 0.0)
+    scratch.section_fs33.resize(num_int_pts, 0.0)
+    scratch.section_vs_subdivide_eps0.resize(num_int_pts, 0.0)
+    scratch.section_vs_subdivide_ky.resize(num_int_pts, 0.0)
+    scratch.section_vs_subdivide_kz.resize(num_int_pts, 0.0)
+    scratch.section_ssr_subdivide_axial.resize(num_int_pts, 0.0)
+    scratch.section_ssr_subdivide_my.resize(num_int_pts, 0.0)
+    scratch.section_ssr_subdivide_mz.resize(num_int_pts, 0.0)
+    scratch.section_fs_subdivide11.resize(num_int_pts, 0.0)
+    scratch.section_fs_subdivide12.resize(num_int_pts, 0.0)
+    scratch.section_fs_subdivide13.resize(num_int_pts, 0.0)
+    scratch.section_fs_subdivide22.resize(num_int_pts, 0.0)
+    scratch.section_fs_subdivide23.resize(num_int_pts, 0.0)
+    scratch.section_fs_subdivide33.resize(num_int_pts, 0.0)
+
+
+fn _restore_force_beam_column3d_predictor_state(
+    mut force_basic_q_state: List[Float64],
+    force_basic_q_offset: Int,
+    num_int_pts: Int,
+    q0: Float64,
+    q1: Float64,
+    q2: Float64,
+    q3: Float64,
+    q4: Float64,
+    section_eps0: List[Float64],
+    section_ky: List[Float64],
+    section_kz: List[Float64],
+):
+    force_basic_q_state[force_basic_q_offset] = q0
+    force_basic_q_state[force_basic_q_offset + 1] = q1
+    force_basic_q_state[force_basic_q_offset + 2] = q2
+    force_basic_q_state[force_basic_q_offset + 3] = q3
+    force_basic_q_state[force_basic_q_offset + 4] = q4
+    var eps0_offset = force_basic_q_offset + 5
+    var ky_offset = eps0_offset + num_int_pts
+    var kz_offset = ky_offset + num_int_pts
+    for ip in range(num_int_pts):
+        force_basic_q_state[eps0_offset + ip] = section_eps0[ip]
+        force_basic_q_state[ky_offset + ip] = section_ky[ip]
+        force_basic_q_state[kz_offset + ip] = section_kz[ip]
+
+
+fn _force_beam_column3d_section_basic_deformation(
+    L: Float64,
+    num_int_pts: Int,
+    scratch: ForceBeamColumn3dScratch,
+    force_basic_q_state: List[Float64],
+    eps0_offset: Int,
+    ky_offset: Int,
+    kz_offset: Int,
+) -> (Float64, Float64, Float64, Float64, Float64):
+    var v0 = 0.0
+    var v1 = 0.0
+    var v2 = 0.0
+    var v3 = 0.0
+    var v4 = 0.0
+    for ip in range(num_int_pts):
+        var xi = scratch.integration_cache.xis[ip]
+        var wL = scratch.integration_cache.weights[ip] * L
+        var b_mi = xi - 1.0
+        var b_mj = xi
+        v0 += wL * force_basic_q_state[eps0_offset + ip]
+        v1 += wL * b_mi * force_basic_q_state[kz_offset + ip]
+        v2 += wL * b_mj * force_basic_q_state[kz_offset + ip]
+        v3 += wL * b_mi * force_basic_q_state[ky_offset + ip]
+        v4 += wL * b_mj * force_basic_q_state[ky_offset + ip]
+    return (v0, v1, v2, v3, v4)
+
+
+fn _force_beam_column3d_try_increment(
+    L: Float64,
+    sec_def: FiberSection3dDef,
+    fibers: List[FiberCell],
+    uniaxial_defs: List[UniMaterialDef],
+    mut uniaxial_states: List[UniMaterialState],
+    elem_state_ids: List[Int],
+    elem_state_offset: Int,
+    fibers_per_section: Int,
+    num_int_pts: Int,
+    mut force_basic_q_state: List[Float64],
+    force_basic_q_offset: Int,
+    mut scratch: ForceBeamColumn3dScratch,
+    base_v0: Float64,
+    base_v1: Float64,
+    base_v2: Float64,
+    base_v3: Float64,
+    base_v4: Float64,
+    dv_trial0: Float64,
+    dv_trial1: Float64,
+    dv_trial2: Float64,
+    dv_trial3: Float64,
+    dv_trial4: Float64,
+    use_initial_section_flexibility: Int,
+) -> (Bool, Float64, Float64, Float64, Float64, Float64):
+    var q0 = force_basic_q_state[force_basic_q_offset]
+    var q1 = force_basic_q_state[force_basic_q_offset + 1]
+    var q2 = force_basic_q_state[force_basic_q_offset + 2]
+    var q3 = force_basic_q_state[force_basic_q_offset + 3]
+    var q4 = force_basic_q_state[force_basic_q_offset + 4]
+    var eps0_offset = force_basic_q_offset + 5
+    var ky_offset = eps0_offset + num_int_pts
+    var kz_offset = ky_offset + num_int_pts
+
+    var elem_tol = 1.0e-12
+    var max_elem_iters = 10
+
+    var target_v0 = base_v0 + dv_trial0
+    var target_v1 = base_v1 + dv_trial1
+    var target_v2 = base_v2 + dv_trial2
+    var target_v3 = base_v3 + dv_trial3
+    var target_v4 = base_v4 + dv_trial4
+
+    _ensure_force_beam_column3d_section_history_capacity(scratch, num_int_pts)
+
+    var init_fs11: List[Float64] = []
+    var init_fs12: List[Float64] = []
+    var init_fs13: List[Float64] = []
+    var init_fs22: List[Float64] = []
+    var init_fs23: List[Float64] = []
+    var init_fs33: List[Float64] = []
+    init_fs11.resize(num_int_pts, 0.0)
+    init_fs12.resize(num_int_pts, 0.0)
+    init_fs13.resize(num_int_pts, 0.0)
+    init_fs22.resize(num_int_pts, 0.0)
+    init_fs23.resize(num_int_pts, 0.0)
+    init_fs33.resize(num_int_pts, 0.0)
+
+    for ip in range(num_int_pts):
+        var eps0 = force_basic_q_state[eps0_offset + ip]
+        var kappa_y = force_basic_q_state[ky_offset + ip]
+        var kappa_z = force_basic_q_state[kz_offset + ip]
+        scratch.section_vs_eps0[ip] = eps0
+        scratch.section_vs_ky[ip] = kappa_y
+        scratch.section_vs_kz[ip] = kappa_z
+
+        var ip_state_offset = elem_state_offset + ip * fibers_per_section
+        var resp_trial = _fiber_section3d_set_trial_from_offset(
+            sec_def,
+            fibers,
+            uniaxial_defs,
+            uniaxial_states,
+            elem_state_ids,
+            ip_state_offset,
+            fibers_per_section,
+            eps0,
+            kappa_y,
+            kappa_z,
+        )
+        scratch.section_ssr_axial[ip] = resp_trial.axial_force
+        scratch.section_ssr_my[ip] = resp_trial.moment_y
+        scratch.section_ssr_mz[ip] = resp_trial.moment_z
+        var sec_flex = _fiber_section3d_response_flexibility(resp_trial)
+        if not sec_flex[0]:
+            return (False, 0.0, 0.0, 0.0, 0.0, 0.0)
+        scratch.section_fs11[ip] = sec_flex[1]
+        scratch.section_fs12[ip] = sec_flex[2]
+        scratch.section_fs13[ip] = sec_flex[3]
+        scratch.section_fs22[ip] = sec_flex[4]
+        scratch.section_fs23[ip] = sec_flex[5]
+        scratch.section_fs33[ip] = sec_flex[6]
+
+        scratch.section_vs_subdivide_eps0[ip] = eps0
+        scratch.section_vs_subdivide_ky[ip] = kappa_y
+        scratch.section_vs_subdivide_kz[ip] = kappa_z
+        scratch.section_ssr_subdivide_axial[ip] = resp_trial.axial_force
+        scratch.section_ssr_subdivide_my[ip] = resp_trial.moment_y
+        scratch.section_ssr_subdivide_mz[ip] = resp_trial.moment_z
+        scratch.section_fs_subdivide11[ip] = sec_flex[1]
+        scratch.section_fs_subdivide12[ip] = sec_flex[2]
+        scratch.section_fs_subdivide13[ip] = sec_flex[3]
+        scratch.section_fs_subdivide22[ip] = sec_flex[4]
+        scratch.section_fs_subdivide23[ip] = sec_flex[5]
+        scratch.section_fs_subdivide33[ip] = sec_flex[6]
+
+        var init_resp = _fiber_section3d_set_trial_from_offset(
+            sec_def,
+            fibers,
+            uniaxial_defs,
+            uniaxial_states,
+            elem_state_ids,
+            ip_state_offset,
+            fibers_per_section,
+            0.0,
+            0.0,
+            0.0,
+        )
+        var init_flex = _fiber_section3d_response_flexibility(init_resp)
+        if not init_flex[0]:
+            return (False, 0.0, 0.0, 0.0, 0.0, 0.0)
+        init_fs11[ip] = init_flex[1]
+        init_fs12[ip] = init_flex[2]
+        init_fs13[ip] = init_flex[3]
+        init_fs22[ip] = init_flex[4]
+        init_fs23[ip] = init_flex[5]
+        init_fs33[ip] = init_flex[6]
+    var predictor_f = Beam3dMat5(fill=0.0)
+    for ip in range(num_int_pts):
+        var xi = scratch.integration_cache.xis[ip]
+        var wL = scratch.integration_cache.weights[ip] * L
+        var b_mi = xi - 1.0
+        var b_mj = xi
+        var sec_f11 = scratch.section_fs11[ip]
+        var sec_f12 = scratch.section_fs12[ip]
+        var sec_f13 = scratch.section_fs13[ip]
+        var sec_f22 = scratch.section_fs22[ip]
+        var sec_f23 = scratch.section_fs23[ip]
+        var sec_f33 = scratch.section_fs33[ip]
+        predictor_f[_mat5_index(0, 0)] += wL * sec_f11
+        predictor_f[_mat5_index(0, 1)] += wL * sec_f13 * b_mi
+        predictor_f[_mat5_index(0, 2)] += wL * sec_f13 * b_mj
+        predictor_f[_mat5_index(0, 3)] += wL * sec_f12 * b_mi
+        predictor_f[_mat5_index(0, 4)] += wL * sec_f12 * b_mj
+        predictor_f[_mat5_index(1, 0)] += wL * b_mi * sec_f13
+        predictor_f[_mat5_index(1, 1)] += wL * b_mi * sec_f33 * b_mi
+        predictor_f[_mat5_index(1, 2)] += wL * b_mi * sec_f33 * b_mj
+        predictor_f[_mat5_index(1, 3)] += wL * b_mi * sec_f23 * b_mi
+        predictor_f[_mat5_index(1, 4)] += wL * b_mi * sec_f23 * b_mj
+        predictor_f[_mat5_index(2, 0)] += wL * b_mj * sec_f13
+        predictor_f[_mat5_index(2, 1)] += wL * b_mj * sec_f33 * b_mi
+        predictor_f[_mat5_index(2, 2)] += wL * b_mj * sec_f33 * b_mj
+        predictor_f[_mat5_index(2, 3)] += wL * b_mj * sec_f23 * b_mi
+        predictor_f[_mat5_index(2, 4)] += wL * b_mj * sec_f23 * b_mj
+        predictor_f[_mat5_index(3, 0)] += wL * b_mi * sec_f12
+        predictor_f[_mat5_index(3, 1)] += wL * b_mi * sec_f23 * b_mi
+        predictor_f[_mat5_index(3, 2)] += wL * b_mi * sec_f23 * b_mj
+        predictor_f[_mat5_index(3, 3)] += wL * b_mi * sec_f22 * b_mi
+        predictor_f[_mat5_index(3, 4)] += wL * b_mi * sec_f22 * b_mj
+        predictor_f[_mat5_index(4, 0)] += wL * b_mj * sec_f12
+        predictor_f[_mat5_index(4, 1)] += wL * b_mj * sec_f23 * b_mi
+        predictor_f[_mat5_index(4, 2)] += wL * b_mj * sec_f23 * b_mj
+        predictor_f[_mat5_index(4, 3)] += wL * b_mj * sec_f22 * b_mi
+        predictor_f[_mat5_index(4, 4)] += wL * b_mj * sec_f22 * b_mj
+    var predictor_f_copy = predictor_f
+    if _invert_5x5_flat_into(predictor_f_copy, scratch.k_basic_flat):
+        q0 += (
+            scratch.k_basic_flat[_mat5_index(0, 0)] * dv_trial0
+            + scratch.k_basic_flat[_mat5_index(0, 1)] * dv_trial1
+            + scratch.k_basic_flat[_mat5_index(0, 2)] * dv_trial2
+            + scratch.k_basic_flat[_mat5_index(0, 3)] * dv_trial3
+            + scratch.k_basic_flat[_mat5_index(0, 4)] * dv_trial4
+        )
+        q1 += (
+            scratch.k_basic_flat[_mat5_index(1, 0)] * dv_trial0
+            + scratch.k_basic_flat[_mat5_index(1, 1)] * dv_trial1
+            + scratch.k_basic_flat[_mat5_index(1, 2)] * dv_trial2
+            + scratch.k_basic_flat[_mat5_index(1, 3)] * dv_trial3
+            + scratch.k_basic_flat[_mat5_index(1, 4)] * dv_trial4
+        )
+        q2 += (
+            scratch.k_basic_flat[_mat5_index(2, 0)] * dv_trial0
+            + scratch.k_basic_flat[_mat5_index(2, 1)] * dv_trial1
+            + scratch.k_basic_flat[_mat5_index(2, 2)] * dv_trial2
+            + scratch.k_basic_flat[_mat5_index(2, 3)] * dv_trial3
+            + scratch.k_basic_flat[_mat5_index(2, 4)] * dv_trial4
+        )
+        q3 += (
+            scratch.k_basic_flat[_mat5_index(3, 0)] * dv_trial0
+            + scratch.k_basic_flat[_mat5_index(3, 1)] * dv_trial1
+            + scratch.k_basic_flat[_mat5_index(3, 2)] * dv_trial2
+            + scratch.k_basic_flat[_mat5_index(3, 3)] * dv_trial3
+            + scratch.k_basic_flat[_mat5_index(3, 4)] * dv_trial4
+        )
+        q4 += (
+            scratch.k_basic_flat[_mat5_index(4, 0)] * dv_trial0
+            + scratch.k_basic_flat[_mat5_index(4, 1)] * dv_trial1
+            + scratch.k_basic_flat[_mat5_index(4, 2)] * dv_trial2
+            + scratch.k_basic_flat[_mat5_index(4, 3)] * dv_trial3
+            + scratch.k_basic_flat[_mat5_index(4, 4)] * dv_trial4
+        )
+
+    var num_elem_iters = max_elem_iters
+    if use_initial_section_flexibility == 1:
+        num_elem_iters = 10 * max_elem_iters
+
+    for elem_iter in range(num_elem_iters):
+        _zero_static_tuple(scratch.f_basic_flat)
+        _zero_static_tuple(scratch.v_from)
+        var use_initial_flex = (
+            use_initial_section_flexibility == 1
+            or (
+                use_initial_section_flexibility == 2
+                and elem_iter == 0
+            )
+        )
+        for ip in range(num_int_pts):
+            var xi = scratch.integration_cache.xis[ip]
+            var wL = scratch.integration_cache.weights[ip] * L
+            var b_mi = xi - 1.0
+            var b_mj = xi
+            var axial_target = q0 + scratch.section_load_axial[ip]
+            var moment_z_target = b_mi * q1 + b_mj * q2 + scratch.section_load_mz[ip]
+            var moment_y_target = b_mi * q3 + b_mj * q4 + scratch.section_load_my[ip]
+            var dss0 = axial_target - scratch.section_ssr_subdivide_axial[ip]
+            var dss1 = moment_y_target - scratch.section_ssr_subdivide_my[ip]
+            var dss2 = moment_z_target - scratch.section_ssr_subdivide_mz[ip]
+
+            var solve_f11: Float64
+            var solve_f12: Float64
+            var solve_f13: Float64
+            var solve_f22: Float64
+            var solve_f23: Float64
+            var solve_f33: Float64
+            if use_initial_flex:
+                solve_f11 = init_fs11[ip]
+                solve_f12 = init_fs12[ip]
+                solve_f13 = init_fs13[ip]
+                solve_f22 = init_fs22[ip]
+                solve_f23 = init_fs23[ip]
+                solve_f33 = init_fs33[ip]
+            else:
+                solve_f11 = scratch.section_fs_subdivide11[ip]
+                solve_f12 = scratch.section_fs_subdivide12[ip]
+                solve_f13 = scratch.section_fs_subdivide13[ip]
+                solve_f22 = scratch.section_fs_subdivide22[ip]
+                solve_f23 = scratch.section_fs_subdivide23[ip]
+                solve_f33 = scratch.section_fs_subdivide33[ip]
+            var dvs0 = solve_f11 * dss0 + solve_f12 * dss1 + solve_f13 * dss2
+            var dvs1 = solve_f12 * dss0 + solve_f22 * dss1 + solve_f23 * dss2
+            var dvs2 = solve_f13 * dss0 + solve_f23 * dss1 + solve_f33 * dss2
+
+            var sec_vs0 = scratch.section_vs_subdivide_eps0[ip] + dvs0
+            var sec_vs1 = scratch.section_vs_subdivide_ky[ip] + dvs1
+            var sec_vs2 = scratch.section_vs_subdivide_kz[ip] + dvs2
+            var ip_state_offset = elem_state_offset + ip * fibers_per_section
+            var resp_trial = _fiber_section3d_set_trial_from_offset(
+                sec_def,
+                fibers,
+                uniaxial_defs,
+                uniaxial_states,
+                elem_state_ids,
+                ip_state_offset,
+                fibers_per_section,
+                sec_vs0,
+                sec_vs1,
+                sec_vs2,
+            )
+            scratch.section_vs_subdivide_eps0[ip] = sec_vs0
+            scratch.section_vs_subdivide_ky[ip] = sec_vs1
+            scratch.section_vs_subdivide_kz[ip] = sec_vs2
+            scratch.section_ssr_subdivide_axial[ip] = resp_trial.axial_force
+            scratch.section_ssr_subdivide_my[ip] = resp_trial.moment_y
+            scratch.section_ssr_subdivide_mz[ip] = resp_trial.moment_z
+            var sec_flex = _fiber_section3d_response_flexibility(resp_trial)
+            if not sec_flex[0]:
+                return (False, 0.0, 0.0, 0.0, 0.0, 0.0)
+            scratch.section_fs_subdivide11[ip] = sec_flex[1]
+            scratch.section_fs_subdivide12[ip] = sec_flex[2]
+            scratch.section_fs_subdivide13[ip] = sec_flex[3]
+            scratch.section_fs_subdivide22[ip] = sec_flex[4]
+            scratch.section_fs_subdivide23[ip] = sec_flex[5]
+            scratch.section_fs_subdivide33[ip] = sec_flex[6]
+
+            var dss_res0 = axial_target - scratch.section_ssr_subdivide_axial[ip]
+            var dss_res1 = moment_y_target - scratch.section_ssr_subdivide_my[ip]
+            var dss_res2 = moment_z_target - scratch.section_ssr_subdivide_mz[ip]
+            var dvs_res0 = sec_flex[1] * dss_res0 + sec_flex[2] * dss_res1 + sec_flex[3] * dss_res2
+            var dvs_res1 = sec_flex[2] * dss_res0 + sec_flex[4] * dss_res1 + sec_flex[5] * dss_res2
+            var dvs_res2 = sec_flex[3] * dss_res0 + sec_flex[5] * dss_res1 + sec_flex[6] * dss_res2
+
+            scratch.v_from[0] += wL * (sec_vs0 + dvs_res0)
+            scratch.v_from[1] += wL * b_mi * (sec_vs2 + dvs_res2)
+            scratch.v_from[2] += wL * b_mj * (sec_vs2 + dvs_res2)
+            scratch.v_from[3] += wL * b_mi * (sec_vs1 + dvs_res1)
+            scratch.v_from[4] += wL * b_mj * (sec_vs1 + dvs_res1)
+
+            for a in range(5):
+                var Ba_n = 0.0
+                var Ba_my = 0.0
+                var Ba_mz = 0.0
+                if a == 0:
+                    Ba_n = 1.0
+                elif a == 1:
+                    Ba_mz = b_mi
+                elif a == 2:
+                    Ba_mz = b_mj
+                elif a == 3:
+                    Ba_my = b_mi
+                else:
+                    Ba_my = b_mj
+                for b in range(5):
+                    var Bb_n = 0.0
+                    var Bb_my = 0.0
+                    var Bb_mz = 0.0
+                    if b == 0:
+                        Bb_n = 1.0
+                    elif b == 1:
+                        Bb_mz = b_mi
+                    elif b == 2:
+                        Bb_mz = b_mj
+                    elif b == 3:
+                        Bb_my = b_mi
+                    else:
+                        Bb_my = b_mj
+                    var dEps = sec_flex[1] * Bb_n + sec_flex[2] * Bb_my + sec_flex[3] * Bb_mz
+                    var dKy = sec_flex[2] * Bb_n + sec_flex[4] * Bb_my + sec_flex[5] * Bb_mz
+                    var dKz = sec_flex[3] * Bb_n + sec_flex[5] * Bb_my + sec_flex[6] * Bb_mz
+                    scratch.f_basic_flat[_mat5_index(a, b)] += (
+                        wL * (Ba_n * dEps + Ba_my * dKy + Ba_mz * dKz)
+                    )
+        _zero_static_tuple(scratch.f_basic_copy_flat)
+        for i in range(25):
+            scratch.f_basic_copy_flat[i] = scratch.f_basic_flat[i]
+        if not _invert_5x5_flat_into(
+            scratch.f_basic_copy_flat, scratch.k_basic_flat
+        ):
+            return (False, 0.0, 0.0, 0.0, 0.0, 0.0)
+
+        var residual_0 = target_v0 - scratch.v_from[0]
+        var residual_1 = target_v1 - scratch.v_from[1]
+        var residual_2 = target_v2 - scratch.v_from[2]
+        var residual_3 = target_v3 - scratch.v_from[3]
+        var residual_4 = target_v4 - scratch.v_from[4]
+        var dq0 = (
+            scratch.k_basic_flat[_mat5_index(0, 0)] * residual_0
+            + scratch.k_basic_flat[_mat5_index(0, 1)] * residual_1
+            + scratch.k_basic_flat[_mat5_index(0, 2)] * residual_2
+            + scratch.k_basic_flat[_mat5_index(0, 3)] * residual_3
+            + scratch.k_basic_flat[_mat5_index(0, 4)] * residual_4
+        )
+        var dq1 = (
+            scratch.k_basic_flat[_mat5_index(1, 0)] * residual_0
+            + scratch.k_basic_flat[_mat5_index(1, 1)] * residual_1
+            + scratch.k_basic_flat[_mat5_index(1, 2)] * residual_2
+            + scratch.k_basic_flat[_mat5_index(1, 3)] * residual_3
+            + scratch.k_basic_flat[_mat5_index(1, 4)] * residual_4
+        )
+        var dq2 = (
+            scratch.k_basic_flat[_mat5_index(2, 0)] * residual_0
+            + scratch.k_basic_flat[_mat5_index(2, 1)] * residual_1
+            + scratch.k_basic_flat[_mat5_index(2, 2)] * residual_2
+            + scratch.k_basic_flat[_mat5_index(2, 3)] * residual_3
+            + scratch.k_basic_flat[_mat5_index(2, 4)] * residual_4
+        )
+        var dq3 = (
+            scratch.k_basic_flat[_mat5_index(3, 0)] * residual_0
+            + scratch.k_basic_flat[_mat5_index(3, 1)] * residual_1
+            + scratch.k_basic_flat[_mat5_index(3, 2)] * residual_2
+            + scratch.k_basic_flat[_mat5_index(3, 3)] * residual_3
+            + scratch.k_basic_flat[_mat5_index(3, 4)] * residual_4
+        )
+        var dq4 = (
+            scratch.k_basic_flat[_mat5_index(4, 0)] * residual_0
+            + scratch.k_basic_flat[_mat5_index(4, 1)] * residual_1
+            + scratch.k_basic_flat[_mat5_index(4, 2)] * residual_2
+            + scratch.k_basic_flat[_mat5_index(4, 3)] * residual_3
+            + scratch.k_basic_flat[_mat5_index(4, 4)] * residual_4
+        )
+        var work_norm = abs(
+            residual_0 * dq0
+            + residual_1 * dq1
+            + residual_2 * dq2
+            + residual_3 * dq3
+            + residual_4 * dq4
+        )
+        q0 += dq0
+        q1 += dq1
+        q2 += dq2
+        q3 += dq3
+        q4 += dq4
+        if work_norm < elem_tol:
+            force_basic_q_state[force_basic_q_offset] = q0
+            force_basic_q_state[force_basic_q_offset + 1] = q1
+            force_basic_q_state[force_basic_q_offset + 2] = q2
+            force_basic_q_state[force_basic_q_offset + 3] = q3
+            force_basic_q_state[force_basic_q_offset + 4] = q4
+            for ip in range(num_int_pts):
+                force_basic_q_state[eps0_offset + ip] = scratch.section_vs_subdivide_eps0[ip]
+                force_basic_q_state[ky_offset + ip] = scratch.section_vs_subdivide_ky[ip]
+                force_basic_q_state[kz_offset + ip] = scratch.section_vs_subdivide_kz[ip]
+                scratch.section_vs_eps0[ip] = scratch.section_vs_subdivide_eps0[ip]
+                scratch.section_vs_ky[ip] = scratch.section_vs_subdivide_ky[ip]
+                scratch.section_vs_kz[ip] = scratch.section_vs_subdivide_kz[ip]
+                scratch.section_ssr_axial[ip] = scratch.section_ssr_subdivide_axial[ip]
+                scratch.section_ssr_my[ip] = scratch.section_ssr_subdivide_my[ip]
+                scratch.section_ssr_mz[ip] = scratch.section_ssr_subdivide_mz[ip]
+                scratch.section_fs11[ip] = scratch.section_fs_subdivide11[ip]
+                scratch.section_fs12[ip] = scratch.section_fs_subdivide12[ip]
+                scratch.section_fs13[ip] = scratch.section_fs_subdivide13[ip]
+                scratch.section_fs22[ip] = scratch.section_fs_subdivide22[ip]
+                scratch.section_fs23[ip] = scratch.section_fs_subdivide23[ip]
+                scratch.section_fs33[ip] = scratch.section_fs_subdivide33[ip]
+            return (True, q0, q1, q2, q3, q4)
+    return (False, 0.0, 0.0, 0.0, 0.0, 0.0)
+
+
 fn _force_beam_column3d_basic_state(
     u_local: List[Float64], L: Float64
 ) -> (Float64, Float64, Float64, Float64, Float64, Float64):
@@ -1524,202 +2098,167 @@ fn force_beam_column3d_fiber_global_tangent_and_internal(
         _force_beam_column3d_basic_state(scratch.u_local, L)
     )
 
-    var q0 = force_basic_q_state[force_basic_q_offset]
-    var q1 = force_basic_q_state[force_basic_q_offset + 1]
-    var q2 = force_basic_q_state[force_basic_q_offset + 2]
-    var q3 = force_basic_q_state[force_basic_q_offset + 3]
-    var q4 = force_basic_q_state[force_basic_q_offset + 4]
     var eps0_offset = force_basic_q_offset + 5
     var ky_offset = eps0_offset + num_int_pts
     var kz_offset = ky_offset + num_int_pts
 
-    var elem_tol = 1.0e-8
-    var section_tol = 1.0e-8
-    var max_elem_iters = 80
-    var max_section_iters = 80
-    var converged = False
-
     _zero_static_tuple(scratch.k_basic_flat)
+    _ensure_force_beam_column3d_section_history_capacity(scratch, num_int_pts)
+    var current_basic = _force_beam_column3d_section_basic_deformation(
+        L,
+        num_int_pts,
+        scratch,
+        force_basic_q_state,
+        eps0_offset,
+        ky_offset,
+        kz_offset,
+    )
+    var accepted_basic_0 = current_basic[0]
+    var accepted_basic_1 = current_basic[1]
+    var accepted_basic_2 = current_basic[2]
+    var accepted_basic_3 = current_basic[3]
+    var accepted_basic_4 = current_basic[4]
+    var accepted_q0 = force_basic_q_state[force_basic_q_offset]
+    var accepted_q1 = force_basic_q_state[force_basic_q_offset + 1]
+    var accepted_q2 = force_basic_q_state[force_basic_q_offset + 2]
+    var accepted_q3 = force_basic_q_state[force_basic_q_offset + 3]
+    var accepted_q4 = force_basic_q_state[force_basic_q_offset + 4]
+    for ip in range(num_int_pts):
+        scratch.section_vs_eps0[ip] = force_basic_q_state[eps0_offset + ip]
+        scratch.section_vs_ky[ip] = force_basic_q_state[ky_offset + ip]
+        scratch.section_vs_kz[ip] = force_basic_q_state[kz_offset + ip]
 
-    for _ in range(max_elem_iters):
-        _zero_static_tuple(scratch.f_basic_flat)
-        _zero_static_tuple(scratch.v_from)
+    var tolerance = 1.0e-12
+    var cutback_factor = 10.0
+    var max_subdivisions = 4
+    var converged = False
+    var remaining_0 = v_basic_0 - accepted_basic_0
+    var remaining_1 = v_basic_1 - accepted_basic_1
+    var remaining_2 = v_basic_2 - accepted_basic_2
+    var remaining_3 = v_basic_3 - accepted_basic_3
+    var remaining_4 = v_basic_4 - accepted_basic_4
+    var attempt_0 = remaining_0
+    var attempt_1 = remaining_1
+    var attempt_2 = remaining_2
+    var attempt_3 = remaining_3
+    var attempt_4 = remaining_4
+    var num_subdivide = 1
 
-        for ip in range(num_int_pts):
-            var xi = scratch.integration_cache.xis[ip]
-            var weight = scratch.integration_cache.weights[ip]
-            var wL = weight * L
-
-            var b_mi = xi - 1.0
-            var b_mj = xi
-            var axial_target = q0 + scratch.section_load_axial[ip]
-            var moment_z_target = b_mi * q1 + b_mj * q2 + scratch.section_load_mz[ip]
-            var moment_y_target = b_mi * q3 + b_mj * q4 + scratch.section_load_my[ip]
-
-            var ip_state_offset = elem_state_offset + ip * fibers_per_section
-            var eps0 = force_basic_q_state[eps0_offset + ip]
-            var kappa_y = force_basic_q_state[ky_offset + ip]
-            var kappa_z = force_basic_q_state[kz_offset + ip]
-            var solved = _fiber_section3d_solve_for_force(
+    while True:
+        if num_subdivide > max_subdivisions:
+            break
+        var target_v0 = accepted_basic_0 + attempt_0
+        var target_v1 = accepted_basic_1 + attempt_1
+        var target_v2 = accepted_basic_2 + attempt_2
+        var target_v3 = accepted_basic_3 + attempt_3
+        var target_v4 = accepted_basic_4 + attempt_4
+        var scheme_success = False
+        for use_initial in range(3):
+            _restore_force_beam_column3d_predictor_state(
+                force_basic_q_state,
+                force_basic_q_offset,
+                num_int_pts,
+                accepted_q0,
+                accepted_q1,
+                accepted_q2,
+                accepted_q3,
+                accepted_q4,
+                scratch.section_vs_eps0,
+                scratch.section_vs_ky,
+                scratch.section_vs_kz,
+            )
+            var solved = _force_beam_column3d_try_increment(
+                L,
                 sec_def,
                 fibers,
                 uniaxial_defs,
                 uniaxial_states,
                 elem_state_ids,
-                ip_state_offset,
+                elem_state_offset,
                 fibers_per_section,
-                axial_target,
-                moment_y_target,
-                moment_z_target,
-                eps0,
-                kappa_y,
-                kappa_z,
-                max_section_iters,
-                section_tol,
+                num_int_pts,
+                force_basic_q_state,
+                force_basic_q_offset,
+                scratch,
+                accepted_basic_0,
+                accepted_basic_1,
+                accepted_basic_2,
+                accepted_basic_3,
+                accepted_basic_4,
+                attempt_0,
+                attempt_1,
+                attempt_2,
+                attempt_3,
+                attempt_4,
+                use_initial,
             )
-            var resp = solved[0]
-            eps0 = solved[1]
-            kappa_y = solved[2]
-            kappa_z = solved[3]
-            force_basic_q_state[eps0_offset + ip] = eps0
-            force_basic_q_state[ky_offset + ip] = kappa_y
-            force_basic_q_state[kz_offset + ip] = kappa_z
-
-            var inv_sec = _invert_3x3_values(
-                resp.k11,
-                resp.k12,
-                resp.k13,
-                resp.k12,
-                resp.k22,
-                resp.k23,
-                resp.k13,
-                resp.k23,
-                resp.k33,
+            if not solved[0]:
+                continue
+            accepted_basic_0 = target_v0
+            accepted_basic_1 = target_v1
+            accepted_basic_2 = target_v2
+            accepted_basic_3 = target_v3
+            accepted_basic_4 = target_v4
+            accepted_q0 = solved[1]
+            accepted_q1 = solved[2]
+            accepted_q2 = solved[3]
+            accepted_q3 = solved[4]
+            accepted_q4 = solved[5]
+            for ip in range(num_int_pts):
+                scratch.section_vs_eps0[ip] = force_basic_q_state[eps0_offset + ip]
+                scratch.section_vs_ky[ip] = force_basic_q_state[ky_offset + ip]
+                scratch.section_vs_kz[ip] = force_basic_q_state[kz_offset + ip]
+            remaining_0 = v_basic_0 - accepted_basic_0
+            remaining_1 = v_basic_1 - accepted_basic_1
+            remaining_2 = v_basic_2 - accepted_basic_2
+            remaining_3 = v_basic_3 - accepted_basic_3
+            remaining_4 = v_basic_4 - accepted_basic_4
+            var remaining_norm = max(
+                max(abs(remaining_0), abs(remaining_1)),
+                max(max(abs(remaining_2), abs(remaining_3)), abs(remaining_4)),
             )
-            if not inv_sec[0]:
-                abort("forceBeamColumn3d singular section flexibility")
-
-            scratch.v_from[0] += wL * eps0
-            scratch.v_from[1] += wL * b_mi * kappa_z
-            scratch.v_from[2] += wL * b_mj * kappa_z
-            scratch.v_from[3] += wL * b_mi * kappa_y
-            scratch.v_from[4] += wL * b_mj * kappa_y
-
-            for a in range(5):
-                var Ba_n = 0.0
-                var Ba_my = 0.0
-                var Ba_mz = 0.0
-                if a == 0:
-                    Ba_n = 1.0
-                elif a == 1:
-                    Ba_mz = b_mi
-                elif a == 2:
-                    Ba_mz = b_mj
-                elif a == 3:
-                    Ba_my = b_mi
-                else:
-                    Ba_my = b_mj
-                for b in range(5):
-                    var Bb_n = 0.0
-                    var Bb_my = 0.0
-                    var Bb_mz = 0.0
-                    if b == 0:
-                        Bb_n = 1.0
-                    elif b == 1:
-                        Bb_mz = b_mi
-                    elif b == 2:
-                        Bb_mz = b_mj
-                    elif b == 3:
-                        Bb_my = b_mi
-                    else:
-                        Bb_my = b_mj
-                    var dEps = inv_sec[1] * Bb_n + inv_sec[4] * Bb_my + inv_sec[7] * Bb_mz
-                    var dKy = inv_sec[2] * Bb_n + inv_sec[5] * Bb_my + inv_sec[8] * Bb_mz
-                    var dKz = inv_sec[3] * Bb_n + inv_sec[6] * Bb_my + inv_sec[9] * Bb_mz
-                    scratch.f_basic_flat[_mat5_index(a, b)] += (
-                        wL * (Ba_n * dEps + Ba_my * dKy + Ba_mz * dKz)
-                    )
-
-        _zero_static_tuple(scratch.f_basic_copy_flat)
-        for i in range(25):
-            scratch.f_basic_copy_flat[i] = scratch.f_basic_flat[i]
-        if not _invert_5x5_flat_into(
-            scratch.f_basic_copy_flat, scratch.k_basic_flat
-        ):
-            abort("forceBeamColumn3d singular element flexibility")
-
-        _zero_static_tuple(scratch.residual)
-        scratch.residual[0] = v_basic_0 - scratch.v_from[0]
-        scratch.residual[1] = v_basic_1 - scratch.v_from[1]
-        scratch.residual[2] = v_basic_2 - scratch.v_from[2]
-        scratch.residual[3] = v_basic_3 - scratch.v_from[3]
-        scratch.residual[4] = v_basic_4 - scratch.v_from[4]
-        _zero_static_tuple(scratch.dq)
-        var r0 = scratch.residual[0]
-        var r1 = scratch.residual[1]
-        var r2 = scratch.residual[2]
-        var r3 = scratch.residual[3]
-        var r4 = scratch.residual[4]
-        scratch.dq[0] = (
-            scratch.k_basic_flat[_mat5_index(0, 0)] * r0
-            + scratch.k_basic_flat[_mat5_index(0, 1)] * r1
-            + scratch.k_basic_flat[_mat5_index(0, 2)] * r2
-            + scratch.k_basic_flat[_mat5_index(0, 3)] * r3
-            + scratch.k_basic_flat[_mat5_index(0, 4)] * r4
-        )
-        scratch.dq[1] = (
-            scratch.k_basic_flat[_mat5_index(1, 0)] * r0
-            + scratch.k_basic_flat[_mat5_index(1, 1)] * r1
-            + scratch.k_basic_flat[_mat5_index(1, 2)] * r2
-            + scratch.k_basic_flat[_mat5_index(1, 3)] * r3
-            + scratch.k_basic_flat[_mat5_index(1, 4)] * r4
-        )
-        scratch.dq[2] = (
-            scratch.k_basic_flat[_mat5_index(2, 0)] * r0
-            + scratch.k_basic_flat[_mat5_index(2, 1)] * r1
-            + scratch.k_basic_flat[_mat5_index(2, 2)] * r2
-            + scratch.k_basic_flat[_mat5_index(2, 3)] * r3
-            + scratch.k_basic_flat[_mat5_index(2, 4)] * r4
-        )
-        scratch.dq[3] = (
-            scratch.k_basic_flat[_mat5_index(3, 0)] * r0
-            + scratch.k_basic_flat[_mat5_index(3, 1)] * r1
-            + scratch.k_basic_flat[_mat5_index(3, 2)] * r2
-            + scratch.k_basic_flat[_mat5_index(3, 3)] * r3
-            + scratch.k_basic_flat[_mat5_index(3, 4)] * r4
-        )
-        scratch.dq[4] = (
-            scratch.k_basic_flat[_mat5_index(4, 0)] * r0
-            + scratch.k_basic_flat[_mat5_index(4, 1)] * r1
-            + scratch.k_basic_flat[_mat5_index(4, 2)] * r2
-            + scratch.k_basic_flat[_mat5_index(4, 3)] * r3
-            + scratch.k_basic_flat[_mat5_index(4, 4)] * r4
-        )
-
-        q0 += scratch.dq[0]
-        q1 += scratch.dq[1]
-        q2 += scratch.dq[2]
-        q3 += scratch.dq[3]
-        q4 += scratch.dq[4]
-
-        var max_residual = 0.0
-        var work_norm = 0.0
-        for i in range(5):
-            var abs_residual = abs(scratch.residual[i])
-            if abs_residual > max_residual:
-                max_residual = abs_residual
-            work_norm += scratch.residual[i] * scratch.dq[i]
-        if max_residual <= elem_tol or abs(work_norm) <= elem_tol:
-            converged = True
+            if remaining_norm <= tolerance:
+                converged = True
+            else:
+                attempt_0 = remaining_0
+                attempt_1 = remaining_1
+                attempt_2 = remaining_2
+                attempt_3 = remaining_3
+                attempt_4 = remaining_4
+                num_subdivide = 1
+            scheme_success = True
             break
-    if not converged:
-        abort("forceBeamColumn3d element compatibility did not converge")
+        if converged:
+            break
+        if scheme_success:
+            continue
+        attempt_0 /= cutback_factor
+        attempt_1 /= cutback_factor
+        attempt_2 /= cutback_factor
+        attempt_3 /= cutback_factor
+        attempt_4 /= cutback_factor
+        num_subdivide += 1
 
-    force_basic_q_state[force_basic_q_offset] = q0
-    force_basic_q_state[force_basic_q_offset + 1] = q1
-    force_basic_q_state[force_basic_q_offset + 2] = q2
-    force_basic_q_state[force_basic_q_offset + 3] = q3
-    force_basic_q_state[force_basic_q_offset + 4] = q4
+    if not converged:
+        _restore_force_beam_column3d_predictor_state(
+            force_basic_q_state,
+            force_basic_q_offset,
+            num_int_pts,
+            accepted_q0,
+            accepted_q1,
+            accepted_q2,
+            accepted_q3,
+            accepted_q4,
+            scratch.section_vs_eps0,
+            scratch.section_vs_ky,
+            scratch.section_vs_kz,
+        )
+        abort("forceBeamColumn3d element compatibility did not converge")
+    var q0 = accepted_q0
+    var q1 = accepted_q1
+    var q2 = accepted_q2
+    var q3 = accepted_q3
+    var q4 = accepted_q4
 
     var inv_L = 1.0 / L
     if elem_index >= 0 and elem_index < len(scratch.cached_inv_length):

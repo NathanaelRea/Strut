@@ -64,7 +64,7 @@ Minimum required fields (v1.0):
     - Load control: `{ type: "LoadControl" }` (default)
     - Displacement control: `{ type: "DisplacementControl", node, dof, du? | targets?, cutback?, max_cutbacks?, min_du? }`
     - `algorithm`: `"Newton"` (default), `"ModifiedNewton"`, or `"ModifiedNewtonInitial"`
-    - `test_type`: `"MaxDispIncr"` (default), `"NormDispIncr"`, `"NormUnbalance"`, or `"EnergyIncr"`
+    - `test_type`: `"NormUnbalance"` (default), `"NormDispIncr"`, `"NormUnbalance"`, or `"EnergyIncr"`
     - optional fallback controls:
       - `fallback_algorithm: "Newton" | "ModifiedNewton" | "ModifiedNewtonInitial"`
       - `fallback_test_type`, `fallback_tol`, `fallback_rel_tol`, `fallback_max_iters`
@@ -72,7 +72,7 @@ Minimum required fields (v1.0):
   - `transient_nonlinear` requires `dt > 0` and supports:
     - `integrator: { type: "Newmark", gamma?, beta? }`
     - `algorithm: "Newton"` (default), `"ModifiedNewton"`, `"ModifiedNewtonInitial"`, `"Broyden"`, or `"NewtonLineSearch"` (`Broyden`/`NewtonLineSearch` currently map to Newton tangent refresh behavior in Mojo runtime)
-    - `test_type: "MaxDispIncr"` (default), `"NormDispIncr"`, `"NormUnbalance"`, or `"EnergyIncr"`
+    - `test_type: "NormUnbalance"` (default), `"NormDispIncr"`, `"NormUnbalance"`, or `"EnergyIncr"`
     - optional fallback controls:
       - `fallback_algorithm: "Newton" | "ModifiedNewton" | "ModifiedNewtonInitial" | "Broyden" | "NewtonLineSearch"`
       - `fallback_test_type`, `fallback_tol`, `fallback_rel_tol`, `fallback_max_iters`

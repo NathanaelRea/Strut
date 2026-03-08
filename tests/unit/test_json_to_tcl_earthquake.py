@@ -217,6 +217,51 @@ def test_json_to_tcl_preserves_numberer_system_and_print_commands():
     assert "print ele\n" in text
 
 
+def test_json_to_tcl_emits_test_print_flag_and_extra_args():
+    case = _base_uniform_case()
+    case["pattern"] = {"type": "Plain", "tag": 1, "time_series": 2}
+    case["loads"] = [{"node": 2, "dof": 1, "value": 1.0}]
+    case["analysis"] = {
+        "type": "static_nonlinear",
+        "steps": 1,
+        "algorithm": "Newton",
+        "test_type": "NormDispIncr",
+        "tol": 1.0e-12,
+        "max_iters": 10,
+        "test_print_flag": 3,
+        "test_extra_args": ["7"],
+        "integrator": {"type": "LoadControl", "step": 1.0},
+    }
+
+    text = _run_json_to_tcl(case)
+
+    assert "test NormDispIncr 1e-12 10 3 7\n" in text
+
+
+def test_json_to_tcl_rejects_rel_tol_in_nonlinear_analysis():
+    case = _base_uniform_case()
+    case["analysis"]["rel_tol"] = 1.0e-6
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_dir = Path(tmp)
+        case_path = tmp_dir / "case.json"
+        tcl_path = tmp_dir / "model.tcl"
+        case_path.write_text(json.dumps(case), encoding="utf-8")
+        proc = subprocess.run(
+            [
+                sys.executable,
+                str(repo_root / "scripts" / "json_to_tcl.py"),
+                str(case_path),
+                str(tcl_path),
+            ],
+            capture_output=True,
+            text=True,
+        )
+
+    assert proc.returncode != 0
+    assert "rel_tol is not representable in Tcl/OpenSees" in proc.stderr
+
+
 def test_json_to_tcl_emits_stage_initialize_before_analysis_setup():
     case = _base_uniform_case()
     case["pattern"] = {"type": "Plain", "tag": 1, "time_series": 2}
