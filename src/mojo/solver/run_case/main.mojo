@@ -5,6 +5,33 @@ from python import Python, PythonObject
 from solver.assembly import assemble_internal_forces_typed_soa
 from solver.dof import node_dof_index, require_dof_in_range
 from solver.profile import (
+    PROFILE_FRAME_ASSEMBLE,
+    PROFILE_FRAME_ASSEMBLE_FIBER,
+    PROFILE_FRAME_ASSEMBLE_FIBER_GEOMETRY,
+    PROFILE_FRAME_ASSEMBLE_FIBER_INTERNAL_FORCE,
+    PROFILE_FRAME_ASSEMBLE_FIBER_MATRIX_SCATTER,
+    PROFILE_FRAME_ASSEMBLE_FIBER_SECTION_RESPONSE,
+    PROFILE_FRAME_ASSEMBLE_STIFFNESS,
+    PROFILE_FRAME_ASSEMBLE_UNIAXIAL,
+    PROFILE_FRAME_CASE_LOAD_PARSE,
+    PROFILE_FRAME_CONSTRAINTS,
+    PROFILE_FRAME_FACTORIZE,
+    PROFILE_FRAME_KFF_EXTRACT,
+    PROFILE_FRAME_MODEL_BUILD_DOF_MAP,
+    PROFILE_FRAME_NONLINEAR_ITER,
+    PROFILE_FRAME_NONLINEAR_STEP,
+    PROFILE_FRAME_OUTPUT,
+    PROFILE_FRAME_RECORDERS,
+    PROFILE_FRAME_SOLVE,
+    PROFILE_FRAME_SOLVE_LINEAR,
+    PROFILE_FRAME_SOLVE_NONLINEAR,
+    PROFILE_FRAME_TIME_SERIES_EVAL,
+    PROFILE_FRAME_TOTAL,
+    PROFILE_FRAME_TRANSIENT_STEP,
+    PROFILE_FRAME_UNIAXIAL_COMMIT_ALL,
+    PROFILE_FRAME_UNIAXIAL_COPY_RESET,
+    PROFILE_FRAME_UNIAXIAL_REVERT_ALL,
+    PROFILE_FRAME_UNIAXIAL_TRIAL_UPDATE,
     _append_event,
     _append_frame,
     _profile_enabled,
@@ -124,27 +151,27 @@ def run_case_input(
     var t0 = t_start - safe_case_load_us * 1000
     var do_profile = _profile_enabled(profile_path)
 
-    var frame_total = 0
-    var frame_assemble = 1
-    var frame_solve = 2
-    var frame_output = 3
-    var frame_assemble_stiffness = 4
-    var frame_kff_extract = 5
-    var frame_solve_linear = 6
-    var frame_solve_nonlinear = 7
-    var frame_nonlinear_step = 8
-    var frame_nonlinear_iter = 9
-    var frame_time_series_eval = 10
-    var frame_constraints = 11
-    var frame_recorders = 12
-    var frame_factorize = 13
-    var frame_transient_step = 14
-    var frame_case_load_parse = 15
-    var frame_model_build_dof_map = 16
-    var frame_assemble_uniaxial = 17
-    var frame_assemble_fiber = 18
-    var frame_uniaxial_revert_all = 19
-    var frame_uniaxial_commit_all = 20
+    var frame_total = PROFILE_FRAME_TOTAL
+    var frame_assemble = PROFILE_FRAME_ASSEMBLE
+    var frame_solve = PROFILE_FRAME_SOLVE
+    var frame_output = PROFILE_FRAME_OUTPUT
+    var frame_assemble_stiffness = PROFILE_FRAME_ASSEMBLE_STIFFNESS
+    var frame_kff_extract = PROFILE_FRAME_KFF_EXTRACT
+    var frame_solve_linear = PROFILE_FRAME_SOLVE_LINEAR
+    var frame_solve_nonlinear = PROFILE_FRAME_SOLVE_NONLINEAR
+    var frame_nonlinear_step = PROFILE_FRAME_NONLINEAR_STEP
+    var frame_nonlinear_iter = PROFILE_FRAME_NONLINEAR_ITER
+    var frame_time_series_eval = PROFILE_FRAME_TIME_SERIES_EVAL
+    var frame_constraints = PROFILE_FRAME_CONSTRAINTS
+    var frame_recorders = PROFILE_FRAME_RECORDERS
+    var frame_factorize = PROFILE_FRAME_FACTORIZE
+    var frame_transient_step = PROFILE_FRAME_TRANSIENT_STEP
+    var frame_case_load_parse = PROFILE_FRAME_CASE_LOAD_PARSE
+    var frame_model_build_dof_map = PROFILE_FRAME_MODEL_BUILD_DOF_MAP
+    var frame_assemble_uniaxial = PROFILE_FRAME_ASSEMBLE_UNIAXIAL
+    var frame_assemble_fiber = PROFILE_FRAME_ASSEMBLE_FIBER
+    var frame_uniaxial_revert_all = PROFILE_FRAME_UNIAXIAL_REVERT_ALL
+    var frame_uniaxial_commit_all = PROFILE_FRAME_UNIAXIAL_COMMIT_ALL
 
     var frames = String()
     var events = String()
@@ -172,6 +199,12 @@ def run_case_input(
         _append_frame(frames, frames_need_comma, "assemble_fiber")
         _append_frame(frames, frames_need_comma, "uniaxial_revert_all")
         _append_frame(frames, frames_need_comma, "uniaxial_commit_all")
+        _append_frame(frames, frames_need_comma, "assemble_fiber_geometry")
+        _append_frame(frames, frames_need_comma, "assemble_fiber_section_response")
+        _append_frame(frames, frames_need_comma, "assemble_fiber_matrix_scatter")
+        _append_frame(frames, frames_need_comma, "assemble_fiber_internal_force")
+        _append_frame(frames, frames_need_comma, "uniaxial_trial_update")
+        _append_frame(frames, frames_need_comma, "uniaxial_copy_reset")
         _append_event(events, events_need_comma, "O", frame_total, 0)
         _append_event(events, events_need_comma, "O", frame_case_load_parse, 0)
         _append_event(

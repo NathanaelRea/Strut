@@ -14,7 +14,7 @@ from solver.assembly import (
     assemble_global_stiffness_and_internal_soa,
 )
 from solver.banded import banded_gaussian_elimination, estimate_bandwidth_typed
-from solver.profile import _append_event
+from solver.profile import PROFILE_FRAME_UNIAXIAL_COPY_RESET, _append_event
 from solver.run_case.input_types import (
     AnalysisInput,
     ElementInput,
@@ -142,8 +142,26 @@ fn run_static_linear(
         ndm,
         ndf,
     )
+    if do_profile:
+        var t_reset_start = Int(time.perf_counter_ns())
+        _append_event(
+            events,
+            events_need_comma,
+            "O",
+            PROFILE_FRAME_UNIAXIAL_COPY_RESET,
+            (t_reset_start - t0) // 1000,
+        )
     reset_force_beam_column2d_scratch(force_beam_column2d_scratch)
     reset_force_beam_column3d_scratch(force_beam_column3d_scratch)
+    if do_profile:
+        var t_reset_end = Int(time.perf_counter_ns())
+        _append_event(
+            events,
+            events_need_comma,
+            "C",
+            PROFILE_FRAME_UNIAXIAL_COPY_RESET,
+            (t_reset_end - t0) // 1000,
+        )
     if do_profile:
         var t_asm_start = Int(time.perf_counter_ns())
         var asm_start_us = (t_asm_start - t0) // 1000

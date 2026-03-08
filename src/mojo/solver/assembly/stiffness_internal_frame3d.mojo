@@ -16,6 +16,12 @@ from solver.assembly.stiffness_internal_shared import (
     _profile_scope_open,
     _scatter_add_row,
 )
+from solver.profile import (
+    PROFILE_FRAME_ASSEMBLE_FIBER_GEOMETRY,
+    PROFILE_FRAME_ASSEMBLE_FIBER_INTERNAL_FORCE,
+    PROFILE_FRAME_ASSEMBLE_FIBER_MATRIX_SCATTER,
+    PROFILE_FRAME_ASSEMBLE_FIBER_SECTION_RESPONSE,
+)
 from solver.run_case.input_types import (
     ElementInput,
     ElementLoadInput,
@@ -71,6 +77,13 @@ fn _assemble_frame3d_soa_indices(
     u_elem12.resize(12, 0.0)
     for idx in range(len(frame3d_elem_indices)):
         var e = frame3d_elem_indices[idx]
+        _profile_scope_open(
+            do_profile,
+            events,
+            events_need_comma,
+            PROFILE_FRAME_ASSEMBLE_FIBER_GEOMETRY,
+            t0,
+        )
         var node_offset = elem_node_offsets[e]
         var i1 = elem_node_pool[node_offset]
         var i2 = elem_node_pool[node_offset + 1]
@@ -89,6 +102,13 @@ fn _assemble_frame3d_soa_indices(
         var geom_name = _geom_transf_name_from_tag(elem_geom_tags[e])
         var k_elem12: List[List[Float64]] = []
         var f_elem12: List[Float64] = []
+        _profile_scope_close(
+            do_profile,
+            events,
+            events_need_comma,
+            PROFILE_FRAME_ASSEMBLE_FIBER_GEOMETRY,
+            t0,
+        )
         if elem_type == ElementTypeTag.ElasticBeamColumn3d:
             if sec.type != "ElasticSection3d":
                 abort("elasticBeamColumn3d requires ElasticSection3d")
@@ -181,6 +201,13 @@ fn _assemble_frame3d_soa_indices(
                     frame_assemble_fiber,
                     t0,
                 )
+                _profile_scope_open(
+                    do_profile,
+                    events,
+                    events_need_comma,
+                    PROFILE_FRAME_ASSEMBLE_FIBER_SECTION_RESPONSE,
+                    t0,
+                )
                 if elem_type == ElementTypeTag.ForceBeamColumn3d:
                     force_beam_column3d_fiber_global_tangent_and_internal(
                         e,
@@ -247,7 +274,14 @@ fn _assemble_frame3d_soa_indices(
                     do_profile,
                     events,
                     events_need_comma,
-                    frame_assemble_fiber,
+                    PROFILE_FRAME_ASSEMBLE_FIBER_SECTION_RESPONSE,
+                    t0,
+                )
+                _profile_scope_open(
+                    do_profile,
+                    events,
+                    events_need_comma,
+                    PROFILE_FRAME_ASSEMBLE_FIBER_MATRIX_SCATTER,
                     t0,
                 )
             else:
@@ -255,7 +289,39 @@ fn _assemble_frame3d_soa_indices(
         for a in range(12):
             var Aidx = dof_map12[a]
             _scatter_add_row[12](K, Aidx, k_elem12[a], dof_map12)
+        if sec.type == "FiberSection3d":
+            _profile_scope_close(
+                do_profile,
+                events,
+                events_need_comma,
+                PROFILE_FRAME_ASSEMBLE_FIBER_MATRIX_SCATTER,
+                t0,
+            )
+            _profile_scope_open(
+                do_profile,
+                events,
+                events_need_comma,
+                PROFILE_FRAME_ASSEMBLE_FIBER_INTERNAL_FORCE,
+                t0,
+            )
+        for a in range(12):
+            var Aidx = dof_map12[a]
             F_int[Aidx] += f_elem12[a]
+        if sec.type == "FiberSection3d":
+            _profile_scope_close(
+                do_profile,
+                events,
+                events_need_comma,
+                PROFILE_FRAME_ASSEMBLE_FIBER_INTERNAL_FORCE,
+                t0,
+            )
+            _profile_scope_close(
+                do_profile,
+                events,
+                events_need_comma,
+                frame_assemble_fiber,
+                t0,
+            )
 
 
 fn _assemble_frame3d_element(

@@ -35,7 +35,7 @@ from solver.assembly import (
     assemble_zero_length_damping_typed,
 )
 from solver.dof import node_dof_index, require_dof_in_range
-from solver.profile import _append_event
+from solver.profile import PROFILE_FRAME_UNIAXIAL_COPY_RESET, _append_event
 from solver.simd_contiguous import (
     copy_float64_contiguous,
     dot_float64_contiguous,
@@ -1057,8 +1057,26 @@ fn run_transient_nonlinear(
         and ts_index >= 0
         and len(pattern_element_loads) > 0
     )
+    if do_profile:
+        var t_reset_start = Int(time.perf_counter_ns())
+        _append_event(
+            events,
+            events_need_comma,
+            "O",
+            PROFILE_FRAME_UNIAXIAL_COPY_RESET,
+            (t_reset_start - t0) // 1000,
+        )
     reset_force_beam_column2d_scratch(force_beam_column2d_scratch)
     reset_force_beam_column3d_scratch(force_beam_column3d_scratch)
+    if do_profile:
+        var t_reset_end = Int(time.perf_counter_ns())
+        _append_event(
+            events,
+            events_need_comma,
+            "C",
+            PROFILE_FRAME_UNIAXIAL_COPY_RESET,
+            (t_reset_end - t0) // 1000,
+        )
     assemble_global_stiffness_and_internal_soa(
         typed_nodes,
         typed_elements,

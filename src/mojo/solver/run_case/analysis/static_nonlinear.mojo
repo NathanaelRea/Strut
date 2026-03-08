@@ -23,7 +23,7 @@ from solver.assembly import (
 )
 from solver.banded import banded_gaussian_elimination, banded_matrix, estimate_bandwidth_typed
 from solver.dof import node_dof_index, require_dof_in_range
-from solver.profile import _append_event
+from solver.profile import PROFILE_FRAME_UNIAXIAL_COPY_RESET, _append_event
 from solver.simd_contiguous import dot_float64_contiguous, sum_sq_float64_contiguous
 from solver.run_case.input_types import (
     AnalysisInput,
@@ -814,8 +814,26 @@ fn run_static_nonlinear_load_control(
             ndm,
             ndf,
         )
+        if do_profile:
+            var t_reset_start = Int(time.perf_counter_ns())
+            _append_event(
+                events,
+                events_need_comma,
+                "O",
+                PROFILE_FRAME_UNIAXIAL_COPY_RESET,
+                (t_reset_start - t0) // 1000,
+            )
         reset_force_beam_column2d_scratch(force_beam_column2d_scratch)
         reset_force_beam_column3d_scratch(force_beam_column3d_scratch)
+        if do_profile:
+            var t_reset_end = Int(time.perf_counter_ns())
+            _append_event(
+                events,
+                events_need_comma,
+                "C",
+                PROFILE_FRAME_UNIAXIAL_COPY_RESET,
+                (t_reset_end - t0) // 1000,
+            )
         assemble_global_stiffness_and_internal_soa(
             typed_nodes,
             typed_elements,
@@ -983,8 +1001,26 @@ fn run_static_nonlinear_load_control(
             ndm,
             ndf,
         )
+        if do_profile:
+            var t_reset_start = Int(time.perf_counter_ns())
+            _append_event(
+                events,
+                events_need_comma,
+                "O",
+                PROFILE_FRAME_UNIAXIAL_COPY_RESET,
+                (t_reset_start - t0) // 1000,
+            )
         reset_force_beam_column2d_scratch(force_beam_column2d_scratch)
         reset_force_beam_column3d_scratch(force_beam_column3d_scratch)
+        if do_profile:
+            var t_reset_end = Int(time.perf_counter_ns())
+            _append_event(
+                events,
+                events_need_comma,
+                "C",
+                PROFILE_FRAME_UNIAXIAL_COPY_RESET,
+                (t_reset_end - t0) // 1000,
+            )
         var u_base = u.copy()
         var force_basic_q_base = force_basic_q.copy()
         var uniaxial_states_base = uniaxial_states.copy()
@@ -2307,8 +2343,26 @@ fn run_static_nonlinear_displacement_control(
             ndm,
             ndf,
         )
+        if do_profile:
+            var t_reset_start = Int(time.perf_counter_ns())
+            _append_event(
+                events,
+                events_need_comma,
+                "O",
+                PROFILE_FRAME_UNIAXIAL_COPY_RESET,
+                (t_reset_start - t0) // 1000,
+            )
         reset_force_beam_column2d_scratch(force_beam_column2d_scratch)
         reset_force_beam_column3d_scratch(force_beam_column3d_scratch)
+        if do_profile:
+            var t_reset_end = Int(time.perf_counter_ns())
+            _append_event(
+                events,
+                events_need_comma,
+                "C",
+                PROFILE_FRAME_UNIAXIAL_COPY_RESET,
+                (t_reset_end - t0) // 1000,
+            )
         assemble_global_stiffness_and_internal_soa(
             typed_nodes,
             typed_elements,
@@ -2515,8 +2569,26 @@ fn run_static_nonlinear_displacement_control(
                             ndm,
                             ndf,
                         )
+                        if do_profile:
+                            var t_reset_start = Int(time.perf_counter_ns())
+                            _append_event(
+                                events,
+                                events_need_comma,
+                                "O",
+                                PROFILE_FRAME_UNIAXIAL_COPY_RESET,
+                                (t_reset_start - t0) // 1000,
+                            )
                         reset_force_beam_column2d_scratch(force_beam_column2d_scratch)
                         reset_force_beam_column3d_scratch(force_beam_column3d_scratch)
+                        if do_profile:
+                            var t_reset_end = Int(time.perf_counter_ns())
+                            _append_event(
+                                events,
+                                events_need_comma,
+                                "C",
+                                PROFILE_FRAME_UNIAXIAL_COPY_RESET,
+                                (t_reset_end - t0) // 1000,
+                            )
                         assemble_global_stiffness_and_internal_soa(
                             typed_nodes,
                             typed_elements,
@@ -3124,8 +3196,26 @@ fn run_static_nonlinear_displacement_control(
             ndm,
             ndf,
         )
+        if do_profile:
+            var t_reset_start = Int(time.perf_counter_ns())
+            _append_event(
+                events,
+                events_need_comma,
+                "O",
+                PROFILE_FRAME_UNIAXIAL_COPY_RESET,
+                (t_reset_start - t0) // 1000,
+            )
         reset_force_beam_column2d_scratch(force_beam_column2d_scratch)
         reset_force_beam_column3d_scratch(force_beam_column3d_scratch)
+        if do_profile:
+            var t_reset_end = Int(time.perf_counter_ns())
+            _append_event(
+                events,
+                events_need_comma,
+                "C",
+                PROFILE_FRAME_UNIAXIAL_COPY_RESET,
+                (t_reset_end - t0) // 1000,
+            )
         var F_int_reaction: List[Float64] = []
         var F_ext_reaction: List[Float64] = []
         if has_reaction_recorder:

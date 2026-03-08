@@ -701,7 +701,6 @@ fn fiber_section2d_set_trial_from_offset(
     sec_def: FiberSection2dDef,
     fibers: List[FiberCell],
     uniaxial_defs: List[UniMaterialDef],
-    section_state_ids: List[Int],
     mut uniaxial_states: List[UniMaterialState],
     section_state_offset: Int,
     section_state_count: Int,
@@ -714,10 +713,6 @@ fn fiber_section2d_set_trial_from_offset(
         fibers
     ):
         abort("FiberSection2d fiber data out of range")
-    if section_state_offset < 0 or section_state_offset + section_state_count > len(
-        section_state_ids
-    ):
-        abort("FiberSection2d section state ids out of range")
     if section_state_offset + section_state_count > len(uniaxial_states):
         abort("FiberSection2d section states out of range")
 
@@ -791,7 +786,6 @@ fn fiber_section2d_set_trial(
         sec_def,
         fibers,
         uniaxial_defs,
-        section_uniaxial_state_ids,
         uniaxial_states,
         offset,
         count,

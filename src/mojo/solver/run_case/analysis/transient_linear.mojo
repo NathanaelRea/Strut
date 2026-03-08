@@ -28,7 +28,7 @@ from solver.assembly import (
     assemble_zero_length_damping_typed,
 )
 from solver.dof import node_dof_index, require_dof_in_range
-from solver.profile import _append_event
+from solver.profile import PROFILE_FRAME_UNIAXIAL_COPY_RESET, _append_event
 from solver.simd_contiguous import (
     copy_float64_contiguous,
     dot_float64_contiguous,
@@ -473,8 +473,26 @@ fn run_transient_linear(
         ndm,
         ndf,
     )
+    if do_profile:
+        var t_reset_start = Int(time.perf_counter_ns())
+        _append_event(
+            events,
+            events_need_comma,
+            "O",
+            PROFILE_FRAME_UNIAXIAL_COPY_RESET,
+            (t_reset_start - t0) // 1000,
+        )
     reset_force_beam_column2d_scratch(force_beam_column2d_scratch)
     reset_force_beam_column3d_scratch(force_beam_column3d_scratch)
+    if do_profile:
+        var t_reset_end = Int(time.perf_counter_ns())
+        _append_event(
+            events,
+            events_need_comma,
+            "C",
+            PROFILE_FRAME_UNIAXIAL_COPY_RESET,
+            (t_reset_end - t0) // 1000,
+        )
     var K = assemble_global_stiffness_typed_soa(
         typed_nodes,
         typed_elements,
@@ -838,8 +856,26 @@ fn run_transient_linear(
                 ndm,
                 ndf,
             )
+            if do_profile:
+                var t_reset_start = Int(time.perf_counter_ns())
+                _append_event(
+                    events,
+                    events_need_comma,
+                    "O",
+                    PROFILE_FRAME_UNIAXIAL_COPY_RESET,
+                    (t_reset_start - t0) // 1000,
+                )
             reset_force_beam_column2d_scratch(force_beam_column2d_scratch)
             reset_force_beam_column3d_scratch(force_beam_column3d_scratch)
+            if do_profile:
+                var t_reset_end = Int(time.perf_counter_ns())
+                _append_event(
+                    events,
+                    events_need_comma,
+                    "C",
+                    PROFILE_FRAME_UNIAXIAL_COPY_RESET,
+                    (t_reset_end - t0) // 1000,
+                )
             if do_profile:
                 var t_ts_start = Int(time.perf_counter_ns())
                 var ts_start_us = (t_ts_start - t0) // 1000
@@ -911,8 +947,26 @@ fn run_transient_linear(
                     ndm,
                     ndf,
                 )
+                if do_profile:
+                    var t_reset_start = Int(time.perf_counter_ns())
+                    _append_event(
+                        events,
+                        events_need_comma,
+                        "O",
+                        PROFILE_FRAME_UNIAXIAL_COPY_RESET,
+                        (t_reset_start - t0) // 1000,
+                    )
                 reset_force_beam_column2d_scratch(force_beam_column2d_scratch)
                 reset_force_beam_column3d_scratch(force_beam_column3d_scratch)
+                if do_profile:
+                    var t_reset_end = Int(time.perf_counter_ns())
+                    _append_event(
+                        events,
+                        events_need_comma,
+                        "C",
+                        PROFILE_FRAME_UNIAXIAL_COPY_RESET,
+                        (t_reset_end - t0) // 1000,
+                    )
             else:
                 copy_float64_contiguous(
                     F_ext_step,
@@ -928,8 +982,26 @@ fn run_transient_linear(
                     ndm,
                     ndf,
                 )
+                if do_profile:
+                    var t_reset_start = Int(time.perf_counter_ns())
+                    _append_event(
+                        events,
+                        events_need_comma,
+                        "O",
+                        PROFILE_FRAME_UNIAXIAL_COPY_RESET,
+                        (t_reset_start - t0) // 1000,
+                    )
                 reset_force_beam_column2d_scratch(force_beam_column2d_scratch)
                 reset_force_beam_column3d_scratch(force_beam_column3d_scratch)
+                if do_profile:
+                    var t_reset_end = Int(time.perf_counter_ns())
+                    _append_event(
+                        events,
+                        events_need_comma,
+                        "C",
+                        PROFILE_FRAME_UNIAXIAL_COPY_RESET,
+                        (t_reset_end - t0) // 1000,
+                    )
         _build_solver_load_vector_with_element_loads(
             typed_nodes,
             typed_elements,

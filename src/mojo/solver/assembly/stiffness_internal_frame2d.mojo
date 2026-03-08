@@ -20,6 +20,12 @@ from solver.assembly.stiffness_internal_shared import (
     _scatter_add_and_dot_row_simd,
     _scatter_add_row,
 )
+from solver.profile import (
+    PROFILE_FRAME_ASSEMBLE_FIBER_GEOMETRY,
+    PROFILE_FRAME_ASSEMBLE_FIBER_INTERNAL_FORCE,
+    PROFILE_FRAME_ASSEMBLE_FIBER_MATRIX_SCATTER,
+    PROFILE_FRAME_ASSEMBLE_FIBER_SECTION_RESPONSE,
+)
 from solver.run_case.input_types import (
     ElementInput,
     ElementLoadInput,
@@ -73,6 +79,13 @@ fn _assemble_frame2d_soa_indices(
 ) raises:
     for idx in range(len(frame2d_elem_indices)):
         var e = frame2d_elem_indices[idx]
+        _profile_scope_open(
+            do_profile,
+            events,
+            events_need_comma,
+            PROFILE_FRAME_ASSEMBLE_FIBER_GEOMETRY,
+            t0,
+        )
         var node_offset = elem_node_offsets[e]
         var i1 = elem_node_pool[node_offset]
         var i2 = elem_node_pool[node_offset + 1]
@@ -85,6 +98,13 @@ fn _assemble_frame2d_soa_indices(
         for i in range(6):
             dof_map6[i] = elem_dof_pool[dof_offset + i]
         var elem_type = elem_type_tags[e]
+        _profile_scope_close(
+            do_profile,
+            events,
+            events_need_comma,
+            PROFILE_FRAME_ASSEMBLE_FIBER_GEOMETRY,
+            t0,
+        )
         if elem_type == ElementTypeTag.ElasticBeamColumn2d:
             var k_global: List[List[Float64]] = []
             var f_elem: List[Float64] = []
@@ -180,6 +200,13 @@ fn _assemble_frame2d_soa_indices(
             frame_assemble_fiber,
             t0,
         )
+        _profile_scope_open(
+            do_profile,
+            events,
+            events_need_comma,
+            PROFILE_FRAME_ASSEMBLE_FIBER_SECTION_RESPONSE,
+            t0,
+        )
         var k_elem6: List[List[Float64]] = []
         var f_elem6: List[Float64] = []
         if elem_type == ElementTypeTag.ForceBeamColumn2d:
@@ -240,13 +267,50 @@ fn _assemble_frame2d_soa_indices(
             do_profile,
             events,
             events_need_comma,
-            frame_assemble_fiber,
+            PROFILE_FRAME_ASSEMBLE_FIBER_SECTION_RESPONSE,
+            t0,
+        )
+        _profile_scope_open(
+            do_profile,
+            events,
+            events_need_comma,
+            PROFILE_FRAME_ASSEMBLE_FIBER_MATRIX_SCATTER,
             t0,
         )
         for a in range(6):
             var Aidx = dof_map6[a]
             _scatter_add_row[6](K, Aidx, k_elem6[a], dof_map6)
+        _profile_scope_close(
+            do_profile,
+            events,
+            events_need_comma,
+            PROFILE_FRAME_ASSEMBLE_FIBER_MATRIX_SCATTER,
+            t0,
+        )
+        _profile_scope_open(
+            do_profile,
+            events,
+            events_need_comma,
+            PROFILE_FRAME_ASSEMBLE_FIBER_INTERNAL_FORCE,
+            t0,
+        )
+        for a in range(6):
+            var Aidx = dof_map6[a]
             F_int[Aidx] += f_elem6[a]
+        _profile_scope_close(
+            do_profile,
+            events,
+            events_need_comma,
+            PROFILE_FRAME_ASSEMBLE_FIBER_INTERNAL_FORCE,
+            t0,
+        )
+        _profile_scope_close(
+            do_profile,
+            events,
+            events_need_comma,
+            frame_assemble_fiber,
+            t0,
+        )
 
 
 fn _assemble_frame2d_element(

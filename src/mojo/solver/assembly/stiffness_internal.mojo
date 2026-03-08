@@ -45,6 +45,13 @@ from solver.assembly.stiffness_internal_surface import (
     _assemble_surface_soa_indices,
 )
 from solver.dof import node_dof_index
+from solver.profile import (
+    PROFILE_FRAME_ASSEMBLE_FIBER_GEOMETRY,
+    PROFILE_FRAME_ASSEMBLE_FIBER_INTERNAL_FORCE,
+    PROFILE_FRAME_ASSEMBLE_FIBER_MATRIX_SCATTER,
+    PROFILE_FRAME_ASSEMBLE_FIBER_SECTION_RESPONSE,
+    PROFILE_FRAME_UNIAXIAL_TRIAL_UPDATE,
+)
 from solver.run_case.helpers import aggregator_section2d_set_trial_from_offset
 from solver.run_case.input_types import (
     ElementInput,
@@ -1350,7 +1357,21 @@ fn assemble_global_stiffness_and_internal_soa(
             var s = dy / L
             var du = (u[d2] - u[d0]) * c + (u[d3] - u[d1]) * s
             var eps = du / L
+            _profile_scope_open(
+                do_profile,
+                events,
+                events_need_comma,
+                PROFILE_FRAME_UNIAXIAL_TRIAL_UPDATE,
+                t0,
+            )
             uniaxial_set_trial_strain(mat_def, state, eps)
+            _profile_scope_close(
+                do_profile,
+                events,
+                events_need_comma,
+                PROFILE_FRAME_UNIAXIAL_TRIAL_UPDATE,
+                t0,
+            )
             var N = state.sig_t * A
             var k = state.tangent_t * A / L
             var dof_map = [d0, d1, d2, d3]
@@ -1387,7 +1408,21 @@ fn assemble_global_stiffness_and_internal_soa(
             var n = dz / L
             var du = (u[d3] - u[d0]) * l + (u[d4] - u[d1]) * m + (u[d5] - u[d2]) * n
             var eps = du / L
+            _profile_scope_open(
+                do_profile,
+                events,
+                events_need_comma,
+                PROFILE_FRAME_UNIAXIAL_TRIAL_UPDATE,
+                t0,
+            )
             uniaxial_set_trial_strain(mat_def, state, eps)
+            _profile_scope_close(
+                do_profile,
+                events,
+                events_need_comma,
+                PROFILE_FRAME_UNIAXIAL_TRIAL_UPDATE,
+                t0,
+            )
             var N = state.sig_t * A
             var k = state.tangent_t * A / L
             var dof_map = [d0, d1, d2, d3, d4, d5]
@@ -1427,6 +1462,13 @@ fn assemble_global_stiffness_and_internal_soa(
             frame_assemble_uniaxial,
             t0,
         )
+        _profile_scope_open(
+            do_profile,
+            events,
+            events_need_comma,
+            PROFILE_FRAME_UNIAXIAL_TRIAL_UPDATE,
+            t0,
+        )
         _assemble_zero_length_element(
             e,
             elements[e],
@@ -1447,6 +1489,13 @@ fn assemble_global_stiffness_and_internal_soa(
             do_profile,
             events,
             events_need_comma,
+            PROFILE_FRAME_UNIAXIAL_TRIAL_UPDATE,
+            t0,
+        )
+        _profile_scope_close(
+            do_profile,
+            events,
+            events_need_comma,
             frame_assemble_uniaxial,
             t0,
         )
@@ -1457,6 +1506,13 @@ fn assemble_global_stiffness_and_internal_soa(
             events,
             events_need_comma,
             frame_assemble_uniaxial,
+            t0,
+        )
+        _profile_scope_open(
+            do_profile,
+            events,
+            events_need_comma,
+            PROFILE_FRAME_UNIAXIAL_TRIAL_UPDATE,
             t0,
         )
         _assemble_two_node_link_element(
@@ -1479,12 +1535,26 @@ fn assemble_global_stiffness_and_internal_soa(
             do_profile,
             events,
             events_need_comma,
+            PROFILE_FRAME_UNIAXIAL_TRIAL_UPDATE,
+            t0,
+        )
+        _profile_scope_close(
+            do_profile,
+            events,
+            events_need_comma,
             frame_assemble_uniaxial,
             t0,
         )
 
     for idx in range(len(zero_length_section_elem_indices)):
         var e = zero_length_section_elem_indices[idx]
+        _profile_scope_open(
+            do_profile,
+            events,
+            events_need_comma,
+            PROFILE_FRAME_ASSEMBLE_FIBER_GEOMETRY,
+            t0,
+        )
         var dof_offset = elem_dof_offsets[e]
         var u1 = elem_dof_pool[dof_offset]
         var r1 = elem_dof_pool[dof_offset + 2]
@@ -1500,12 +1570,26 @@ fn assemble_global_stiffness_and_internal_soa(
         var k11 = 0.0
         var k12 = 0.0
         var k22 = 0.0
+        _profile_scope_close(
+            do_profile,
+            events,
+            events_need_comma,
+            PROFILE_FRAME_ASSEMBLE_FIBER_GEOMETRY,
+            t0,
+        )
         if sec.type == "ElasticSection2d":
             k11 = sec.E * sec.A
             k22 = sec.E * sec.I
             axial_force = k11 * delta_axial
             moment_z = k22 * delta_curv
         elif sec.type == "AggregatorSection2d":
+            _profile_scope_open(
+                do_profile,
+                events,
+                events_need_comma,
+                PROFILE_FRAME_UNIAXIAL_TRIAL_UPDATE,
+                t0,
+            )
             (axial_force, moment_z, k11, k12, k22) = aggregator_section2d_set_trial_from_offset(
                 sec,
                 uniaxial_defs,
@@ -1516,6 +1600,13 @@ fn assemble_global_stiffness_and_internal_soa(
                 elem_state_count,
                 delta_axial,
                 delta_curv,
+            )
+            _profile_scope_close(
+                do_profile,
+                events,
+                events_need_comma,
+                PROFILE_FRAME_UNIAXIAL_TRIAL_UPDATE,
+                t0,
             )
         elif sec.type == "FiberSection2d":
             var sec_index = fiber_section_index_by_id[elem_section_ids[e]]
@@ -1533,16 +1624,29 @@ fn assemble_global_stiffness_and_internal_soa(
                 frame_assemble_fiber,
                 t0,
             )
+            _profile_scope_open(
+                do_profile,
+                events,
+                events_need_comma,
+                PROFILE_FRAME_ASSEMBLE_FIBER_SECTION_RESPONSE,
+                t0,
+            )
             var resp = fiber_section2d_set_trial_from_offset(
                 sec_def,
                 fiber_section_cells,
                 uniaxial_defs,
-                elem_uniaxial_state_ids,
                 uniaxial_states,
                 elem_offset,
                 elem_state_count,
                 delta_axial,
                 delta_curv,
+            )
+            _profile_scope_close(
+                do_profile,
+                events,
+                events_need_comma,
+                PROFILE_FRAME_ASSEMBLE_FIBER_SECTION_RESPONSE,
+                t0,
             )
             _profile_scope_close(
                 do_profile,
@@ -1560,6 +1664,13 @@ fn assemble_global_stiffness_and_internal_soa(
             abort(
                 "zeroLengthSection requires FiberSection2d, ElasticSection2d, or AggregatorSection2d"
             )
+        _profile_scope_open(
+            do_profile,
+            events,
+            events_need_comma,
+            PROFILE_FRAME_ASSEMBLE_FIBER_MATRIX_SCATTER,
+            t0,
+        )
         K[u1][u1] += k11
         K[u1][r1] += k12
         K[u1][u2] -= k11
@@ -1576,10 +1687,31 @@ fn assemble_global_stiffness_and_internal_soa(
         K[r2][r1] -= k22
         K[r2][u2] += k12
         K[r2][r2] += k22
+        _profile_scope_close(
+            do_profile,
+            events,
+            events_need_comma,
+            PROFILE_FRAME_ASSEMBLE_FIBER_MATRIX_SCATTER,
+            t0,
+        )
+        _profile_scope_open(
+            do_profile,
+            events,
+            events_need_comma,
+            PROFILE_FRAME_ASSEMBLE_FIBER_INTERNAL_FORCE,
+            t0,
+        )
         F_int[u1] -= axial_force
         F_int[r1] -= moment_z
         F_int[u2] += axial_force
         F_int[r2] += moment_z
+        _profile_scope_close(
+            do_profile,
+            events,
+            events_need_comma,
+            PROFILE_FRAME_ASSEMBLE_FIBER_INTERNAL_FORCE,
+            t0,
+        )
 
     _assemble_surface_soa_indices(
         quad_elem_indices,
@@ -2204,7 +2336,6 @@ fn _assemble_global_stiffness_and_internal_filtered(
                     sec_def,
                     fiber_section_cells,
                     uniaxial_defs,
-                    elem_uniaxial_state_ids,
                     uniaxial_states,
                     elem_offset,
                     elem_state_count,
