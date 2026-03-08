@@ -11,5 +11,10 @@ from materials.uniaxial.ops import (
     uniaxial_commit_all,
     uniaxial_revert_trial,
     uniaxial_revert_trial_all,
+    uniaxial_set_trial_strain_concrete01,
+    uniaxial_set_trial_strain_concrete02,
+    uniaxial_set_trial_strain_elastic,
     uniaxial_set_trial_strain,
+    uniaxial_set_trial_strain_steel01,
+    uniaxial_set_trial_strain_steel02,
 )

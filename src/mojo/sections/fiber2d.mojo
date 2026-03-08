@@ -10,11 +10,16 @@ from materials import (
     uni_mat_initial_tangent,
     uniaxial_commit,
     uniaxial_revert_trial,
+    uniaxial_set_trial_strain_concrete01,
+    uniaxial_set_trial_strain_concrete02,
     uniaxial_set_trial_strain,
+    uniaxial_set_trial_strain_steel01,
+    uniaxial_set_trial_strain_steel02,
 )
 from solver.run_case.input_types import FiberLayerInput, FiberPatchInput, SectionInput
 from solver.simd_contiguous import FLOAT64_SIMD_WIDTH, load_float64_contiguous_simd
 from strut_io import py_len
+from tag_types import UniMaterialTypeTag
 
 
 struct FiberCell(Defaultable, Movable, ImplicitlyCopyable):
@@ -56,6 +61,11 @@ struct FiberSection2dDef(Defaultable, Movable, ImplicitlyCopyable):
     var nonlinear_area: List[Float64]
     var nonlinear_def_index: List[Int]
     var nonlinear_mat_defs: List[UniMaterialDef]
+    var steel01_nonlinear_indices: List[Int]
+    var concrete01_nonlinear_indices: List[Int]
+    var steel02_nonlinear_indices: List[Int]
+    var concrete02_nonlinear_indices: List[Int]
+    var other_nonlinear_indices: List[Int]
 
     fn __init__(out self):
         self.fiber_offset = 0
@@ -75,6 +85,11 @@ struct FiberSection2dDef(Defaultable, Movable, ImplicitlyCopyable):
         self.nonlinear_area = []
         self.nonlinear_def_index = []
         self.nonlinear_mat_defs = []
+        self.steel01_nonlinear_indices = []
+        self.concrete01_nonlinear_indices = []
+        self.steel02_nonlinear_indices = []
+        self.concrete02_nonlinear_indices = []
+        self.other_nonlinear_indices = []
 
     fn __init__(out self, fiber_offset: Int, fiber_count: Int, y_bar: Float64):
         self.fiber_offset = fiber_offset
@@ -94,6 +109,11 @@ struct FiberSection2dDef(Defaultable, Movable, ImplicitlyCopyable):
         self.nonlinear_area = []
         self.nonlinear_def_index = []
         self.nonlinear_mat_defs = []
+        self.steel01_nonlinear_indices = []
+        self.concrete01_nonlinear_indices = []
+        self.steel02_nonlinear_indices = []
+        self.concrete02_nonlinear_indices = []
+        self.other_nonlinear_indices = []
 
     fn __copyinit__(out self, existing: Self):
         self.fiber_offset = existing.fiber_offset
@@ -113,6 +133,11 @@ struct FiberSection2dDef(Defaultable, Movable, ImplicitlyCopyable):
         self.nonlinear_area = existing.nonlinear_area.copy()
         self.nonlinear_def_index = existing.nonlinear_def_index.copy()
         self.nonlinear_mat_defs = existing.nonlinear_mat_defs.copy()
+        self.steel01_nonlinear_indices = existing.steel01_nonlinear_indices.copy()
+        self.concrete01_nonlinear_indices = existing.concrete01_nonlinear_indices.copy()
+        self.steel02_nonlinear_indices = existing.steel02_nonlinear_indices.copy()
+        self.concrete02_nonlinear_indices = existing.concrete02_nonlinear_indices.copy()
+        self.other_nonlinear_indices = existing.other_nonlinear_indices.copy()
 
 
 struct FiberSection2dResponse(Defaultable, Movable, ImplicitlyCopyable):
@@ -142,6 +167,559 @@ struct FiberSection2dResponse(Defaultable, Movable, ImplicitlyCopyable):
         self.k11 = k11
         self.k12 = k12
         self.k22 = k22
+
+
+alias FIBER_SECTION2D_BATCH_FLAG_PREDICTOR: Int = 1
+alias FIBER_SECTION2D_BATCH_FLAG_CORRECTOR: Int = 2
+alias FIBER_SECTION2D_BATCH_FLAG_RETRY: Int = 4
+alias FIBER_SECTION2D_BATCH_FLAG_CONVERGED: Int = 8
+
+
+struct FiberSection2dBatchPoint(Defaultable, Movable, ImplicitlyCopyable):
+    var section_def_index: Int
+    var section_state_offset: Int
+    var section_state_count: Int
+    var eps0: Float64
+    var kappa: Float64
+    var lagged_axial_force: Float64
+    var lagged_moment_z: Float64
+    var lagged_f00: Float64
+    var lagged_f01: Float64
+    var lagged_f11: Float64
+    var flags: Int
+
+    fn __init__(out self):
+        self.section_def_index = -1
+        self.section_state_offset = 0
+        self.section_state_count = 0
+        self.eps0 = 0.0
+        self.kappa = 0.0
+        self.lagged_axial_force = 0.0
+        self.lagged_moment_z = 0.0
+        self.lagged_f00 = 0.0
+        self.lagged_f01 = 0.0
+        self.lagged_f11 = 0.0
+        self.flags = 0
+
+    fn __init__(
+        out self,
+        section_def_index: Int,
+        section_state_offset: Int,
+        section_state_count: Int,
+        eps0: Float64,
+        kappa: Float64,
+        lagged_axial_force: Float64,
+        lagged_moment_z: Float64,
+        lagged_f00: Float64,
+        lagged_f01: Float64,
+        lagged_f11: Float64,
+        flags: Int,
+    ):
+        self.section_def_index = section_def_index
+        self.section_state_offset = section_state_offset
+        self.section_state_count = section_state_count
+        self.eps0 = eps0
+        self.kappa = kappa
+        self.lagged_axial_force = lagged_axial_force
+        self.lagged_moment_z = lagged_moment_z
+        self.lagged_f00 = lagged_f00
+        self.lagged_f01 = lagged_f01
+        self.lagged_f11 = lagged_f11
+        self.flags = flags
+
+
+struct FiberSection2dBatchResult(Defaultable, Movable, ImplicitlyCopyable):
+    var response: FiberSection2dResponse
+    var flexibility_valid: Bool
+    var f00: Float64
+    var f01: Float64
+    var f11: Float64
+
+    fn __init__(out self):
+        self.response = FiberSection2dResponse()
+        self.flexibility_valid = False
+        self.f00 = 0.0
+        self.f01 = 0.0
+        self.f11 = 0.0
+
+    fn __init__(
+        out self,
+        response: FiberSection2dResponse,
+        flexibility_valid: Bool,
+        f00: Float64,
+        f01: Float64,
+        f11: Float64,
+    ):
+        self.response = response
+        self.flexibility_valid = flexibility_valid
+        self.f00 = f00
+        self.f01 = f01
+        self.f11 = f11
+
+
+struct FiberSection2dBatchProfile(Defaultable, Movable, ImplicitlyCopyable):
+    var batches_total: Int
+    var homogeneous_batches: Int
+    var irregular_batches: Int
+    var scalar_fallback_batches: Int
+    var section_point_evals: Int
+    var section_point_reevals: Int
+    var predictor_points: Int
+    var corrector_points: Int
+    var retry_points: Int
+    var converged_points: Int
+    var batch_hist_1: Int
+    var batch_hist_2_4: Int
+    var batch_hist_5_8: Int
+    var batch_hist_9_plus: Int
+    var traced_force_beam_elements: Int
+    var traced_integration_points: Int
+    var traced_fibers_total: Int
+    var traced_max_fibers_per_section: Int
+    var traced_elastic_fibers: Int
+    var traced_nonlinear_fibers: Int
+    var traced_elastic_material_points: Int
+    var traced_steel01_material_points: Int
+    var traced_concrete01_material_points: Int
+    var traced_steel02_material_points: Int
+    var traced_concrete02_material_points: Int
+    var traced_other_material_points: Int
+
+    fn __init__(out self):
+        self.batches_total = 0
+        self.homogeneous_batches = 0
+        self.irregular_batches = 0
+        self.scalar_fallback_batches = 0
+        self.section_point_evals = 0
+        self.section_point_reevals = 0
+        self.predictor_points = 0
+        self.corrector_points = 0
+        self.retry_points = 0
+        self.converged_points = 0
+        self.batch_hist_1 = 0
+        self.batch_hist_2_4 = 0
+        self.batch_hist_5_8 = 0
+        self.batch_hist_9_plus = 0
+        self.traced_force_beam_elements = 0
+        self.traced_integration_points = 0
+        self.traced_fibers_total = 0
+        self.traced_max_fibers_per_section = 0
+        self.traced_elastic_fibers = 0
+        self.traced_nonlinear_fibers = 0
+        self.traced_elastic_material_points = 0
+        self.traced_steel01_material_points = 0
+        self.traced_concrete01_material_points = 0
+        self.traced_steel02_material_points = 0
+        self.traced_concrete02_material_points = 0
+        self.traced_other_material_points = 0
+
+
+fn fiber_section2d_batch_profile_reset(mut profile: FiberSection2dBatchProfile):
+    profile = FiberSection2dBatchProfile()
+
+
+fn _fiber_section2d_batch_profile_note_batch_size(
+    batch_size: Int, mut profile: FiberSection2dBatchProfile
+):
+    profile.batches_total += 1
+    if batch_size <= 1:
+        profile.batch_hist_1 += 1
+    elif batch_size <= 4:
+        profile.batch_hist_2_4 += 1
+    elif batch_size <= 8:
+        profile.batch_hist_5_8 += 1
+    else:
+        profile.batch_hist_9_plus += 1
+
+
+fn fiber_section2d_batch_profile_note_definition(
+    sec_def: FiberSection2dDef,
+    num_section_points: Int,
+    mut profile: FiberSection2dBatchProfile,
+):
+    if num_section_points <= 0:
+        return
+    profile.traced_force_beam_elements += 1
+    profile.traced_integration_points += num_section_points
+    profile.traced_fibers_total += num_section_points * sec_def.fiber_count
+    profile.traced_elastic_fibers += num_section_points * sec_def.elastic_count
+    profile.traced_nonlinear_fibers += num_section_points * sec_def.nonlinear_count
+    if sec_def.fiber_count > profile.traced_max_fibers_per_section:
+        profile.traced_max_fibers_per_section = sec_def.fiber_count
+    profile.traced_elastic_material_points += num_section_points * sec_def.elastic_count
+    for i in range(sec_def.nonlinear_count):
+        var mat_type = sec_def.nonlinear_mat_defs[i].mat_type
+        if mat_type == UniMaterialTypeTag.Steel01:
+            profile.traced_steel01_material_points += num_section_points
+        elif mat_type == UniMaterialTypeTag.Concrete01:
+            profile.traced_concrete01_material_points += num_section_points
+        elif mat_type == UniMaterialTypeTag.Steel02:
+            profile.traced_steel02_material_points += num_section_points
+        elif mat_type == UniMaterialTypeTag.Concrete02:
+            profile.traced_concrete02_material_points += num_section_points
+        else:
+            profile.traced_other_material_points += num_section_points
+
+
+fn _fiber_section2d_batch_profile_note_flags(
+    flags: Int, mut profile: FiberSection2dBatchProfile
+):
+    if flags & FIBER_SECTION2D_BATCH_FLAG_PREDICTOR != 0:
+        profile.predictor_points += 1
+    if flags & FIBER_SECTION2D_BATCH_FLAG_CORRECTOR != 0:
+        profile.corrector_points += 1
+        profile.section_point_reevals += 1
+    if flags & FIBER_SECTION2D_BATCH_FLAG_RETRY != 0:
+        profile.retry_points += 1
+        profile.section_point_reevals += 1
+    if flags & FIBER_SECTION2D_BATCH_FLAG_CONVERGED != 0:
+        profile.converged_points += 1
+
+
+@always_inline
+fn _fiber_section2d_batch_accumulate_nonlinear_response(
+    y_rel: Float64,
+    area: Float64,
+    sig_t: Float64,
+    tangent_t: Float64,
+    mut resp: FiberSection2dResponse,
+):
+    var fs = sig_t * area
+    var ks = tangent_t * area
+    resp.axial_force += fs
+    resp.moment_z += -fs * y_rel
+    resp.k11 += ks
+    resp.k12 += -ks * y_rel
+    resp.k22 += ks * y_rel * y_rel
+
+
+fn _fiber_section2d_batch_apply_steel01_family(
+    sec_def: FiberSection2dDef,
+    subgroup_indices: List[Int],
+    points: List[FiberSection2dBatchPoint],
+    mut uniaxial_states: List[UniMaterialState],
+    mut results: List[FiberSection2dBatchResult],
+):
+    for j in range(len(subgroup_indices)):
+        var nonlinear_index = subgroup_indices[j]
+        var y_rel = sec_def.nonlinear_y_rel[nonlinear_index]
+        var area = sec_def.nonlinear_area[nonlinear_index]
+        var mat_def = sec_def.nonlinear_mat_defs[nonlinear_index]
+        for i in range(len(points)):
+            var point = points[i]
+            var state_index = point.section_state_offset + sec_def.elastic_count + nonlinear_index
+            ref state = uniaxial_states[state_index]
+            var eps = point.eps0 - y_rel * point.kappa
+            uniaxial_set_trial_strain_steel01(mat_def, state, eps)
+            _fiber_section2d_batch_accumulate_nonlinear_response(
+                y_rel,
+                area,
+                state.sig_t,
+                state.tangent_t,
+                results[i].response,
+            )
+
+
+fn _fiber_section2d_batch_apply_concrete01_family(
+    sec_def: FiberSection2dDef,
+    subgroup_indices: List[Int],
+    points: List[FiberSection2dBatchPoint],
+    mut uniaxial_states: List[UniMaterialState],
+    mut results: List[FiberSection2dBatchResult],
+):
+    for j in range(len(subgroup_indices)):
+        var nonlinear_index = subgroup_indices[j]
+        var y_rel = sec_def.nonlinear_y_rel[nonlinear_index]
+        var area = sec_def.nonlinear_area[nonlinear_index]
+        var mat_def = sec_def.nonlinear_mat_defs[nonlinear_index]
+        for i in range(len(points)):
+            var point = points[i]
+            var state_index = point.section_state_offset + sec_def.elastic_count + nonlinear_index
+            ref state = uniaxial_states[state_index]
+            var eps = point.eps0 - y_rel * point.kappa
+            uniaxial_set_trial_strain_concrete01(mat_def, state, eps)
+            _fiber_section2d_batch_accumulate_nonlinear_response(
+                y_rel,
+                area,
+                state.sig_t,
+                state.tangent_t,
+                results[i].response,
+            )
+
+
+fn _fiber_section2d_batch_apply_steel02_family(
+    sec_def: FiberSection2dDef,
+    subgroup_indices: List[Int],
+    points: List[FiberSection2dBatchPoint],
+    mut uniaxial_states: List[UniMaterialState],
+    mut results: List[FiberSection2dBatchResult],
+):
+    for j in range(len(subgroup_indices)):
+        var nonlinear_index = subgroup_indices[j]
+        var y_rel = sec_def.nonlinear_y_rel[nonlinear_index]
+        var area = sec_def.nonlinear_area[nonlinear_index]
+        var mat_def = sec_def.nonlinear_mat_defs[nonlinear_index]
+        for i in range(len(points)):
+            var point = points[i]
+            var state_index = point.section_state_offset + sec_def.elastic_count + nonlinear_index
+            ref state = uniaxial_states[state_index]
+            var eps = point.eps0 - y_rel * point.kappa
+            uniaxial_set_trial_strain_steel02(mat_def, state, eps)
+            _fiber_section2d_batch_accumulate_nonlinear_response(
+                y_rel,
+                area,
+                state.sig_t,
+                state.tangent_t,
+                results[i].response,
+            )
+
+
+fn _fiber_section2d_batch_apply_concrete02_family(
+    sec_def: FiberSection2dDef,
+    subgroup_indices: List[Int],
+    points: List[FiberSection2dBatchPoint],
+    mut uniaxial_states: List[UniMaterialState],
+    mut results: List[FiberSection2dBatchResult],
+):
+    for j in range(len(subgroup_indices)):
+        var nonlinear_index = subgroup_indices[j]
+        var y_rel = sec_def.nonlinear_y_rel[nonlinear_index]
+        var area = sec_def.nonlinear_area[nonlinear_index]
+        var mat_def = sec_def.nonlinear_mat_defs[nonlinear_index]
+        for i in range(len(points)):
+            var point = points[i]
+            var state_index = point.section_state_offset + sec_def.elastic_count + nonlinear_index
+            ref state = uniaxial_states[state_index]
+            var eps = point.eps0 - y_rel * point.kappa
+            uniaxial_set_trial_strain_concrete02(mat_def, state, eps)
+            _fiber_section2d_batch_accumulate_nonlinear_response(
+                y_rel,
+                area,
+                state.sig_t,
+                state.tangent_t,
+                results[i].response,
+            )
+
+
+fn _fiber_section2d_batch_apply_other_family(
+    sec_def: FiberSection2dDef,
+    subgroup_indices: List[Int],
+    points: List[FiberSection2dBatchPoint],
+    mut uniaxial_states: List[UniMaterialState],
+    mut results: List[FiberSection2dBatchResult],
+):
+    for j in range(len(subgroup_indices)):
+        var nonlinear_index = subgroup_indices[j]
+        var y_rel = sec_def.nonlinear_y_rel[nonlinear_index]
+        var area = sec_def.nonlinear_area[nonlinear_index]
+        var mat_def = sec_def.nonlinear_mat_defs[nonlinear_index]
+        for i in range(len(points)):
+            var point = points[i]
+            var state_index = point.section_state_offset + sec_def.elastic_count + nonlinear_index
+            ref state = uniaxial_states[state_index]
+            var eps = point.eps0 - y_rel * point.kappa
+            uniaxial_set_trial_strain(mat_def, state, eps)
+            _fiber_section2d_batch_accumulate_nonlinear_response(
+                y_rel,
+                area,
+                state.sig_t,
+                state.tangent_t,
+                results[i].response,
+            )
+
+
+fn fiber_section2d_batch_eval_same_def(
+    sec_def: FiberSection2dDef,
+    mut uniaxial_states: List[UniMaterialState],
+    points: List[FiberSection2dBatchPoint],
+    mut results: List[FiberSection2dBatchResult],
+    mut profile: FiberSection2dBatchProfile,
+) -> Bool:
+    var batch_size = len(points)
+    if batch_size <= 0:
+        results.clear()
+        return True
+
+    _fiber_section2d_batch_profile_note_batch_size(batch_size, profile)
+    profile.homogeneous_batches += 1
+    if batch_size <= 1:
+        profile.scalar_fallback_batches += 1
+        results.resize(batch_size, FiberSection2dBatchResult())
+        for i in range(batch_size):
+            var point = points[i]
+            _fiber_section2d_batch_profile_note_flags(point.flags, profile)
+            profile.section_point_evals += 1
+            var resp = fiber_section2d_set_trial_from_offset(
+                sec_def,
+                uniaxial_states,
+                point.section_state_offset,
+                point.section_state_count,
+                point.eps0,
+                point.kappa,
+            )
+            var det = resp.k11 * resp.k22 - resp.k12 * resp.k12
+            if abs(det) <= 1.0e-40:
+                results[i] = FiberSection2dBatchResult(resp, False, 0.0, 0.0, 0.0)
+                return False
+            var inv_det = 1.0 / det
+            results[i] = FiberSection2dBatchResult(
+                resp,
+                True,
+                resp.k22 * inv_det,
+                -resp.k12 * inv_det,
+                resp.k11 * inv_det,
+            )
+        return True
+
+    results.resize(batch_size, FiberSection2dBatchResult())
+    for i in range(batch_size):
+        var point = points[i]
+        if point.section_state_count != sec_def.fiber_count:
+            abort("FiberSection2d section state count mismatch")
+        if point.section_state_offset + point.section_state_count > len(uniaxial_states):
+            abort("FiberSection2d section states out of range")
+        _fiber_section2d_batch_profile_note_flags(point.flags, profile)
+        profile.section_point_evals += 1
+        var elastic_resp = _fiber_section2d_elastic_response_simd[FLOAT64_SIMD_WIDTH](
+            sec_def.elastic_y_rel,
+            sec_def.elastic_area,
+            sec_def.elastic_modulus,
+            sec_def.elastic_count,
+            point.eps0,
+            point.kappa,
+        )
+        results[i] = FiberSection2dBatchResult(
+            FiberSection2dResponse(
+                elastic_resp[0],
+                elastic_resp[1],
+                elastic_resp[2],
+                elastic_resp[3],
+                elastic_resp[4],
+            ),
+            False,
+            0.0,
+            0.0,
+            0.0,
+        )
+
+    _fiber_section2d_batch_apply_steel01_family(
+        sec_def,
+        sec_def.steel01_nonlinear_indices,
+        points,
+        uniaxial_states,
+        results,
+    )
+    _fiber_section2d_batch_apply_concrete01_family(
+        sec_def,
+        sec_def.concrete01_nonlinear_indices,
+        points,
+        uniaxial_states,
+        results,
+    )
+    _fiber_section2d_batch_apply_steel02_family(
+        sec_def,
+        sec_def.steel02_nonlinear_indices,
+        points,
+        uniaxial_states,
+        results,
+    )
+    _fiber_section2d_batch_apply_concrete02_family(
+        sec_def,
+        sec_def.concrete02_nonlinear_indices,
+        points,
+        uniaxial_states,
+        results,
+    )
+    _fiber_section2d_batch_apply_other_family(
+        sec_def,
+        sec_def.other_nonlinear_indices,
+        points,
+        uniaxial_states,
+        results,
+    )
+
+    for i in range(batch_size):
+        var resp = results[i].response
+        var det = resp.k11 * resp.k22 - resp.k12 * resp.k12
+        if abs(det) <= 1.0e-40:
+            results[i] = FiberSection2dBatchResult(resp, False, 0.0, 0.0, 0.0)
+            return False
+        var inv_det = 1.0 / det
+        results[i] = FiberSection2dBatchResult(
+            resp,
+            True,
+            resp.k22 * inv_det,
+            -resp.k12 * inv_det,
+            resp.k11 * inv_det,
+        )
+    return True
+
+
+fn fiber_section2d_batch_eval(
+    defs: List[FiberSection2dDef],
+    mut uniaxial_states: List[UniMaterialState],
+    points: List[FiberSection2dBatchPoint],
+    mut results: List[FiberSection2dBatchResult],
+    mut profile: FiberSection2dBatchProfile,
+) -> Bool:
+    var batch_size = len(points)
+    if batch_size <= 0:
+        results.clear()
+        return True
+
+    var def_index0 = points[0].section_def_index
+    var homogeneous = True
+    for i in range(batch_size):
+        if points[i].section_def_index != def_index0:
+            homogeneous = False
+            break
+
+    if homogeneous:
+        if def_index0 < 0 or def_index0 >= len(defs):
+            abort("FiberSection2d batch section definition out of range")
+        return fiber_section2d_batch_eval_same_def(
+            defs[def_index0],
+            uniaxial_states,
+            points,
+            results,
+            profile,
+        )
+
+    _fiber_section2d_batch_profile_note_batch_size(batch_size, profile)
+    profile.irregular_batches += 1
+    if batch_size <= 1:
+        profile.scalar_fallback_batches += 1
+
+    results.resize(batch_size, FiberSection2dBatchResult())
+    for i in range(batch_size):
+        var point = points[i]
+        var def_index = point.section_def_index
+        if def_index < 0 or def_index >= len(defs):
+            abort("FiberSection2d batch section definition out of range")
+        _fiber_section2d_batch_profile_note_flags(point.flags, profile)
+        profile.section_point_evals += 1
+        var sec_def = defs[def_index]
+        var resp = fiber_section2d_set_trial_from_offset(
+            sec_def,
+            uniaxial_states,
+            point.section_state_offset,
+            point.section_state_count,
+            point.eps0,
+            point.kappa,
+        )
+        var det = resp.k11 * resp.k22 - resp.k12 * resp.k12
+        if abs(det) <= 1.0e-40:
+            results[i] = FiberSection2dBatchResult(resp, False, 0.0, 0.0, 0.0)
+            return False
+        var inv_det = 1.0 / det
+        results[i] = FiberSection2dBatchResult(
+            resp,
+            True,
+            resp.k22 * inv_det,
+            -resp.k12 * inv_det,
+            resp.k11 * inv_det,
+        )
+    return True
 
 
 fn _resolve_uniaxial_def_index(
@@ -182,10 +760,21 @@ fn _build_fiber_section2d_def(
             sec_def.elastic_modulus.append(uni_mat_initial_tangent(mat_def))
             sec_def.elastic_def_index.append(def_index)
         else:
+            var nonlinear_index = len(sec_def.nonlinear_y_rel)
             sec_def.nonlinear_y_rel.append(y_rel)
             sec_def.nonlinear_area.append(cell.area)
             sec_def.nonlinear_def_index.append(def_index)
             sec_def.nonlinear_mat_defs.append(mat_def)
+            if mat_def.mat_type == UniMaterialTypeTag.Steel01:
+                sec_def.steel01_nonlinear_indices.append(nonlinear_index)
+            elif mat_def.mat_type == UniMaterialTypeTag.Concrete01:
+                sec_def.concrete01_nonlinear_indices.append(nonlinear_index)
+            elif mat_def.mat_type == UniMaterialTypeTag.Steel02:
+                sec_def.steel02_nonlinear_indices.append(nonlinear_index)
+            elif mat_def.mat_type == UniMaterialTypeTag.Concrete02:
+                sec_def.concrete02_nonlinear_indices.append(nonlinear_index)
+            else:
+                sec_def.other_nonlinear_indices.append(nonlinear_index)
     sec_def.elastic_count = len(sec_def.elastic_y_rel)
     sec_def.nonlinear_count = len(sec_def.nonlinear_y_rel)
     var det = initial_k11 * initial_k22 - initial_k12 * initial_k12
