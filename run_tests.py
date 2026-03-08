@@ -29,6 +29,12 @@ def _benchmark_output_root(repo_root: Path, configured_root: str | None) -> Path
     return repo_root / "benchmark" / "results"
 
 
+def _solver_binary_path(repo_root: Path, env: dict[str, str]) -> Path:
+    if env.get("STRUT_PROFILE") == "1":
+        return repo_root / "build" / "strut" / "strut_profile"
+    return repo_root / "build" / "strut" / "strut"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Build the solver, run tests, and optionally run benchmark gates."
@@ -114,6 +120,11 @@ def main() -> int:
             env=env,
             verbose=args.verbose,
         )
+        env["STRUT_MOJO_BIN"] = str(_solver_binary_path(repo_root, env))
+    elif "STRUT_MOJO_BIN" not in env:
+        solver_path = _solver_binary_path(repo_root, env)
+        if solver_path.exists():
+            env["STRUT_MOJO_BIN"] = str(solver_path)
 
     run(
         ["uv", "run", "pytest", "-q", "tests/unit", "tests/validation/test_json_cases.py"],
