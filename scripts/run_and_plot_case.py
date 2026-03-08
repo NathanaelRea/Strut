@@ -5,12 +5,17 @@ import math
 import os
 import subprocess
 from pathlib import Path
+import sys
 
 import matplotlib.pyplot as plt
 from matplotlib import animation
 from matplotlib.backends.backend_pdf import PdfPages
 from matplotlib.collections import LineCollection
 from matplotlib.lines import Line2D
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
 
 try:
     from .plot_constants import MOJO_ORANGE, OPENSEES_BLUE
@@ -47,6 +52,106 @@ def _max_abs(values):
     return max((abs(v) for v in values), default=0.0)
 
 
+def _case_name_candidates(case_json: Path, case_data: dict) -> list[str]:
+    candidates: list[str] = []
+    raw_name = case_data.get("name")
+    if isinstance(raw_name, str):
+        name = raw_name.strip()
+        if name:
+            candidates.append(name)
+    stem = case_json.stem.strip()
+    if stem and stem not in candidates:
+        candidates.append(stem)
+    return candidates
+
+
+def _resolve_case_root(
+    repo_root: Path, case_json: Path, case_data: dict
+) -> tuple[str, Path, Path]:
+    case_names = _case_name_candidates(case_json, case_data)
+    if not case_names:
+        raise SystemExit(f"unable to derive case name from {case_json}")
+
+    for case_name in case_names:
+        case_root = repo_root / "tests" / "validation" / case_name
+        tgt_json = case_root / f"{case_name}.json"
+        if case_root.exists():
+            return case_name, case_root, tgt_json if tgt_json.exists() else case_json
+
+    case_name = case_names[0]
+    case_root = repo_root / "tests" / "validation" / case_name
+    return case_name, case_root, case_json
+
+
+def _is_direct_tcl_manifest(case_json: Path, case_data: dict) -> bool:
+    return case_json.name == "direct_tcl_case.json" and isinstance(
+        case_data.get("entry_tcl"), str
+    )
+
+
+def _merge_direct_tcl_manifest_metadata(case_data: dict, manifest_data: dict) -> dict:
+    merged = dict(case_data)
+    for key in (
+        "enabled",
+        "status",
+        "benchmark_size",
+        "parity_tolerance",
+        "parity_tolerance_by_category",
+        "parity_tolerance_by_recorder",
+        "parity_mode",
+    ):
+        if key in manifest_data:
+            merged[key] = manifest_data[key]
+    return merged
+
+
+def _load_plot_case_data(
+    repo_root: Path, case_root: Path, case_json: Path, case_data: dict
+) -> dict:
+    if not _is_direct_tcl_manifest(case_json, case_data):
+        return case_data
+
+    import direct_tcl_support
+    import tcl_to_strut
+
+    entry_tcl = direct_tcl_support.resolve_entry_tcl_from_manifest(case_json, repo_root)
+    parser_entry, _ = direct_tcl_support.prepare_direct_tcl_entry(
+        entry_tcl,
+        direct_tcl_support.resolve_direct_tcl_source_files(entry_tcl, case_json),
+        case_root / "generated" / "_direct_tcl_context",
+        excluded_roots=[case_root],
+    )
+    return _merge_direct_tcl_manifest_metadata(
+        tcl_to_strut.convert_tcl_to_solver_input(parser_entry, repo_root), case_data
+    )
+
+
+def _resolve_case_json_input(repo_root: Path, raw_input: str) -> Path:
+    candidate = Path(raw_input)
+    if candidate.exists():
+        return candidate.resolve()
+
+    named_candidates: list[Path] = []
+    if candidate.suffix == ".json":
+        named_candidates.append(repo_root / candidate)
+        named_candidates.append(repo_root / "tests" / "validation" / candidate)
+    else:
+        case_name = raw_input.strip()
+        if case_name:
+            named_candidates.append(
+                repo_root / "tests" / "validation" / case_name / f"{case_name}.json"
+            )
+            named_candidates.append(
+                repo_root / "tests" / "validation" / case_name / "direct_tcl_case.json"
+            )
+
+    for named in named_candidates:
+        if named.exists():
+            return named.resolve()
+
+    raise SystemExit(f"missing case json: {candidate.resolve()}")
+
+
 def _run_case(
     repo_root: Path,
     case_json: Path,
@@ -65,6 +170,147 @@ def _run_case(
         print(
             f"warning: run_case exited with code {result.returncode}; plotting available outputs anyway"
         )
+
+
+def _run_cmd(cmd: list[str], env: dict[str, str]) -> bool:
+    print("+", " ".join(cmd))
+    result = subprocess.run(cmd, env=env, check=False)
+    return result.returncode == 0
+
+
+def _node_ids_with_xy(case_data: dict) -> list[int]:
+    node_ids: list[int] = []
+    for node in case_data.get("nodes", []):
+        try:
+            node_ids.append(int(node["id"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+    return node_ids
+
+
+def _nodes_missing_animation_displacements(case_data: dict) -> list[int]:
+    covered: dict[int, set[int]] = {}
+    for rec in case_data.get("recorders", []):
+        if rec.get("type") != "node_displacement":
+            continue
+        dofs = {int(dof) for dof in rec.get("dofs", [])}
+        for node_id in rec.get("nodes", []):
+            try:
+                nid = int(node_id)
+            except (TypeError, ValueError):
+                continue
+            covered.setdefault(nid, set()).update(dofs)
+
+    missing: list[int] = []
+    for node_id in _node_ids_with_xy(case_data):
+        if not {1, 2}.issubset(covered.get(node_id, set())):
+            missing.append(node_id)
+    return missing
+
+
+def _augment_case_for_animation(case_data: dict) -> dict:
+    node_ids = _node_ids_with_xy(case_data)
+    if not node_ids:
+        return case_data
+
+    augmented = dict(case_data)
+    recorders = list(case_data.get("recorders", []))
+    recorders.append(
+        {
+            "type": "node_displacement",
+            "nodes": node_ids,
+            "dofs": [1, 2],
+            "output": "Data/__animation_disp",
+            "include_time": True,
+            "parity": False,
+        }
+    )
+    augmented["recorders"] = recorders
+    return augmented
+
+
+def _prepare_animation_outputs(
+    repo_root: Path,
+    case_root: Path,
+    case_name: str,
+    case_data: dict,
+    refresh_reference: bool,
+) -> tuple[dict, Path, Path] | None:
+    augmented_case = _augment_case_for_animation(case_data)
+    if augmented_case is case_data:
+        return None
+
+    work_dir = case_root / "generated" / "_run_and_plot_animation"
+    anim_case_json = work_dir / "case.json"
+    anim_tcl = work_dir / "model.tcl"
+    ref_dir = work_dir / "reference"
+    strut_dir = work_dir / "strut"
+    work_dir.mkdir(parents=True, exist_ok=True)
+    (work_dir / "Data").mkdir(parents=True, exist_ok=True)
+    (ref_dir / "Data").mkdir(parents=True, exist_ok=True)
+    (strut_dir / "Data").mkdir(parents=True, exist_ok=True)
+
+    anim_case_json.write_text(
+        json.dumps(augmented_case, indent=2) + "\n", encoding="utf-8"
+    )
+
+    env = os.environ.copy()
+    if refresh_reference:
+        env["STRUT_REFRESH_REFERENCE"] = "1"
+
+    emit_ok = _run_cmd(
+        [
+            "uv",
+            "run",
+            "python",
+            str(repo_root / "scripts" / "json_to_tcl.py"),
+            str(anim_case_json),
+            str(anim_tcl),
+        ],
+        env,
+    )
+    if not emit_ok:
+        print(
+            f"warning: failed to build animation-specific model for {case_name}; using base outputs"
+        )
+        return None
+
+    ref_ok = _run_cmd(
+        [
+            str(repo_root / "scripts" / "run_opensees_wine.sh"),
+            "--script",
+            str(anim_tcl),
+            "--output",
+            str(ref_dir),
+        ],
+        env,
+    )
+    if not ref_ok:
+        print(
+            f"warning: failed to generate animation reference outputs for {case_name}; using base outputs"
+        )
+        return None
+
+    strut_ok = _run_cmd(
+        [
+            "uv",
+            "run",
+            "python",
+            str(repo_root / "scripts" / "run_strut_case.py"),
+            "--input",
+            str(anim_case_json),
+            "--output",
+            str(strut_dir),
+        ],
+        env,
+    )
+    if not strut_ok:
+        print(
+            f"warning: failed to generate animation strut outputs for {case_name}; using base outputs"
+        )
+        return None
+
+    return augmented_case, ref_dir, strut_dir
 
 
 def _build_node_xy(case_data: dict) -> dict[int, tuple[float, float]]:
@@ -502,21 +748,22 @@ def main():
     args = parser.parse_args()
 
     repo_root = Path(__file__).resolve().parents[1]
-    case_json = Path(args.case_json).resolve()
-    if not case_json.exists():
-        raise SystemExit(f"missing case json: {case_json}")
+    case_json = _resolve_case_json_input(repo_root, args.case_json)
     case_data_input = json.loads(case_json.read_text(encoding="utf-8"))
     force_case = args.force_case or (not bool(case_data_input.get("enabled", True)))
 
     if not args.skip_run:
         _run_case(repo_root, case_json, args.refresh_reference, force_case)
 
-    case_name = case_json.stem
-    case_root = repo_root / "tests" / "validation" / case_name
-    tgt_json = case_root / f"{case_name}.json"
-    if not tgt_json.exists():
-        tgt_json = case_json
-    case_data = json.loads(tgt_json.read_text(encoding="utf-8"))
+    case_name, case_root, tgt_json = _resolve_case_root(
+        repo_root, case_json, case_data_input
+    )
+    case_data = _load_plot_case_data(
+        repo_root,
+        case_root,
+        tgt_json,
+        json.loads(tgt_json.read_text(encoding="utf-8")),
+    )
     analysis = case_data.get("analysis", {})
     is_transient = str(analysis.get("type", "")).startswith("transient")
     dt = float(analysis.get("dt", 1.0))
@@ -545,6 +792,18 @@ def main():
 
     plotted = 0
     animation_saved = False
+    animation_case_data = case_data
+    animation_ref_dir = ref_dir
+    animation_strut_dir = strut_dir
+    if not args.no_animation and not args.skip_run:
+        animation_outputs = _prepare_animation_outputs(
+            repo_root, case_root, case_name, case_data, args.refresh_reference
+        )
+        if animation_outputs is not None:
+            animation_case_data, animation_ref_dir, animation_strut_dir = (
+                animation_outputs
+            )
+
     with PdfPages(pdf_path) as pdf:
         if not args.no_animation:
             if args.animation:
@@ -553,9 +812,9 @@ def main():
                 animation_path = plot_dir / f"{case_name}_structure_time_history.mp4"
             animation_saved = _plot_structure_animation(
                 case_name,
-                case_data,
-                ref_dir,
-                strut_dir,
+                animation_case_data,
+                animation_ref_dir,
+                animation_strut_dir,
                 is_transient,
                 dt,
                 animation_path,
