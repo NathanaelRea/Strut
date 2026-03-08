@@ -35,6 +35,15 @@ def _solver_binary_path(repo_root: Path, env: dict[str, str]) -> Path:
     return repo_root / "build" / "strut" / "strut"
 
 
+def _add_pytest_workers(cmd: List[str], workers: int | str | None) -> List[str]:
+    if workers is None:
+        return cmd
+    worker_value = str(workers).strip()
+    if not worker_value or worker_value == "1":
+        return cmd
+    return [*cmd, "-n", worker_value]
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Build the solver, run tests, and optionally run benchmark gates."
@@ -99,6 +108,22 @@ def main() -> int:
         action="store_true",
         help="Print commands as they run.",
     )
+    parser.add_argument(
+        "--pytest-workers",
+        default="8",
+        help=(
+            "Worker count for unit/json pytest runs. Use an integer or 'auto'. "
+            "Default: 8."
+        ),
+    )
+    parser.add_argument(
+        "--parity-workers",
+        default="8",
+        help=(
+            "Worker count for parity pytest runs. Use an integer or 'auto'. "
+            "Default: 8."
+        ),
+    )
     args = parser.parse_args()
 
     if args.benchmark_baseline and not args.benchmark_suite:
@@ -127,7 +152,10 @@ def main() -> int:
             env["STRUT_MOJO_BIN"] = str(solver_path)
 
     run(
-        ["uv", "run", "pytest", "-q", "tests/unit", "tests/validation/test_json_cases.py"],
+        _add_pytest_workers(
+            ["uv", "run", "pytest", "-q", "tests/unit", "tests/validation/test_json_cases.py"],
+            args.pytest_workers,
+        ),
         env=env,
         verbose=args.verbose,
     )
@@ -138,7 +166,10 @@ def main() -> int:
     if args.case:
         parity_env["STRUT_PARITY_CASES"] = ",".join(_normalize_case_args(args.case))
     run(
-        ["uv", "run", "pytest", "-q", "tests/validation/test_parity_cases.py"],
+        _add_pytest_workers(
+            ["uv", "run", "pytest", "-q", "tests/validation/test_parity_cases.py"],
+            args.parity_workers,
+        ),
         env=parity_env,
         verbose=args.verbose,
     )
