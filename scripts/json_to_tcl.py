@@ -1469,7 +1469,12 @@ def main():
                 )
                 if stage_pattern is not None:
                     stage_pattern_type = stage_pattern.get("type", "Plain")
-                    if stage_pattern_type == "Plain":
+                    if stage_pattern_type in {None, "None"}:
+                        if stage_loads or stage_element_loads:
+                            raise ValueError(
+                                "pattern type None does not support nodal/element loads"
+                            )
+                    elif stage_pattern_type == "Plain":
                         pattern_tag = stage_pattern.get("tag", 1)
                         ts_tag = stage_pattern.get("time_series")
                         if ts_tag is None:

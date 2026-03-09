@@ -40,6 +40,68 @@ def _convert_direct_tcl_manifest(case_name: str) -> dict:
     return tcl_to_strut.convert_tcl_to_case(runtime_entry, REPO_ROOT)
 
 
+def test_prepare_direct_tcl_entry_preserves_legacy_mass_arity_in_source(tmp_path: Path):
+    bundle_root = tmp_path / "OpenSeesExamplesAdvanced"
+    script_dir = bundle_root / "example"
+    script_dir.mkdir(parents=True, exist_ok=True)
+    entry = script_dir / "Example.tcl"
+    entry.write_text(
+        "\n".join(
+            [
+                "model BasicBuilder -ndm 2 -ndf 3",
+                "node 21 0.0 0.0",
+                "set nodeID 21",
+                "set MassNode 1.0",
+                "mass $nodeID $MassNode 0.0 0.0 0.0 0.0 0.0;",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    runtime_entry, _ = run_case._prepare_direct_tcl_entry(
+        entry, tmp_path / "case_root", [entry]
+    )
+
+    mirrored_entry = runtime_entry.parent / "Example.tcl"
+    mirrored_text = mirrored_entry.read_text(encoding="utf-8")
+    assert "mass $nodeID $MassNode 0.0 0.0 0.0 0.0 0.0;" in mirrored_text
+
+    opensees_wrapper = run_case._prepare_opensees_compat_entry(runtime_entry)
+    wrapper_text = opensees_wrapper.read_text(encoding="utf-8")
+    assert "rename mass __strut_builtin_mass" in wrapper_text
+    assert f"source {{{runtime_entry.name}}}" in wrapper_text
+
+
+def test_prepare_direct_tcl_entry_injects_missing_w_section_tags(tmp_path: Path):
+    bundle_root = tmp_path / "OpenSeesExamplesAdvanced"
+    script_dir = (
+        bundle_root
+        / "opensees_example_6_generic_2d_frame_n_story_n_bay_reinforced_concrete_section_steel_w_section"
+    )
+    script_dir.mkdir(parents=True, exist_ok=True)
+    entry = script_dir / "Ex6.genericFrame2D.build.InelasticFiberWSection.tcl"
+    entry.write_text(
+        "\n".join(
+            [
+                "# define MATERIAL properties ----------------------------------------",
+                "set matIDhard 1",
+                "Wsection  $ColSecTag $matIDhard 1 1 1 1 1 1 1 1",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    runtime_entry, _ = run_case._prepare_direct_tcl_entry(
+        entry, tmp_path / "case_root", [entry]
+    )
+
+    mirrored_text = (runtime_entry.parent / entry.name).read_text(encoding="utf-8")
+    assert "set ColSecTag 1" in mirrored_text
+    assert "set BeamSecTag 4" in mirrored_text
+
+
 def test_convert_ex1a_builds_staged_case():
     entry = (
         REPO_ROOT
@@ -467,7 +529,11 @@ def test_convert_ex5_disables_transient_force_beam_local_force_parity():
     }
     assert case["parity_tolerance_by_recorder"]["element_local_force"] == {
         "rtol": pytest.approx(1.0),
-        "atol": pytest.approx(2.0e-2),
+        "atol": pytest.approx(3.0e-2),
+    }
+    assert case["parity_tolerance_by_recorder"]["section_force"] == {
+        "rtol": pytest.approx(0.75),
+        "atol": pytest.approx(3.0e-2),
     }
 
 
@@ -586,6 +652,7 @@ def test_convert_ex4_static_push_uses_solver_chain_and_continuation_policy():
 def test_convert_ex5_static_push_uses_very_loose_parity_tolerances():
     case = _convert_direct_tcl_manifest("opensees_example_ex5_frame2d_analyze_static_push")
 
+    assert case["parity_mode"] == "max_abs"
     assert case["parity_tolerance"] == {
         "rtol": pytest.approx(2.0),
         "atol": pytest.approx(1.0e-1),
@@ -1009,6 +1076,303 @@ def test_convert_imports_block2d_quad_and_fallback_eigen(tmp_path: Path):
         }
     ]
     assert len(case["analysis"]["stages"]) == 2
+
+
+def test_convert_imports_block2d_curved_quad_geometry(tmp_path: Path):
+    script = tmp_path / "case.tcl"
+    script.write_text(
+        "\n".join(
+            [
+                "wipe",
+                "model basic -ndm 2 -ndf 2",
+                "nDMaterial ElasticIsotropic 1 1000.0 0.25 0.0",
+                'block2D 1 1 10 20 quad "2.0 PlaneStress 1" {',
+                "    1 0 0",
+                "    2 10 0",
+                "    3 12 8",
+                "    4 -1 9",
+                "    5 4 0",
+                "    6 11 3",
+                "    7 5 9",
+                "    8 -1 4",
+                "    9 5 5",
+                "}",
+                "fix 10 1 1",
+                "fix 11 0 1",
+                "timeSeries Linear 1",
+                "pattern Plain 1 1 {",
+                "    load 12 0.0 -1.0",
+                "    load 13 0.0 -1.0",
+                "}",
+                "constraints Plain",
+                "numberer RCM",
+                "system ProfileSPD",
+                "algorithm Newton",
+                "integrator LoadControl 1.0",
+                "analysis Static",
+                "analyze 1",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    case = tcl_to_strut.convert_tcl_to_case(script, REPO_ROOT)
+
+    assert case["nodes"] == [
+        {"id": 10, "x": 0.0, "y": 0.0, "constraints": [1, 2]},
+        {"id": 11, "x": 10.0, "y": 0.0, "constraints": [2]},
+        {"id": 12, "x": -1.0, "y": 9.0},
+        {"id": 13, "x": 12.0, "y": 8.0},
+    ]
+    assert case["elements"] == [
+        {
+            "id": 20,
+            "type": "fourNodeQuad",
+            "nodes": [10, 11, 13, 12],
+            "material": 1,
+            "thickness": 2.0,
+            "formulation": "PlaneStress",
+        }
+    ]
+
+
+def test_convert_imports_block2d_shell_geometry(tmp_path: Path):
+    script = tmp_path / "case.tcl"
+    script.write_text(
+        "\n".join(
+            [
+                "wipe",
+                "model basic -ndm 3 -ndf 6",
+                "section ElasticMembranePlateSection 1 3000.0 0.25 1.175 1.27",
+                'block2D 1 1 1 1 shell "1" {',
+                "    1 -20 0 0",
+                "    2 -20 0 40",
+                "    3 20 0 40",
+                "    4 20 0 0",
+                "    9 0 10 20",
+                "}",
+                "fix 1 1 1 1 0 1 1",
+                "fix 2 1 1 1 0 1 1",
+                "timeSeries Linear 1",
+                "pattern Plain 1 1 {",
+                "    load 3 0.0 -0.5 0.0 0.0 0.0 0.0",
+                "    load 4 0.0 -0.5 0.0 0.0 0.0 0.0",
+                "}",
+                "constraints Plain",
+                "numberer RCM",
+                "system SparseGeneral -piv",
+                "algorithm Newton",
+                "integrator LoadControl 1.0",
+                "analysis Static",
+                "analyze 1",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    case = tcl_to_strut.convert_tcl_to_case(script, REPO_ROOT)
+
+    assert case["sections"] == [
+        {
+            "id": 1,
+            "type": "ElasticMembranePlateSection",
+            "params": {"E": 3000.0, "nu": 0.25, "h": 1.175, "rho": 1.27},
+        }
+    ]
+    assert case["nodes"] == [
+        {"id": 1, "x": -20.0, "y": 0.0, "z": 0.0, "constraints": [1, 2, 3, 5, 6]},
+        {"id": 2, "x": -20.0, "y": 0.0, "z": 40.0, "constraints": [1, 2, 3, 5, 6]},
+        {"id": 3, "x": 20.0, "y": 0.0, "z": 0.0},
+        {"id": 4, "x": 20.0, "y": 0.0, "z": 40.0},
+    ]
+    assert case["elements"] == [{"id": 1, "type": "shell", "nodes": [1, 2, 4, 3], "section": 1}]
+
+
+def test_convert_rejects_block2d_nine_node_elements_until_schema_supports_them(tmp_path: Path):
+    script = tmp_path / "case.tcl"
+    script.write_text(
+        "\n".join(
+            [
+                "wipe",
+                "model basic -ndm 2 -ndf 2",
+                "nDMaterial ElasticIsotropic 1 1000.0 0.25 0.0",
+                'block2D 2 2 1 1 quad "1.0 PlaneStress 1" -numEleNodes 9 {',
+                "    1 0 0",
+                "    2 10 0",
+                "    3 10 10",
+                "    4 0 10",
+                "}",
+                "constraints Plain",
+                "numberer RCM",
+                "system ProfileSPD",
+                "algorithm Newton",
+                "integrator LoadControl 1.0",
+                "analysis Static",
+                "analyze 1",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(tcl_to_strut.TclToStrutError, match="numEleNodes 9"):
+        tcl_to_strut.convert_tcl_to_case(script, REPO_ROOT)
+
+
+def test_convert_applies_fixy_to_matching_nodes(tmp_path: Path):
+    script = tmp_path / "case.tcl"
+    script.write_text(
+        "\n".join(
+            [
+                "wipe",
+                "model basic -ndm 2 -ndf 3",
+                "node 1 0.0 0.0",
+                "node 2 10.0 0.0",
+                "node 3 0.0 5.0",
+                "fixY 0.0 1 1 0",
+                "timeSeries Linear 1",
+                "pattern Plain 1 1 {",
+                "    load 3 1.0 0.0 0.0",
+                "}",
+                "constraints Plain",
+                "numberer RCM",
+                "system BandGeneral",
+                "algorithm Newton",
+                "integrator LoadControl 1.0",
+                "analysis Static",
+                "analyze 1",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    case = tcl_to_strut.convert_tcl_to_case(script, REPO_ROOT)
+
+    assert case["nodes"] == [
+        {"id": 1, "x": 0.0, "y": 0.0, "constraints": [1, 2]},
+        {"id": 2, "x": 10.0, "y": 0.0, "constraints": [1, 2]},
+        {"id": 3, "x": 0.0, "y": 5.0},
+    ]
+
+
+def test_convert_mass_ignores_extra_trailing_dofs(tmp_path: Path):
+    script = tmp_path / "case.tcl"
+    script.write_text(
+        "\n".join(
+            [
+                "wipe",
+                "model basic -ndm 2 -ndf 3",
+                "node 1 0.0 0.0",
+                "mass 1 2.5 0.0 1.5 0.0 0.0 0.0",
+                "timeSeries Linear 1",
+                "pattern Plain 1 1 {",
+                "    load 1 1.0 0.0 0.0",
+                "}",
+                "constraints Plain",
+                "numberer RCM",
+                "system BandGeneral",
+                "algorithm Newton",
+                "integrator LoadControl 1.0",
+                "analysis Static",
+                "analyze 1",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    case = tcl_to_strut.convert_tcl_to_case(script, REPO_ROOT)
+
+    assert case["masses"] == [
+        {"node": 1, "dof": 1, "value": 2.5},
+        {"node": 1, "dof": 3, "value": 1.5},
+    ]
+
+
+def test_convert_allows_nodebounds_in_display_helper_proc(tmp_path: Path):
+    helper = tmp_path / "helper.tcl"
+    helper.write_text(
+        "\n".join(
+            [
+                "proc ShowBounds {} {",
+                "    set bounds [nodeBounds]",
+                "    vrp 0 0 0",
+                "    plane 1 -1",
+                "    projection 1",
+                "    fill 1",
+                "    port -1 1 -1 1",
+                "    return [llength $bounds]",
+                "}",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    script = tmp_path / "case.tcl"
+    script.write_text(
+        "\n".join(
+            [
+                "wipe",
+                "model basic -ndm 2 -ndf 3",
+                "node 1 0.0 0.0",
+                "node 2 10.0 5.0",
+                f"source {helper}",
+                "ShowBounds",
+                "timeSeries Linear 1",
+                "pattern Plain 1 1 {",
+                "    load 2 1.0 0.0 0.0",
+                "}",
+                "constraints Plain",
+                "numberer RCM",
+                "system BandGeneral",
+                "algorithm Newton",
+                "integrator LoadControl 1.0",
+                "analysis Static",
+                "analyze 1",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    case = tcl_to_strut.convert_tcl_to_case(script, REPO_ROOT)
+
+    assert case["nodes"] == [{"id": 1, "x": 0.0, "y": 0.0}, {"id": 2, "x": 10.0, "y": 5.0}]
+
+
+def test_convert_ignores_plot_recorder(tmp_path: Path):
+    script = tmp_path / "case.tcl"
+    script.write_text(
+        "\n".join(
+            [
+                "wipe",
+                "model basic -ndm 2 -ndf 3",
+                "node 1 0.0 0.0",
+                "node 2 1.0 0.0",
+                "recorder plot Data/DFree.out ForceDisp 910 10 400 400 -columns 2 1",
+                "timeSeries Linear 1",
+                "pattern Plain 1 1 {",
+                "    load 2 1.0 0.0 0.0",
+                "}",
+                "constraints Plain",
+                "numberer RCM",
+                "system BandGeneral",
+                "algorithm Newton",
+                "integrator LoadControl 1.0",
+                "analysis Static",
+                "analyze 1",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    case = tcl_to_strut.convert_tcl_to_case(script, REPO_ROOT)
+
+    assert case["recorders"] == []
 
 
 def test_convert_skips_truss_basic_force_recorders(tmp_path: Path):

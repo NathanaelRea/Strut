@@ -144,7 +144,9 @@ run_script() {
   work_root="$(mktemp -d)"
   local mirrored_parent="${work_root}/$(basename "$script_parent")"
   local mirrored_script_dir="${mirrored_parent}/${script_dir_name}"
+  local run_start_stamp="${work_root}/run_start.stamp"
   cp -a "${script_parent}/." "${mirrored_parent}/"
+  : >"$run_start_stamp"
 
   local run_script_name
   run_script_name="$(basename "$script_path")"
@@ -155,14 +157,31 @@ run_script() {
   }
   popd >/dev/null
 
-  if [[ -d "${mirrored_script_dir}/Data" ]]; then
-    cp -a "${mirrored_script_dir}/Data" "${analysis_dir}/"
-  fi
-  for metric_file in analysis_time_us.txt case_time_us.txt case_error.txt; do
-    if [[ -f "${mirrored_script_dir}/${metric_file}" ]]; then
-      cp "${mirrored_script_dir}/${metric_file}" "${analysis_dir}/${metric_file}"
+  for output_subdir in Data data; do
+    if [[ -d "${mirrored_script_dir}/${output_subdir}" ]]; then
+      cp -a "${mirrored_script_dir}/${output_subdir}" "${analysis_dir}/"
     fi
   done
+
+  shopt -s nullglob
+  local top_level_outputs=(
+    "${mirrored_script_dir}"/*.out
+    "${mirrored_script_dir}"/analysis_time_us.txt
+    "${mirrored_script_dir}"/case_time_us.txt
+    "${mirrored_script_dir}"/case_error.txt
+  )
+  shopt -u nullglob
+  for produced_file in "${top_level_outputs[@]}"; do
+    [[ -f "$produced_file" ]] || continue
+    cp "$produced_file" "${analysis_dir}/$(basename "$produced_file")"
+  done
+
+  while IFS= read -r -d '' produced_file; do
+    local rel_path
+    rel_path="${produced_file#${mirrored_script_dir}/}"
+    mkdir -p "${analysis_dir}/$(dirname "$rel_path")"
+    cp "$produced_file" "${analysis_dir}/${rel_path}"
+  done < <(find "$mirrored_script_dir" -type f -newer "$run_start_stamp" -print0)
   rm -rf "$work_root"
 }
 

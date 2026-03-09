@@ -16,11 +16,21 @@ fn beam2d_section_load_response(
     var axial = 0.0
     var moment_z = 0.0
     var shear_y = 0.0
-    if load_scale == 0.0:
+    if (
+        load_scale == 0.0
+        or elem_index < 0
+        or elem_index + 1 >= len(elem_load_offsets)
+        or len(elem_load_pool) == 0
+    ):
         return (axial, moment_z, shear_y)
 
     for slot in range(elem_load_offsets[elem_index], elem_load_offsets[elem_index + 1]):
-        var load = element_loads[elem_load_pool[slot]]
+        if slot < 0 or slot >= len(elem_load_pool):
+            continue
+        var load_index = elem_load_pool[slot]
+        if load_index < 0 or load_index >= len(element_loads):
+            continue
+        var load = element_loads[load_index]
         if load.type_tag == ElementLoadTypeTag.BeamUniform:
             var wa = load.wx * load_scale
             var wy = load.wy * load_scale
@@ -60,11 +70,21 @@ fn beam3d_section_load_response(
     var moment_z = 0.0
     var shear_y = 0.0
     var shear_z = 0.0
-    if load_scale == 0.0:
+    if (
+        load_scale == 0.0
+        or elem_index < 0
+        or elem_index + 1 >= len(elem_load_offsets)
+        or len(elem_load_pool) == 0
+    ):
         return (axial, moment_y, moment_z, shear_y, shear_z)
 
     for slot in range(elem_load_offsets[elem_index], elem_load_offsets[elem_index + 1]):
-        var load = element_loads[elem_load_pool[slot]]
+        if slot < 0 or slot >= len(elem_load_pool):
+            continue
+        var load_index = elem_load_pool[slot]
+        if load_index < 0 or load_index >= len(element_loads):
+            continue
+        var load = element_loads[load_index]
         if load.type_tag == ElementLoadTypeTag.BeamUniform:
             var wa = load.wx * load_scale
             var wy = load.wy * load_scale
@@ -114,11 +134,21 @@ fn beam2d_basic_fixed_end_and_reactions(
     var p0_0 = 0.0
     var p0_1 = 0.0
     var p0_2 = 0.0
-    if load_scale == 0.0:
+    if (
+        load_scale == 0.0
+        or elem_index < 0
+        or elem_index + 1 >= len(elem_load_offsets)
+        or len(elem_load_pool) == 0
+    ):
         return (q0_0, q0_1, q0_2, p0_0, p0_1, p0_2)
 
     for slot in range(elem_load_offsets[elem_index], elem_load_offsets[elem_index + 1]):
-        var load = element_loads[elem_load_pool[slot]]
+        if slot < 0 or slot >= len(elem_load_pool):
+            continue
+        var load_index = elem_load_pool[slot]
+        if load_index < 0 or load_index >= len(element_loads):
+            continue
+        var load = element_loads[load_index]
         if load.type_tag == ElementLoadTypeTag.BeamUniform:
             var wt = load.wy * load_scale
             var wa = load.wx * load_scale
@@ -180,11 +210,21 @@ fn beam3d_basic_fixed_end_and_reactions(
     var p0_2 = 0.0
     var p0_3 = 0.0
     var p0_4 = 0.0
-    if load_scale == 0.0:
+    if (
+        load_scale == 0.0
+        or elem_index < 0
+        or elem_index + 1 >= len(elem_load_offsets)
+        or len(elem_load_pool) == 0
+    ):
         return (q0_0, q0_1, q0_2, q0_3, q0_4, p0_0, p0_1, p0_2, p0_3, p0_4)
 
     for slot in range(elem_load_offsets[elem_index], elem_load_offsets[elem_index + 1]):
-        var load = element_loads[elem_load_pool[slot]]
+        if slot < 0 or slot >= len(elem_load_pool):
+            continue
+        var load_index = elem_load_pool[slot]
+        if load_index < 0 or load_index >= len(element_loads):
+            continue
+        var load = element_loads[load_index]
         if load.type_tag == ElementLoadTypeTag.BeamUniform:
             var wy = load.wy * load_scale
             var wz = load.wz * load_scale

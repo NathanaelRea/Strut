@@ -146,6 +146,12 @@ def _ensure_direct_tcl_compat_aliases(
         shutil.copy2(lib_generate_peaks, generate_peaks)
         mirrored_inputs.append(lib_generate_peaks.resolve())
 
+    canonical_read_smd = mirrored_script_dir / "ReadSMDFile.tcl"
+    legacy_read_smd = mirrored_script_dir / "ReadSMDfile.tcl"
+    if canonical_read_smd.exists() and not legacy_read_smd.exists():
+        shutil.copy2(canonical_read_smd, legacy_read_smd)
+        mirrored_inputs.append(canonical_read_smd.resolve())
+
     gm_dirs = [mirrored_parent / "GMfiles", mirrored_script_dir / "GMfiles"]
     seen_dirs: set[Path] = set()
     for gm_dir in gm_dirs:
@@ -175,6 +181,36 @@ def _ensure_direct_tcl_compat_aliases(
                 mirrored_inputs.append(legacy_peer.resolve())
 
     return mirrored_inputs
+
+
+def _patch_direct_tcl_compatibility(mirrored_tcl: Path, original_tcl: Path) -> None:
+    text = mirrored_tcl.read_text(encoding="utf-8")
+
+    if original_tcl.name == "Ex6.genericFrame2D.build.InelasticFiberWSection.tcl":
+        if "set ColSecTag" not in text:
+            marker = "# define MATERIAL properties ----------------------------------------\n"
+            insert = "set ColSecTag 1\nset BeamSecTag 4\n"
+            if marker in text:
+                text = text.replace(marker, insert + marker, 1)
+            else:
+                text = insert + text
+
+    if original_tcl.name in {
+        "Ex6.genericFrame2D.build.ElasticSection.tcl",
+        "Ex6.genericFrame2D.build.InelasticSection.tcl",
+        "Ex6.genericFrame2D.build.InelasticFiberRCSection.tcl",
+        "Ex6.genericFrame2D.build.InelasticFiberWSection.tcl",
+    }:
+        text = text.replace(
+            "mass $nodeID $MassNode 0.0 0.0 0.0 0.0 0.0;",
+            "mass $nodeID $MassNode 0.0 0.0;",
+        )
+        text = text.replace(
+            "mass $nodeID $MassNode 0. 0. 0. 0. 0.;",
+            "mass $nodeID $MassNode 0. 0.;",
+        )
+
+    mirrored_tcl.write_text(text, encoding="utf-8")
 
 
 def prepare_direct_tcl_entry(
@@ -223,6 +259,9 @@ def prepare_direct_tcl_entry(
     compat_alias_inputs = _ensure_direct_tcl_compat_aliases(
         mirrored_parent, mirrored_script_dir
     )
+    for source_path in resolved_sources:
+        relative_path = source_path.relative_to(script_dir)
+        _patch_direct_tcl_compatibility(mirrored_script_dir / relative_path, source_path)
 
     wrapper_path = mirrored_script_dir / f"__strut_{entry_path.stem}_entry.tcl"
     wrapper_lines = []

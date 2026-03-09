@@ -101,6 +101,63 @@ def _prepare_direct_tcl_entry(
     )
 
 
+def _prepare_opensees_compat_entry(entry_tcl: Path) -> Path:
+    wrapper_path = entry_tcl.parent / f"__strut_opensees_{entry_tcl.stem}_entry.tcl"
+    wrapper_path.write_text(
+        "\n".join(
+            [
+                "set __strut_ndf 0",
+                "if {[llength [info commands model]] > 0 && ![llength [info commands __strut_builtin_model]]} {",
+                "    rename model __strut_builtin_model",
+                "    proc model {args} {",
+                "        global __strut_ndf",
+                "        set idx [lsearch -exact $args -ndf]",
+                "        if {$idx >= 0 && ($idx + 1) < [llength $args]} {",
+                "            set __strut_ndf [lindex $args [expr {$idx + 1}]]",
+                "        }",
+                "        return [uplevel 1 [linsert $args 0 __strut_builtin_model]]",
+                "    }",
+                "}",
+                "if {[llength [info commands mass]] > 0 && ![llength [info commands __strut_builtin_mass]]} {",
+                "    rename mass __strut_builtin_mass",
+                "    proc mass {args} {",
+                "        global __strut_ndf",
+                "        if {[llength $args] < 2} {",
+                "            return [uplevel 1 [linsert $args 0 __strut_builtin_mass]]",
+                "        }",
+                "        set nodeTag [lindex $args 0]",
+                "        set values [lrange $args 1 end]",
+                "        if {$__strut_ndf > 0 && [llength $values] > $__strut_ndf} {",
+                "            set values [lrange $values 0 [expr {$__strut_ndf - 1}]]",
+                "        }",
+                "        set attempt_lengths [list [llength $values]]",
+                "        foreach expected {6 3 1} {",
+                "            if {$expected < [llength $values] && [lsearch -exact $attempt_lengths $expected] < 0} {",
+                "                lappend attempt_lengths $expected",
+                "            }",
+                "        }",
+                "        set result {}",
+                "        set opts {}",
+                "        foreach expected $attempt_lengths {",
+                "            set trimmed [lrange $values 0 [expr {$expected - 1}]]",
+                "            set call [linsert $trimmed 0 $nodeTag]",
+                "            set rc [catch {uplevel 1 [linsert $call 0 __strut_builtin_mass]} result opts]",
+                "            if {$rc == 0} {",
+                "                return $result",
+                "            }",
+                "        }",
+                "        return -options $opts $result",
+                "    }",
+                "}",
+                f"source {{{entry_tcl.name}}}",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return wrapper_path
+
+
 def _reference_output_path(reference_dir: Path, raw_path: str):
     path = Path(raw_path)
     current = reference_dir
@@ -191,6 +248,8 @@ def _normalize_reference_outputs(case_data: dict | Path, reference_dir: Path):
         )
         source = _reference_output_path(reference_dir, raw_path)
         if source is None or not source.exists():
+            if preserve_existing_targets:
+                continue
             raise SystemExit(f"missing raw OpenSees recorder output: {raw_path}")
         normalized_rows = []
         for line in source.read_text(encoding="utf-8").splitlines():
@@ -337,6 +396,59 @@ def _clear_parser_check(case_root: Path) -> None:
     (case_root / ".parser-check").unlink(missing_ok=True)
 
 
+def _canonical_reference_ready(case_data: dict, reference_dir: Path) -> bool:
+    if not reference_dir.exists():
+        return False
+    for recorder in case_data.get("recorders", []):
+        if recorder.get("parity", True) is False:
+            continue
+        rec_type = recorder.get("type")
+        output = recorder.get("output", rec_type)
+        if rec_type in {
+            "node_displacement",
+            "node_reaction",
+            "envelope_node_displacement",
+            "envelope_node_acceleration",
+        }:
+            nodes = recorder.get("nodes", [])
+            if len(nodes) != 1:
+                return False
+            targets = [f"{output}_node{int(nodes[0])}.out"]
+        elif rec_type in {
+            "element_force",
+            "element_local_force",
+            "element_basic_force",
+            "element_deformation",
+            "envelope_element_force",
+            "envelope_element_local_force",
+        }:
+            elements = recorder.get("elements", [])
+            if len(elements) != 1:
+                return False
+            targets = [f"{output}_ele{int(elements[0])}.out"]
+        elif rec_type in {"section_force", "section_deformation"}:
+            elements = recorder.get("elements", [])
+            if len(elements) != 1:
+                return False
+            section = recorder.get("section")
+            if section is None:
+                sections = recorder.get("sections") or []
+                if len(sections) != 1:
+                    return False
+                section = sections[0]
+            targets = [f"{output}_ele{int(elements[0])}_sec{int(section)}.out"]
+        elif rec_type == "drift":
+            targets = [
+                f"{output}_i{int(recorder['i_node'])}_j{int(recorder['j_node'])}.out"
+            ]
+        else:
+            return False
+        for rel_name in targets:
+            if not (reference_dir / rel_name).exists():
+                return False
+    return True
+
+
 def _validate_generated_tcl_matches_original(
     *,
     repo_root: Path,
@@ -353,8 +465,12 @@ def _validate_generated_tcl_matches_original(
     original_reference_dir = case_root / "reference-original"
     generated_reference_dir = case_root / "reference"
     parser_check_path = case_root / ".parser-check"
-    needs_original = refresh_reference or not original_reference_dir.exists()
-    needs_generated = refresh_reference or not generated_reference_dir.exists()
+    needs_original = refresh_reference or not _canonical_reference_ready(
+        case_data, original_reference_dir
+    )
+    needs_generated = refresh_reference or not _canonical_reference_ready(
+        case_data, generated_reference_dir
+    )
     needs_compare = refresh_reference or not parser_check_path.exists()
     if not needs_original and not needs_generated and not needs_compare:
         return
@@ -447,12 +563,14 @@ def main():
     (case_root / "reference").mkdir(parents=True, exist_ok=True)
     (case_root / "strut").mkdir(parents=True, exist_ok=True)
     runtime_entry_tcl = entry_tcl
+    opensees_entry_tcl = entry_tcl
     if is_tcl:
         assert entry_tcl is not None
         source_files = _resolve_direct_tcl_source_files(entry_tcl, manifest_path)
         runtime_entry_tcl, runtime_hash_inputs = _prepare_direct_tcl_entry(
             entry_tcl, case_root, source_files
         )
+        opensees_entry_tcl = _prepare_opensees_compat_entry(runtime_entry_tcl)
         hash_inputs.extend(runtime_hash_inputs)
 
     verbose = os.getenv("STRUT_VERBOSE") == "1"
@@ -468,6 +586,7 @@ def main():
             tcl_to_strut.convert_tcl_to_solver_input(runtime_entry_tcl, repo_root),
             manifest_path,
         )
+        opensees_entry_tcl = _prepare_opensees_compat_entry(runtime_entry_tcl)
         try:
             case_json = _write_generated_direct_tcl_case(case_data, case_root)
             hash_inputs.append(case_json)
@@ -514,12 +633,13 @@ def main():
 
     if is_tcl and use_generated_direct_tcl:
         assert runtime_entry_tcl is not None
+        assert opensees_entry_tcl is not None
         try:
             _validate_generated_tcl_matches_original(
                 repo_root=repo_root,
                 case_root=case_root,
                 case_data=case_data,
-                entry_tcl=runtime_entry_tcl,
+                entry_tcl=opensees_entry_tcl,
                 generated_tcl=tcl_out,
                 env=env,
                 verbose=verbose,
@@ -546,7 +666,7 @@ def main():
                 [
                     str(repo_root / "scripts" / "run_opensees_wine.sh"),
                     "--script",
-                    str(runtime_entry_tcl),
+                    str(opensees_entry_tcl),
                     "--output",
                     str(case_root / "reference"),
                 ],

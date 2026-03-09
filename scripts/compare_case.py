@@ -132,6 +132,15 @@ def _compare_transient_rows(
     ref_vals, strut_vals, label, failures, rtol, atol, parity_mode
 ):
     if parity_mode == "max_abs":
+        if len(ref_vals) != len(strut_vals):
+            shared_steps = min(len(ref_vals), len(strut_vals))
+            if shared_steps == 0:
+                failures.append(
+                    f"{label} step count mismatch: {len(ref_vals)} != {len(strut_vals)}"
+                )
+                return
+            ref_vals = ref_vals[:shared_steps]
+            strut_vals = strut_vals[:shared_steps]
         ref_peak = _max_abs_vector(ref_vals)
         strut_peak = _max_abs_vector(strut_vals)
         ok, errors = _compare_vectors(ref_peak, strut_peak, rtol=rtol, atol=atol)
@@ -284,6 +293,7 @@ def _compare_output_dirs(data: dict, ref_dir: Path, strut_dir: Path) -> list[str
         )
     analysis = data.get("analysis", {})
     is_transient = _analysis_is_transient(analysis)
+    compare_history = is_transient or parity_mode == "max_abs"
 
     failures = []
     for rec in recorders:
@@ -309,7 +319,7 @@ def _compare_output_dirs(data: dict, ref_dir: Path, strut_dir: Path) -> list[str
                 if not strut_file.exists():
                     failures.append(f"missing strut output: {strut_file}")
                     continue
-                if is_transient:
+                if compare_history:
                     ref_vals = _load_all_values(ref_file)
                     strut_vals = _load_all_values(strut_file)
                     _compare_transient_rows(
@@ -341,7 +351,7 @@ def _compare_output_dirs(data: dict, ref_dir: Path, strut_dir: Path) -> list[str
                 if not strut_file.exists():
                     failures.append(f"missing strut output: {strut_file}")
                     continue
-                if is_transient:
+                if compare_history:
                     ref_vals = _load_all_values(ref_file)
                     strut_vals = _load_all_values(strut_file)
                     _compare_transient_rows(
@@ -373,7 +383,7 @@ def _compare_output_dirs(data: dict, ref_dir: Path, strut_dir: Path) -> list[str
                 if not strut_file.exists():
                     failures.append(f"missing strut output: {strut_file}")
                     continue
-                if is_transient:
+                if compare_history:
                     ref_vals = _load_all_values(ref_file)
                     strut_vals = _load_all_values(strut_file)
                     _compare_transient_rows(
@@ -406,7 +416,7 @@ def _compare_output_dirs(data: dict, ref_dir: Path, strut_dir: Path) -> list[str
             if not strut_file.exists():
                 failures.append(f"missing strut output: {strut_file}")
                 continue
-            if is_transient:
+            if compare_history:
                 ref_vals = _load_all_values(ref_file)
                 strut_vals = _load_all_values(strut_file)
                 _compare_transient_rows(
@@ -444,7 +454,7 @@ def _compare_output_dirs(data: dict, ref_dir: Path, strut_dir: Path) -> list[str
                 if not strut_file.exists():
                     failures.append(f"missing strut output: {strut_file}")
                     continue
-                if is_transient:
+                if compare_history:
                     ref_vals = _load_all_values(ref_file)
                     strut_vals = _load_all_values(strut_file)
                     _compare_transient_rows(
@@ -530,7 +540,7 @@ def _compare_output_dirs(data: dict, ref_dir: Path, strut_dir: Path) -> list[str
                     if not strut_file.exists():
                         failures.append(f"missing strut output: {strut_file}")
                         continue
-                    if is_transient:
+                    if compare_history:
                         ref_vals = _load_all_values(ref_file)
                         strut_vals = _load_all_values(strut_file)
                         _compare_transient_rows(

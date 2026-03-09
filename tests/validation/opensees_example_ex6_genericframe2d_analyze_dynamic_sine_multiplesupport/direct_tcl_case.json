@@ -1,7 +1,7 @@
 {
   "name": "opensees_example_ex6_genericframe2d_analyze_dynamic_sine_multiplesupport",
   "entry_tcl": "docs/agent-reference/OpenSeesExamplesAdvanced/opensees_example_6_generic_2d_frame_n_story_n_bay_reinforced_concrete_section_steel_w_section/Ex6.genericFrame2D.analyze.Dynamic.sine.multipleSupport.tcl",
-  "enabled": false,
+  "enabled": true,
   "source_files": [
     "Ex6.genericFrame2D.build.InelasticFiberRCSection.tcl",
     "Ex6.genericFrame2D.analyze.Dynamic.sine.multipleSupport.tcl"

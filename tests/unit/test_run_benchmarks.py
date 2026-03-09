@@ -11,6 +11,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 RUN_BENCHMARKS_PATH = REPO_ROOT / "scripts" / "run_benchmarks.py"
+COMPARE_CASE_PATH = REPO_ROOT / "scripts" / "compare_case.py"
 
 
 def _load_run_benchmarks_module():
@@ -25,6 +26,20 @@ def _load_run_benchmarks_module():
 
 
 run_benchmarks = _load_run_benchmarks_module()
+
+
+def _load_compare_case_module():
+    module_name = "strut_compare_case_test_module"
+    spec = importlib.util.spec_from_file_location(module_name, COMPARE_CASE_PATH)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+compare_case = _load_compare_case_module()
 
 
 def _write_case(path: Path, enabled=True) -> None:
@@ -361,6 +376,11 @@ def test_write_direct_tcl_wrapper_compute_only_noops_display_commands(tmp_path: 
 
     wrapper = wrapper_path.read_text(encoding="utf-8")
 
+    assert "rename source __strut_orig_source" in wrapper
+    assert 'if {$tail == "DisplayModel2D.tcl"} {' in wrapper
+    assert 'proc DisplayModel2D args { return {} }' in wrapper
+    assert 'if {$tail == "DisplayPlane.tcl"} {' in wrapper
+    assert 'proc DisplayPlane args { return {} }' in wrapper
     assert "rename exit __strut_orig_exit" in wrapper
     assert "proc exit args { return {} }" in wrapper
     assert "rename quit __strut_orig_quit" in wrapper
@@ -375,6 +395,7 @@ def test_prepare_direct_tcl_wrappers_mirror_shared_parent_assets(tmp_path: Path)
     script_dir.mkdir(parents=True, exist_ok=True)
     entry_tcl = script_dir / "Ex1.Canti2D.EQ.tcl"
     entry_tcl.write_text("puts ok\n", encoding="utf-8")
+    (script_dir / "ReadSMDFile.tcl").write_text("puts reader\n", encoding="utf-8")
     (bundle_root / "BM68elc.acc").write_text("0.0\n", encoding="utf-8")
     gmfiles = bundle_root / "GMfiles"
     gmfiles.mkdir()
@@ -394,6 +415,7 @@ def test_prepare_direct_tcl_wrappers_mirror_shared_parent_assets(tmp_path: Path)
     assert compute_wrapper.parent == mirrored_script_dir
     assert (mirrored_script_dir / "BM68elc.acc").read_text(encoding="utf-8") == "0.0\n"
     assert (mirrored_script_dir / "GMfiles" / "gm.dat").read_text(encoding="utf-8") == "1.0\n"
+    assert (mirrored_script_dir / "ReadSMDfile.tcl").read_text(encoding="utf-8") == "puts reader\n"
     assert not (mirrored_script_dir / "other_example").exists()
 
 
@@ -436,8 +458,23 @@ def test_prepare_direct_tcl_wrappers_use_manifest_source_files_order(
     ]
     timed_text = timed_wrapper.read_text(encoding="utf-8")
     compute_text = compute_wrapper.read_text(encoding="utf-8")
-    assert f"source {{{entry_wrapper.name}}}" in timed_text
-    assert f"source {{{entry_wrapper.name}}}" in compute_text
+    compat_wrapper = entry_wrapper.with_name(entry_wrapper.stem + "__opensees_compat.tcl")
+    compute_entry = entry_wrapper.with_name(entry_wrapper.stem + "__compute.tcl")
+    compute_compat = compute_entry.with_name(compute_entry.stem + "__opensees_compat.tcl")
+    instrumented_fiber = mirrored_script_dir / "Ex3.Canti2D.build.InelasticFiberSection__strut_compute.tcl"
+    assert compat_wrapper.exists()
+    assert compute_entry.exists()
+    assert compute_compat.exists()
+    assert instrumented_fiber.exists()
+    compat_text = compat_wrapper.read_text(encoding="utf-8")
+    compute_entry_text = compute_entry.read_text(encoding="utf-8")
+    instrumented_text = instrumented_fiber.read_text(encoding="utf-8")
+    assert "rename mass __strut_builtin_mass" in compat_text
+    assert f"source {{{entry_wrapper.name}}}" in compat_text
+    assert f"source {{{compat_wrapper.name}}}" in timed_text
+    assert f"source {{{compute_compat.name}}}" in compute_text
+    assert "source {Ex3.Canti2D.build.InelasticFiberSection__strut_compute.tcl}" in compute_entry_text
+    assert "puts fiber" in instrumented_text
 
 
 def test_prepare_direct_tcl_entry_uses_explicit_source_files_order(
@@ -714,6 +751,37 @@ def test_ensure_direct_tcl_case_artifacts_falls_back_when_generated_tcl_fails(
     assert not (case_root / ".parser-check").exists()
     assert len(calls) == 1
     assert "json_to_tcl.py" in str(calls[0][3])
+
+
+def test_require_direct_tcl_parser_check_accepts_validated_case(tmp_path: Path):
+    repo_root = tmp_path / "repo"
+    case_root = repo_root / "tests" / "validation" / "direct_case"
+    manifest = case_root / "direct_tcl_case.json"
+    entry_tcl = tmp_path / "examples" / "case.tcl"
+    entry_tcl.parent.mkdir(parents=True, exist_ok=True)
+    entry_tcl.write_text("puts ok\n", encoding="utf-8")
+    _write_direct_tcl_case(manifest, entry_tcl=entry_tcl)
+    parser_check = case_root / ".parser-check"
+    parser_check.write_text("ok\n", encoding="utf-8")
+
+    case = run_benchmarks._direct_tcl_case_spec(manifest)
+
+    assert run_benchmarks._require_direct_tcl_parser_check(case) == parser_check
+
+
+def test_require_direct_tcl_parser_check_rejects_missing_file(tmp_path: Path):
+    repo_root = tmp_path / "repo"
+    case_root = repo_root / "tests" / "validation" / "direct_case"
+    manifest = case_root / "direct_tcl_case.json"
+    entry_tcl = tmp_path / "examples" / "case.tcl"
+    entry_tcl.parent.mkdir(parents=True, exist_ok=True)
+    entry_tcl.write_text("puts ok\n", encoding="utf-8")
+    _write_direct_tcl_case(manifest, entry_tcl=entry_tcl)
+
+    case = run_benchmarks._direct_tcl_case_spec(manifest)
+
+    with pytest.raises(SystemExit, match="missing parser-check for direct Tcl benchmark"):
+        run_benchmarks._require_direct_tcl_parser_check(case)
 
 
 def test_filter_cases_by_enabled_counts_disabled_and_skipped(tmp_path: Path):
@@ -1201,6 +1269,23 @@ def test_read_runtime_failures_collects_case_error_files(tmp_path: Path):
     ]
 
 
+def test_read_runtime_failures_ignores_whitespace_only_case_error_files(tmp_path: Path):
+    case_dir = tmp_path / "results" / "opensees" / "beam_case"
+    case_dir.mkdir(parents=True, exist_ok=True)
+    (case_dir / "case_error.txt").write_text("\r\n", encoding="utf-8")
+
+    failures = run_benchmarks._read_runtime_failures(
+        case_entries=[
+            {"name": "beam_case", "case_file": "/tmp/cases/beam_case.json"},
+        ],
+        results_root=tmp_path / "results",
+        run_opensees=True,
+        run_strut=False,
+    )
+
+    assert failures == []
+
+
 def test_analysis_is_transient_for_top_level_transient():
     analysis = {"type": "transient_nonlinear", "steps": 10, "dt": 0.01}
     assert run_benchmarks._analysis_is_transient(analysis) is True
@@ -1234,6 +1319,22 @@ def test_compare_transient_rows_max_abs_uses_peaks_not_first_mismatch():
     run_benchmarks._compare_transient_rows(
         ref_vals=[[0.0, 1.0], [1.0, 3.0]],
         strut_vals=[[0.0, 2.0], [1.0, 3.05]],
+        label="case: node 1",
+        failures=failures,
+        rtol=0.05,
+        atol=0.0,
+        parity_mode="max_abs",
+    )
+
+    assert failures == []
+
+
+def test_compare_case_max_abs_uses_shared_prefix_when_reference_is_truncated():
+    failures = []
+
+    compare_case._compare_transient_rows(
+        ref_vals=[[0.0, 1.0], [1.0, 3.0]],
+        strut_vals=[[0.0, 1.0], [1.0, 3.0], [2.0, 30.0]],
         label="case: node 1",
         failures=failures,
         rtol=0.05,

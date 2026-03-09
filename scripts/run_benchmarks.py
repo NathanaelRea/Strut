@@ -648,6 +648,19 @@ def _clear_parser_check(case_root: Path) -> None:
     (case_root / ".parser-check").unlink(missing_ok=True)
 
 
+def _require_direct_tcl_parser_check(case: CaseSpec) -> Path:
+    if case.tcl_path is None:
+        raise SystemExit(
+            f"parser-check validation is only defined for direct Tcl cases: {case.name}"
+        )
+    parser_check = _direct_case_root(case) / ".parser-check"
+    if not parser_check.exists():
+        raise SystemExit(
+            f"missing parser-check for direct Tcl benchmark `{case.name}`: {parser_check}"
+        )
+    return parser_check
+
+
 def _validate_generated_tcl_matches_original(
     *,
     repo_root: Path,
@@ -663,8 +676,8 @@ def _validate_generated_tcl_matches_original(
     original_reference_dir = case_root / "reference-original"
     generated_reference_dir = case_root / "reference"
     parser_check_path = case_root / ".parser-check"
-    needs_original = not original_reference_dir.exists()
-    needs_generated = not generated_reference_dir.exists()
+    needs_original = not _canonical_reference_ready(case_data, original_reference_dir)
+    needs_generated = not _canonical_reference_ready(case_data, generated_reference_dir)
     needs_compare = not parser_check_path.exists()
     if not needs_original and not needs_generated and not needs_compare:
         return
@@ -775,6 +788,25 @@ def _write_direct_tcl_wrapper(
     if compute_only:
         lines.extend(
             [
+                'if {[llength [info commands source]] > 0 && [llength [info commands __strut_orig_source]] == 0} {',
+                "  rename source __strut_orig_source",
+                "  proc source {path} {",
+                "    set tail [file tail $path]",
+                '    if {$tail == "DisplayModel2D.tcl"} {',
+                '      proc DisplayModel2D args { return {} }',
+                "      return {}",
+                "    }",
+                '    if {$tail == "DisplayModel3D.tcl"} {',
+                '      proc DisplayModel3D args { return {} }',
+                "      return {}",
+                "    }",
+                '    if {$tail == "DisplayPlane.tcl"} {',
+                '      proc DisplayPlane args { return {} }',
+                "      return {}",
+                "    }",
+                "    return [uplevel 1 [list __strut_orig_source $path]]",
+                "  }",
+                "}",
                 'if {[llength [info commands recorder]] > 0 && [llength [info commands __strut_orig_recorder]] == 0} {',
                 "  rename recorder __strut_orig_recorder",
                 "  proc recorder args { return {} }",
@@ -820,6 +852,63 @@ def _write_direct_tcl_wrapper(
     return wrapper_path
 
 
+def _prepare_opensees_compat_entry(entry_tcl: Path) -> Path:
+    wrapper_path = entry_tcl.with_name(entry_tcl.stem + "__opensees_compat.tcl")
+    wrapper_path.write_text(
+        "\n".join(
+            [
+                "set __strut_ndf 0",
+                'if {[llength [info commands model]] > 0 && [llength [info commands __strut_builtin_model]] == 0} {',
+                "    rename model __strut_builtin_model",
+                "    proc model {args} {",
+                "        global __strut_ndf",
+                "        set idx [lsearch -exact $args -ndf]",
+                "        if {$idx >= 0 && ($idx + 1) < [llength $args]} {",
+                "            set __strut_ndf [lindex $args [expr {$idx + 1}]]",
+                "        }",
+                "        return [uplevel 1 [linsert $args 0 __strut_builtin_model]]",
+                "    }",
+                "}",
+                'if {[llength [info commands mass]] > 0 && [llength [info commands __strut_builtin_mass]] == 0} {',
+                "    rename mass __strut_builtin_mass",
+                "    proc mass {args} {",
+                "        global __strut_ndf",
+                "        if {[llength $args] < 2} {",
+                "            return [uplevel 1 [linsert $args 0 __strut_builtin_mass]]",
+                "        }",
+                "        set nodeTag [lindex $args 0]",
+                "        set values [lrange $args 1 end]",
+                "        if {$__strut_ndf > 0 && [llength $values] > $__strut_ndf} {",
+                "            set values [lrange $values 0 [expr {$__strut_ndf - 1}]]",
+                "        }",
+                "        set attempt_lengths [list [llength $values]]",
+                "        foreach expected {6 3 1} {",
+                "            if {$expected < [llength $values] && [lsearch -exact $attempt_lengths $expected] < 0} {",
+                "                lappend attempt_lengths $expected",
+                "            }",
+                "        }",
+                "        set result {}",
+                "        set opts {}",
+                "        foreach expected $attempt_lengths {",
+                "            set trimmed [lrange $values 0 [expr {$expected - 1}]]",
+                "            set call [linsert $trimmed 0 $nodeTag]",
+                "            set rc [catch {uplevel 1 [linsert $call 0 __strut_builtin_mass]} result opts]",
+                "            if {$rc == 0} {",
+                "                return $result",
+                "            }",
+                "        }",
+                "        return -options $opts $result",
+                "    }",
+                "}",
+                f"source {{{entry_tcl.name}}}",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return wrapper_path
+
+
 def _resolve_direct_tcl_source_files(case: CaseSpec) -> list[Path]:
     if case.tcl_path is None:
         raise SystemExit(f"direct Tcl case `{case.name}` is missing tcl_path")
@@ -851,17 +940,39 @@ def _prepare_direct_tcl_wrappers(
     entry_wrapper = _prepare_direct_tcl_entry(
         script_path, mirror_root, source_files=source_files
     )
+    opensees_entry = _prepare_opensees_compat_entry(entry_wrapper)
     mirrored_script_dir = entry_wrapper.parent
     raw_output_paths = _direct_tcl_raw_output_paths(case_data)
 
+    compute_source_lines = []
+    for source_path in source_files:
+        relative_path = source_path.relative_to(script_path.parent)
+        mirrored_source = mirrored_script_dir / relative_path
+        instrumented_source = mirrored_source.with_name(
+            mirrored_source.stem + "__strut_compute.tcl"
+        )
+        instrumented_source.write_text(
+            "\n".join(
+                _inject_opensees_timing_into_source(
+                    mirrored_source.read_text(encoding="utf-8").splitlines()
+                )
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        compute_source_lines.append(f"source {{{instrumented_source.name}}}")
+    compute_entry = mirrored_script_dir / f"{entry_wrapper.stem}__compute.tcl"
+    compute_entry.write_text("\n".join(compute_source_lines) + "\n", encoding="utf-8")
+    compute_opensees_entry = _prepare_opensees_compat_entry(compute_entry)
+
     timed_wrapper = _write_direct_tcl_wrapper(
-        original_script_name=entry_wrapper.name,
+        original_script_name=opensees_entry.name,
         wrapper_path=mirrored_script_dir / f"__strut_{case.name}_timed.tcl",
         compute_only=False,
         raw_output_paths=raw_output_paths,
     )
     compute_wrapper = _write_direct_tcl_wrapper(
-        original_script_name=entry_wrapper.name,
+        original_script_name=compute_opensees_entry.name,
         wrapper_path=mirrored_script_dir / f"__strut_{case.name}_compute.tcl",
         compute_only=True,
         raw_output_paths=raw_output_paths,
@@ -922,24 +1033,25 @@ def _ensure_direct_tcl_case_artifacts(
             verbose,
             capture_on_error=True,
         )
-        with tempfile.TemporaryDirectory(
-            prefix=f"strut_direct_tcl_{case.name}_", dir="/tmp"
-        ) as validation_root:
-            original_reference_tcl, _ = _prepare_direct_tcl_wrappers(
-                case, case_data, Path(validation_root)
-            )
-            _validate_generated_tcl_matches_original(
-                repo_root=repo_root,
-                case_root=case_root,
-                case_data=case_data,
-                original_reference_tcl=original_reference_tcl,
-                generated_tcl=generated_tcl,
-                env=env,
-                verbose=verbose,
-            )
+        source_files = _resolve_direct_tcl_source_files(case)
+        validation_entry = _prepare_direct_tcl_entry(
+            case.tcl_path.resolve(),
+            case_root / "generated" / "_direct_tcl_context",
+            source_files=source_files,
+        )
+        original_reference_tcl = _prepare_opensees_compat_entry(validation_entry)
+        _validate_generated_tcl_matches_original(
+            repo_root=repo_root,
+            case_root=case_root,
+            case_data=case_data,
+            original_reference_tcl=original_reference_tcl,
+            generated_tcl=generated_tcl,
+            env=env,
+            verbose=verbose,
+        )
     except (OSError, ValueError, subprocess.CalledProcessError, SystemExit) as exc:
         _clear_parser_check(case_root)
-        log(f"{case.name}: generated Tcl unavailable; benchmarking original Tcl.")
+        log(f"{case.name}: generated Tcl parser-check unavailable.")
         if verbose:
             log(f"{case.name}: fallback reason: {exc}")
     return case_data
@@ -1713,6 +1825,22 @@ def _inject_opensees_timing(tcl_lines: List[str], timing_file: str) -> List[str]
     return out
 
 
+def _inject_opensees_timing_into_source(tcl_lines: List[str]) -> List[str]:
+    out: List[str] = []
+    for line in tcl_lines:
+        stripped = line.lstrip()
+        has_analyze = stripped.startswith("analyze ") or "[analyze " in stripped
+        has_eigen = stripped.startswith("eigen ") or "[eigen " in stripped
+        if has_analyze or has_eigen:
+            out.append("set __strut_t0 [clock microseconds]")
+            out.append(line)
+            out.append("set __strut_t1 [clock microseconds]")
+            out.append("incr __strut_analysis_us [expr {$__strut_t1 - $__strut_t0}]")
+            continue
+        out.append(line)
+    return out
+
+
 def _tcl_uses_eigen(path: Path) -> bool:
     try:
         lines = path.read_text().splitlines()
@@ -1806,6 +1934,8 @@ def _read_runtime_failures(
             if not error_file.exists():
                 continue
             detail = _compact_error_text(error_file.read_text(encoding="utf-8"))
+            if detail == "empty case_error.txt":
+                continue
             key = (case_name, engine, phase, str(error_file), detail)
             if key in seen:
                 continue
@@ -2286,9 +2416,12 @@ def main() -> None:
     prepared_case_data: Dict[str, dict] = {}
     for case in case_specs:
         try:
-            prepared_case_data[case.name] = _ensure_direct_tcl_case_artifacts(
+            case_data = _ensure_direct_tcl_case_artifacts(
                 case, repo_root, env, verbose
             )
+            if case.tcl_path is not None:
+                _require_direct_tcl_parser_check(case)
+            prepared_case_data[case.name] = case_data
         except (OSError, ValueError, subprocess.CalledProcessError, SystemExit) as exc:
             setup_failures.append(
                 RuntimeFailure(
@@ -2332,8 +2465,8 @@ def main() -> None:
         if case.tcl_path is not None:
             direct_case_root = _direct_case_root(case)
             generated_tcl = direct_case_root / "generated" / "model.tcl"
-            parser_check = direct_case_root / ".parser-check"
-            if generated_tcl.exists() and parser_check.exists():
+            _require_direct_tcl_parser_check(case)
+            if generated_tcl.exists():
                 tcl_out = results_root / "tcl" / f"{case_name}.tcl"
                 shutil.copy2(generated_tcl, tcl_out)
                 tcl_compute = tcl_out.parent / f"{tcl_out.stem}_compute.tcl"

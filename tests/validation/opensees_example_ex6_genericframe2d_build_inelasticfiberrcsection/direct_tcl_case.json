@@ -1,5 +1,5 @@
 {
   "name": "opensees_example_ex6_genericframe2d_build_inelasticfiberrcsection",
   "entry_tcl": "docs/agent-reference/OpenSeesExamplesAdvanced/opensees_example_6_generic_2d_frame_n_story_n_bay_reinforced_concrete_section_steel_w_section/Ex6.genericFrame2D.build.InelasticFiberRCSection.tcl",
-  "enabled": false
+  "enabled": true
 }
