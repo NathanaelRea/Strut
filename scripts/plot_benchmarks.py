@@ -590,6 +590,8 @@ def write_plots_pdf(
 
     summary = load_summary(results_path)
     cases = _filter_enabled_cases(summary.get("cases", []))
+    filtered_summary = dict(summary)
+    filtered_summary["cases"] = cases
     small_indices: List[int] = []
     medium_indices: List[int] = []
     large_indices: List[int] = []
@@ -604,7 +606,7 @@ def write_plots_pdf(
         small_indices.append(idx)
 
     def _prepare(indices: List[int]):
-        names, engines, errors = collect_recent_cases(summary, indices)
+        names, engines, errors = collect_recent_cases(filtered_summary, indices)
         names, engines, errors, group_spans = group_cases(
             names,
             engines,
@@ -778,7 +780,6 @@ def main() -> None:
         if args.output
         else repo_root / "benchmark" / "results" / "plots.pdf"
     )
-
     write_plots_pdf(
         results_path=results_path,
         archive_dir=archive_dir,
