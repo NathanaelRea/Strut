@@ -17,14 +17,18 @@ from materials import (
 )
 from solver.assembly.stiffness_internal_frame2d import (
     _assemble_frame2d_element,
+    _assemble_frame2d_native_soa_indices,
     _assemble_frame2d_soa_indices,
 )
 from solver.assembly.stiffness_internal_frame3d import (
     _assemble_frame3d_element,
+    _assemble_frame3d_native_soa_indices,
     _assemble_frame3d_soa_indices,
 )
 from solver.assembly.stiffness_internal_links import (
+    _assemble_two_node_link_element_native,
     _assemble_two_node_link_element,
+    _assemble_zero_length_element_native,
     _assemble_zero_length_element,
 )
 from solver.assembly.stiffness_internal_shared import (
@@ -43,6 +47,7 @@ from solver.assembly.stiffness_internal_shared import (
 )
 from solver.assembly.stiffness_internal_surface import (
     _assemble_surface_element,
+    _assemble_surface_native_soa_indices,
     _assemble_surface_soa_indices,
 )
 from solver.dof import node_dof_index
@@ -56,6 +61,11 @@ from solver.profile import (
     _profile_metrics_note_element_timing,
 )
 from solver.run_case.helpers import aggregator_section2d_set_trial_from_offset
+from solver.run_case.linear_solver_backend import (
+    LinearSolverBackend,
+    add_element_matrix_from_pool,
+    zero_loaded_matrix,
+)
 from solver.run_case.input_types import (
     ElementInput,
     ElementLoadInput,
@@ -1778,6 +1788,625 @@ fn assemble_global_stiffness_and_internal_soa(
         sections_by_id,
         u,
         K,
+        F_int,
+        runtime_metrics,
+    )
+
+
+fn assemble_global_stiffness_and_internal_native_soa(
+    nodes: List[NodeInput],
+    elements: List[ElementInput],
+    node_x: List[Float64],
+    node_y: List[Float64],
+    node_z: List[Float64],
+    elem_dof_offsets: List[Int],
+    elem_dof_pool: List[Int],
+    elem_free_offsets: List[Int],
+    elem_free_pool: List[Int],
+    elem_node_offsets: List[Int],
+    elem_node_pool: List[Int],
+    elem_primary_material_ids: List[Int],
+    elem_type_tags: List[Int],
+    elem_geom_tags: List[Int],
+    elem_section_ids: List[Int],
+    elem_integration_tags: List[Int],
+    elem_num_int_pts: List[Int],
+    elem_area: List[Float64],
+    elem_thickness: List[Float64],
+    frame2d_elem_indices: List[Int],
+    frame3d_elem_indices: List[Int],
+    truss_elem_indices: List[Int],
+    zero_length_elem_indices: List[Int],
+    two_node_link_elem_indices: List[Int],
+    zero_length_section_elem_indices: List[Int],
+    quad_elem_indices: List[Int],
+    shell_elem_indices: List[Int],
+    element_loads: List[ElementLoadInput],
+    elem_load_offsets: List[Int],
+    elem_load_pool: List[Int],
+    load_scale: Float64,
+    sections_by_id: List[SectionInput],
+    materials_by_id: List[MaterialInput],
+    id_to_index: List[Int],
+    node_count: Int,
+    ndf: Int,
+    ndm: Int,
+    u: List[Float64],
+    uniaxial_defs: List[UniMaterialDef],
+    uniaxial_state_defs: List[Int],
+    mut uniaxial_states: List[UniMaterialState],
+    elem_uniaxial_offsets: List[Int],
+    elem_uniaxial_counts: List[Int],
+    elem_uniaxial_state_ids: List[Int],
+    force_basic_offsets: List[Int],
+    force_basic_counts: List[Int],
+    mut force_basic_q: List[Float64],
+    mut fiber_section_defs: List[FiberSection2dDef],
+    fiber_section_cells: List[FiberCell],
+    fiber_section_index_by_id: List[Int],
+    fiber_section3d_defs: List[FiberSection3dDef],
+    fiber_section3d_cells: List[FiberCell],
+    fiber_section3d_index_by_id: List[Int],
+    mut force_beam_column2d_scratch: ForceBeamColumn2dScratch,
+    mut force_beam_column3d_scratch: ForceBeamColumn3dScratch,
+    mut dof_map6: List[Int],
+    mut dof_map12: List[Int],
+    mut u_elem6: List[Float64],
+    mut backend: LinearSolverBackend,
+    mut F_int: List[Float64],
+    do_profile: Bool,
+    t0: Int,
+    mut events: String,
+    mut events_need_comma: Bool,
+    frame_assemble_uniaxial: Int,
+    frame_assemble_fiber: Int,
+    mut runtime_metrics: RuntimeProfileMetrics,
+) raises:
+    _zero_vector(F_int)
+    zero_loaded_matrix(backend)
+
+    var elem_count = len(elements)
+    if len(elem_dof_offsets) != elem_count + 1:
+        abort("invalid elem_dof_offsets size for native global assembly")
+    if len(elem_free_offsets) != elem_count + 1:
+        abort("invalid elem_free_offsets size for native global assembly")
+    if len(elem_dof_pool) != elem_dof_offsets[elem_count]:
+        abort("invalid elem_dof_pool size for native global assembly")
+    if len(elem_free_pool) != elem_free_offsets[elem_count]:
+        abort("invalid elem_free_pool size for native global assembly")
+    if len(dof_map6) != 6:
+        dof_map6.resize(6, 0)
+    if len(dof_map12) != 12:
+        dof_map12.resize(12, 0)
+    if len(u_elem6) != 6:
+        u_elem6.resize(6, 0.0)
+
+    _assemble_frame2d_native_soa_indices(
+        frame2d_elem_indices,
+        node_x,
+        node_y,
+        elem_dof_offsets,
+        elem_dof_pool,
+        elem_free_offsets,
+        elem_free_pool,
+        elem_node_offsets,
+        elem_node_pool,
+        elem_type_tags,
+        elem_geom_tags,
+        elem_section_ids,
+        elem_integration_tags,
+        elem_num_int_pts,
+        element_loads,
+        elem_load_offsets,
+        elem_load_pool,
+        load_scale,
+        sections_by_id,
+        u,
+        uniaxial_defs,
+        uniaxial_states,
+        elem_uniaxial_offsets,
+        elem_uniaxial_counts,
+        elem_uniaxial_state_ids,
+        force_basic_offsets,
+        force_basic_counts,
+        force_basic_q,
+        fiber_section_defs,
+        fiber_section_cells,
+        fiber_section_index_by_id,
+        force_beam_column2d_scratch,
+        dof_map6,
+        u_elem6,
+        backend,
+        F_int,
+        do_profile,
+        t0,
+        events,
+        events_need_comma,
+        frame_assemble_fiber,
+        runtime_metrics,
+    )
+
+    _assemble_frame3d_native_soa_indices(
+        frame3d_elem_indices,
+        node_x,
+        node_y,
+        node_z,
+        elem_dof_offsets,
+        elem_dof_pool,
+        elem_free_offsets,
+        elem_free_pool,
+        elem_node_offsets,
+        elem_node_pool,
+        elem_type_tags,
+        elem_geom_tags,
+        elem_section_ids,
+        elem_integration_tags,
+        elem_num_int_pts,
+        element_loads,
+        elem_load_offsets,
+        elem_load_pool,
+        load_scale,
+        sections_by_id,
+        u,
+        uniaxial_defs,
+        uniaxial_states,
+        elem_uniaxial_offsets,
+        elem_uniaxial_counts,
+        elem_uniaxial_state_ids,
+        force_basic_offsets,
+        force_basic_counts,
+        force_basic_q,
+        fiber_section3d_defs,
+        fiber_section3d_cells,
+        fiber_section3d_index_by_id,
+        force_beam_column3d_scratch,
+        dof_map12,
+        backend,
+        F_int,
+        do_profile,
+        t0,
+        events,
+        events_need_comma,
+        frame_assemble_fiber,
+        runtime_metrics,
+    )
+
+    for idx in range(len(truss_elem_indices)):
+        var e = truss_elem_indices[idx]
+        var t_elem_start = 0
+        if runtime_metrics.enabled:
+            t_elem_start = Int(perf_counter_ns())
+        var node_offset = elem_node_offsets[e]
+        var i1 = elem_node_pool[node_offset]
+        var i2 = elem_node_pool[node_offset + 1]
+        var x1 = node_x[i1]
+        var y1 = node_y[i1]
+        var z1 = node_z[i1]
+        var x2 = node_x[i2]
+        var y2 = node_y[i2]
+        var z2 = node_z[i2]
+        var offset = elem_uniaxial_offsets[e]
+        var state_index = elem_uniaxial_state_ids[offset]
+        var def_index = uniaxial_state_defs[state_index]
+        var mat_def = uniaxial_defs[def_index]
+        ref state = uniaxial_states[state_index]
+        var A = elem_area[e]
+        var dof_offset = elem_dof_offsets[e]
+        var free_offset = elem_free_offsets[e]
+        _profile_scope_open(
+            do_profile,
+            events,
+            events_need_comma,
+            frame_assemble_uniaxial,
+            t0,
+        )
+        if ndf == 2:
+            var d0 = elem_dof_pool[dof_offset]
+            var d1 = elem_dof_pool[dof_offset + 1]
+            var d2 = elem_dof_pool[dof_offset + 2]
+            var d3 = elem_dof_pool[dof_offset + 3]
+            var dx = x2 - x1
+            var dy = y2 - y1
+            var L = hypot(dx, dy)
+            if L == 0.0:
+                abort("zero-length element")
+            var c = dx / L
+            var s = dy / L
+            var du = (u[d2] - u[d0]) * c + (u[d3] - u[d1]) * s
+            var eps = du / L
+            _profile_scope_open(
+                do_profile,
+                events,
+                events_need_comma,
+                PROFILE_FRAME_UNIAXIAL_TRIAL_UPDATE,
+                t0,
+            )
+            uniaxial_set_trial_strain(mat_def, state, eps)
+            _profile_scope_close(
+                do_profile,
+                events,
+                events_need_comma,
+                PROFILE_FRAME_UNIAXIAL_TRIAL_UPDATE,
+                t0,
+            )
+            var N = state.sig_t * A
+            var k = state.tangent_t * A / L
+            var k_global = [
+                [k * c * c, k * c * s, -k * c * c, -k * c * s],
+                [k * c * s, k * s * s, -k * c * s, -k * s * s],
+                [-k * c * c, -k * c * s, k * c * c, k * c * s],
+                [-k * c * s, -k * s * s, k * c * s, k * s * s],
+            ]
+            add_element_matrix_from_pool(backend, elem_free_pool, free_offset, 4, k_global)
+            F_int[d0] -= N * c
+            F_int[d1] -= N * s
+            F_int[d2] += N * c
+            F_int[d3] += N * s
+        else:
+            var d0 = elem_dof_pool[dof_offset]
+            var d1 = elem_dof_pool[dof_offset + 1]
+            var d2 = elem_dof_pool[dof_offset + 2]
+            var d3 = elem_dof_pool[dof_offset + 3]
+            var d4 = elem_dof_pool[dof_offset + 4]
+            var d5 = elem_dof_pool[dof_offset + 5]
+            var dx = x2 - x1
+            var dy = y2 - y1
+            var dz = z2 - z1
+            var L = sqrt(dx * dx + dy * dy + dz * dz)
+            if L == 0.0:
+                abort("zero-length element")
+            var l = dx / L
+            var m = dy / L
+            var n = dz / L
+            var du = (u[d3] - u[d0]) * l + (u[d4] - u[d1]) * m + (u[d5] - u[d2]) * n
+            var eps = du / L
+            _profile_scope_open(
+                do_profile,
+                events,
+                events_need_comma,
+                PROFILE_FRAME_UNIAXIAL_TRIAL_UPDATE,
+                t0,
+            )
+            uniaxial_set_trial_strain(mat_def, state, eps)
+            _profile_scope_close(
+                do_profile,
+                events,
+                events_need_comma,
+                PROFILE_FRAME_UNIAXIAL_TRIAL_UPDATE,
+                t0,
+            )
+            var N = state.sig_t * A
+            var k = state.tangent_t * A / L
+            var k_global = [
+                [k * l * l, k * l * m, k * l * n, -k * l * l, -k * l * m, -k * l * n],
+                [k * l * m, k * m * m, k * m * n, -k * l * m, -k * m * m, -k * m * n],
+                [k * l * n, k * m * n, k * n * n, -k * l * n, -k * m * n, -k * n * n],
+                [-k * l * l, -k * l * m, -k * l * n, k * l * l, k * l * m, k * l * n],
+                [-k * l * m, -k * m * m, -k * m * n, k * l * m, k * m * m, k * m * n],
+                [-k * l * n, -k * m * n, -k * n * n, k * l * n, k * m * n, k * n * n],
+            ]
+            add_element_matrix_from_pool(backend, elem_free_pool, free_offset, 6, k_global)
+            F_int[d0] -= N * l
+            F_int[d1] -= N * m
+            F_int[d2] -= N * n
+            F_int[d3] += N * l
+            F_int[d4] += N * m
+            F_int[d5] += N * n
+        _profile_scope_close(
+            do_profile,
+            events,
+            events_need_comma,
+            frame_assemble_uniaxial,
+            t0,
+        )
+        if runtime_metrics.enabled:
+            _profile_metrics_note_element_timing(
+                runtime_metrics,
+                ElementTypeTag.Truss,
+                Int(perf_counter_ns()) - t_elem_start,
+            )
+
+    for idx in range(len(zero_length_elem_indices)):
+        var e = zero_length_elem_indices[idx]
+        var t_elem_start = 0
+        if runtime_metrics.enabled:
+            t_elem_start = Int(perf_counter_ns())
+        _profile_scope_open(
+            do_profile,
+            events,
+            events_need_comma,
+            frame_assemble_uniaxial,
+            t0,
+        )
+        _profile_scope_open(
+            do_profile,
+            events,
+            events_need_comma,
+            PROFILE_FRAME_UNIAXIAL_TRIAL_UPDATE,
+            t0,
+        )
+        _assemble_zero_length_element_native(
+            e,
+            elements[e],
+            nodes,
+            ndf,
+            ndm,
+            u,
+            uniaxial_defs,
+            uniaxial_state_defs,
+            uniaxial_states,
+            elem_uniaxial_offsets,
+            elem_uniaxial_counts,
+            elem_uniaxial_state_ids,
+            elem_free_offsets,
+            elem_free_pool,
+            backend,
+            F_int,
+        )
+        _profile_scope_close(
+            do_profile,
+            events,
+            events_need_comma,
+            PROFILE_FRAME_UNIAXIAL_TRIAL_UPDATE,
+            t0,
+        )
+        _profile_scope_close(
+            do_profile,
+            events,
+            events_need_comma,
+            frame_assemble_uniaxial,
+            t0,
+        )
+        if runtime_metrics.enabled:
+            _profile_metrics_note_element_timing(
+                runtime_metrics,
+                ElementTypeTag.ZeroLength,
+                Int(perf_counter_ns()) - t_elem_start,
+            )
+
+    for idx in range(len(two_node_link_elem_indices)):
+        var e = two_node_link_elem_indices[idx]
+        var t_elem_start = 0
+        if runtime_metrics.enabled:
+            t_elem_start = Int(perf_counter_ns())
+        _profile_scope_open(
+            do_profile,
+            events,
+            events_need_comma,
+            frame_assemble_uniaxial,
+            t0,
+        )
+        _profile_scope_open(
+            do_profile,
+            events,
+            events_need_comma,
+            PROFILE_FRAME_UNIAXIAL_TRIAL_UPDATE,
+            t0,
+        )
+        _assemble_two_node_link_element_native(
+            e,
+            elements[e],
+            nodes,
+            ndf,
+            ndm,
+            u,
+            uniaxial_defs,
+            uniaxial_state_defs,
+            uniaxial_states,
+            elem_uniaxial_offsets,
+            elem_uniaxial_counts,
+            elem_uniaxial_state_ids,
+            elem_free_offsets,
+            elem_free_pool,
+            backend,
+            F_int,
+        )
+        _profile_scope_close(
+            do_profile,
+            events,
+            events_need_comma,
+            PROFILE_FRAME_UNIAXIAL_TRIAL_UPDATE,
+            t0,
+        )
+        _profile_scope_close(
+            do_profile,
+            events,
+            events_need_comma,
+            frame_assemble_uniaxial,
+            t0,
+        )
+        if runtime_metrics.enabled:
+            _profile_metrics_note_element_timing(
+                runtime_metrics,
+                ElementTypeTag.TwoNodeLink,
+                Int(perf_counter_ns()) - t_elem_start,
+            )
+
+    for idx in range(len(zero_length_section_elem_indices)):
+        var e = zero_length_section_elem_indices[idx]
+        var t_elem_start = 0
+        if runtime_metrics.enabled:
+            t_elem_start = Int(perf_counter_ns())
+        _profile_scope_open(
+            do_profile,
+            events,
+            events_need_comma,
+            PROFILE_FRAME_ASSEMBLE_FIBER_GEOMETRY,
+            t0,
+        )
+        var dof_offset = elem_dof_offsets[e]
+        var free_offset = elem_free_offsets[e]
+        var u1 = elem_dof_pool[dof_offset]
+        var r1 = elem_dof_pool[dof_offset + 2]
+        var u2 = elem_dof_pool[dof_offset + 3]
+        var r2 = elem_dof_pool[dof_offset + 5]
+        var delta_axial = u[u2] - u[u1]
+        var delta_curv = u[r2] - u[r1]
+        var sec = sections_by_id[elem_section_ids[e]]
+        var elem_offset = elem_uniaxial_offsets[e]
+        var elem_state_count = elem_uniaxial_counts[e]
+        var axial_force = 0.0
+        var moment_z = 0.0
+        var k11 = 0.0
+        var k12 = 0.0
+        var k22 = 0.0
+        _profile_scope_close(
+            do_profile,
+            events,
+            events_need_comma,
+            PROFILE_FRAME_ASSEMBLE_FIBER_GEOMETRY,
+            t0,
+        )
+        if sec.type == "ElasticSection2d":
+            k11 = sec.E * sec.A
+            k22 = sec.E * sec.I
+            axial_force = k11 * delta_axial
+            moment_z = k22 * delta_curv
+        elif sec.type == "AggregatorSection2d":
+            _profile_scope_open(
+                do_profile,
+                events,
+                events_need_comma,
+                PROFILE_FRAME_UNIAXIAL_TRIAL_UPDATE,
+                t0,
+            )
+            (axial_force, moment_z, k11, k12, k22) = aggregator_section2d_set_trial_from_offset(
+                sec,
+                uniaxial_defs,
+                uniaxial_state_defs,
+                uniaxial_states,
+                elem_uniaxial_state_ids,
+                elem_offset,
+                elem_state_count,
+                delta_axial,
+                delta_curv,
+            )
+            _profile_scope_close(
+                do_profile,
+                events,
+                events_need_comma,
+                PROFILE_FRAME_UNIAXIAL_TRIAL_UPDATE,
+                t0,
+            )
+        elif sec.type == "FiberSection2d":
+            var sec_index = fiber_section_index_by_id[elem_section_ids[e]]
+            if sec_index < 0 or sec_index >= len(fiber_section_defs):
+                abort("zeroLengthSection fiber section not found")
+            ref sec_def = fiber_section_defs[sec_index]
+            if elem_state_count != sec_def.fiber_count:
+                abort("zeroLengthSection fiber state count mismatch")
+            _profile_scope_open(
+                do_profile,
+                events,
+                events_need_comma,
+                frame_assemble_fiber,
+                t0,
+            )
+            _profile_scope_open(
+                do_profile,
+                events,
+                events_need_comma,
+                PROFILE_FRAME_ASSEMBLE_FIBER_SECTION_RESPONSE,
+                t0,
+            )
+            var resp = fiber_section2d_set_trial_from_offset(
+                sec_def,
+                uniaxial_states,
+                elem_offset,
+                elem_state_count,
+                delta_axial,
+                delta_curv,
+            )
+            _profile_scope_close(
+                do_profile,
+                events,
+                events_need_comma,
+                PROFILE_FRAME_ASSEMBLE_FIBER_SECTION_RESPONSE,
+                t0,
+            )
+            _profile_scope_close(
+                do_profile,
+                events,
+                events_need_comma,
+                frame_assemble_fiber,
+                t0,
+            )
+            axial_force = resp.axial_force
+            moment_z = resp.moment_z
+            k11 = resp.k11
+            k12 = resp.k12
+            k22 = resp.k22
+        else:
+            abort(
+                "zeroLengthSection requires FiberSection2d, ElasticSection2d, or AggregatorSection2d"
+            )
+        var k_global = [
+            [k11, 0.0, k12, -k11, 0.0, -k12],
+            [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            [k12, 0.0, k22, -k12, 0.0, -k22],
+            [-k11, 0.0, -k12, k11, 0.0, k12],
+            [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            [-k12, 0.0, -k22, k12, 0.0, k22],
+        ]
+        _profile_scope_open(
+            do_profile,
+            events,
+            events_need_comma,
+            PROFILE_FRAME_ASSEMBLE_FIBER_MATRIX_SCATTER,
+            t0,
+        )
+        add_element_matrix_from_pool(backend, elem_free_pool, free_offset, 6, k_global)
+        _profile_scope_close(
+            do_profile,
+            events,
+            events_need_comma,
+            PROFILE_FRAME_ASSEMBLE_FIBER_MATRIX_SCATTER,
+            t0,
+        )
+        _profile_scope_open(
+            do_profile,
+            events,
+            events_need_comma,
+            PROFILE_FRAME_ASSEMBLE_FIBER_INTERNAL_FORCE,
+            t0,
+        )
+        F_int[u1] -= axial_force
+        F_int[r1] -= moment_z
+        F_int[u2] += axial_force
+        F_int[r2] += moment_z
+        _profile_scope_close(
+            do_profile,
+            events,
+            events_need_comma,
+            PROFILE_FRAME_ASSEMBLE_FIBER_INTERNAL_FORCE,
+            t0,
+        )
+        if runtime_metrics.enabled:
+            _profile_metrics_note_element_timing(
+                runtime_metrics,
+                ElementTypeTag.ZeroLengthSection,
+                Int(perf_counter_ns()) - t_elem_start,
+            )
+
+    _assemble_surface_native_soa_indices(
+        quad_elem_indices,
+        shell_elem_indices,
+        node_x,
+        node_y,
+        node_z,
+        elem_dof_offsets,
+        elem_dof_pool,
+        elem_free_offsets,
+        elem_free_pool,
+        elem_node_offsets,
+        elem_node_pool,
+        elem_primary_material_ids,
+        elem_section_ids,
+        elem_thickness,
+        materials_by_id,
+        sections_by_id,
+        u,
+        backend,
         F_int,
         runtime_metrics,
     )

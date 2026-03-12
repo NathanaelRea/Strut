@@ -11,6 +11,7 @@ from python import Python
 
 from solver.assembly import (
     assemble_global_stiffness_banded_frame2d_soa,
+    assemble_global_stiffness_and_internal_native_soa,
     assemble_global_stiffness_and_internal_soa,
 )
 from solver.banded import banded_gaussian_elimination, estimate_bandwidth_typed
@@ -29,8 +30,10 @@ from solver.run_case.input_types import (
 from solver.run_case.linear_solver_backend import (
     LinearSolverBackend,
     clear,
-    factorize,
+    factorize_loaded,
+    factorize_from_full_matrix,
     initialize_structure,
+    initialize_symbolic_from_element_free_map,
     solve,
 )
 from solver.run_case.helpers import (
@@ -177,6 +180,20 @@ fn run_static_linear(
     var use_typed_banded = False
     var K_ff_banded: List[List[Float64]] = []
     var K: List[List[Float64]] = []
+    var use_native_backend_assembly = (
+        not has_transformation_mpc
+        and (
+            analysis.system_tag == AnalysisSystemTag.FullGeneral
+        or analysis.system_tag == AnalysisSystemTag.BandGeneral
+        or analysis.system_tag == AnalysisSystemTag.BandSPD
+        or analysis.system_tag == AnalysisSystemTag.ProfileSPD
+        or analysis.system_tag == AnalysisSystemTag.SuperLU
+        or analysis.system_tag == AnalysisSystemTag.UmfPack
+        or analysis.system_tag == AnalysisSystemTag.SparseSYM
+        )
+    )
+    var backend = LinearSolverBackend()
+    var use_native_backend_solver = False
     var F_int_dummy: List[Float64] = []
     F_int_dummy.resize(total_dofs, 0.0)
     var use_bandgeneral_banded = (
@@ -241,7 +258,82 @@ fn run_static_linear(
                 asm_u_elem6,
                 asm_f_dummy,
             )
-    if not (use_bandgeneral_banded and use_typed_banded):
+    if use_bandgeneral_banded and use_typed_banded:
+        use_native_backend_assembly = False
+    if use_native_backend_assembly:
+        initialize_structure(backend, analysis, free_count)
+        initialize_symbolic_from_element_free_map(backend, elem_free_offsets, elem_free_pool)
+        assemble_global_stiffness_and_internal_native_soa(
+            typed_nodes,
+            typed_elements,
+            node_x,
+            node_y,
+            node_z,
+            elem_dof_offsets,
+            elem_dof_pool,
+            elem_free_offsets,
+            elem_free_pool,
+            elem_node_offsets,
+            elem_node_pool,
+            elem_primary_material_ids,
+            elem_type_tags,
+            elem_geom_tags,
+            elem_section_ids,
+            elem_integration_tags,
+            elem_num_int_pts,
+            elem_area,
+            elem_thickness,
+            frame2d_elem_indices,
+            frame3d_elem_indices,
+            truss_elem_indices,
+            zero_length_elem_indices,
+            two_node_link_elem_indices,
+            zero_length_section_elem_indices,
+            quad_elem_indices,
+            shell_elem_indices,
+            active_element_load_state.element_loads,
+            active_element_load_state.elem_load_offsets,
+            active_element_load_state.elem_load_pool,
+            1.0,
+            typed_sections_by_id,
+            typed_materials_by_id,
+            id_to_index,
+            node_count,
+            ndf,
+            ndm,
+            u,
+            uniaxial_defs,
+            uniaxial_state_defs,
+            uniaxial_states,
+            elem_uniaxial_offsets,
+            elem_uniaxial_counts,
+            elem_uniaxial_state_ids,
+            force_basic_offsets,
+            force_basic_counts,
+            force_basic_q,
+            fiber_section_defs,
+            fiber_section_cells,
+            fiber_section_index_by_id,
+            fiber_section3d_defs,
+            fiber_section3d_cells,
+            fiber_section3d_index_by_id,
+            force_beam_column2d_scratch,
+            force_beam_column3d_scratch,
+            asm_dof_map6,
+            asm_dof_map12,
+            asm_u_elem6,
+            backend,
+            F_int_dummy,
+            do_profile,
+            t0,
+            events,
+            events_need_comma,
+            frame_assemble_uniaxial,
+            frame_assemble_fiber,
+            runtime_metrics,
+        )
+        use_native_backend_solver = True
+    elif not (use_bandgeneral_banded and use_typed_banded):
         for _ in range(total_dofs):
             var row: List[Float64] = []
             row.resize(total_dofs, 0.0)
@@ -330,17 +422,10 @@ fn run_static_linear(
         _append_event(
             events, events_need_comma, "O", frame_kff_extract, kff_start_us
         )
-    var K_ff: List[List[Float64]] = []
-    if not (use_bandgeneral_banded and use_typed_banded):
-        for _ in range(free_count):
-            var row: List[Float64] = []
-            row.resize(free_count, 0.0)
-            K_ff.append(row^)
+    if use_native_backend_solver or not (use_bandgeneral_banded and use_typed_banded):
         for i in range(free_count):
             var row_i = free[i]
             F_f[i] = F_active[row_i] - F_int_dummy[row_i]
-            for j in range(free_count):
-                K_ff[i][j] = K[row_i][free[j]]
     else:
         for i in range(free_count):
             F_f[i] = F_active[free[i]]
@@ -359,10 +444,14 @@ fn run_static_linear(
         if runtime_metrics.enabled:
             runtime_metrics.tangent_factorizations += 1
         u_f = banded_gaussian_elimination(K_ff_banded, bw, F_f)
+    elif use_native_backend_solver:
+        factorize_loaded(backend, runtime_metrics)
+        solve(backend, F_f, u_f)
+        clear(backend)
     else:
-        var backend = LinearSolverBackend()
         initialize_structure(backend, analysis, free_count)
-        factorize(backend, K_ff, runtime_metrics)
+        initialize_symbolic_from_element_free_map(backend, elem_free_offsets, elem_free_pool)
+        factorize_from_full_matrix(backend, K, free, runtime_metrics)
         solve(backend, F_f, u_f)
         clear(backend)
     if do_profile:

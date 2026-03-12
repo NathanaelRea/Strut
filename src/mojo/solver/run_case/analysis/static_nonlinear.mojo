@@ -13,11 +13,14 @@ from python import Python
 from solver.run_case.linear_solver_backend import (
     LinearSolverBackend,
     clear,
+    initialize_symbolic_from_element_dof_map,
     initialize_structure,
+    refactor_loaded_if_needed,
     refactor_if_needed,
     solve,
 )
 from solver.assembly import (
+    assemble_global_stiffness_and_internal_native_soa,
     assemble_global_stiffness_and_internal_soa,
     assemble_internal_forces_typed_soa,
 )
@@ -74,7 +77,6 @@ from solver.run_case.helpers import (
     _format_values_line,
     _has_recorder_type,
     _section_response_for_recorder,
-    _solve_linear_system,
     _sync_force_beam_column2d_committed_basic_states,
     _update_envelope,
 )
@@ -154,6 +156,98 @@ fn _copy_vector(src: List[Float64], count: Int) -> List[Float64]:
     return dst^
 
 
+@always_inline
+fn _dense_flat_index(size: Int, row: Int, col: Int) -> Int:
+    return row * size + col
+
+
+fn _ensure_dense_flat_storage(mut values: List[Float64], size: Int):
+    var count = size * size
+    if len(values) != count:
+        values.resize(count, 0.0)
+
+
+fn _load_displacement_control_augmented_dense_flat(
+    mut matrix_flat: List[Float64],
+    K_ff: List[List[Float64]],
+    load_column_free: List[Float64],
+    control_free: Int,
+):
+    var free_count = len(load_column_free)
+    var aug_size = free_count + 1
+    _ensure_dense_flat_storage(matrix_flat, aug_size)
+    for i in range(aug_size * aug_size):
+        matrix_flat[i] = 0.0
+    for i in range(free_count):
+        for j in range(free_count):
+            matrix_flat[_dense_flat_index(aug_size, i, j)] = K_ff[i][j]
+        matrix_flat[_dense_flat_index(aug_size, i, free_count)] = load_column_free[i]
+    matrix_flat[_dense_flat_index(aug_size, free_count, control_free)] = 1.0
+
+
+fn _solve_linear_system_dense_flat(
+    matrix_flat: List[Float64],
+    rhs: List[Float64],
+    mut solution_out: List[Float64],
+    mut factor_work: List[Float64],
+    mut rhs_work: List[Float64],
+) -> Bool:
+    var n = len(rhs)
+    if len(matrix_flat) != n * n:
+        return False
+    solution_out.resize(n, 0.0)
+    _ensure_dense_flat_storage(factor_work, n)
+    rhs_work.resize(n, 0.0)
+    for i in range(n * n):
+        factor_work[i] = matrix_flat[i]
+    for i in range(n):
+        rhs_work[i] = rhs[i]
+
+    var eps = 1.0e-18
+    for i in range(n):
+        var pivot = i
+        var max_val = abs(factor_work[_dense_flat_index(n, i, i)])
+        for row in range(i + 1, n):
+            var candidate = abs(factor_work[_dense_flat_index(n, row, i)])
+            if candidate > max_val:
+                max_val = candidate
+                pivot = row
+        if max_val <= eps:
+            return False
+        if pivot != i:
+            var pivot_base = pivot * n
+            var row_base = i * n
+            for col in range(n):
+                var tmp = factor_work[row_base + col]
+                factor_work[row_base + col] = factor_work[pivot_base + col]
+                factor_work[pivot_base + col] = tmp
+            var rhs_tmp = rhs_work[i]
+            rhs_work[i] = rhs_work[pivot]
+            rhs_work[pivot] = rhs_tmp
+
+        var piv = factor_work[_dense_flat_index(n, i, i)]
+        for j in range(i, n):
+            factor_work[_dense_flat_index(n, i, j)] /= piv
+        rhs_work[i] /= piv
+
+        for row in range(i + 1, n):
+            var factor = factor_work[_dense_flat_index(n, row, i)]
+            if factor == 0.0:
+                continue
+            for col in range(i, n):
+                factor_work[_dense_flat_index(n, row, col)] -= (
+                    factor * factor_work[_dense_flat_index(n, i, col)]
+                )
+            rhs_work[row] -= factor * rhs_work[i]
+
+    for i in range(n - 1, -1, -1):
+        var sum = rhs_work[i]
+        for j in range(i + 1, n):
+            sum -= factor_work[_dense_flat_index(n, i, j)] * solution_out[j]
+        solution_out[i] = sum
+    return True
+
+
 fn _broyden_update_direction(
     mut du: List[Float64],
     history_s: List[List[Float64]],
@@ -185,6 +279,35 @@ fn _broyden_update_direction(
                 ((history_s[current_pair][j] + current_z[j]) * current_sdotdu)
                 / current_p
             )
+
+
+fn _solve_displacement_control_augmented_from_factorized_backend(
+    mut backend: LinearSolverBackend,
+    rhs_free: List[Float64],
+    load_column_free: List[Float64],
+    control_free: Int,
+    disp_constraint_rhs: Float64,
+    mut solution_aug: List[Float64],
+    mut rhs_solve: List[Float64],
+    mut load_solve: List[Float64],
+) -> Bool:
+    var free_count = len(rhs_free)
+    if len(load_column_free) != free_count:
+        abort("DisplacementControl load column size mismatch")
+    if control_free < 0 or control_free >= free_count:
+        abort("DisplacementControl control free index out of range")
+    solve(backend, rhs_free, rhs_solve)
+    solve(backend, load_column_free, load_solve)
+    var denom = load_solve[control_free]
+    if abs(denom) <= 1.0e-14:
+        return False
+    var delta_lambda = (rhs_solve[control_free] - disp_constraint_rhs) / denom
+    if len(solution_aug) != free_count + 1:
+        solution_aug.resize(free_count + 1, 0.0)
+    for i in range(free_count):
+        solution_aug[i] = rhs_solve[i] - load_solve[i] * delta_lambda
+    solution_aug[free_count] = delta_lambda
+    return True
 
 
 fn _static_load_control_residual(
@@ -803,10 +926,31 @@ fn run_static_nonlinear_load_control(
     var K_ff: List[List[Float64]] = []
     var K_init_ff: List[List[Float64]] = []
     var backend = LinearSolverBackend()
+    var native_direct_backend_available = (
+        not has_transformation_mpc
+        and not use_banded_loadcontrol
+        and (
+            analysis.system_tag == AnalysisSystemTag.FullGeneral
+            or analysis.system_tag == AnalysisSystemTag.BandGeneral
+            or analysis.system_tag == AnalysisSystemTag.BandSPD
+            or analysis.system_tag == AnalysisSystemTag.ProfileSPD
+            or analysis.system_tag == AnalysisSystemTag.SuperLU
+            or analysis.system_tag == AnalysisSystemTag.UmfPack
+            or analysis.system_tag == AnalysisSystemTag.SparseSYM
+        )
+    )
+    var elem_free_pool_native: List[Int] = []
+    if native_direct_backend_available:
+        elem_free_pool_native.resize(len(elem_dof_pool), -1)
+        for i in range(len(elem_dof_pool)):
+            var dof = elem_dof_pool[i]
+            if dof >= 0 and dof < len(free_index):
+                elem_free_pool_native[i] = free_index[dof]
     var lu_rhs: List[Float64] = []
     var u_f_work: List[Float64] = []
     if not use_banded_loadcontrol:
         initialize_structure(backend, analysis, free_count)
+        initialize_symbolic_from_element_dof_map(backend, elem_dof_offsets, elem_dof_pool, free_index)
         for _ in range(free_count):
             var row_ff: List[Float64] = []
             row_ff.resize(free_count, 0.0)
@@ -1088,102 +1232,6 @@ fn run_static_nonlinear_load_control(
                         frame_nonlinear_iter,
                         iter_start_us,
                     )
-                if do_profile:
-                    var t_asm_start = Int(time.perf_counter_ns())
-                    var asm_start_us = (t_asm_start - t0) // 1000
-                    _append_event(
-                        events,
-                        events_need_comma,
-                        "O",
-                        frame_assemble_stiffness,
-                        asm_start_us,
-                    )
-                assemble_global_stiffness_and_internal_soa(
-                    typed_nodes,
-                    typed_elements,
-                    node_x,
-                    node_y,
-                    node_z,
-                    elem_dof_offsets,
-                    elem_dof_pool,
-                    elem_node_offsets,
-                    elem_node_pool,
-                    elem_primary_material_ids,
-                    elem_type_tags,
-                    elem_geom_tags,
-                    elem_section_ids,
-                    elem_integration_tags,
-                    elem_num_int_pts,
-                    elem_area,
-                    elem_thickness,
-                    frame2d_elem_indices,
-                    frame3d_elem_indices,
-                    truss_elem_indices,
-                    zero_length_elem_indices,
-                    two_node_link_elem_indices,
-                    zero_length_section_elem_indices,
-                    quad_elem_indices,
-                    shell_elem_indices,
-                    active_element_load_state.element_loads,
-                    active_element_load_state.elem_load_offsets,
-                    active_element_load_state.elem_load_pool,
-                    1.0,
-                    typed_sections_by_id,
-                    typed_materials_by_id,
-                    id_to_index,
-                    node_count,
-                    ndf,
-                    ndm,
-                    u,
-                    uniaxial_defs,
-                    uniaxial_state_defs,
-                    uniaxial_states,
-                    elem_uniaxial_offsets,
-                    elem_uniaxial_counts,
-                    elem_uniaxial_state_ids,
-                    force_basic_offsets,
-                    force_basic_counts,
-                    force_basic_q,
-                    fiber_section_defs,
-                    fiber_section_cells,
-                    fiber_section_index_by_id,
-                    fiber_section3d_defs,
-                    fiber_section3d_cells,
-                    fiber_section3d_index_by_id,
-                    force_beam_column2d_scratch,
-                    force_beam_column3d_scratch,
-                    asm_dof_map6,
-                    asm_dof_map12,
-                    asm_u_elem6,
-                    K,
-                    F_int,
-                    do_profile,
-                    t0,
-                    events,
-                    events_need_comma,
-                    frame_assemble_uniaxial,
-                    frame_assemble_fiber,
-                    runtime_metrics,
-                )
-                if has_transformation_mpc:
-                    K = _collapse_matrix_by_rep(K, rep_dof)
-                    F_int = _collapse_vector_by_rep(F_int, rep_dof)
-                if do_profile:
-                    var t_asm_end = Int(time.perf_counter_ns())
-                    var asm_end_us = (t_asm_end - t0) // 1000
-                    _append_event(
-                        events,
-                        events_need_comma,
-                        "C",
-                        frame_assemble_stiffness,
-                        asm_end_us,
-                    )
-                if do_profile:
-                    var t_kff_start = Int(time.perf_counter_ns())
-                    var kff_start_us = (t_kff_start - t0) // 1000
-                    _append_event(
-                        events, events_need_comma, "O", frame_kff_extract, kff_start_us
-                    )
                 var broyden_refresh_interval = _default_broyden_count(
                     attempt_broyden_count
                 )
@@ -1201,6 +1249,180 @@ fn run_static_nonlinear_load_control(
                     refresh_tangent = not tangent_initialized
                 else:
                     refresh_tangent = not tangent_initialized
+                var use_native_direct_solve = (
+                    native_direct_backend_available
+                    and attempt_algorithm_mode != NonlinearAlgorithmMode.ModifiedNewtonInitial
+                )
+                var use_native_tangent_assembly = (
+                    use_native_direct_solve and refresh_tangent
+                )
+                if do_profile:
+                    var t_asm_start = Int(time.perf_counter_ns())
+                    var asm_start_us = (t_asm_start - t0) // 1000
+                    _append_event(
+                        events,
+                        events_need_comma,
+                        "O",
+                        frame_assemble_stiffness,
+                        asm_start_us,
+                    )
+                if use_native_tangent_assembly:
+                    assemble_global_stiffness_and_internal_native_soa(
+                        typed_nodes,
+                        typed_elements,
+                        node_x,
+                        node_y,
+                        node_z,
+                        elem_dof_offsets,
+                        elem_dof_pool,
+                        elem_dof_offsets,
+                        elem_free_pool_native,
+                        elem_node_offsets,
+                        elem_node_pool,
+                        elem_primary_material_ids,
+                        elem_type_tags,
+                        elem_geom_tags,
+                        elem_section_ids,
+                        elem_integration_tags,
+                        elem_num_int_pts,
+                        elem_area,
+                        elem_thickness,
+                        frame2d_elem_indices,
+                        frame3d_elem_indices,
+                        truss_elem_indices,
+                        zero_length_elem_indices,
+                        two_node_link_elem_indices,
+                        zero_length_section_elem_indices,
+                        quad_elem_indices,
+                        shell_elem_indices,
+                        active_element_load_state.element_loads,
+                        active_element_load_state.elem_load_offsets,
+                        active_element_load_state.elem_load_pool,
+                        1.0,
+                        typed_sections_by_id,
+                        typed_materials_by_id,
+                        id_to_index,
+                        node_count,
+                        ndf,
+                        ndm,
+                        u,
+                        uniaxial_defs,
+                        uniaxial_state_defs,
+                        uniaxial_states,
+                        elem_uniaxial_offsets,
+                        elem_uniaxial_counts,
+                        elem_uniaxial_state_ids,
+                        force_basic_offsets,
+                        force_basic_counts,
+                        force_basic_q,
+                        fiber_section_defs,
+                        fiber_section_cells,
+                        fiber_section_index_by_id,
+                        fiber_section3d_defs,
+                        fiber_section3d_cells,
+                        fiber_section3d_index_by_id,
+                        force_beam_column2d_scratch,
+                        force_beam_column3d_scratch,
+                        asm_dof_map6,
+                        asm_dof_map12,
+                        asm_u_elem6,
+                        backend,
+                        F_int,
+                        do_profile,
+                        t0,
+                        events,
+                        events_need_comma,
+                        frame_assemble_uniaxial,
+                        frame_assemble_fiber,
+                        runtime_metrics,
+                    )
+                else:
+                    assemble_global_stiffness_and_internal_soa(
+                        typed_nodes,
+                        typed_elements,
+                        node_x,
+                        node_y,
+                        node_z,
+                        elem_dof_offsets,
+                        elem_dof_pool,
+                        elem_node_offsets,
+                        elem_node_pool,
+                        elem_primary_material_ids,
+                        elem_type_tags,
+                        elem_geom_tags,
+                        elem_section_ids,
+                        elem_integration_tags,
+                        elem_num_int_pts,
+                        elem_area,
+                        elem_thickness,
+                        frame2d_elem_indices,
+                        frame3d_elem_indices,
+                        truss_elem_indices,
+                        zero_length_elem_indices,
+                        two_node_link_elem_indices,
+                        zero_length_section_elem_indices,
+                        quad_elem_indices,
+                        shell_elem_indices,
+                        active_element_load_state.element_loads,
+                        active_element_load_state.elem_load_offsets,
+                        active_element_load_state.elem_load_pool,
+                        1.0,
+                        typed_sections_by_id,
+                        typed_materials_by_id,
+                        id_to_index,
+                        node_count,
+                        ndf,
+                        ndm,
+                        u,
+                        uniaxial_defs,
+                        uniaxial_state_defs,
+                        uniaxial_states,
+                        elem_uniaxial_offsets,
+                        elem_uniaxial_counts,
+                        elem_uniaxial_state_ids,
+                        force_basic_offsets,
+                        force_basic_counts,
+                        force_basic_q,
+                        fiber_section_defs,
+                        fiber_section_cells,
+                        fiber_section_index_by_id,
+                        fiber_section3d_defs,
+                        fiber_section3d_cells,
+                        fiber_section3d_index_by_id,
+                        force_beam_column2d_scratch,
+                        force_beam_column3d_scratch,
+                        asm_dof_map6,
+                        asm_dof_map12,
+                        asm_u_elem6,
+                        K,
+                        F_int,
+                        do_profile,
+                        t0,
+                        events,
+                        events_need_comma,
+                        frame_assemble_uniaxial,
+                        frame_assemble_fiber,
+                        runtime_metrics,
+                    )
+                    if has_transformation_mpc:
+                        K = _collapse_matrix_by_rep(K, rep_dof)
+                        F_int = _collapse_vector_by_rep(F_int, rep_dof)
+                if do_profile:
+                    var t_asm_end = Int(time.perf_counter_ns())
+                    var asm_end_us = (t_asm_end - t0) // 1000
+                    _append_event(
+                        events,
+                        events_need_comma,
+                        "C",
+                        frame_assemble_stiffness,
+                        asm_end_us,
+                    )
+                if do_profile:
+                    var t_kff_start = Int(time.perf_counter_ns())
+                    var kff_start_us = (t_kff_start - t0) // 1000
+                    _append_event(
+                        events, events_need_comma, "O", frame_kff_extract, kff_start_us
+                    )
                 if use_banded_loadcontrol:
                     if refresh_tangent:
                         var width = bw_nl * 2 + 1
@@ -1227,8 +1449,9 @@ fn run_static_nonlinear_load_control(
                             for i in range(free_count):
                                 var row_i = free[i]
                                 F_f[i] = F_step[row_i] - F_int[row_i]
-                                for j in range(free_count):
-                                    K_ff[i][j] = K[row_i][free[j]]
+                                if not use_native_direct_solve:
+                                    for j in range(free_count):
+                                        K_ff[i][j] = K[row_i][free[j]]
                             tangent_initialized = True
                             tangent_factored = False
                         else:
@@ -1239,8 +1462,9 @@ fn run_static_nonlinear_load_control(
                             for i in range(free_count):
                                 var row_i = free[i]
                                 F_f[i] = F_step[row_i] - F_int[row_i]
-                                for j in range(free_count):
-                                    K_ff[i][j] = K[row_i][free[j]]
+                                if not use_native_direct_solve:
+                                    for j in range(free_count):
+                                        K_ff[i][j] = K[row_i][free[j]]
                             tangent_initialized = True
                             tangent_factored = False
                         else:
@@ -1306,9 +1530,14 @@ fn run_static_nonlinear_load_control(
                         and attempt_algorithm_tag != AnalysisAlgorithmTag.Broyden
                     )
                     var force_refactor = direct_newton_solve or not tangent_factored
-                    _ = refactor_if_needed(
-                        backend, K_ff, refresh_tangent, runtime_metrics, force_refactor
-                    )
+                    if use_native_direct_solve:
+                        _ = refactor_loaded_if_needed(
+                            backend, refresh_tangent, runtime_metrics, force_refactor
+                        )
+                    else:
+                        _ = refactor_if_needed(
+                            backend, K_ff, refresh_tangent, runtime_metrics, force_refactor
+                        )
                     tangent_factored = True
                     for i in range(free_count):
                         lu_rhs[i] = F_f[i]
@@ -2246,6 +2475,34 @@ fn run_static_nonlinear_displacement_control(
         var row_kinit: List[Float64] = []
         row_kinit.resize(free_count, 0.0)
         K_init_ff.append(row_kinit^)
+    var backend = LinearSolverBackend()
+    var native_direct_backend_available = (
+        not has_transformation_mpc
+        and (
+            analysis.system_tag == AnalysisSystemTag.FullGeneral
+            or analysis.system_tag == AnalysisSystemTag.BandGeneral
+            or analysis.system_tag == AnalysisSystemTag.BandSPD
+            or analysis.system_tag == AnalysisSystemTag.ProfileSPD
+            or analysis.system_tag == AnalysisSystemTag.SuperLU
+            or analysis.system_tag == AnalysisSystemTag.UmfPack
+            or analysis.system_tag == AnalysisSystemTag.SparseSYM
+        )
+    )
+    var free_index_native: List[Int] = []
+    free_index_native.resize(total_dofs, -1)
+    var elem_free_pool_native: List[Int] = []
+    if native_direct_backend_available:
+        for i in range(free_count):
+            free_index_native[free[i]] = i
+        elem_free_pool_native.resize(len(elem_dof_pool), -1)
+        for i in range(len(elem_dof_pool)):
+            var dof = elem_dof_pool[i]
+            if dof >= 0 and dof < total_dofs:
+                elem_free_pool_native[i] = free_index_native[dof]
+        initialize_structure(backend, analysis, free_count)
+        initialize_symbolic_from_element_dof_map(
+            backend, elem_dof_offsets, elem_dof_pool, free_index_native
+        )
 
     var load_scale_derivative = 1.0
     if ts_index >= 0:
@@ -2350,15 +2607,24 @@ fn run_static_nonlinear_displacement_control(
     var R_f: List[Float64] = []
     R_f.resize(free_count, 0.0)
     var aug_size = free_count + 1
-    var K_aug: List[List[Float64]] = []
-    for _ in range(aug_size):
-        var row_aug: List[Float64] = []
-        row_aug.resize(aug_size, 0.0)
-        K_aug.append(row_aug^)
+    var K_aug_flat: List[Float64] = []
+    K_aug_flat.resize(aug_size * aug_size, 0.0)
+    var K_aug_factor_flat: List[Float64] = []
+    K_aug_factor_flat.resize(aug_size * aug_size, 0.0)
     var rhs_aug: List[Float64] = []
     rhs_aug.resize(aug_size, 0.0)
+    var rhs_aug_work: List[Float64] = []
+    rhs_aug_work.resize(aug_size, 0.0)
     var sol_aug: List[Float64] = []
     sol_aug.resize(aug_size, 0.0)
+    var aug_load_column_free: List[Float64] = []
+    aug_load_column_free.resize(free_count, 0.0)
+    for i in range(free_count):
+        aug_load_column_free[i] = -load_scale_derivative * F_pattern_free[i]
+    var aug_rhs_solve: List[Float64] = []
+    aug_rhs_solve.resize(free_count, 0.0)
+    var aug_load_solve: List[Float64] = []
+    aug_load_solve.resize(free_count, 0.0)
     var has_reaction_recorder = _has_recorder_type(recorders, RecorderTypeTag.NodeReaction)
     var envelope_files: List[String] = []
     var envelope_min: List[List[Float64]] = []
@@ -2568,6 +2834,7 @@ fn run_static_nonlinear_displacement_control(
                         attempt_broyden_count = retry_broyden_counts[attempt]
 
                     var tangent_initialized = False
+                    var tangent_factored = False
                     var broyden_history_s: List[List[Float64]] = []
                     var broyden_history_z: List[List[Float64]] = []
                     var broyden_prev_residual: List[Float64] = []
@@ -2585,6 +2852,35 @@ fn run_static_nonlinear_displacement_control(
                                 frame_nonlinear_iter,
                                 iter_start_us,
                             )
+                        var broyden_refresh_interval = _default_broyden_count(
+                            attempt_broyden_count
+                        )
+                        var refresh_tangent: Bool
+                        if attempt_algorithm_mode == NonlinearAlgorithmMode.Newton:
+                            if attempt_algorithm_tag == AnalysisAlgorithmTag.Broyden:
+                                refresh_tangent = (
+                                    not tangent_initialized
+                                    or broyden_refresh_interval <= 1
+                                    or len(broyden_history_s) >= broyden_refresh_interval
+                                )
+                            else:
+                                refresh_tangent = True
+                        elif attempt_algorithm_mode == NonlinearAlgorithmMode.ModifiedNewton:
+                            refresh_tangent = not tangent_initialized
+                        else:
+                            refresh_tangent = not tangent_initialized
+                        var use_native_direct_solve = (
+                            native_direct_backend_available
+                        )
+                        var use_native_tangent_assembly = (
+                            use_native_direct_solve
+                            and refresh_tangent
+                            and attempt_algorithm_mode
+                                != NonlinearAlgorithmMode.ModifiedNewtonInitial
+                        )
+                        var use_native_internal_force_only = (
+                            use_native_direct_solve and not use_native_tangent_assembly
+                        )
                         if do_profile:
                             var t_asm_start = Int(time.perf_counter_ns())
                             var asm_start_us = (t_asm_start - t0) // 1000
@@ -2625,76 +2921,203 @@ fn run_static_nonlinear_displacement_control(
                                 PROFILE_FRAME_UNIAXIAL_COPY_RESET,
                                 (t_reset_end - t0) // 1000,
                             )
-                        assemble_global_stiffness_and_internal_soa(
-                            typed_nodes,
-                            typed_elements,
-                            node_x,
-                            node_y,
-                            node_z,
-                            elem_dof_offsets,
-                            elem_dof_pool,
-                            elem_node_offsets,
-                            elem_node_pool,
-                            elem_primary_material_ids,
-                            elem_type_tags,
-                            elem_geom_tags,
-                            elem_section_ids,
-                            elem_integration_tags,
-                            elem_num_int_pts,
-                            elem_area,
-                            elem_thickness,
-                            frame2d_elem_indices,
-                            frame3d_elem_indices,
-                            truss_elem_indices,
-                            zero_length_elem_indices,
-                            two_node_link_elem_indices,
-                            zero_length_section_elem_indices,
-                            quad_elem_indices,
-                            shell_elem_indices,
-                            active_element_load_state.element_loads,
-                            active_element_load_state.elem_load_offsets,
-                            active_element_load_state.elem_load_pool,
-                            1.0,
-                            typed_sections_by_id,
-                            typed_materials_by_id,
-                            id_to_index,
-                            node_count,
-                            ndf,
-                            ndm,
-                            u,
-                            uniaxial_defs,
-                            uniaxial_state_defs,
-                            uniaxial_states,
-                            elem_uniaxial_offsets,
-                            elem_uniaxial_counts,
-                            elem_uniaxial_state_ids,
-                            force_basic_offsets,
-                            force_basic_counts,
-                            force_basic_q,
-                            fiber_section_defs,
-                            fiber_section_cells,
-                            fiber_section_index_by_id,
-                            fiber_section3d_defs,
-                            fiber_section3d_cells,
-                            fiber_section3d_index_by_id,
-                            force_beam_column2d_scratch,
-                            force_beam_column3d_scratch,
-                            asm_dof_map6,
-                            asm_dof_map12,
-                            asm_u_elem6,
-                            K,
-                            F_int,
-                            do_profile,
-                            t0,
-                            events,
-                            events_need_comma,
-                            frame_assemble_uniaxial,
-                            frame_assemble_fiber,
-                            runtime_metrics,
-                        )
-                        if has_transformation_mpc:
-                            K = _collapse_matrix_by_rep(K, rep_dof)
-                            F_int = _collapse_vector_by_rep(F_int, rep_dof)
+                        if use_native_tangent_assembly:
+                            assemble_global_stiffness_and_internal_native_soa(
+                                typed_nodes,
+                                typed_elements,
+                                node_x,
+                                node_y,
+                                node_z,
+                                elem_dof_offsets,
+                                elem_dof_pool,
+                                elem_dof_offsets,
+                                elem_free_pool_native,
+                                elem_node_offsets,
+                                elem_node_pool,
+                                elem_primary_material_ids,
+                                elem_type_tags,
+                                elem_geom_tags,
+                                elem_section_ids,
+                                elem_integration_tags,
+                                elem_num_int_pts,
+                                elem_area,
+                                elem_thickness,
+                                frame2d_elem_indices,
+                                frame3d_elem_indices,
+                                truss_elem_indices,
+                                zero_length_elem_indices,
+                                two_node_link_elem_indices,
+                                zero_length_section_elem_indices,
+                                quad_elem_indices,
+                                shell_elem_indices,
+                                active_element_load_state.element_loads,
+                                active_element_load_state.elem_load_offsets,
+                                active_element_load_state.elem_load_pool,
+                                1.0,
+                                typed_sections_by_id,
+                                typed_materials_by_id,
+                                id_to_index,
+                                node_count,
+                                ndf,
+                                ndm,
+                                u,
+                                uniaxial_defs,
+                                uniaxial_state_defs,
+                                uniaxial_states,
+                                elem_uniaxial_offsets,
+                                elem_uniaxial_counts,
+                                elem_uniaxial_state_ids,
+                                force_basic_offsets,
+                                force_basic_counts,
+                                force_basic_q,
+                                fiber_section_defs,
+                                fiber_section_cells,
+                                fiber_section_index_by_id,
+                                fiber_section3d_defs,
+                                fiber_section3d_cells,
+                                fiber_section3d_index_by_id,
+                                force_beam_column2d_scratch,
+                                force_beam_column3d_scratch,
+                                asm_dof_map6,
+                                asm_dof_map12,
+                                asm_u_elem6,
+                                backend,
+                                F_int,
+                                do_profile,
+                                t0,
+                                events,
+                                events_need_comma,
+                                frame_assemble_uniaxial,
+                                frame_assemble_fiber,
+                                runtime_metrics,
+                            )
+                        elif use_native_internal_force_only:
+                            F_int = assemble_internal_forces_typed_soa(
+                                typed_nodes,
+                                typed_elements,
+                                node_x,
+                                node_y,
+                                node_z,
+                                elem_dof_offsets,
+                                elem_dof_pool,
+                                elem_node_offsets,
+                                elem_node_pool,
+                                elem_primary_material_ids,
+                                elem_type_tags,
+                                elem_geom_tags,
+                                elem_section_ids,
+                                elem_integration_tags,
+                                elem_num_int_pts,
+                                elem_area,
+                                elem_thickness,
+                                frame2d_elem_indices,
+                                frame3d_elem_indices,
+                                truss_elem_indices,
+                                zero_length_elem_indices,
+                                two_node_link_elem_indices,
+                                zero_length_section_elem_indices,
+                                quad_elem_indices,
+                                shell_elem_indices,
+                                active_element_load_state.element_loads,
+                                active_element_load_state.elem_load_offsets,
+                                active_element_load_state.elem_load_pool,
+                                1.0,
+                                typed_sections_by_id,
+                                typed_materials_by_id,
+                                id_to_index,
+                                node_count,
+                                ndf,
+                                ndm,
+                                u,
+                                uniaxial_defs,
+                                uniaxial_state_defs,
+                                uniaxial_states,
+                                elem_uniaxial_offsets,
+                                elem_uniaxial_counts,
+                                elem_uniaxial_state_ids,
+                                force_basic_offsets,
+                                force_basic_counts,
+                                force_basic_q,
+                                fiber_section_defs,
+                                fiber_section_cells,
+                                fiber_section_index_by_id,
+                                fiber_section3d_defs,
+                                fiber_section3d_cells,
+                                fiber_section3d_index_by_id,
+                                force_beam_column2d_scratch,
+                                force_beam_column3d_scratch,
+                            )
+                        else:
+                            assemble_global_stiffness_and_internal_soa(
+                                typed_nodes,
+                                typed_elements,
+                                node_x,
+                                node_y,
+                                node_z,
+                                elem_dof_offsets,
+                                elem_dof_pool,
+                                elem_node_offsets,
+                                elem_node_pool,
+                                elem_primary_material_ids,
+                                elem_type_tags,
+                                elem_geom_tags,
+                                elem_section_ids,
+                                elem_integration_tags,
+                                elem_num_int_pts,
+                                elem_area,
+                                elem_thickness,
+                                frame2d_elem_indices,
+                                frame3d_elem_indices,
+                                truss_elem_indices,
+                                zero_length_elem_indices,
+                                two_node_link_elem_indices,
+                                zero_length_section_elem_indices,
+                                quad_elem_indices,
+                                shell_elem_indices,
+                                active_element_load_state.element_loads,
+                                active_element_load_state.elem_load_offsets,
+                                active_element_load_state.elem_load_pool,
+                                1.0,
+                                typed_sections_by_id,
+                                typed_materials_by_id,
+                                id_to_index,
+                                node_count,
+                                ndf,
+                                ndm,
+                                u,
+                                uniaxial_defs,
+                                uniaxial_state_defs,
+                                uniaxial_states,
+                                elem_uniaxial_offsets,
+                                elem_uniaxial_counts,
+                                elem_uniaxial_state_ids,
+                                force_basic_offsets,
+                                force_basic_counts,
+                                force_basic_q,
+                                fiber_section_defs,
+                                fiber_section_cells,
+                                fiber_section_index_by_id,
+                                fiber_section3d_defs,
+                                fiber_section3d_cells,
+                                fiber_section3d_index_by_id,
+                                force_beam_column2d_scratch,
+                                force_beam_column3d_scratch,
+                                asm_dof_map6,
+                                asm_dof_map12,
+                                asm_u_elem6,
+                                K,
+                                F_int,
+                                do_profile,
+                                t0,
+                                events,
+                                events_need_comma,
+                                frame_assemble_uniaxial,
+                                frame_assemble_fiber,
+                                runtime_metrics,
+                            )
+                            if has_transformation_mpc:
+                                K = _collapse_matrix_by_rep(K, rep_dof)
+                                F_int = _collapse_vector_by_rep(F_int, rep_dof)
                         if do_profile:
                             var t_asm_end = Int(time.perf_counter_ns())
                             var asm_end_us = (t_asm_end - t0) // 1000
@@ -2716,23 +3139,6 @@ fn run_static_nonlinear_displacement_control(
                                 frame_kff_extract,
                                 kff_start_us,
                             )
-                        var broyden_refresh_interval = _default_broyden_count(
-                            attempt_broyden_count
-                        )
-                        var refresh_tangent: Bool
-                        if attempt_algorithm_mode == NonlinearAlgorithmMode.Newton:
-                            if attempt_algorithm_tag == AnalysisAlgorithmTag.Broyden:
-                                refresh_tangent = (
-                                    not tangent_initialized
-                                    or broyden_refresh_interval <= 1
-                                    or len(broyden_history_s) >= broyden_refresh_interval
-                                )
-                            else:
-                                refresh_tangent = True
-                        elif attempt_algorithm_mode == NonlinearAlgorithmMode.ModifiedNewton:
-                            refresh_tangent = not tangent_initialized
-                        else:
-                            refresh_tangent = not tangent_initialized
                         var load_ext_scale = load_scale
                         if attempt_algorithm_mode == NonlinearAlgorithmMode.Newton:
                             if refresh_tangent:
@@ -2743,9 +3149,11 @@ fn run_static_nonlinear_displacement_control(
                                         + load_ext_scale * F_pattern_free[i]
                                         - F_int[row_i]
                                     )
-                                    for j in range(free_count):
-                                        K_ff[i][j] = K[row_i][free[j]]
+                                    if not use_native_direct_solve:
+                                        for j in range(free_count):
+                                            K_ff[i][j] = K[row_i][free[j]]
                                 tangent_initialized = True
+                                tangent_factored = False
                             else:
                                 for i in range(free_count):
                                     R_f[i] = (
@@ -2762,9 +3170,11 @@ fn run_static_nonlinear_displacement_control(
                                         + load_ext_scale * F_pattern_free[i]
                                         - F_int[row_i]
                                     )
-                                    for j in range(free_count):
-                                        K_ff[i][j] = K[row_i][free[j]]
+                                    if not use_native_direct_solve:
+                                        for j in range(free_count):
+                                            K_ff[i][j] = K[row_i][free[j]]
                                 tangent_initialized = True
+                                tangent_factored = False
                             else:
                                 for i in range(free_count):
                                     R_f[i] = (
@@ -2774,10 +3184,12 @@ fn run_static_nonlinear_displacement_control(
                                     )
                         else:
                             if not tangent_initialized:
-                                for i in range(free_count):
-                                    for j in range(free_count):
-                                        K_ff[i][j] = K_init_ff[i][j]
+                                if not use_native_direct_solve:
+                                    for i in range(free_count):
+                                        for j in range(free_count):
+                                            K_ff[i][j] = K_init_ff[i][j]
                                 tangent_initialized = True
+                                tangent_factored = False
                             for i in range(free_count):
                                 R_f[i] = (
                                     F_const_free[i]
@@ -2818,13 +3230,6 @@ fn run_static_nonlinear_displacement_control(
 
                         for i in range(free_count):
                             rhs_aug[i] = R_f[i]
-                            for j in range(free_count):
-                                K_aug[i][j] = K_ff[i][j]
-                            K_aug[i][free_count] = -load_scale_derivative * F_pattern_free[i]
-                        for j in range(free_count):
-                            K_aug[free_count][j] = 0.0
-                        K_aug[free_count][control_free] = 1.0
-                        K_aug[free_count][free_count] = 0.0
                         rhs_aug[free_count] = (
                             attempt_du - (u[control_idx] - u_base[control_idx])
                         )
@@ -2839,9 +3244,57 @@ fn run_static_nonlinear_displacement_control(
                                 frame_solve_nonlinear,
                                 solve_nl_start_us,
                             )
-                        var solved = _solve_linear_system(K_aug, rhs_aug, sol_aug)
-                        if runtime_metrics.enabled:
-                            runtime_metrics.tangent_factorizations += 1
+                        var solved: Bool
+                        if use_native_direct_solve:
+                            if attempt_algorithm_mode == NonlinearAlgorithmMode.ModifiedNewtonInitial:
+                                _ = refactor_if_needed(
+                                    backend,
+                                    K_init_ff,
+                                    not tangent_factored,
+                                    runtime_metrics,
+                                    False,
+                                )
+                            else:
+                                var direct_newton_solve = (
+                                    attempt_algorithm_mode == NonlinearAlgorithmMode.Newton
+                                    and attempt_algorithm_tag
+                                        != AnalysisAlgorithmTag.Broyden
+                                )
+                                var force_refactor = direct_newton_solve or not tangent_factored
+                                _ = refactor_loaded_if_needed(
+                                    backend,
+                                    refresh_tangent,
+                                    runtime_metrics,
+                                    force_refactor,
+                                )
+                            tangent_factored = True
+                            solved = _solve_displacement_control_augmented_from_factorized_backend(
+                                backend,
+                                R_f,
+                                aug_load_column_free,
+                                control_free,
+                                rhs_aug[free_count],
+                                sol_aug,
+                                aug_rhs_solve,
+                                aug_load_solve,
+                            )
+                        else:
+                            if refresh_tangent:
+                                _load_displacement_control_augmented_dense_flat(
+                                    K_aug_flat,
+                                    K_ff,
+                                    aug_load_column_free,
+                                    control_free,
+                                )
+                            solved = _solve_linear_system_dense_flat(
+                                K_aug_flat,
+                                rhs_aug,
+                                sol_aug,
+                                K_aug_factor_flat,
+                                rhs_aug_work,
+                            )
+                            if runtime_metrics.enabled:
+                                runtime_metrics.tangent_factorizations += 1
                         if do_profile:
                             var t_solve_nl_end = Int(time.perf_counter_ns())
                             var solve_nl_end_us = (t_solve_nl_end - t0) // 1000
@@ -2871,9 +3324,33 @@ fn run_static_nonlinear_displacement_control(
                                     )
                                 var z_aug: List[Float64] = []
                                 z_aug.resize(free_count + 1, 0.0)
-                                var z_ok = _solve_linear_system(
-                                    K_aug, delta_residual_aug, z_aug
-                                )
+                                var z_ok: Bool
+                                if use_native_direct_solve:
+                                    z_ok = _solve_displacement_control_augmented_from_factorized_backend(
+                                        backend,
+                                        delta_residual_aug,
+                                        aug_load_column_free,
+                                        control_free,
+                                        delta_residual_aug[free_count],
+                                        z_aug,
+                                        aug_rhs_solve,
+                                        aug_load_solve,
+                                    )
+                                else:
+                                    if refresh_tangent:
+                                        _load_displacement_control_augmented_dense_flat(
+                                            K_aug_flat,
+                                            K_ff,
+                                            aug_load_column_free,
+                                            control_free,
+                                        )
+                                    z_ok = _solve_linear_system_dense_flat(
+                                        K_aug_flat,
+                                        delta_residual_aug,
+                                        z_aug,
+                                        K_aug_factor_flat,
+                                        rhs_aug_work,
+                                    )
                                 if z_ok:
                                     _broyden_update_direction(
                                         sol_aug,

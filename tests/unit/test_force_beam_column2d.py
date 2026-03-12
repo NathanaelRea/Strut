@@ -293,6 +293,56 @@ def test_force_beam_column2d_displacement_control_uses_static_fallback_controls(
     assert rows[0][1] * rows[1][1] < 0.0
 
 
+def test_force_beam_column2d_displacement_control_broyden_matches_newton_on_elastic_case():
+    base_case = _base_force_beam_case(
+        {"id": 1, "type": "Elastic", "params": {"E": 30000000000.0}}
+    )
+    base_case["analysis"] = {
+        "type": "static_nonlinear",
+        "steps": 3,
+        "max_iters": 20,
+        "tol": 1e-10,
+        "system": "BandGeneral",
+        "integrator": {
+            "type": "DisplacementControl",
+            "node": 2,
+            "dof": 2,
+            "du": 0.005,
+        },
+    }
+    base_case["recorders"] = [
+        {"type": "element_force", "elements": [1], "output": "element_force"},
+        {"type": "node_displacement", "nodes": [2], "dofs": [2], "output": "disp"},
+    ]
+
+    results = {}
+    algorithm_options = {
+        "Newton": {},
+        "Broyden": {"broyden_count": 3},
+    }
+    for algorithm, extra in algorithm_options.items():
+        case_data = json.loads(json.dumps(base_case))
+        case_data["analysis"]["algorithm"] = algorithm
+        case_data["analysis"].update(extra)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            _run_strut_case(case_data, out_dir)
+            results[algorithm] = {
+                "forces": _read_rows(out_dir / "element_force_ele1.out"),
+                "disp": _read_rows(out_dir / "disp_node2.out"),
+            }
+
+    for broyden_row, newton_row in zip(
+        results["Broyden"]["forces"], results["Newton"]["forces"], strict=True
+    ):
+        assert broyden_row == pytest.approx(newton_row, abs=1e-12, rel=1e-12)
+    for broyden_row, newton_row in zip(
+        results["Broyden"]["disp"], results["Newton"]["disp"], strict=True
+    ):
+        assert broyden_row == pytest.approx(newton_row, abs=1e-12, rel=1e-12)
+
+
 def test_force_beam_column2d_section_recorders_emit_force_and_deformation():
     case_data = _base_force_beam_case(
         {"id": 1, "type": "Elastic", "params": {"E": 30000000000.0}}

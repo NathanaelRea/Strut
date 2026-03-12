@@ -3,12 +3,121 @@ from collections import List
 from elements import quad4_plane_stress_stiffness, shell4_mindlin_stiffness
 from solver.profile import RuntimeProfileMetrics, _profile_metrics_note_element_timing
 from solver.assembly.stiffness_internal_shared import (
+    _dot_row_simd,
     _elem_dof,
     _scatter_add_and_dot_row_simd,
+)
+from solver.run_case.linear_solver_backend import (
+    LinearSolverBackend,
+    add_element_matrix_from_pool,
 )
 from solver.run_case.input_types import ElementInput, MaterialInput, NodeInput, SectionInput
 from tag_types import ElementTypeTag
 from time import perf_counter_ns
+
+
+fn _assemble_surface_native_soa_indices(
+    quad_elem_indices: List[Int],
+    shell_elem_indices: List[Int],
+    node_x: List[Float64],
+    node_y: List[Float64],
+    node_z: List[Float64],
+    elem_dof_offsets: List[Int],
+    elem_dof_pool: List[Int],
+    elem_free_offsets: List[Int],
+    elem_free_pool: List[Int],
+    elem_node_offsets: List[Int],
+    elem_node_pool: List[Int],
+    elem_primary_material_ids: List[Int],
+    elem_section_ids: List[Int],
+    elem_thickness: List[Float64],
+    materials_by_id: List[MaterialInput],
+    sections_by_id: List[SectionInput],
+    u: List[Float64],
+    mut backend: LinearSolverBackend,
+    mut F_int: List[Float64],
+    mut runtime_metrics: RuntimeProfileMetrics,
+):
+    for idx in range(len(quad_elem_indices)):
+        var e = quad_elem_indices[idx]
+        var t_elem_start = 0
+        if runtime_metrics.enabled:
+            t_elem_start = Int(perf_counter_ns())
+        var node_offset = elem_node_offsets[e]
+        var mat = materials_by_id[elem_primary_material_ids[e]]
+        var x = [node_x[elem_node_pool[node_offset]], node_x[elem_node_pool[node_offset + 1]], node_x[elem_node_pool[node_offset + 2]], node_x[elem_node_pool[node_offset + 3]]]
+        var y = [node_y[elem_node_pool[node_offset]], node_y[elem_node_pool[node_offset + 1]], node_y[elem_node_pool[node_offset + 2]], node_y[elem_node_pool[node_offset + 3]]]
+        var k_global = quad4_plane_stress_stiffness(mat.E, mat.nu, elem_thickness[e], x, y)
+        var dof_offset = elem_dof_offsets[e]
+        var free_offset = elem_free_offsets[e]
+        var dof_map = [
+            elem_dof_pool[dof_offset],
+            elem_dof_pool[dof_offset + 1],
+            elem_dof_pool[dof_offset + 2],
+            elem_dof_pool[dof_offset + 3],
+            elem_dof_pool[dof_offset + 4],
+            elem_dof_pool[dof_offset + 5],
+            elem_dof_pool[dof_offset + 6],
+            elem_dof_pool[dof_offset + 7],
+        ]
+        add_element_matrix_from_pool(backend, elem_free_pool, free_offset, 8, k_global)
+        for a in range(8):
+            F_int[dof_map[a]] += _dot_row_simd(k_global[a], dof_map, u, 8)
+        if runtime_metrics.enabled:
+            _profile_metrics_note_element_timing(
+                runtime_metrics,
+                ElementTypeTag.FourNodeQuad,
+                Int(perf_counter_ns()) - t_elem_start,
+            )
+
+    for idx in range(len(shell_elem_indices)):
+        var e = shell_elem_indices[idx]
+        var t_elem_start = 0
+        if runtime_metrics.enabled:
+            t_elem_start = Int(perf_counter_ns())
+        var node_offset = elem_node_offsets[e]
+        var sec = sections_by_id[elem_section_ids[e]]
+        var x = [node_x[elem_node_pool[node_offset]], node_x[elem_node_pool[node_offset + 1]], node_x[elem_node_pool[node_offset + 2]], node_x[elem_node_pool[node_offset + 3]]]
+        var y = [node_y[elem_node_pool[node_offset]], node_y[elem_node_pool[node_offset + 1]], node_y[elem_node_pool[node_offset + 2]], node_y[elem_node_pool[node_offset + 3]]]
+        var z = [node_z[elem_node_pool[node_offset]], node_z[elem_node_pool[node_offset + 1]], node_z[elem_node_pool[node_offset + 2]], node_z[elem_node_pool[node_offset + 3]]]
+        var k_global = shell4_mindlin_stiffness(sec.E, sec.nu, sec.h, x, y, z)
+        var dof_offset = elem_dof_offsets[e]
+        var free_offset = elem_free_offsets[e]
+        var dof_map = [
+            elem_dof_pool[dof_offset],
+            elem_dof_pool[dof_offset + 1],
+            elem_dof_pool[dof_offset + 2],
+            elem_dof_pool[dof_offset + 3],
+            elem_dof_pool[dof_offset + 4],
+            elem_dof_pool[dof_offset + 5],
+            elem_dof_pool[dof_offset + 6],
+            elem_dof_pool[dof_offset + 7],
+            elem_dof_pool[dof_offset + 8],
+            elem_dof_pool[dof_offset + 9],
+            elem_dof_pool[dof_offset + 10],
+            elem_dof_pool[dof_offset + 11],
+            elem_dof_pool[dof_offset + 12],
+            elem_dof_pool[dof_offset + 13],
+            elem_dof_pool[dof_offset + 14],
+            elem_dof_pool[dof_offset + 15],
+            elem_dof_pool[dof_offset + 16],
+            elem_dof_pool[dof_offset + 17],
+            elem_dof_pool[dof_offset + 18],
+            elem_dof_pool[dof_offset + 19],
+            elem_dof_pool[dof_offset + 20],
+            elem_dof_pool[dof_offset + 21],
+            elem_dof_pool[dof_offset + 22],
+            elem_dof_pool[dof_offset + 23],
+        ]
+        add_element_matrix_from_pool(backend, elem_free_pool, free_offset, 24, k_global)
+        for a in range(24):
+            F_int[dof_map[a]] += _dot_row_simd(k_global[a], dof_map, u, 24)
+        if runtime_metrics.enabled:
+            _profile_metrics_note_element_timing(
+                runtime_metrics,
+                ElementTypeTag.Shell,
+                Int(perf_counter_ns()) - t_elem_start,
+            )
 
 
 fn _assemble_surface_soa_indices(

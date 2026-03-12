@@ -25,6 +25,10 @@ from solver.profile import (
     RuntimeProfileMetrics,
     _profile_metrics_note_element_timing,
 )
+from solver.run_case.linear_solver_backend import (
+    LinearSolverBackend,
+    add_element_matrix_from_pool,
+)
 from solver.run_case.input_types import (
     ElementInput,
     ElementLoadInput,
@@ -33,6 +37,278 @@ from solver.run_case.input_types import (
 )
 from sections import FiberCell, FiberSection3dDef
 from tag_types import ElementTypeTag
+
+
+fn _assemble_frame3d_native_soa_indices(
+    frame3d_elem_indices: List[Int],
+    node_x: List[Float64],
+    node_y: List[Float64],
+    node_z: List[Float64],
+    elem_dof_offsets: List[Int],
+    elem_dof_pool: List[Int],
+    elem_free_offsets: List[Int],
+    elem_free_pool: List[Int],
+    elem_node_offsets: List[Int],
+    elem_node_pool: List[Int],
+    elem_type_tags: List[Int],
+    elem_geom_tags: List[Int],
+    elem_section_ids: List[Int],
+    elem_integration_tags: List[Int],
+    elem_num_int_pts: List[Int],
+    element_loads: List[ElementLoadInput],
+    elem_load_offsets: List[Int],
+    elem_load_pool: List[Int],
+    load_scale: Float64,
+    sections_by_id: List[SectionInput],
+    u: List[Float64],
+    uniaxial_defs: List[UniMaterialDef],
+    mut uniaxial_states: List[UniMaterialState],
+    elem_uniaxial_offsets: List[Int],
+    elem_uniaxial_counts: List[Int],
+    elem_uniaxial_state_ids: List[Int],
+    force_basic_offsets: List[Int],
+    force_basic_counts: List[Int],
+    mut force_basic_q: List[Float64],
+    fiber_section3d_defs: List[FiberSection3dDef],
+    fiber_section3d_cells: List[FiberCell],
+    fiber_section3d_index_by_id: List[Int],
+    mut force_beam_column3d_scratch: ForceBeamColumn3dScratch,
+    mut dof_map12: List[Int],
+    mut backend: LinearSolverBackend,
+    mut F_int: List[Float64],
+    do_profile: Bool,
+    t0: Int,
+    mut events: String,
+    mut events_need_comma: Bool,
+    frame_assemble_fiber: Int,
+    mut runtime_metrics: RuntimeProfileMetrics,
+) raises:
+    var u_elem12: List[Float64] = []
+    u_elem12.resize(12, 0.0)
+    for idx in range(len(frame3d_elem_indices)):
+        var e = frame3d_elem_indices[idx]
+        var t_elem_start = 0
+        if runtime_metrics.enabled:
+            t_elem_start = Int(perf_counter_ns())
+        _profile_scope_open(
+            do_profile,
+            events,
+            events_need_comma,
+            PROFILE_FRAME_ASSEMBLE_FIBER_GEOMETRY,
+            t0,
+        )
+        var node_offset = elem_node_offsets[e]
+        var i1 = elem_node_pool[node_offset]
+        var i2 = elem_node_pool[node_offset + 1]
+        var x1 = node_x[i1]
+        var y1 = node_y[i1]
+        var z1 = node_z[i1]
+        var x2 = node_x[i2]
+        var y2 = node_y[i2]
+        var z2 = node_z[i2]
+        var sec = sections_by_id[elem_section_ids[e]]
+        var dof_offset = elem_dof_offsets[e]
+        var free_offset = elem_free_offsets[e]
+        for i in range(12):
+            dof_map12[i] = elem_dof_pool[dof_offset + i]
+            u_elem12[i] = u[dof_map12[i]]
+        var elem_type = elem_type_tags[e]
+        var geom_name = _geom_transf_name_from_tag(elem_geom_tags[e])
+        var k_elem12: List[List[Float64]] = []
+        var f_elem12: List[Float64] = []
+        _profile_scope_close(
+            do_profile,
+            events,
+            events_need_comma,
+            PROFILE_FRAME_ASSEMBLE_FIBER_GEOMETRY,
+            t0,
+        )
+        if elem_type == ElementTypeTag.ElasticBeamColumn3d:
+            if sec.type != "ElasticSection3d":
+                abort("elasticBeamColumn3d requires ElasticSection3d")
+            force_beam_column3d_global_tangent_and_internal(
+                e,
+                x1,
+                y1,
+                z1,
+                x2,
+                y2,
+                z2,
+                u_elem12,
+                geom_name,
+                element_loads,
+                elem_load_offsets,
+                elem_load_pool,
+                load_scale,
+                sec.E,
+                sec.A,
+                sec.Iy,
+                sec.Iz,
+                sec.G,
+                sec.J,
+                force_beam_column3d_scratch,
+                k_elem12,
+                f_elem12,
+            )
+        else:
+            if sec.type == "ElasticSection3d":
+                if elem_type == ElementTypeTag.ForceBeamColumn3d:
+                    force_beam_column3d_global_tangent_and_internal(
+                        e,
+                        x1,
+                        y1,
+                        z1,
+                        x2,
+                        y2,
+                        z2,
+                        u_elem12,
+                        geom_name,
+                        element_loads,
+                        elem_load_offsets,
+                        elem_load_pool,
+                        load_scale,
+                        sec.E,
+                        sec.A,
+                        sec.Iy,
+                        sec.Iz,
+                        sec.G,
+                        sec.J,
+                        force_beam_column3d_scratch,
+                        k_elem12,
+                        f_elem12,
+                    )
+                else:
+                    disp_beam_column3d_global_tangent_and_internal(
+                        e,
+                        x1,
+                        y1,
+                        z1,
+                        x2,
+                        y2,
+                        z2,
+                        u_elem12,
+                        geom_name,
+                        element_loads,
+                        elem_load_offsets,
+                        elem_load_pool,
+                        load_scale,
+                        sec.E,
+                        sec.A,
+                        sec.Iy,
+                        sec.Iz,
+                        sec.G,
+                        sec.J,
+                        k_elem12,
+                        f_elem12,
+                    )
+            elif sec.type == "FiberSection3d":
+                var sec_index = fiber_section3d_index_by_id[elem_section_ids[e]]
+                if sec_index < 0 or sec_index >= len(fiber_section3d_defs):
+                    abort("fiber section not found")
+                var integration_name = _beam_integration_name_from_tag(
+                    elem_integration_tags[e]
+                )
+                _profile_scope_open(
+                    do_profile,
+                    events,
+                    events_need_comma,
+                    frame_assemble_fiber,
+                    t0,
+                )
+                _profile_scope_open(
+                    do_profile,
+                    events,
+                    events_need_comma,
+                    PROFILE_FRAME_ASSEMBLE_FIBER_SECTION_RESPONSE,
+                    t0,
+                )
+                if elem_type == ElementTypeTag.ForceBeamColumn3d:
+                    force_beam_column3d_fiber_global_tangent_and_internal(
+                        e,
+                        x1,
+                        y1,
+                        z1,
+                        x2,
+                        y2,
+                        z2,
+                        u_elem12,
+                        geom_name,
+                        element_loads,
+                        elem_load_offsets,
+                        elem_load_pool,
+                        load_scale,
+                        fiber_section3d_defs[sec_index],
+                        fiber_section3d_cells,
+                        uniaxial_defs,
+                        uniaxial_states,
+                        elem_uniaxial_state_ids,
+                        elem_uniaxial_offsets[e],
+                        elem_uniaxial_counts[e],
+                        integration_name,
+                        elem_num_int_pts[e],
+                        sec.G,
+                        sec.J,
+                        force_basic_q,
+                        force_basic_offsets[e],
+                        force_basic_counts[e],
+                        force_beam_column3d_scratch,
+                        k_elem12,
+                        f_elem12,
+                    )
+                else:
+                    beam_column3d_fiber_global_tangent_and_internal(
+                        e,
+                        x1,
+                        y1,
+                        z1,
+                        x2,
+                        y2,
+                        z2,
+                        u_elem12,
+                        geom_name,
+                        element_loads,
+                        elem_load_offsets,
+                        elem_load_pool,
+                        load_scale,
+                        fiber_section3d_defs[sec_index],
+                        fiber_section3d_cells,
+                        uniaxial_defs,
+                        uniaxial_states,
+                        elem_uniaxial_state_ids,
+                        elem_uniaxial_offsets[e],
+                        elem_uniaxial_counts[e],
+                        integration_name,
+                        elem_num_int_pts[e],
+                        sec.G,
+                        sec.J,
+                        k_elem12,
+                        f_elem12,
+                    )
+                _profile_scope_close(
+                    do_profile,
+                    events,
+                    events_need_comma,
+                    PROFILE_FRAME_ASSEMBLE_FIBER_SECTION_RESPONSE,
+                    t0,
+                )
+                _profile_scope_close(
+                    do_profile,
+                    events,
+                    events_need_comma,
+                    frame_assemble_fiber,
+                    t0,
+                )
+            else:
+                abort("beam-column 3d requires ElasticSection3d or FiberSection3d")
+        add_element_matrix_from_pool(backend, elem_free_pool, free_offset, 12, k_elem12)
+        for a in range(12):
+            F_int[dof_map12[a]] += f_elem12[a]
+        if runtime_metrics.enabled:
+            _profile_metrics_note_element_timing(
+                runtime_metrics,
+                elem_type,
+                Int(perf_counter_ns()) - t_elem_start,
+            )
 
 
 fn _assemble_frame3d_soa_indices(

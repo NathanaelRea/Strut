@@ -1,0 +1,81 @@
+{
+  "schema_version": "1.0",
+  "enabled": true,
+  "metadata": {
+    "name": "steel01_truss_bilinear",
+    "units": "SI"
+  },
+  "model": {
+    "ndm": 2,
+    "ndf": 2
+  },
+  "nodes": [
+    {
+      "id": 1,
+      "x": 0.0,
+      "y": 0.0,
+      "constraints": [
+        1,
+        2
+      ]
+    },
+    {
+      "id": 2,
+      "x": 1.0,
+      "y": 0.0,
+      "constraints": [
+        2
+      ]
+    }
+  ],
+  "materials": [
+    {
+      "id": 1,
+      "type": "Steel01",
+      "params": {
+        "Fy": 250.0,
+        "E0": 200000.0,
+        "b": 0.01
+      }
+    }
+  ],
+  "elements": [
+    {
+      "id": 1,
+      "type": "truss",
+      "nodes": [
+        1,
+        2
+      ],
+      "area": 1.0,
+      "material": 1
+    }
+  ],
+  "loads": [
+    {
+      "node": 2,
+      "dof": 1,
+      "value": 400.0
+    }
+  ],
+  "analysis": {
+    "type": "static_nonlinear",
+    "steps": 1,
+    "max_iters": 20,
+    "tol": 1e-10,
+    "system": "SuperLU"
+  },
+  "recorders": [
+    {
+      "type": "node_displacement",
+      "nodes": [
+        2
+      ],
+      "dofs": [
+        1,
+        2
+      ],
+      "output": "node_disp"
+    }
+  ]
+}

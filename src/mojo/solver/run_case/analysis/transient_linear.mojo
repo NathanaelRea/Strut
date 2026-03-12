@@ -20,9 +20,13 @@ from sys import simd_width_of
 
 from solver.run_case.linear_solver_backend import (
     LinearSolverBackend,
+    add_diagonal,
+    add_reduced_matrix,
     clear,
+    factorize_loaded,
+    initialize_symbolic_from_element_dof_map,
     initialize_structure,
-    refactor_if_needed,
+    load_reduced_matrix,
     solve,
 )
 from solver.assembly import (
@@ -448,8 +452,11 @@ fn run_transient_linear(
     M_f.resize(free_count, 0.0)
     var M_rayleigh_f: List[Float64] = []
     M_rayleigh_f.resize(free_count, 0.0)
+    var free_index: List[Int] = []
+    free_index.resize(total_dofs, -1)
     var has_mass = False
     for i in range(free_count):
+        free_index[free[i]] = i
         var m = M_total[free[i]]
         M_f[i] = m
         M_rayleigh_f[i] = M_rayleigh_total[free[i]]
@@ -746,22 +753,9 @@ fn run_transient_linear(
             for j in range(free_count):
                 C_ff[i][j] += C_zero_length_damp_ff[i][j]
 
-    var K_eff: List[List[Float64]] = []
-    for _ in range(free_count):
-        var row_eff: List[Float64] = []
-        row_eff.resize(free_count, 0.0)
-        K_eff.append(row_eff^)
-    for i in range(free_count):
-        for j in range(free_count):
-            K_eff[i][j] = K_ff[i][j] + a1 * C_ff[i][j]
-        K_eff[i][i] += a0 * M_f[i]
-    var K_lu: List[List[Float64]] = []
-    for _ in range(free_count):
-        var row_lu: List[Float64] = []
-        row_lu.resize(free_count, 0.0)
-        K_lu.append(row_lu^)
     var backend = LinearSolverBackend()
     initialize_structure(backend, analysis, free_count)
+    initialize_symbolic_from_element_dof_map(backend, elem_dof_offsets, elem_dof_pool, free_index)
     var K_zero_length_damp_ff: List[List[Float64]] = []
     for _ in range(free_count):
         var row_zero_length_damp: List[Float64] = []
@@ -774,7 +768,10 @@ fn run_transient_linear(
             var t_fac_start = Int(time.perf_counter_ns())
             var fac_start_us = (t_fac_start - t0) // 1000
             _append_event(events, events_need_comma, "O", frame_factorize, fac_start_us)
-        _ = refactor_if_needed(backend, K_eff, True, runtime_metrics, True)
+        load_reduced_matrix(backend, K_ff)
+        add_reduced_matrix(backend, C_ff, a1)
+        add_diagonal(backend, M_f, a0)
+        factorize_loaded(backend, runtime_metrics)
         if do_profile:
             var t_fac_end = Int(time.perf_counter_ns())
             var fac_end_us = (t_fac_end - t0) // 1000
@@ -1078,12 +1075,15 @@ fn run_transient_linear(
                 F_zero_length_damp_committed_f[i] = F_zero_length_damp_committed[free[i]]
                 for j in range(free_count):
                     K_zero_length_damp_ff[i][j] = K_zero_length_damp_global[free[i]][free[j]]
-                    K_lu[i][j] = K_eff[i][j] + K_zero_length_damp_ff[i][j]
             if do_profile:
                 var t_fac_start = Int(time.perf_counter_ns())
                 var fac_start_us = (t_fac_start - t0) // 1000
                 _append_event(events, events_need_comma, "O", frame_factorize, fac_start_us)
-            _ = refactor_if_needed(backend, K_lu, True, runtime_metrics, True)
+            load_reduced_matrix(backend, K_ff)
+            add_reduced_matrix(backend, K_zero_length_damp_ff)
+            add_reduced_matrix(backend, C_ff, a1)
+            add_diagonal(backend, M_f, a0)
+            factorize_loaded(backend, runtime_metrics)
             if do_profile:
                 var t_fac_end = Int(time.perf_counter_ns())
                 var fac_end_us = (t_fac_end - t0) // 1000

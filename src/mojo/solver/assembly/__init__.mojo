@@ -5,6 +5,7 @@ from solver.assembly.stiffness_internal import (
     assemble_link_stiffness_typed,
     assemble_global_stiffness_typed,
     assemble_global_stiffness_and_internal,
+    assemble_global_stiffness_and_internal_native_soa,
     assemble_global_stiffness_and_internal_soa,
 )
 from solver.assembly.stiffness_internal_banded import (

@@ -9,6 +9,10 @@ from solver.assembly.stiffness_internal_shared import (
     _elem_dof_map,
     _gather_element_u,
 )
+from solver.run_case.linear_solver_backend import (
+    LinearSolverBackend,
+    add_element_matrix_from_pool,
+)
 from solver.run_case.input_types import ElementInput, NodeInput
 
 
@@ -351,6 +355,83 @@ fn _assemble_zero_length_element(
                     K[dof_map[i]][dof_map[j]] += ri * tangent * rj
 
 
+fn _assemble_zero_length_element_native(
+    e: Int,
+    elem: ElementInput,
+    nodes: List[NodeInput],
+    ndf: Int,
+    ndm: Int,
+    u: List[Float64],
+    uniaxial_defs: List[UniMaterialDef],
+    uniaxial_state_defs: List[Int],
+    mut uniaxial_states: List[UniMaterialState],
+    elem_uniaxial_offsets: List[Int],
+    elem_uniaxial_counts: List[Int],
+    elem_uniaxial_state_ids: List[Int],
+    elem_free_offsets: List[Int],
+    elem_free_pool: List[Int],
+    mut backend: LinearSolverBackend,
+    mut F_int: List[Float64],
+):
+    var node1 = nodes[elem.node_index_1]
+    var node2 = nodes[elem.node_index_2]
+    var trans = link_orientation_matrix(
+        ndm,
+        node1.x,
+        node1.y,
+        node1.z,
+        node2.x,
+        node2.y,
+        node2.z,
+        elem.has_orient_x,
+        elem.orient_x_1,
+        elem.orient_x_2,
+        elem.orient_x_3,
+        elem.has_orient_y,
+        elem.orient_y_1,
+        elem.orient_y_2,
+        elem.orient_y_3,
+        False,
+    )
+    var dof_map = _elem_dof_map(elem)
+    var ug = _gather_element_u(dof_map, u)
+    var offset = elem_uniaxial_offsets[e]
+    var count = elem_uniaxial_counts[e]
+    var k_global: List[List[Float64]] = []
+    for _ in range(elem.dof_count):
+        var row: List[Float64] = []
+        row.resize(elem.dof_count, 0.0)
+        k_global.append(row^)
+    for m in range(count):
+        var row = _zero_length_row(_elem_dir(elem, m), ndm, ndf, trans)
+        var strain = 0.0
+        for i in range(elem.dof_count):
+            strain += row[i] * ug[i]
+        var state_index = elem_uniaxial_state_ids[offset + m]
+        var def_index = uniaxial_state_defs[state_index]
+        var mat_def = uniaxial_defs[def_index]
+        ref state = uniaxial_states[state_index]
+        uniaxial_set_trial_strain(mat_def, state, strain)
+        var force = state.sig_t
+        var tangent = state.tangent_t
+        for i in range(elem.dof_count):
+            var ri = row[i]
+            if ri == 0.0:
+                continue
+            F_int[dof_map[i]] += ri * force
+            for j in range(elem.dof_count):
+                var rj = row[j]
+                if rj != 0.0:
+                    k_global[i][j] += ri * tangent * rj
+    add_element_matrix_from_pool(
+        backend,
+        elem_free_pool,
+        elem_free_offsets[e],
+        elem.dof_count,
+        k_global,
+    )
+
+
 fn _assemble_two_node_link_element(
     e: Int,
     elem: ElementInput,
@@ -459,3 +540,125 @@ fn _assemble_two_node_link_element(
                     if tgl[q][j] != 0.0:
                         kij += tgl[p][i] * k_local[p][q] * tgl[q][j]
             K[dof_map[i]][dof_map[j]] += kij
+
+
+fn _assemble_two_node_link_element_native(
+    e: Int,
+    elem: ElementInput,
+    nodes: List[NodeInput],
+    ndf: Int,
+    ndm: Int,
+    u: List[Float64],
+    uniaxial_defs: List[UniMaterialDef],
+    uniaxial_state_defs: List[Int],
+    mut uniaxial_states: List[UniMaterialState],
+    elem_uniaxial_offsets: List[Int],
+    elem_uniaxial_counts: List[Int],
+    elem_uniaxial_state_ids: List[Int],
+    elem_free_offsets: List[Int],
+    elem_free_pool: List[Int],
+    mut backend: LinearSolverBackend,
+    mut F_int: List[Float64],
+):
+    var node1 = nodes[elem.node_index_1]
+    var node2 = nodes[elem.node_index_2]
+    var dx = node2.x - node1.x
+    var dy = node2.y - node1.y
+    var dz = node2.z - node1.z
+    var length: Float64
+    if ndm == 2:
+        length = sqrt(dx * dx + dy * dy)
+    else:
+        length = sqrt(dx * dx + dy * dy + dz * dz)
+    var trans = link_orientation_matrix(
+        ndm,
+        node1.x,
+        node1.y,
+        node1.z,
+        node2.x,
+        node2.y,
+        node2.z,
+        elem.has_orient_x,
+        elem.orient_x_1,
+        elem.orient_x_2,
+        elem.orient_x_3,
+        elem.has_orient_y,
+        elem.orient_y_1,
+        elem.orient_y_2,
+        elem.orient_y_3,
+        True,
+    )
+    var tgl = _two_node_link_tgl(ndm, ndf, trans)
+    var tlb = _two_node_link_tlb(ndm, ndf, elem, length)
+    var dof_map = _elem_dof_map(elem)
+    var ug = _gather_element_u(dof_map, u)
+    var ul: List[Float64] = []
+    ul.resize(elem.dof_count, 0.0)
+    for i in range(elem.dof_count):
+        for j in range(elem.dof_count):
+            ul[i] += tgl[i][j] * ug[j]
+    var offset = elem_uniaxial_offsets[e]
+    var count = elem_uniaxial_counts[e]
+    var q_basic: List[Float64] = []
+    var k_basic: List[Float64] = []
+    q_basic.resize(count, 0.0)
+    k_basic.resize(count, 0.0)
+    for m in range(count):
+        var ub = 0.0
+        for j in range(elem.dof_count):
+            ub += tlb[m][j] * ul[j]
+        var state_index = elem_uniaxial_state_ids[offset + m]
+        var def_index = uniaxial_state_defs[state_index]
+        var mat_def = uniaxial_defs[def_index]
+        ref state = uniaxial_states[state_index]
+        uniaxial_set_trial_strain(mat_def, state, ub)
+        q_basic[m] = state.sig_t
+        k_basic[m] = state.tangent_t
+    var k_local: List[List[Float64]] = []
+    for _ in range(elem.dof_count):
+        var row: List[Float64] = []
+        row.resize(elem.dof_count, 0.0)
+        k_local.append(row^)
+    for m in range(count):
+        for i in range(elem.dof_count):
+            var ti = tlb[m][i]
+            if ti == 0.0:
+                continue
+            for j in range(elem.dof_count):
+                var tj = tlb[m][j]
+                if tj != 0.0:
+                    k_local[i][j] += ti * k_basic[m] * tj
+    var p_local: List[Float64] = []
+    p_local.resize(elem.dof_count, 0.0)
+    for i in range(elem.dof_count):
+        for m in range(count):
+            p_local[i] += tlb[m][i] * q_basic[m]
+    _two_node_link_add_pdelta_forces(ndm, ndf, elem, length, ul, q_basic, p_local)
+    _two_node_link_add_pdelta_stiff(ndm, ndf, elem, length, q_basic, k_local)
+    var p_global: List[Float64] = []
+    p_global.resize(elem.dof_count, 0.0)
+    var k_global: List[List[Float64]] = []
+    for _ in range(elem.dof_count):
+        var row: List[Float64] = []
+        row.resize(elem.dof_count, 0.0)
+        k_global.append(row^)
+    for i in range(elem.dof_count):
+        for j in range(elem.dof_count):
+            p_global[i] += tgl[j][i] * p_local[j]
+            var kij = 0.0
+            for p in range(elem.dof_count):
+                if tgl[p][i] == 0.0:
+                    continue
+                for q in range(elem.dof_count):
+                    if tgl[q][j] != 0.0:
+                        kij += tgl[p][i] * k_local[p][q] * tgl[q][j]
+            k_global[i][j] = kij
+    for i in range(elem.dof_count):
+        F_int[dof_map[i]] += p_global[i]
+    add_element_matrix_from_pool(
+        backend,
+        elem_free_pool,
+        elem_free_offsets[e],
+        elem.dof_count,
+        k_global,
+    )

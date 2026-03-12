@@ -28,9 +28,13 @@ from sys import simd_width_of
 
 from solver.run_case.linear_solver_backend import (
     LinearSolverBackend,
+    add_diagonal,
+    add_reduced_matrix,
     clear,
+    factorize_loaded,
+    initialize_symbolic_from_element_dof_map,
     initialize_structure,
-    refactor_if_needed,
+    load_reduced_matrix,
     solve,
 )
 from solver.assembly import (
@@ -954,8 +958,11 @@ fn run_transient_nonlinear(
     M_f.resize(free_count, 0.0)
     var M_rayleigh_f: List[Float64] = []
     M_rayleigh_f.resize(free_count, 0.0)
+    var free_index: List[Int] = []
+    free_index.resize(total_dofs, -1)
     var has_mass = False
     for i in range(free_count):
+        free_index[free[i]] = i
         var m = M_total[free[i]]
         M_f[i] = m
         M_rayleigh_f[i] = M_rayleigh_total[free[i]]
@@ -977,6 +984,7 @@ fn run_transient_nonlinear(
     var has_zero_length_dampers = _has_zero_length_dampers(typed_elements)
     var backend = LinearSolverBackend()
     initialize_structure(backend, analysis, free_count)
+    initialize_symbolic_from_element_dof_map(backend, elem_dof_offsets, elem_dof_pool, free_index)
 
     var K: List[List[Float64]] = []
     for _ in range(total_dofs):
@@ -1006,7 +1014,6 @@ fn run_transient_nonlinear(
     var C_ff: List[List[Float64]] = []
     var C_zero_length_damp_ff: List[List[Float64]] = []
     var K_zero_length_damp_ff: List[List[Float64]] = []
-    var K_eff: List[List[Float64]] = []
     for _ in range(free_count):
         var row_kff: List[Float64] = []
         row_kff.resize(free_count, 0.0)
@@ -1038,9 +1045,6 @@ fn run_transient_nonlinear(
         var row_zero_length_damp_k: List[Float64] = []
         row_zero_length_damp_k.resize(free_count, 0.0)
         K_zero_length_damp_ff.append(row_zero_length_damp_k^)
-        var row_keff: List[Float64] = []
-        row_keff.resize(free_count, 0.0)
-        K_eff.append(row_keff^)
     var F_zero_length_damp_f: List[Float64] = []
     F_zero_length_damp_f.resize(free_count, 0.0)
 
@@ -2100,16 +2104,9 @@ fn run_transient_nonlinear(
                         converged = True
                         break
 
-                if need_tangent_matrix or not k_eff_initialized:
-                    for i in range(free_count):
-                        for j in range(free_count):
-                            K_eff[i][j] = (
-                                K_ff[i][j]
-                                + K_zero_length_damp_ff[i][j]
-                                + a1 * C_ff[i][j]
-                            )
-                        K_eff[i][i] += a0 * M_f[i]
-                    k_eff_initialized = True
+                var effective_matrix_changed = (
+                    need_tangent_matrix or not k_eff_initialized or has_zero_length_dampers
+                )
 
                 var direct_newton_solve = (
                     attempt_algorithm_mode == NonlinearAlgorithmMode.Newton
@@ -2133,7 +2130,14 @@ fn run_transient_nonlinear(
                             frame_factorize,
                             solve_start_us,
                         )
-                    _ = refactor_if_needed(backend, K_eff, True, runtime_metrics, True)
+                    load_reduced_matrix(backend, K_ff)
+                    if has_zero_length_dampers:
+                        add_reduced_matrix(backend, K_zero_length_damp_ff)
+                    add_reduced_matrix(backend, C_ff, a1)
+                    add_diagonal(backend, M_f, a0)
+                    factorize_loaded(backend, runtime_metrics)
+                    k_eff_initialized = True
+                    k_eff_factored = True
                     for i in range(free_count):
                         R_step[i] = R_f[i]
                     solve(backend, R_step, du_f)
@@ -2159,13 +2163,15 @@ fn run_transient_nonlinear(
                     if do_profile:
                         var t_fac_start = Int(time.perf_counter_ns())
                         fac_start_us = (t_fac_start - t0) // 1000
-                    var did_factor = refactor_if_needed(
-                        backend,
-                        K_eff,
-                        not k_eff_factored,
-                        runtime_metrics,
-                        False,
-                    )
+                    var did_factor = effective_matrix_changed or not k_eff_factored
+                    if did_factor:
+                        load_reduced_matrix(backend, K_ff)
+                        if has_zero_length_dampers:
+                            add_reduced_matrix(backend, K_zero_length_damp_ff)
+                        add_reduced_matrix(backend, C_ff, a1)
+                        add_diagonal(backend, M_f, a0)
+                        factorize_loaded(backend, runtime_metrics)
+                        k_eff_initialized = True
                     if did_factor:
                         if do_profile:
                             var t_fac_end = Int(time.perf_counter_ns())

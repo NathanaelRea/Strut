@@ -3192,42 +3192,51 @@ fn _solve_linear_system(
         if len(A[i]) != n:
             return False
 
+    var flat: List[Float64] = []
+    flat.resize(n * n, 0.0)
+    for row in range(n):
+        for col in range(n):
+            flat[row * n + col] = A[row][col]
+
     var eps = 1.0e-18
     for i in range(n):
         var pivot = i
-        var max_val = abs(A[i][i])
+        var max_val = abs(flat[i * n + i])
         for r in range(i + 1, n):
-            var candidate = abs(A[r][i])
+            var candidate = abs(flat[r * n + i])
             if candidate > max_val:
                 max_val = candidate
                 pivot = r
         if max_val <= eps:
             return False
         if pivot != i:
-            var tmp = A[i].copy()
-            A[i] = A[pivot].copy()
-            A[pivot] = tmp^
+            var pivot_base = pivot * n
+            var row_base = i * n
+            for col in range(n):
+                var tmp = flat[row_base + col]
+                flat[row_base + col] = flat[pivot_base + col]
+                flat[pivot_base + col] = tmp
             var tb = b[i]
             b[i] = b[pivot]
             b[pivot] = tb
 
-        var piv = A[i][i]
+        var piv = flat[i * n + i]
         for j in range(i, n):
-            A[i][j] /= piv
+            flat[i * n + j] /= piv
         b[i] /= piv
 
         for r in range(i + 1, n):
-            var factor = A[r][i]
+            var factor = flat[r * n + i]
             if factor == 0.0:
                 continue
             for c in range(i, n):
-                A[r][c] -= factor * A[i][c]
+                flat[r * n + c] -= factor * flat[i * n + c]
             b[r] -= factor * b[i]
 
     for i in range(n - 1, -1, -1):
         var s = b[i]
         for j in range(i + 1, n):
-            s -= A[i][j] * x[j]
+            s -= flat[i * n + j] * x[j]
         x[i] = s
     return True
 
