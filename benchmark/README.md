@@ -2,6 +2,18 @@
 
 Tools for comparing native Linux OpenSees, OpenSeesMP, and Strut runtime performance.
 
+## Micro
+
+Focused section/material microbenchmarks live in `benchmark/micro/`.
+
+Examples:
+
+```bash
+uv run python benchmark/micro/run_section_micro.py
+uv run python benchmark/micro/run_material_compare.py
+uv run python benchmark/micro/run_material_compare.py --compare steel02_uniaxial,steel02_fiber_scalar
+```
+
 ## Runner
 
 Use `scripts/run_benchmarks.py` to run the default enabled validation cases on
