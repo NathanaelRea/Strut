@@ -65,9 +65,36 @@ def _case_name_candidates(case_json: Path, case_data: dict) -> list[str]:
     return candidates
 
 
+def _resolve_validation_case_root_from_path(
+    repo_root: Path, case_json: Path
+) -> tuple[str, Path, Path] | None:
+    validation_root = (repo_root / "tests" / "validation").resolve()
+    resolved_input = case_json.resolve()
+    try:
+        rel = resolved_input.relative_to(validation_root)
+    except ValueError:
+        return None
+
+    parts = rel.parts
+    if len(parts) == 2 and parts[1] == f"{parts[0]}.json":
+        case_name = parts[0]
+        case_root = validation_root / case_name
+        return case_name, case_root, resolved_input
+    if len(parts) == 3 and parts[1] == "generated" and parts[2] == "case.json":
+        case_name = parts[0]
+        case_root = validation_root / case_name
+        tgt_json = case_root / f"{case_name}.json"
+        return case_name, case_root, tgt_json if tgt_json.exists() else resolved_input
+    return None
+
+
 def _resolve_case_root(
     repo_root: Path, case_json: Path, case_data: dict
 ) -> tuple[str, Path, Path]:
+    resolved_from_path = _resolve_validation_case_root_from_path(repo_root, case_json)
+    if resolved_from_path is not None:
+        return resolved_from_path
+
     case_names = _case_name_candidates(case_json, case_data)
     if not case_names:
         raise SystemExit(f"unable to derive case name from {case_json}")

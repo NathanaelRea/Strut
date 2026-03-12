@@ -102,6 +102,24 @@ def test_prepare_direct_tcl_entry_injects_missing_w_section_tags(tmp_path: Path)
     assert "set BeamSecTag 4" in mirrored_text
 
 
+def test_resolve_json_case_root_keeps_generated_case_json_in_canonical_case_dir(
+    tmp_path: Path,
+):
+    repo_root = tmp_path / "repo"
+    case_root = repo_root / "tests" / "validation" / "example_case"
+    generated_case_json = case_root / "generated" / "case.json"
+    generated_case_json.parent.mkdir(parents=True, exist_ok=True)
+    generated_case_json.write_text("{}\n", encoding="utf-8")
+
+    case_name, resolved_case_root, resolved_case_json = run_case._resolve_json_case_root(
+        repo_root, generated_case_json
+    )
+
+    assert case_name == "example_case"
+    assert resolved_case_root == case_root.resolve()
+    assert resolved_case_json == generated_case_json.resolve()
+
+
 def test_convert_ex1a_builds_staged_case():
     entry = (
         REPO_ROOT

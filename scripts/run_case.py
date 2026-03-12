@@ -84,6 +84,30 @@ def _is_direct_tcl_manifest(path: Path) -> bool:
     return isinstance(raw_path, str) and bool(raw_path)
 
 
+def _resolve_json_case_root(repo_root: Path, case_input: Path) -> tuple[str, Path, Path]:
+    validation_root = (repo_root / "tests" / "validation").resolve()
+    resolved_input = case_input.resolve()
+    try:
+        rel = resolved_input.relative_to(validation_root)
+    except ValueError:
+        rel = None
+
+    if rel is not None:
+        parts = rel.parts
+        if len(parts) == 2 and parts[1] == f"{parts[0]}.json":
+            case_name = parts[0]
+            case_root = validation_root / case_name
+            return case_name, case_root, resolved_input
+        if len(parts) == 3 and parts[1] == "generated" and parts[2] == "case.json":
+            case_name = parts[0]
+            case_root = validation_root / case_name
+            return case_name, case_root, resolved_input
+
+    case_name = case_input.stem
+    case_root = repo_root / "tests" / "validation" / case_name
+    return case_name, case_root, case_root / f"{case_name}.json"
+
+
 def _resolve_direct_tcl_source_files(
     entry_tcl: Path, manifest_path: Path | None = None
 ) -> list[Path]:
@@ -540,9 +564,9 @@ def main():
             hash_inputs.append(entry_tcl)
             is_tcl = True
         else:
-            case_name = case_input.stem
-            case_root = repo_root / "tests" / "validation" / case_name
-            case_json = case_root / f"{case_name}.json"
+            case_name, case_root, case_json = _resolve_json_case_root(
+                repo_root, case_input
+            )
             is_tcl = False
     elif case_input.suffix == ".tcl":
         canonical_case = _resolve_canonical_tcl_case(case_input, repo_root)
