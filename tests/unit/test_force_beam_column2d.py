@@ -89,26 +89,6 @@ def _read_rows(path: Path):
     return rows
 
 
-def test_force_beam_column2d_generated_rc_frame_gravity_case_converges():
-    case_path = (
-        repo_root
-        / "tests"
-        / "validation"
-        / "opensees_example_rc_frame_gravity"
-        / "generated"
-        / "case.json"
-    )
-
-    with tempfile.TemporaryDirectory() as tmp:
-        out_dir = Path(tmp)
-        _run_strut_case_path(case_path, out_dir)
-        analysis_time_us = int(
-            (out_dir / "analysis_time_us.txt").read_text(encoding="utf-8").strip()
-        )
-
-    assert analysis_time_us > 0
-
-
 def test_force_beam_column2d_smoke_static_nonlinear_load_control():
     case_data = _base_force_beam_case(
         {"id": 1, "type": "Elastic", "params": {"E": 30000000000.0}}

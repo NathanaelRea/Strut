@@ -30,6 +30,7 @@ tests/validation/**/*.out
 tests/validation/**/*.txt
 tests/validation/**/*.AT2
 tests/validation/**/*.g3
+tests/validation/**/tmpDsteps.tcl
 
 tests/validation/**/phase_times_us.json
 tests/validation/**/.parser-check
