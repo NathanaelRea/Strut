@@ -614,7 +614,7 @@ def test_ensure_direct_tcl_case_artifacts_creates_canonical_reference(
                 "recorder Node -file Data/Disp.out -time -node 1 disp\n",
                 encoding="utf-8",
             )
-        elif "run_opensees_wine.sh" in cmd[0]:
+        elif "run_opensees.sh" in cmd[0]:
             out_dir = Path(cmd[-1])
             out_dir.mkdir(parents=True, exist_ok=True)
             (out_dir / "Data").mkdir(parents=True, exist_ok=True)
@@ -641,8 +641,8 @@ def test_ensure_direct_tcl_case_artifacts_creates_canonical_reference(
     assert (case_root / ".parser-check").read_text(encoding="utf-8") == "ok\n"
     assert len(calls) == 3
     assert "json_to_tcl.py" in str(calls[0][3])
-    assert "run_opensees_wine.sh" in calls[1][0]
-    assert "run_opensees_wine.sh" in calls[2][0]
+    assert "run_opensees.sh" in calls[1][0]
+    assert "run_opensees.sh" in calls[2][0]
 
 
 def test_ensure_direct_tcl_case_artifacts_reuses_existing_canonical_reference(

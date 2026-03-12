@@ -1,6 +1,6 @@
 # Benchmark
 
-Tools for comparing OpenSees (Wine) and Strut (Mojo) runtime performance.
+Tools for comparing native Linux OpenSees and Strut (Mojo) runtime performance.
 
 ## Runner
 

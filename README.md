@@ -9,8 +9,8 @@ This is a test project for now, primarily just to see how far I can push the vib
 ## Quick Start
 
 1. Fetch the dependencies `uv sync`
-2. Download `OpenSees.exe` and necessary `tcl` files, copy into [benchmark/OpenSees/](./benchmark/OpenSees/)
-3. Run the [setup script](./scripts/setup.sh) to clone reference repos, download modular docs, and download OpenSees examples.
+2. Run the [setup script](./scripts/setup.sh) to clone reference repos, download modular docs, and download OpenSees examples.
+3. Build the native Linux OpenSees reference binary with [scripts/build_opensees_linux.sh](./scripts/build_opensees_linux.sh). The harness uses [`.build/opensees-linux/OpenSees`](./.build/opensees-linux/OpenSees) by default.
 
 ## OpenSees Coverage Checklist
 

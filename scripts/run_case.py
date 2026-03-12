@@ -479,7 +479,7 @@ def _validate_generated_tcl_matches_original(
         ensure_clean_dir(original_reference_dir)
         run(
             [
-                str(repo_root / "scripts" / "run_opensees_wine.sh"),
+                str(repo_root / "scripts" / "run_opensees.sh"),
                 "--script",
                 str(entry_tcl),
                 "--output",
@@ -494,7 +494,7 @@ def _validate_generated_tcl_matches_original(
         ensure_clean_dir(generated_reference_dir)
         run(
             [
-                str(repo_root / "scripts" / "run_opensees_wine.sh"),
+                str(repo_root / "scripts" / "run_opensees.sh"),
                 "--script",
                 str(generated_tcl),
                 "--output",
@@ -664,7 +664,7 @@ def main():
         if refresh_reference:
             run(
                 [
-                    str(repo_root / "scripts" / "run_opensees_wine.sh"),
+                    str(repo_root / "scripts" / "run_opensees.sh"),
                     "--script",
                     str(opensees_entry_tcl),
                     "--output",
@@ -681,7 +681,7 @@ def main():
     elif refresh_reference:
         run(
             [
-                str(repo_root / "scripts" / "run_opensees_wine.sh"),
+                str(repo_root / "scripts" / "run_opensees.sh"),
                 "--script",
                 str(tcl_out),
                 "--output",

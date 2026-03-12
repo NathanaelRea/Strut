@@ -113,7 +113,7 @@ Current limitation: `forceBeamColumn3d`/`dispBeamColumn3d` support is currently 
 
 1. JSON-authored cases use `scripts/json_to_tcl.py` to convert JSON models to deterministic Tcl when OpenSees reference generation is needed.
 2. Direct-Tcl cases use the original reference Tcl for OpenSees and parse that same Tcl directly into Strut input.
-3. `scripts/run_case.py` runs OpenSees (Wine) to produce reference outputs, then runs Strut on either JSON input or direct Tcl input.
+3. `scripts/run_case.py` runs native Linux OpenSees to produce reference outputs, then runs Strut on either JSON input or direct Tcl input.
 4. `scripts/run_strut_case.py` runs the current Strut implementation and writes outputs.
 5. `scripts/compare_case.py` compares recorder outputs with recorder-specific tolerances and can load direct-Tcl parity metadata straight from the Tcl parser.
 6. `uv run run_tests.py` builds the solver, then runs unit, schema, and parity checks.

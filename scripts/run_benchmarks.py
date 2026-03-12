@@ -687,7 +687,7 @@ def _validate_generated_tcl_matches_original(
         ensure_clean_dir(original_reference_dir)
         run(
             [
-                str(repo_root / "scripts" / "run_opensees_wine.sh"),
+                str(repo_root / "scripts" / "run_opensees.sh"),
                 "--script",
                 str(original_reference_tcl),
                 "--output",
@@ -702,7 +702,7 @@ def _validate_generated_tcl_matches_original(
         ensure_clean_dir(generated_reference_dir)
         run(
             [
-                str(repo_root / "scripts" / "run_opensees_wine.sh"),
+                str(repo_root / "scripts" / "run_opensees.sh"),
                 "--script",
                 str(generated_tcl),
                 "--output",
@@ -2560,7 +2560,7 @@ def main() -> None:
                 eigen_warmup_tcl = tcl_path
                 break
         if eigen_warmup_tcl is not None:
-            # Eigen has a heavy first-call initialization cost in OpenSees/Wine.
+            # Eigen has a heavy first-call initialization cost in OpenSees.
             # Warm it once outside per-case timers using a real eigen case script.
             lines.extend(
                 [
@@ -2607,7 +2607,7 @@ def main() -> None:
         try:
             run(
                 [
-                    str(repo_root / "scripts" / "run_opensees_wine.sh"),
+                    str(repo_root / "scripts" / "run_opensees.sh"),
                     "--script",
                     str(batch_script),
                     "--output",
@@ -2776,7 +2776,7 @@ def main() -> None:
                 target_dir = tmp_dir
             run(
                 [
-                    str(repo_root / "scripts" / "run_opensees_wine.sh"),
+                    str(repo_root / "scripts" / "run_opensees.sh"),
                     "--script",
                     str(tcl_compute),
                     "--output",

@@ -1,30 +1,27 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Runs OpenSees Tcl examples via Wine and writes recorder files into the
+# Runs OpenSees Tcl examples natively on Linux and writes recorder files into the
 # matching tests/validation/<example>/reference/ directory
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 examples_root="${repo_root}/benchmark/OpenSees/examples"
 validation_root="${repo_root}/tests/validation"
-opensees_exe="${repo_root}/benchmark/OpenSees/OpenSees.exe"
-intel_runtime_env="${OPENSEES_INTEL_RUNTIME:-}"
-intel_runtime_name="libiomp5md.dll"
-tcl_dir_env="${OPENSEES_TCL_DIR:-}"
-tcl_required_rel="lib/tcl8.6"
+opensees_bin="${OPENSEES_BIN:-${repo_root}/.build/opensees-linux/OpenSees}"
 
 usage() {
   cat <<'EOF'
-Usage: run_opensees_wine.sh [--script path/to/example.tcl [--output dir]]...
+Usage: run_opensees.sh [--script path/to/example.tcl [--output dir]]...
 
 Without arguments the script discovers every OpenSees example directory under
-OpenSees/examples/, runs each *.tcl file with Wine, and captures the recorder
+OpenSees/examples/, runs each *.tcl file with the native Linux OpenSees binary,
+and captures the recorder
 files inside tests/validation/<example>/reference/.
 
 Provide one or more --script flags to target specific Tcl files. Follow each
 --script with --output to override the destination directory for that run.
 Set OPENSEES_WORKDIR to change the default output root, or OPENSEES_SCRIPT
-for a single-script run.
+for a single-script run. Set OPENSEES_BIN to override the default binary path.
 EOF
 }
 
@@ -37,14 +34,6 @@ resolve_path() {
     /*) printf '%s\n' "$input" ;;
     *) printf '%s\n' "$(pwd)/$input" ;;
     esac
-  fi
-}
-
-require_binary() {
-  local bin="$1"
-  if ! command -v "$bin" >/dev/null 2>&1; then
-    echo "error: required command '$bin' not found on PATH" >&2
-    exit 1
   fi
 }
 
@@ -66,51 +55,15 @@ default_output_dir_for() {
 }
 
 prepare_runtime() {
-  require_binary wine
-  require_binary winepath
-
-  if [[ ! -f "$opensees_exe" ]]; then
-    echo "error: OpenSees executable not found at '$opensees_exe'." >&2
+  opensees_bin="$(resolve_path "$opensees_bin")"
+  if [[ ! -f "$opensees_bin" ]]; then
+    echo "error: OpenSees binary not found at '$opensees_bin'." >&2
     exit 1
   fi
-
-  wine_prefix="${WINEPREFIX:-$HOME/.wine}"
-  runtime_candidates=()
-  if [[ -n "$intel_runtime_env" ]]; then
-    runtime_candidates+=("$intel_runtime_env")
-  fi
-  runtime_candidates+=("$(dirname "$opensees_exe")/$intel_runtime_name"
-  "$wine_prefix/drive_c/windows/system32/$intel_runtime_name"
-  "$wine_prefix/drive_c/windows/syswow64/$intel_runtime_name")
-
-  runtime_path=""
-  for candidate in "${runtime_candidates[@]}"; do
-    if [[ -f "$candidate" ]]; then
-      runtime_path="$candidate"
-      break
-    fi
-  done
-
-  if [[ -z "$runtime_path" ]]; then
-    {
-      echo "error: Intel OpenMP runtime (${intel_runtime_name}) not found."
-      echo "       Copy it next to OpenSees.exe, install the redistributable into Wine,"
-      echo "       or set OPENSEES_INTEL_RUNTIME to the DLL."
-    } >&2
+  if [[ ! -x "$opensees_bin" ]]; then
+    echo "error: OpenSees binary is not executable: '$opensees_bin'." >&2
     exit 1
   fi
-
-  tcl_dir="${tcl_dir_env:-$(dirname "$opensees_exe")/$tcl_required_rel}"
-  if [[ ! -f "$tcl_dir/init.tcl" ]]; then
-    {
-      echo "error: Tcl runtime not found (expected init.tcl under '$tcl_dir')."
-      echo "       Copy the OpenSees 'lib/' directory next to the executable or"
-      echo "       set OPENSEES_TCL_DIR to the directory that contains init.tcl."
-    } >&2
-    exit 1
-  fi
-
-  tcl_dir_win="$(winepath -w "$tcl_dir")"
 }
 
 run_script() {
@@ -153,7 +106,7 @@ run_script() {
 
   pushd "$mirrored_script_dir" >/dev/null
   {
-    env TCL_LIBRARY="$tcl_dir_win" wine "$opensees_exe" "$run_script_name" >/dev/null 2>&1
+    "$opensees_bin" "$run_script_name" >/dev/null 2>&1
   }
   popd >/dev/null
 

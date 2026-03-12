@@ -390,7 +390,7 @@ def run_case(repo_root: Path, case_json: Path, out_dir: Path, engine: str) -> Pa
         )
         run(
             [
-                str(repo_root / "scripts" / "run_opensees_wine.sh"),
+                str(repo_root / "scripts" / "run_opensees.sh"),
                 "--script",
                 str(tcl_path),
                 "--output",

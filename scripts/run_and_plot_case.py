@@ -277,7 +277,7 @@ def _prepare_animation_outputs(
 
     ref_ok = _run_cmd(
         [
-            str(repo_root / "scripts" / "run_opensees_wine.sh"),
+            str(repo_root / "scripts" / "run_opensees.sh"),
             "--script",
             str(anim_tcl),
             "--output",

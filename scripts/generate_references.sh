@@ -2,7 +2,7 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-runner="${repo_root}/scripts/run_opensees_wine.sh"
+runner="${repo_root}/scripts/run_opensees.sh"
 
 if [[ ! -x "$runner" ]]; then
   echo "error: runner script not found or not executable at '$runner'" >&2
@@ -17,7 +17,7 @@ usage() {
   cat <<'HELP'
 Usage: scripts/generate_references.sh [case ...]
 
-Runs predefined OpenSees Tcl cases via Wine and stores their outputs in the
+Runs predefined OpenSees Tcl cases natively on Linux and stores their outputs in the
 matching tests/validation/<case>/reference directory. Without arguments every
 known case is refreshed. Provide one or more case names to restrict execution.
 
