@@ -5,6 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+import io
 
 import pytest
 
@@ -228,6 +229,75 @@ def test_resolve_engine_mode_prefers_explicit_engine_over_mp_and_env():
         )
         == "openseesmp"
     )
+
+
+def test_build_argument_parser_treats_bare_cases_as_interactive():
+    parser = run_benchmarks.build_argument_parser()
+
+    args = parser.parse_args(["--cases"])
+
+    assert args.cases == [run_benchmarks.INTERACTIVE_CASE_SENTINEL]
+
+
+def test_select_case_with_fzf_returns_selected_case_name(monkeypatch, tmp_path: Path):
+    validation_root = tmp_path / "validation"
+    selected_case = run_benchmarks.CaseSpec(
+        name="alpha_case",
+        json_path=validation_root / "alpha_case" / "alpha_case.json",
+        metadata_path=validation_root / "alpha_case" / "alpha_case.json",
+    )
+    call = {}
+
+    monkeypatch.setattr(run_benchmarks.shutil, "which", lambda name: "/usr/bin/fzf")
+    monkeypatch.setattr(
+        run_benchmarks,
+        "_interactive_case_options",
+        lambda root, include_disabled: [("alpha_case", selected_case)],
+    )
+    monkeypatch.setattr(run_benchmarks.Path, "open", lambda self, *args, **kwargs: io.StringIO())
+
+    class FakePopen:
+        returncode = 0
+
+        def __init__(self, *args, **kwargs):
+            call["kwargs"] = kwargs
+
+        def communicate(self, text):
+            call["input"] = text
+            return ("alpha_case\n", "")
+
+    def fake_popen(*args, **kwargs):
+        call["kwargs"] = kwargs
+        return FakePopen(*args, **kwargs)
+
+    monkeypatch.setattr(run_benchmarks.subprocess, "Popen", fake_popen)
+
+    selected = run_benchmarks._select_case_with_fzf(
+        validation_root, include_disabled=False
+    )
+
+    assert selected == "alpha_case"
+    assert call["kwargs"]["stdin"] == run_benchmarks.subprocess.PIPE
+    assert call["kwargs"]["stdout"] == run_benchmarks.subprocess.PIPE
+    assert call["kwargs"]["stderr"] is not None
+    assert call["input"] == "alpha_case\n"
+
+
+def test_resolve_case_args_expands_interactive_sentinel(monkeypatch, tmp_path: Path):
+    validation_root = tmp_path / "validation"
+    monkeypatch.setattr(
+        run_benchmarks,
+        "_select_case_with_fzf",
+        lambda root, include_disabled: "picked_case",
+    )
+
+    resolved = run_benchmarks._resolve_case_args(
+        [run_benchmarks.INTERACTIVE_CASE_SENTINEL, "explicit_case"],
+        validation_root,
+        include_disabled=True,
+    )
+
+    assert resolved == ["picked_case", "explicit_case"]
 
 
 def test_expand_case_patterns_deduplicates_and_sorts(tmp_path: Path):

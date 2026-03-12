@@ -195,6 +195,7 @@ ENGINE_LABELS = {
     "openseesmp": "OpenSeesMP",
     "strut": "Strut",
 }
+INTERACTIVE_CASE_SENTINEL = "__interactive_case_selection__"
 
 
 def _default_openseesmp_procs() -> int:
@@ -268,6 +269,106 @@ def _resolve_engine_mode(
     if env_engine:
         return env_engine
     return "all" if mp_enabled else "both"
+
+
+def build_argument_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Run OpenSees vs Mojo benchmarks")
+    parser.add_argument(
+        "--cases",
+        action="append",
+        nargs="?",
+        const=INTERACTIVE_CASE_SENTINEL,
+        help="Case name, JSON path, or glob. Repeatable. Pass with no value to pick a case via fzf.",
+    )
+    parser.add_argument(
+        "--benchmark-suite",
+        choices=tuple(sorted(BENCHMARK_SUITES.keys())),
+        default=None,
+        help="Run a predefined benchmark suite.",
+    )
+    parser.add_argument(
+        "--list-benchmark-suites",
+        action="store_true",
+        help="List available benchmark suites and exit.",
+    )
+    parser.add_argument(
+        "--gen-frame-bays",
+        type=int,
+        default=None,
+        help="Generate a synthetic frame with this number of bays.",
+    )
+    parser.add_argument(
+        "--gen-frame-stories",
+        type=int,
+        default=None,
+        help="Generate a synthetic frame with this number of stories.",
+    )
+    parser.add_argument(
+        "--gen-frame-name",
+        default=None,
+        help="Optional name for generated frame case (default: elastic_frame_{bays}bay_{stories}story).",
+    )
+    parser.add_argument(
+        "--gen-frame-element",
+        choices=("elasticBeamColumn2d", "forceBeamColumn2d", "dispBeamColumn2d"),
+        default="elasticBeamColumn2d",
+        help="Element type for generated frame case.",
+    )
+    parser.add_argument(
+        "--repeat",
+        type=int,
+        default=int(os.getenv("STRUT_BENCH_REPEAT", "1")),
+        help="Number of timed repetitions per engine.",
+    )
+    parser.add_argument(
+        "--engine",
+        choices=("both", "all", "opensees", "openseesmp", "strut"),
+        default=None,
+        help="Which engine(s) to benchmark.",
+    )
+    parser.add_argument(
+        "--mp",
+        action="store_true",
+        help="Enable OpenSeesMP in the default engine selection. Without this flag, the default is the normal OpenSees + Strut run.",
+    )
+    parser.add_argument(
+        "--no-batch",
+        action="store_true",
+        help="Disable OpenSees batch mode and run OpenSees cases in separate processes. OpenSeesMP and Strut run per case.",
+    )
+    parser.add_argument(
+        "--warmup",
+        type=int,
+        default=int(os.getenv("STRUT_BENCH_WARMUP", "0")),
+        help="Warmup runs per engine (not timed).",
+    )
+    parser.add_argument(
+        "--output-root",
+        default=None,
+        help="Results root (default: benchmark/results or benchmark/results-profile with --profile).",
+    )
+    parser.add_argument(
+        "--archive-root",
+        default=None,
+        help="Archive root (default: benchmark/archive).",
+    )
+    parser.add_argument(
+        "--no-archive",
+        action="store_true",
+        help="Skip writing summary archives.",
+    )
+    parser.add_argument(
+        "--profile",
+        default=None,
+        metavar="DIR",
+        help="Emit per-case speedscope profiles to DIR.",
+    )
+    parser.add_argument(
+        "--include-disabled",
+        action="store_true",
+        help="Include JSON cases marked enabled=false.",
+    )
+    return parser
 
 
 def run(
@@ -1415,6 +1516,75 @@ def discover_all_cases(validation_root: Path) -> List[CaseSpec]:
     return sorted(cases, key=lambda c: c.name)
 
 
+def _interactive_case_options(
+    validation_root: Path, include_disabled: bool
+) -> List[Tuple[str, CaseSpec]]:
+    cases = discover_all_cases(validation_root)
+    if not include_disabled:
+        cases, _, _ = filter_cases_by_enabled(cases, include_disabled=False)
+    options = []
+    for case in cases:
+        disabled, runnable = _load_case_flags(_case_metadata_path(case))
+        label = case.name
+        if disabled and runnable:
+            label = f"{case.name} [disabled]"
+        elif disabled:
+            label = f"{case.name} [disabled, skipped]"
+        options.append((label, case))
+    return options
+
+
+def _select_case_with_fzf(validation_root: Path, include_disabled: bool) -> str:
+    if shutil.which("fzf") is None:
+        raise SystemExit(
+            "fzf is required for bare --cases selection. Install fzf or pass a case name."
+        )
+    options = _interactive_case_options(validation_root, include_disabled)
+    if not options:
+        raise SystemExit("No benchmark cases are available for interactive selection.")
+    tty_path = Path("/dev/tty")
+    try:
+        tty_out = tty_path.open("w", encoding="utf-8", errors="replace")
+    except OSError as exc:
+        raise SystemExit(
+            f"Interactive case selection requires a terminal: {exc}"
+        ) from exc
+    try:
+        proc = subprocess.Popen(
+            ["fzf", "--prompt", "benchmark case> "],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=tty_out,
+            text=True,
+        )
+        stdout, _ = proc.communicate("\n".join(label for label, _ in options) + "\n")
+    finally:
+        tty_out.close()
+    if proc.returncode != 0:
+        raise SystemExit("No benchmark case selected.")
+    selected = stdout.strip()
+    for label, case in options:
+        if label == selected:
+            return case.name
+    raise SystemExit(f"Selected benchmark case was not recognized: {selected}")
+
+
+def _resolve_case_args(
+    raw_case_args: Optional[List[str]],
+    validation_root: Path,
+    include_disabled: bool,
+) -> Optional[List[str]]:
+    if raw_case_args is None:
+        return None
+    resolved: List[str] = []
+    for raw in raw_case_args:
+        if raw == INTERACTIVE_CASE_SENTINEL:
+            resolved.append(_select_case_with_fzf(validation_root, include_disabled))
+        elif raw is not None:
+            resolved.append(raw)
+    return resolved
+
+
 def ensure_clean_dir(path: Path) -> None:
     if path.exists():
         shutil.rmtree(path)
@@ -2289,100 +2459,7 @@ def _summarize_parity_failures(parity_failures: List[str]) -> List[str]:
 
 def main() -> None:
     repo_root = Path(__file__).resolve().parents[1]
-    parser = argparse.ArgumentParser(description="Run OpenSees vs Mojo benchmarks")
-    parser.add_argument(
-        "--cases",
-        action="append",
-        help="Case name, JSON path, or glob. Repeatable.",
-    )
-    parser.add_argument(
-        "--benchmark-suite",
-        choices=tuple(sorted(BENCHMARK_SUITES.keys())),
-        default=None,
-        help="Run a predefined benchmark suite.",
-    )
-    parser.add_argument(
-        "--list-benchmark-suites",
-        action="store_true",
-        help="List available benchmark suites and exit.",
-    )
-    parser.add_argument(
-        "--gen-frame-bays",
-        type=int,
-        default=None,
-        help="Generate a synthetic frame with this number of bays.",
-    )
-    parser.add_argument(
-        "--gen-frame-stories",
-        type=int,
-        default=None,
-        help="Generate a synthetic frame with this number of stories.",
-    )
-    parser.add_argument(
-        "--gen-frame-name",
-        default=None,
-        help="Optional name for generated frame case (default: elastic_frame_{bays}bay_{stories}story).",
-    )
-    parser.add_argument(
-        "--gen-frame-element",
-        choices=("elasticBeamColumn2d", "forceBeamColumn2d", "dispBeamColumn2d"),
-        default="elasticBeamColumn2d",
-        help="Element type for generated frame case.",
-    )
-    parser.add_argument(
-        "--repeat",
-        type=int,
-        default=int(os.getenv("STRUT_BENCH_REPEAT", "1")),
-        help="Number of timed repetitions per engine.",
-    )
-    parser.add_argument(
-        "--engine",
-        choices=("both", "all", "opensees", "openseesmp", "strut"),
-        default=None,
-        help="Which engine(s) to benchmark.",
-    )
-    parser.add_argument(
-        "--mp",
-        action="store_true",
-        help="Enable OpenSeesMP in the default engine selection. Without this flag, the default is the normal OpenSees + Strut run.",
-    )
-    parser.add_argument(
-        "--no-batch",
-        action="store_true",
-        help="Disable OpenSees batch mode and run OpenSees cases in separate processes. OpenSeesMP and Strut run per case.",
-    )
-    parser.add_argument(
-        "--warmup",
-        type=int,
-        default=int(os.getenv("STRUT_BENCH_WARMUP", "0")),
-        help="Warmup runs per engine (not timed).",
-    )
-    parser.add_argument(
-        "--output-root",
-        default=None,
-        help="Results root (default: benchmark/results or benchmark/results-profile with --profile).",
-    )
-    parser.add_argument(
-        "--archive-root",
-        default=None,
-        help="Archive root (default: benchmark/archive).",
-    )
-    parser.add_argument(
-        "--no-archive",
-        action="store_true",
-        help="Skip writing summary archives.",
-    )
-    parser.add_argument(
-        "--profile",
-        default=None,
-        metavar="DIR",
-        help="Emit per-case speedscope profiles to DIR.",
-    )
-    parser.add_argument(
-        "--include-disabled",
-        action="store_true",
-        help="Include JSON cases marked enabled=false.",
-    )
+    parser = build_argument_parser()
     args = parser.parse_args()
 
     if args.list_benchmark_suites:
@@ -2396,6 +2473,11 @@ def main() -> None:
         return
 
     validation_root = repo_root / "tests" / "validation"
+    args.cases = _resolve_case_args(
+        args.cases,
+        validation_root,
+        include_disabled=args.include_disabled,
+    )
     generated_cases: List[CaseSpec] = []
     generate_suite_force_pair = False
 

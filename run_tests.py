@@ -5,6 +5,8 @@ import subprocess
 from pathlib import Path
 from typing import Iterable, List
 
+INTERACTIVE_CASE_SENTINEL = "__interactive_case_selection__"
+
 
 def run(cmd: List[str], env=None, verbose: bool = False) -> None:
     if verbose:
@@ -23,9 +25,13 @@ def _normalize_case_args(cases: Iterable[str]) -> List[str]:
     return normalized
 
 
-def _benchmark_output_root(repo_root: Path, configured_root: str | None) -> Path:
+def _benchmark_output_root(
+    repo_root: Path, configured_root: str | None, profile_root: str | None
+) -> Path:
     if configured_root:
         return Path(configured_root)
+    if profile_root:
+        return repo_root / "benchmark" / "results-profile"
     return repo_root / "benchmark" / "results"
 
 
@@ -44,7 +50,17 @@ def _add_pytest_workers(cmd: List[str], workers: int | str | None) -> List[str]:
     return [*cmd, "-n", worker_value]
 
 
-def main() -> int:
+def _append_benchmark_case_args(cmd: List[str], cases: list[str] | None) -> List[str]:
+    if not cases:
+        return cmd
+    for case in cases:
+        cmd.append("--cases")
+        if case != INTERACTIVE_CASE_SENTINEL:
+            cmd.append(case)
+    return cmd
+
+
+def build_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Build the solver, run tests, and optionally run benchmark gates."
     )
@@ -53,6 +69,14 @@ def main() -> int:
         action="append",
         default=[],
         help="Run parity for specific case names or JSON paths. Repeatable.",
+    )
+    parser.add_argument(
+        "--cases",
+        action="append",
+        nargs="?",
+        const=INTERACTIVE_CASE_SENTINEL,
+        default=None,
+        help="Run benchmark cases after tests. Repeatable. Pass with no value to pick one via fzf.",
     )
     parser.add_argument(
         "--all",
@@ -73,12 +97,12 @@ def main() -> int:
         "--benchmark-engine",
         choices=("both", "opensees", "strut"),
         default="strut",
-        help="Engine selection for --benchmark-suite.",
+        help="Engine selection for benchmark runs.",
     )
     parser.add_argument(
         "--benchmark-output-root",
         default=None,
-        help="Results root for benchmark runs (default: benchmark/results).",
+        help="Results root for benchmark runs (default: benchmark/results, or benchmark/results-profile with --profile).",
     )
     parser.add_argument(
         "--benchmark-baseline",
@@ -104,6 +128,12 @@ def main() -> int:
         help="Required benchmark improvement in CASE=PCT form. Repeatable.",
     )
     parser.add_argument(
+        "--profile",
+        default=None,
+        metavar="DIR",
+        help="Emit benchmark speedscope profiles to DIR.",
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         help="Print commands as they run.",
@@ -124,10 +154,19 @@ def main() -> int:
             "Default: 8."
         ),
     )
+    return parser
+
+
+def main() -> int:
+    parser = build_argument_parser()
     args = parser.parse_args()
 
-    if args.benchmark_baseline and not args.benchmark_suite:
-        parser.error("--benchmark-baseline requires --benchmark-suite.")
+    benchmark_requested = bool(args.benchmark_suite or args.cases or args.profile)
+
+    if args.benchmark_baseline and not benchmark_requested:
+        parser.error(
+            "--benchmark-baseline requires a benchmark run via --benchmark-suite, --cases, or --profile."
+        )
 
     repo_root = Path(__file__).resolve().parent
     env = os.environ.copy()
@@ -174,20 +213,25 @@ def main() -> int:
         verbose=args.verbose,
     )
 
-    if args.benchmark_suite:
-        output_root = _benchmark_output_root(repo_root, args.benchmark_output_root)
+    if benchmark_requested:
+        output_root = _benchmark_output_root(
+            repo_root, args.benchmark_output_root, args.profile
+        )
         benchmark_cmd = [
             "uv",
             "run",
             "scripts/run_benchmarks.py",
-            "--benchmark-suite",
-            args.benchmark_suite,
             "--engine",
             args.benchmark_engine,
-            "--output-root",
-            str(output_root),
             "--no-archive",
         ]
+        if args.benchmark_suite:
+            benchmark_cmd.extend(["--benchmark-suite", args.benchmark_suite])
+        benchmark_cmd = _append_benchmark_case_args(benchmark_cmd, args.cases)
+        if args.benchmark_output_root or not args.profile:
+            benchmark_cmd.extend(["--output-root", str(output_root)])
+        if args.profile:
+            benchmark_cmd.extend(["--profile", args.profile])
         run(benchmark_cmd, env=env, verbose=args.verbose)
 
         if args.benchmark_baseline:
