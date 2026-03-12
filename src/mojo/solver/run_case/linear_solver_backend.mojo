@@ -3,6 +3,7 @@ from math import sqrt
 from os import abort
 
 from linalg import cholesky_factorize_into, lu_factorize_into
+from solver.profile import RuntimeProfileMetrics
 from solver.reorder import min_degree_order, rcm_order
 from solver.run_case.input_types import AnalysisInput
 from tag_types import AnalysisSystemTag
@@ -948,7 +949,33 @@ fn initialize_structure(
     backend.profile_values.clear()
 
 
-fn factorize(mut backend: LinearSolverBackend, A: List[List[Float64]]):
+fn _update_active_structure_metrics(
+    backend: LinearSolverBackend, mut metrics: RuntimeProfileMetrics
+):
+    if not metrics.enabled:
+        return
+    metrics.active_bandwidth = 0
+    metrics.active_nnz = 0
+    metrics.active_profile_size = 0
+    if backend.system_tag == AnalysisSystemTag.BandGeneral:
+        metrics.active_bandwidth = backend.band_general_half_bandwidth * 2 + 1
+    elif backend.system_tag == AnalysisSystemTag.BandSPD:
+        metrics.active_bandwidth = backend.band_spd_half_bandwidth * 2 + 1
+    elif backend.system_tag == AnalysisSystemTag.ProfileSPD:
+        metrics.active_profile_size = len(backend.profile_values)
+    elif (
+        backend.system_tag == AnalysisSystemTag.SuperLU
+        or backend.system_tag == AnalysisSystemTag.UmfPack
+        or backend.system_tag == AnalysisSystemTag.SparseSYM
+    ):
+        metrics.active_nnz = len(backend.sparse_row_indices)
+
+
+fn factorize(
+    mut backend: LinearSolverBackend,
+    A: List[List[Float64]],
+    mut metrics: RuntimeProfileMetrics,
+):
     if not backend.initialized:
         abort("linear solver backend not initialized")
     _validate_square_matrix_shape(A, backend.free_count)
@@ -970,6 +997,9 @@ fn factorize(mut backend: LinearSolverBackend, A: List[List[Float64]]):
     else:
         abort("unsupported analysis system tag")
     backend.factorized = True
+    if metrics.enabled:
+        metrics.tangent_factorizations += 1
+    _update_active_structure_metrics(backend, metrics)
 
 
 fn solve(
@@ -1004,13 +1034,14 @@ fn refactor_if_needed(
     mut backend: LinearSolverBackend,
     A: List[List[Float64]],
     matrix_changed: Bool,
+    mut metrics: RuntimeProfileMetrics,
     force_refactor: Bool = False,
 ) -> Bool:
     var needs_refactor = force_refactor or not backend.factorized or matrix_changed
     if _force_refactor_every_solve(backend):
         needs_refactor = True
     if needs_refactor:
-        factorize(backend, A)
+        factorize(backend, A, metrics)
     return needs_refactor
 
 

@@ -41,7 +41,11 @@ from solver.assembly import (
     assemble_zero_length_damping_typed,
 )
 from solver.dof import node_dof_index, require_dof_in_range
-from solver.profile import PROFILE_FRAME_UNIAXIAL_COPY_RESET, _append_event
+from solver.profile import (
+    PROFILE_FRAME_UNIAXIAL_COPY_RESET,
+    RuntimeProfileMetrics,
+    _append_event,
+)
 from solver.simd_contiguous import (
     copy_float64_contiguous,
     dot_float64_contiguous,
@@ -878,6 +882,7 @@ fn run_transient_nonlinear(
     frame_transient_step: Int,
     frame_uniaxial_revert_all: Int,
     frame_uniaxial_commit_all: Int,
+    mut runtime_metrics: RuntimeProfileMetrics,
 ) raises:
     var time = Python.import_module("time")
     var asm_dof_map6: List[Int] = []
@@ -1152,6 +1157,7 @@ fn run_transient_nonlinear(
         events_need_comma,
         frame_assemble_uniaxial,
         frame_assemble_fiber,
+        runtime_metrics,
     )
     if do_profile:
         var t_asm_end = Int(time.perf_counter_ns())
@@ -1748,6 +1754,8 @@ fn run_transient_nonlinear(
             var has_broyden_prev_residual = False
             for _ in range(attempt_max_iters):
                 var iter_closed = False
+                if runtime_metrics.enabled:
+                    runtime_metrics.global_nonlinear_iterations += 1
                 if do_profile:
                     var t_iter_start = Int(time.perf_counter_ns())
                     var iter_start_us = (t_iter_start - t0) // 1000
@@ -1833,6 +1841,7 @@ fn run_transient_nonlinear(
                     events_need_comma,
                     frame_assemble_uniaxial,
                     frame_assemble_fiber,
+                    runtime_metrics,
                 )
                 if do_profile:
                     var t_asm_iter_end = Int(time.perf_counter_ns())
@@ -2124,7 +2133,7 @@ fn run_transient_nonlinear(
                             frame_factorize,
                             solve_start_us,
                         )
-                    _ = refactor_if_needed(backend, K_eff, True, True)
+                    _ = refactor_if_needed(backend, K_eff, True, runtime_metrics, True)
                     for i in range(free_count):
                         R_step[i] = R_f[i]
                     solve(backend, R_step, du_f)
@@ -2151,7 +2160,11 @@ fn run_transient_nonlinear(
                         var t_fac_start = Int(time.perf_counter_ns())
                         fac_start_us = (t_fac_start - t0) // 1000
                     var did_factor = refactor_if_needed(
-                        backend, K_eff, not k_eff_factored, False
+                        backend,
+                        K_eff,
+                        not k_eff_factored,
+                        runtime_metrics,
+                        False,
                     )
                     if did_factor:
                         if do_profile:
@@ -2585,6 +2598,7 @@ fn run_transient_nonlinear(
                 events_need_comma,
                 frame_assemble_uniaxial,
                 frame_assemble_fiber,
+                runtime_metrics,
             )
             if do_profile:
                 var t_asm_post_end = Int(time.perf_counter_ns())

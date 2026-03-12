@@ -1639,3 +1639,37 @@ def test_finalize_benchmark_outputs_archives_summary_and_plot(
             [plots_pdf],
         ),
     ]
+
+
+def test_build_phase_row_prefers_phase_json_splits_and_keeps_extra_metrics():
+    row = run_benchmarks._build_phase_row(
+        case_name="demo_case",
+        dofs=42,
+        phase_times={
+            "case_load_parse_us": 10,
+            "model_build_dof_map_us": 20,
+            "output_write_us": 30,
+            "solve_total_us": 40,
+            "total_case_us": 50,
+            "element_state_update_us": 60,
+            "predictor_section_eval_us": 11,
+            "corrector_section_eval_us": 12,
+            "local_flexibility_accumulation_us": 13,
+            "local_3x3_solve_us": 14,
+            "local_commit_revert_us": 15,
+            "global_nonlinear_iterations": 16,
+            "tangent_factorizations": 17,
+            "element_type_timing_us": {"forceBeamColumn2d": 123},
+        },
+        frame_totals={"nonlinear_iter": 999, "nonlinear_step": 1},
+    )
+
+    assert row["element_state_update_us"] == 60
+    assert row["predictor_section_eval_us"] == 11
+    assert row["corrector_section_eval_us"] == 12
+    assert row["local_flexibility_accumulation_us"] == 13
+    assert row["local_3x3_solve_us"] == 14
+    assert row["local_commit_revert_us"] == 15
+    assert row["global_nonlinear_iterations"] == 16
+    assert row["tangent_factorizations"] == 17
+    assert row["element_type_timing_us"] == {"forceBeamColumn2d": 123}

@@ -1,5 +1,6 @@
 from collections import List
 from os import abort
+from time import perf_counter_ns
 
 from elements import (
     ForceBeamColumn2dScratch,
@@ -25,6 +26,8 @@ from solver.profile import (
     PROFILE_FRAME_ASSEMBLE_FIBER_INTERNAL_FORCE,
     PROFILE_FRAME_ASSEMBLE_FIBER_MATRIX_SCATTER,
     PROFILE_FRAME_ASSEMBLE_FIBER_SECTION_RESPONSE,
+    RuntimeProfileMetrics,
+    _profile_metrics_note_element_timing,
 )
 from solver.run_case.input_types import (
     ElementInput,
@@ -76,9 +79,13 @@ fn _assemble_frame2d_soa_indices(
     mut events: String,
     mut events_need_comma: Bool,
     frame_assemble_fiber: Int,
+    mut runtime_metrics: RuntimeProfileMetrics,
 ) raises:
     for idx in range(len(frame2d_elem_indices)):
         var e = frame2d_elem_indices[idx]
+        var t_elem_start = 0
+        if runtime_metrics.enabled:
+            t_elem_start = Int(perf_counter_ns())
         _profile_scope_open(
             do_profile,
             events,
@@ -147,6 +154,12 @@ fn _assemble_frame2d_soa_indices(
                     F_int[Aidx] += _scatter_add_and_dot_row_simd(
                         K, Aidx, k_global[a], dof_map6, u, 6
                     ) - f_load_global[a]
+            if runtime_metrics.enabled:
+                _profile_metrics_note_element_timing(
+                    runtime_metrics,
+                    elem_type,
+                    Int(perf_counter_ns()) - t_elem_start,
+                )
             continue
 
         for i in range(6):
@@ -185,6 +198,12 @@ fn _assemble_frame2d_soa_indices(
                 var Aidx = dof_map6[a]
                 _scatter_add_row[6](K, Aidx, k_global[a], dof_map6)
                 F_int[Aidx] += f_global[a] - f_load_global[a]
+            if runtime_metrics.enabled:
+                _profile_metrics_note_element_timing(
+                    runtime_metrics,
+                    elem_type,
+                    Int(perf_counter_ns()) - t_elem_start,
+                )
             continue
 
         var sec_index = fiber_section_index_by_id[elem_section_ids[e]]
@@ -234,6 +253,7 @@ fn _assemble_frame2d_soa_indices(
                 force_basic_q,
                 force_basic_offsets[e],
                 force_basic_counts[e],
+                runtime_metrics,
                 force_beam_column2d_scratch,
                 k_elem6,
                 f_elem6,
@@ -311,6 +331,12 @@ fn _assemble_frame2d_soa_indices(
             frame_assemble_fiber,
             t0,
         )
+        if runtime_metrics.enabled:
+            _profile_metrics_note_element_timing(
+                runtime_metrics,
+                elem_type,
+                Int(perf_counter_ns()) - t_elem_start,
+            )
 
 
 fn _assemble_frame2d_element(

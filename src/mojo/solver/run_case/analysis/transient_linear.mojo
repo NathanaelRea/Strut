@@ -33,7 +33,11 @@ from solver.assembly import (
     assemble_zero_length_damping_typed,
 )
 from solver.dof import node_dof_index, require_dof_in_range
-from solver.profile import PROFILE_FRAME_UNIAXIAL_COPY_RESET, _append_event
+from solver.profile import (
+    PROFILE_FRAME_UNIAXIAL_COPY_RESET,
+    RuntimeProfileMetrics,
+    _append_event,
+)
 from solver.simd_contiguous import (
     copy_float64_contiguous,
     dot_float64_contiguous,
@@ -407,6 +411,7 @@ fn run_transient_linear(
     frame_factorize: Int,
     frame_transient_step: Int,
     frame_uniaxial_commit_all: Int,
+    mut runtime_metrics: RuntimeProfileMetrics,
 ) raises:
     var time = Python.import_module("time")
 
@@ -552,6 +557,7 @@ fn run_transient_linear(
         fiber_section3d_index_by_id,
         force_beam_column2d_scratch,
         force_beam_column3d_scratch,
+        runtime_metrics,
     )
     if do_profile:
         var t_asm_end = Int(time.perf_counter_ns())
@@ -768,7 +774,7 @@ fn run_transient_linear(
             var t_fac_start = Int(time.perf_counter_ns())
             var fac_start_us = (t_fac_start - t0) // 1000
             _append_event(events, events_need_comma, "O", frame_factorize, fac_start_us)
-        _ = refactor_if_needed(backend, K_eff, True, True)
+        _ = refactor_if_needed(backend, K_eff, True, runtime_metrics, True)
         if do_profile:
             var t_fac_end = Int(time.perf_counter_ns())
             var fac_end_us = (t_fac_end - t0) // 1000
@@ -1077,7 +1083,7 @@ fn run_transient_linear(
                 var t_fac_start = Int(time.perf_counter_ns())
                 var fac_start_us = (t_fac_start - t0) // 1000
                 _append_event(events, events_need_comma, "O", frame_factorize, fac_start_us)
-            _ = refactor_if_needed(backend, K_lu, True, True)
+            _ = refactor_if_needed(backend, K_lu, True, runtime_metrics, True)
             if do_profile:
                 var t_fac_end = Int(time.perf_counter_ns())
                 var fac_end_us = (t_fac_end - t0) // 1000

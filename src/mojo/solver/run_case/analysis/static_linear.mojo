@@ -14,7 +14,11 @@ from solver.assembly import (
     assemble_global_stiffness_and_internal_soa,
 )
 from solver.banded import banded_gaussian_elimination, estimate_bandwidth_typed
-from solver.profile import PROFILE_FRAME_UNIAXIAL_COPY_RESET, _append_event
+from solver.profile import (
+    PROFILE_FRAME_UNIAXIAL_COPY_RESET,
+    RuntimeProfileMetrics,
+    _append_event,
+)
 from solver.run_case.input_types import (
     AnalysisInput,
     ElementInput,
@@ -117,6 +121,7 @@ fn run_static_linear(
     has_transformation_mpc: Bool,
     rep_dof: List[Int],
     constrained: List[Bool],
+    mut runtime_metrics: RuntimeProfileMetrics,
 ) raises:
     var time = Python.import_module("time")
     var free_count = len(free)
@@ -182,6 +187,10 @@ fn run_static_linear(
         bw = estimate_bandwidth_typed(typed_elements, free_index)
         if bw > free_count - 1:
             bw = free_count - 1
+        if runtime_metrics.enabled:
+            runtime_metrics.active_bandwidth = bw * 2 + 1
+            runtime_metrics.active_nnz = 0
+            runtime_metrics.active_profile_size = 0
         use_typed_banded = True
         for e in range(len(typed_elements)):
             var elem_type = typed_elements[e].type_tag
@@ -302,6 +311,7 @@ fn run_static_linear(
             events_need_comma,
             frame_assemble_uniaxial,
             frame_assemble_fiber,
+            runtime_metrics,
         )
         if has_transformation_mpc:
             K = _collapse_matrix_by_rep(K, rep_dof)
@@ -346,11 +356,13 @@ fn run_static_linear(
         )
     var u_f: List[Float64] = []
     if use_bandgeneral_banded and use_typed_banded:
+        if runtime_metrics.enabled:
+            runtime_metrics.tangent_factorizations += 1
         u_f = banded_gaussian_elimination(K_ff_banded, bw, F_f)
     else:
         var backend = LinearSolverBackend()
         initialize_structure(backend, analysis, free_count)
-        factorize(backend, K_ff)
+        factorize(backend, K_ff, runtime_metrics)
         solve(backend, F_f, u_f)
         clear(backend)
     if do_profile:

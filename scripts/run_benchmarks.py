@@ -153,6 +153,11 @@ PHASE_COLUMNS = [
     "model_build_dof_map_us",
     "global_assembly_us",
     "element_state_update_us",
+    "predictor_section_eval_us",
+    "corrector_section_eval_us",
+    "local_flexibility_accumulation_us",
+    "local_3x3_solve_us",
+    "local_commit_revert_us",
     "linear_solve_us",
     "nonlinear_solve_us",
     "time_series_eval_us",
@@ -161,6 +166,17 @@ PHASE_COLUMNS = [
     "output_write_us",
     "solve_total_us",
     "total_case_us",
+]
+
+PHASE_EXTRA_COLUMNS = [
+    "global_nonlinear_iterations",
+    "local_force_beam_column_iterations",
+    "subdivision_fallback_iterations",
+    "tangent_factorizations",
+    "section_evaluations",
+    "active_bandwidth",
+    "active_nnz",
+    "active_profile_size",
 ]
 
 PHASE_FRAME_MAP = {
@@ -1532,7 +1548,7 @@ def _check_openseesmp_available(
     return True, None
 
 
-def _load_phase_times(path: Path) -> Dict[str, int]:
+def _load_phase_times(path: Path) -> Dict[str, object]:
     if not path.exists():
         return {}
     try:
@@ -1609,7 +1625,7 @@ def _load_profile_frame_totals(profile_path: Path) -> Dict[str, int]:
 def _build_phase_row(
     case_name: str,
     dofs: Optional[int],
-    phase_times: Dict[str, int],
+    phase_times: Dict[str, object],
     frame_totals: Dict[str, int],
 ) -> dict:
     row: Dict[str, object] = {"case": case_name, "dofs": dofs or ""}
@@ -1622,8 +1638,29 @@ def _build_phase_row(
     row["total_case_us"] = phase_times.get("total_case_us")
 
     for key, frame_names in PHASE_FRAME_MAP.items():
+        phase_value = phase_times.get(key)
+        if isinstance(phase_value, (int, float)):
+            row[key] = int(phase_value)
+            continue
         total = sum(frame_totals.get(name, 0) for name in frame_names)
         row[key] = total if total > 0 else None
+    for key in (
+        "predictor_section_eval_us",
+        "corrector_section_eval_us",
+        "local_flexibility_accumulation_us",
+        "local_3x3_solve_us",
+        "local_commit_revert_us",
+    ):
+        value = phase_times.get(key)
+        row[key] = int(value) if isinstance(value, (int, float)) else None
+    for key in PHASE_EXTRA_COLUMNS:
+        value = phase_times.get(key)
+        if isinstance(value, (int, float)):
+            row[key] = int(value)
+    for key in ("element_type_timing_us", "element_type_call_counts"):
+        value = phase_times.get(key)
+        if isinstance(value, dict):
+            row[key] = value
     return row
 
 
@@ -3286,6 +3323,7 @@ def main() -> None:
         "warmup": args.warmup,
         "metadata": run_metadata,
         "phase_columns": PHASE_COLUMNS,
+        "phase_extra_columns": PHASE_EXTRA_COLUMNS,
         "phase_summary": phase_rows,
         "cases": summary_cases,
     }

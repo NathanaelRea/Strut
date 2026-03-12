@@ -23,7 +23,11 @@ from solver.assembly import (
 )
 from solver.banded import banded_gaussian_elimination, banded_matrix, estimate_bandwidth_typed
 from solver.dof import node_dof_index, require_dof_in_range
-from solver.profile import PROFILE_FRAME_UNIAXIAL_COPY_RESET, _append_event
+from solver.profile import (
+    PROFILE_FRAME_UNIAXIAL_COPY_RESET,
+    RuntimeProfileMetrics,
+    _append_event,
+)
 from solver.simd_contiguous import dot_float64_contiguous, sum_sq_float64_contiguous
 from solver.run_case.input_types import (
     AnalysisInput,
@@ -712,6 +716,7 @@ fn run_static_nonlinear_load_control(
     has_transformation_mpc: Bool,
     rep_dof: List[Int],
     constrained: List[Bool],
+    mut runtime_metrics: RuntimeProfileMetrics,
 ) raises:
     var time = Python.import_module("time")
     var asm_dof_map6: List[Int] = []
@@ -791,6 +796,10 @@ fn run_static_nonlinear_load_control(
         bw_nl = estimate_bandwidth_typed(typed_elements, free_index)
         if bw_nl > free_count - 1:
             bw_nl = free_count - 1
+        if runtime_metrics.enabled:
+            runtime_metrics.active_bandwidth = bw_nl * 2 + 1
+            runtime_metrics.active_nnz = 0
+            runtime_metrics.active_profile_size = 0
     var K_ff: List[List[Float64]] = []
     var K_init_ff: List[List[Float64]] = []
     var backend = LinearSolverBackend()
@@ -909,6 +918,7 @@ fn run_static_nonlinear_load_control(
             events_need_comma,
             frame_assemble_uniaxial,
             frame_assemble_fiber,
+            runtime_metrics,
         )
         if has_transformation_mpc:
             K = _collapse_matrix_by_rep(K, rep_dof)
@@ -1066,6 +1076,8 @@ fn run_static_nonlinear_load_control(
             var broyden_prev_residual: List[Float64] = []
             var has_broyden_prev_residual = False
             for iter_idx in range(attempt_max_iters):
+                if runtime_metrics.enabled:
+                    runtime_metrics.global_nonlinear_iterations += 1
                 if do_profile:
                     var t_iter_start = Int(time.perf_counter_ns())
                     var iter_start_us = (t_iter_start - t0) // 1000
@@ -1151,6 +1163,7 @@ fn run_static_nonlinear_load_control(
                     events_need_comma,
                     frame_assemble_uniaxial,
                     frame_assemble_fiber,
+                    runtime_metrics,
                 )
                 if has_transformation_mpc:
                     K = _collapse_matrix_by_rep(K, rep_dof)
@@ -1284,6 +1297,8 @@ fn run_static_nonlinear_load_control(
                         banded_rhs[i] = F_f[i]
                         for j in range(width):
                             K_ff_banded_step[i][j] = K_ff_banded[i][j]
+                    if runtime_metrics.enabled:
+                        runtime_metrics.tangent_factorizations += 1
                     u_f = banded_gaussian_elimination(K_ff_banded_step, bw_nl, banded_rhs)
                 else:
                     var direct_newton_solve = (
@@ -1292,7 +1307,7 @@ fn run_static_nonlinear_load_control(
                     )
                     var force_refactor = direct_newton_solve or not tangent_factored
                     _ = refactor_if_needed(
-                        backend, K_ff, refresh_tangent, force_refactor
+                        backend, K_ff, refresh_tangent, runtime_metrics, force_refactor
                     )
                     tangent_factored = True
                     for i in range(free_count):
@@ -1319,6 +1334,8 @@ fn run_static_nonlinear_load_control(
                                 banded_rhs[i] = delta_residual[i]
                                 for j in range(width):
                                     K_ff_banded_step[i][j] = K_ff_banded[i][j]
+                            if runtime_metrics.enabled:
+                                runtime_metrics.tangent_factorizations += 1
                             current_z = banded_gaussian_elimination(
                                 K_ff_banded_step, bw_nl, banded_rhs
                             )
@@ -2145,6 +2162,7 @@ fn run_static_nonlinear_displacement_control(
     frame_uniaxial_commit_all: Int,
     has_transformation_mpc: Bool,
     rep_dof: List[Int],
+    mut runtime_metrics: RuntimeProfileMetrics,
 ) raises -> Float64:
     var time = Python.import_module("time")
     var asm_dof_map6: List[Int] = []
@@ -2441,6 +2459,7 @@ fn run_static_nonlinear_displacement_control(
             events_need_comma,
             frame_assemble_uniaxial,
             frame_assemble_fiber,
+            runtime_metrics,
         )
         if has_transformation_mpc:
             K = _collapse_matrix_by_rep(K, rep_dof)
@@ -2554,6 +2573,8 @@ fn run_static_nonlinear_displacement_control(
                     var broyden_prev_residual: List[Float64] = []
                     var has_broyden_prev_residual = False
                     for iter_idx in range(attempt_max_iters):
+                        if runtime_metrics.enabled:
+                            runtime_metrics.global_nonlinear_iterations += 1
                         if do_profile:
                             var t_iter_start = Int(time.perf_counter_ns())
                             var iter_start_us = (t_iter_start - t0) // 1000
@@ -2669,6 +2690,7 @@ fn run_static_nonlinear_displacement_control(
                             events_need_comma,
                             frame_assemble_uniaxial,
                             frame_assemble_fiber,
+                            runtime_metrics,
                         )
                         if has_transformation_mpc:
                             K = _collapse_matrix_by_rep(K, rep_dof)
@@ -2818,6 +2840,8 @@ fn run_static_nonlinear_displacement_control(
                                 solve_nl_start_us,
                             )
                         var solved = _solve_linear_system(K_aug, rhs_aug, sol_aug)
+                        if runtime_metrics.enabled:
+                            runtime_metrics.tangent_factorizations += 1
                         if do_profile:
                             var t_solve_nl_end = Int(time.perf_counter_ns())
                             var solve_nl_end_us = (t_solve_nl_end - t0) // 1000

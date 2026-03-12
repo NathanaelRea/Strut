@@ -32,8 +32,10 @@ from solver.profile import (
     PROFILE_FRAME_UNIAXIAL_COPY_RESET,
     PROFILE_FRAME_UNIAXIAL_REVERT_ALL,
     PROFILE_FRAME_UNIAXIAL_TRIAL_UPDATE,
+    RuntimeProfileMetrics,
     _append_event,
     _append_frame,
+    _profile_metrics_element_type_name,
     _profile_enabled,
     _write_speedscope,
 )
@@ -150,6 +152,8 @@ def run_case_input(
         safe_case_load_us = 0
     var t0 = t_start - safe_case_load_us * 1000
     var do_profile = _profile_enabled(profile_path)
+    var runtime_metrics = RuntimeProfileMetrics()
+    runtime_metrics.enabled = do_profile
 
     var frame_total = PROFILE_FRAME_TOTAL
     var frame_assemble = PROFILE_FRAME_ASSEMBLE
@@ -414,6 +418,7 @@ def run_case_input(
             has_transformation_mpc,
             rep_dof,
             constrained,
+            runtime_metrics,
         )
     elif analysis_type_tag == AnalysisTypeTag.StaticNonlinear:
         var integrator_type = analysis.integrator_type
@@ -508,6 +513,7 @@ def run_case_input(
                 has_transformation_mpc,
                 rep_dof,
                 constrained,
+                runtime_metrics,
             )
         elif integrator_tag == IntegratorTypeTag.DisplacementControl:
             _ = run_static_nonlinear_displacement_control(
@@ -594,6 +600,7 @@ def run_case_input(
                 frame_uniaxial_commit_all,
                 has_transformation_mpc,
                 rep_dof,
+                runtime_metrics,
             )
         else:
             abort("unsupported static_nonlinear integrator: " + integrator_type)
@@ -698,6 +705,7 @@ def run_case_input(
             frame_factorize,
             frame_transient_step,
             frame_uniaxial_commit_all,
+            runtime_metrics,
         )
     elif analysis_type_tag == AnalysisTypeTag.TransientNonlinear:
         run_transient_nonlinear(
@@ -800,6 +808,7 @@ def run_case_input(
             frame_transient_step,
             frame_uniaxial_revert_all,
             frame_uniaxial_commit_all,
+            runtime_metrics,
         )
     elif analysis_type_tag == AnalysisTypeTag.Staged:
         var stage_pattern_type = pattern_type
@@ -1004,6 +1013,7 @@ def run_case_input(
                     has_transformation_mpc,
                     rep_dof,
                     constrained,
+                    runtime_metrics,
                 )
                 stage_final_pattern_scale = 1.0
                 if stage_ts_index >= 0:
@@ -1106,6 +1116,7 @@ def run_case_input(
                         has_transformation_mpc,
                         rep_dof,
                         constrained,
+                        runtime_metrics,
                     )
                     stage_final_pattern_scale = 1.0
                     if stage_ts_index >= 0:
@@ -1201,6 +1212,7 @@ def run_case_input(
                         frame_uniaxial_commit_all,
                         has_transformation_mpc,
                         rep_dof,
+                        runtime_metrics,
                     )
                 else:
                     abort(
@@ -1308,6 +1320,7 @@ def run_case_input(
                     frame_factorize,
                     frame_transient_step,
                     frame_uniaxial_commit_all,
+                    runtime_metrics,
                 )
                 if stage_pattern_type_tag == PatternTypeTag.Plain:
                     stage_final_pattern_scale = 1.0
@@ -1419,6 +1432,7 @@ def run_case_input(
                     frame_transient_step,
                     frame_uniaxial_revert_all,
                     frame_uniaxial_commit_all,
+                    runtime_metrics,
                 )
                 if stage_pattern_type_tag == PatternTypeTag.Plain:
                     stage_final_pattern_scale = 1.0
@@ -1973,6 +1987,21 @@ def run_case_input(
     var t2 = Int(time.perf_counter_ns())
     var total_us = (t2 - t0) // 1000
     var output_write_us = (t2 - t_solve_end) // 1000
+    var predictor_section_eval_us = runtime_metrics.predictor_section_eval_ns // 1000
+    var corrector_section_eval_us = runtime_metrics.corrector_section_eval_ns // 1000
+    var local_flexibility_accumulation_us = (
+        runtime_metrics.local_flexibility_accumulation_ns // 1000
+    )
+    var local_3x3_solve_us = runtime_metrics.local_3x3_solve_ns // 1000
+    var local_commit_revert_us = runtime_metrics.local_commit_revert_ns // 1000
+    var element_state_update_ns = (
+        runtime_metrics.predictor_section_eval_ns
+        + runtime_metrics.corrector_section_eval_ns
+        + runtime_metrics.local_flexibility_accumulation_ns
+        + runtime_metrics.local_3x3_solve_ns
+        + runtime_metrics.local_commit_revert_ns
+    )
+    var element_state_update_us = element_state_update_ns // 1000
     var phase_json = String()
     phase_json += "{\n"
     phase_json += "  \"case_load_parse_us\": " + String(safe_case_load_us) + ",\n"
@@ -1980,9 +2009,105 @@ def run_case_input(
         "  \"model_build_dof_map_us\": " + String(model_build_dof_map_us) + ",\n"
     )
     phase_json += "  \"analysis_us\": " + String(analysis_us) + ",\n"
+    phase_json += (
+        "  \"element_state_update_us\": " + String(element_state_update_us) + ",\n"
+    )
+    phase_json += (
+        "  \"predictor_section_eval_us\": "
+        + String(predictor_section_eval_us)
+        + ",\n"
+    )
+    phase_json += (
+        "  \"corrector_section_eval_us\": "
+        + String(corrector_section_eval_us)
+        + ",\n"
+    )
+    phase_json += (
+        "  \"local_flexibility_accumulation_us\": "
+        + String(local_flexibility_accumulation_us)
+        + ",\n"
+    )
+    phase_json += (
+        "  \"local_3x3_solve_us\": "
+        + String(local_3x3_solve_us)
+        + ",\n"
+    )
+    phase_json += (
+        "  \"local_commit_revert_us\": "
+        + String(local_commit_revert_us)
+        + ",\n"
+    )
     phase_json += "  \"solve_total_us\": " + String(analysis_us) + ",\n"
+    phase_json += (
+        "  \"global_nonlinear_iterations\": "
+        + String(runtime_metrics.global_nonlinear_iterations)
+        + ",\n"
+    )
+    phase_json += (
+        "  \"local_force_beam_column_iterations\": "
+        + String(runtime_metrics.local_force_beam_column_iterations)
+        + ",\n"
+    )
+    phase_json += (
+        "  \"subdivision_fallback_iterations\": "
+        + String(runtime_metrics.subdivision_fallback_iterations)
+        + ",\n"
+    )
+    phase_json += (
+        "  \"tangent_factorizations\": "
+        + String(runtime_metrics.tangent_factorizations)
+        + ",\n"
+    )
+    phase_json += (
+        "  \"section_evaluations\": "
+        + String(runtime_metrics.section_evaluations)
+        + ",\n"
+    )
+    phase_json += (
+        "  \"active_bandwidth\": " + String(runtime_metrics.active_bandwidth) + ",\n"
+    )
+    phase_json += "  \"active_nnz\": " + String(runtime_metrics.active_nnz) + ",\n"
+    phase_json += (
+        "  \"active_profile_size\": "
+        + String(runtime_metrics.active_profile_size)
+        + ",\n"
+    )
     phase_json += "  \"output_write_us\": " + String(output_write_us) + ",\n"
-    phase_json += "  \"total_case_us\": " + String(total_us) + "\n"
+    phase_json += "  \"total_case_us\": " + String(total_us) + ",\n"
+    phase_json += "  \"element_type_timing_us\": {\n"
+    var need_elem_comma = False
+    for element_type in range(len(runtime_metrics.element_type_total_ns)):
+        var total_type_us = runtime_metrics.element_type_total_ns[element_type] // 1000
+        var type_name = _profile_metrics_element_type_name(element_type)
+        if total_type_us <= 0 or type_name == "":
+            continue
+        if need_elem_comma:
+            phase_json += ",\n"
+        phase_json += (
+            "    \""
+            + type_name
+            + "\": "
+            + String(total_type_us)
+        )
+        need_elem_comma = True
+    phase_json += "\n  },\n"
+    phase_json += "  \"element_type_call_counts\": {\n"
+    need_elem_comma = False
+    for element_type in range(len(runtime_metrics.element_type_call_counts)):
+        var total_calls = runtime_metrics.element_type_call_counts[element_type]
+        var type_name = _profile_metrics_element_type_name(element_type)
+        if total_calls <= 0 or type_name == "":
+            continue
+        if need_elem_comma:
+            phase_json += ",\n"
+        phase_json += (
+            "    \""
+            + type_name
+            + "\": "
+            + String(total_calls)
+        )
+        need_elem_comma = True
+    phase_json += "\n  }\n"
     phase_json += "}\n"
     var phase_path = out_dir.joinpath("phase_times_us.json")
     phase_path.write_text(PythonObject(phase_json))

@@ -1,5 +1,6 @@
 from collections import List
 from os import abort
+from time import perf_counter_ns
 
 from elements import (
     ForceBeamColumn3dScratch,
@@ -21,6 +22,8 @@ from solver.profile import (
     PROFILE_FRAME_ASSEMBLE_FIBER_INTERNAL_FORCE,
     PROFILE_FRAME_ASSEMBLE_FIBER_MATRIX_SCATTER,
     PROFILE_FRAME_ASSEMBLE_FIBER_SECTION_RESPONSE,
+    RuntimeProfileMetrics,
+    _profile_metrics_note_element_timing,
 )
 from solver.run_case.input_types import (
     ElementInput,
@@ -72,11 +75,15 @@ fn _assemble_frame3d_soa_indices(
     mut events: String,
     mut events_need_comma: Bool,
     frame_assemble_fiber: Int,
+    mut runtime_metrics: RuntimeProfileMetrics,
 ) raises:
     var u_elem12: List[Float64] = []
     u_elem12.resize(12, 0.0)
     for idx in range(len(frame3d_elem_indices)):
         var e = frame3d_elem_indices[idx]
+        var t_elem_start = 0
+        if runtime_metrics.enabled:
+            t_elem_start = Int(perf_counter_ns())
         _profile_scope_open(
             do_profile,
             events,
@@ -321,6 +328,12 @@ fn _assemble_frame3d_soa_indices(
                 events_need_comma,
                 frame_assemble_fiber,
                 t0,
+            )
+        if runtime_metrics.enabled:
+            _profile_metrics_note_element_timing(
+                runtime_metrics,
+                elem_type,
+                Int(perf_counter_ns()) - t_elem_start,
             )
 
 

@@ -1,6 +1,7 @@
 from collections import List
 from math import hypot, sqrt
 from os import abort
+from time import perf_counter_ns
 
 from elements import (
     ForceBeamColumn2dScratch,
@@ -51,6 +52,8 @@ from solver.profile import (
     PROFILE_FRAME_ASSEMBLE_FIBER_MATRIX_SCATTER,
     PROFILE_FRAME_ASSEMBLE_FIBER_SECTION_RESPONSE,
     PROFILE_FRAME_UNIAXIAL_TRIAL_UPDATE,
+    RuntimeProfileMetrics,
+    _profile_metrics_note_element_timing,
 )
 from solver.run_case.helpers import aggregator_section2d_set_trial_from_offset
 from solver.run_case.input_types import (
@@ -572,6 +575,7 @@ fn assemble_internal_forces_typed_soa(
     var u_elem6: List[Float64] = []
     var profile_events = String()
     var profile_events_need_comma = False
+    var runtime_metrics = RuntimeProfileMetrics()
     assemble_global_stiffness_and_internal_soa(
         nodes,
         elements,
@@ -637,6 +641,7 @@ fn assemble_internal_forces_typed_soa(
         profile_events_need_comma,
         0,
         0,
+        runtime_metrics,
     )
     return F_int^
 
@@ -830,6 +835,7 @@ fn assemble_global_stiffness_typed_soa(
 ) raises -> List[List[Float64]]:
     var force_beam_column2d_scratch = ForceBeamColumn2dScratch()
     var force_beam_column3d_scratch = ForceBeamColumn3dScratch()
+    var runtime_metrics = RuntimeProfileMetrics()
     return assemble_global_stiffness_typed_soa(
         nodes,
         elements,
@@ -884,6 +890,7 @@ fn assemble_global_stiffness_typed_soa(
         fiber_section3d_index_by_id,
         force_beam_column2d_scratch,
         force_beam_column3d_scratch,
+        runtime_metrics,
     )
 
 
@@ -941,6 +948,7 @@ fn assemble_global_stiffness_typed_soa(
     fiber_section3d_index_by_id: List[Int],
     mut force_beam_column2d_scratch: ForceBeamColumn2dScratch,
     mut force_beam_column3d_scratch: ForceBeamColumn3dScratch,
+    mut runtime_metrics: RuntimeProfileMetrics,
 ) raises -> List[List[Float64]]:
     var total_dofs = node_count * ndf
     var K: List[List[Float64]] = []
@@ -1020,6 +1028,7 @@ fn assemble_global_stiffness_typed_soa(
         profile_events_need_comma,
         0,
         0,
+        runtime_metrics,
     )
     return K^
 
@@ -1090,6 +1099,7 @@ fn assemble_global_stiffness_and_internal_soa(
 ) raises:
     var force_beam_column2d_scratch = ForceBeamColumn2dScratch()
     var force_beam_column3d_scratch = ForceBeamColumn3dScratch()
+    var runtime_metrics = RuntimeProfileMetrics()
     assemble_global_stiffness_and_internal_soa(
         nodes,
         elements,
@@ -1155,6 +1165,7 @@ fn assemble_global_stiffness_and_internal_soa(
         events_need_comma,
         frame_assemble_uniaxial,
         frame_assemble_fiber,
+        runtime_metrics,
     )
 
 
@@ -1223,6 +1234,7 @@ fn assemble_global_stiffness_and_internal_soa(
     mut events_need_comma: Bool,
     frame_assemble_uniaxial: Int,
     frame_assemble_fiber: Int,
+    mut runtime_metrics: RuntimeProfileMetrics,
 ) raises:
     _zero_matrix(K)
     _zero_vector(F_int)
@@ -1274,6 +1286,7 @@ fn assemble_global_stiffness_and_internal_soa(
         events,
         events_need_comma,
         frame_assemble_fiber,
+        runtime_metrics,
     )
 
     _assemble_frame3d_soa_indices(
@@ -1316,10 +1329,14 @@ fn assemble_global_stiffness_and_internal_soa(
         events,
         events_need_comma,
         frame_assemble_fiber,
+        runtime_metrics,
     )
 
     for idx in range(len(truss_elem_indices)):
         var e = truss_elem_indices[idx]
+        var t_elem_start = 0
+        if runtime_metrics.enabled:
+            t_elem_start = Int(perf_counter_ns())
         var node_offset = elem_node_offsets[e]
         var i1 = elem_node_pool[node_offset]
         var i2 = elem_node_pool[node_offset + 1]
@@ -1452,9 +1469,18 @@ fn assemble_global_stiffness_and_internal_soa(
             frame_assemble_uniaxial,
             t0,
         )
+        if runtime_metrics.enabled:
+            _profile_metrics_note_element_timing(
+                runtime_metrics,
+                ElementTypeTag.Truss,
+                Int(perf_counter_ns()) - t_elem_start,
+            )
 
     for idx in range(len(zero_length_elem_indices)):
         var e = zero_length_elem_indices[idx]
+        var t_elem_start = 0
+        if runtime_metrics.enabled:
+            t_elem_start = Int(perf_counter_ns())
         _profile_scope_open(
             do_profile,
             events,
@@ -1499,8 +1525,17 @@ fn assemble_global_stiffness_and_internal_soa(
             frame_assemble_uniaxial,
             t0,
         )
+        if runtime_metrics.enabled:
+            _profile_metrics_note_element_timing(
+                runtime_metrics,
+                ElementTypeTag.ZeroLength,
+                Int(perf_counter_ns()) - t_elem_start,
+            )
     for idx in range(len(two_node_link_elem_indices)):
         var e = two_node_link_elem_indices[idx]
+        var t_elem_start = 0
+        if runtime_metrics.enabled:
+            t_elem_start = Int(perf_counter_ns())
         _profile_scope_open(
             do_profile,
             events,
@@ -1545,9 +1580,18 @@ fn assemble_global_stiffness_and_internal_soa(
             frame_assemble_uniaxial,
             t0,
         )
+        if runtime_metrics.enabled:
+            _profile_metrics_note_element_timing(
+                runtime_metrics,
+                ElementTypeTag.TwoNodeLink,
+                Int(perf_counter_ns()) - t_elem_start,
+            )
 
     for idx in range(len(zero_length_section_elem_indices)):
         var e = zero_length_section_elem_indices[idx]
+        var t_elem_start = 0
+        if runtime_metrics.enabled:
+            t_elem_start = Int(perf_counter_ns())
         _profile_scope_open(
             do_profile,
             events,
@@ -1710,6 +1754,12 @@ fn assemble_global_stiffness_and_internal_soa(
             PROFILE_FRAME_ASSEMBLE_FIBER_INTERNAL_FORCE,
             t0,
         )
+        if runtime_metrics.enabled:
+            _profile_metrics_note_element_timing(
+                runtime_metrics,
+                ElementTypeTag.ZeroLengthSection,
+                Int(perf_counter_ns()) - t_elem_start,
+            )
 
     _assemble_surface_soa_indices(
         quad_elem_indices,
@@ -1729,6 +1779,7 @@ fn assemble_global_stiffness_and_internal_soa(
         u,
         K,
         F_int,
+        runtime_metrics,
     )
 
 

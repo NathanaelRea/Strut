@@ -1,12 +1,14 @@
 from collections import List
 
 from elements import quad4_plane_stress_stiffness, shell4_mindlin_stiffness
+from solver.profile import RuntimeProfileMetrics, _profile_metrics_note_element_timing
 from solver.assembly.stiffness_internal_shared import (
     _elem_dof,
     _scatter_add_and_dot_row_simd,
 )
 from solver.run_case.input_types import ElementInput, MaterialInput, NodeInput, SectionInput
 from tag_types import ElementTypeTag
+from time import perf_counter_ns
 
 
 fn _assemble_surface_soa_indices(
@@ -27,9 +29,13 @@ fn _assemble_surface_soa_indices(
     u: List[Float64],
     mut K: List[List[Float64]],
     mut F_int: List[Float64],
+    mut runtime_metrics: RuntimeProfileMetrics,
 ):
     for idx in range(len(quad_elem_indices)):
         var e = quad_elem_indices[idx]
+        var t_elem_start = 0
+        if runtime_metrics.enabled:
+            t_elem_start = Int(perf_counter_ns())
         var node_offset = elem_node_offsets[e]
         var mat = materials_by_id[elem_primary_material_ids[e]]
         var x = [node_x[elem_node_pool[node_offset]], node_x[elem_node_pool[node_offset + 1]], node_x[elem_node_pool[node_offset + 2]], node_x[elem_node_pool[node_offset + 3]]]
@@ -49,9 +55,18 @@ fn _assemble_surface_soa_indices(
         for a in range(8):
             var Aidx = dof_map[a]
             F_int[Aidx] += _scatter_add_and_dot_row_simd(K, Aidx, k_global[a], dof_map, u, 8)
+        if runtime_metrics.enabled:
+            _profile_metrics_note_element_timing(
+                runtime_metrics,
+                ElementTypeTag.FourNodeQuad,
+                Int(perf_counter_ns()) - t_elem_start,
+            )
 
     for idx in range(len(shell_elem_indices)):
         var e = shell_elem_indices[idx]
+        var t_elem_start = 0
+        if runtime_metrics.enabled:
+            t_elem_start = Int(perf_counter_ns())
         var node_offset = elem_node_offsets[e]
         var sec = sections_by_id[elem_section_ids[e]]
         var x = [node_x[elem_node_pool[node_offset]], node_x[elem_node_pool[node_offset + 1]], node_x[elem_node_pool[node_offset + 2]], node_x[elem_node_pool[node_offset + 3]]]
@@ -88,6 +103,12 @@ fn _assemble_surface_soa_indices(
         for a in range(24):
             var Aidx = dof_map[a]
             F_int[Aidx] += _scatter_add_and_dot_row_simd(K, Aidx, k_global[a], dof_map, u, 24)
+        if runtime_metrics.enabled:
+            _profile_metrics_note_element_timing(
+                runtime_metrics,
+                ElementTypeTag.Shell,
+                Int(perf_counter_ns()) - t_elem_start,
+            )
 
 
 fn _assemble_surface_element(
