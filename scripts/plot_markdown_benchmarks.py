@@ -86,77 +86,68 @@ def _example_group_key(name: str) -> tuple[int, str] | None:
 
 
 def _build_chart_lines(
-    example_label: str, names: list[str], engines: dict[str, list[float]]
+    example_label: str,
+    names: list[str],
+    engines: dict[str, list[float]],
+    *,
+    include_mp: bool,
 ) -> list[str]:
     base_labels = _relative_labels(names)
     unit_label, unit_divisor_us, max_value = _plot_unit(engines)
     axis_max = max(1.0, math.ceil(max_value * 1.1 * 1000.0) / 1000.0)
     example_title = example_label.replace("ex", "Example ", 1)
+    active_engines: list[tuple[str, str]] = [("OS", "opensees")]
+    if include_mp:
+        active_engines.append(("OMP", "openseesmp"))
+    active_engines.append(("STR", "strut"))
     x_labels: list[str] = []
     mask_slots: list[str] = []
-    os_slots: list[str] = []
-    omp_slots: list[str] = []
-    strut_slots: list[str] = []
+    engine_slots: dict[str, list[str]] = {
+        engine_key: [] for _, engine_key in active_engines
+    }
     for idx, _label in enumerate(base_labels):
-        opensees_value = engines["opensees"][idx]
-        openseesmp_value = engines["openseesmp"][idx]
-        strut_value = engines["strut"][idx]
         case_num = idx + 1
-        x_labels.extend(
-            [
-                _mermaid_label(f"{case_num}O"),
-                _mermaid_label(f"{case_num}M"),
-                _mermaid_label(f"{case_num}S"),
-            ]
-        )
-        mask_slots.extend(
-            [
-                "0.0",
-                "0.0",
-                "0.0",
-            ]
-        )
-        os_slots.extend(
-            [
-                _mermaid_scaled_value(opensees_value, unit_divisor_us),
-                "0.0",
-                "0.0",
-            ]
-        )
-        omp_slots.extend(
-            [
-                "0.0",
-                _mermaid_scaled_value(openseesmp_value, unit_divisor_us),
-                "0.0",
-            ]
-        )
-        strut_slots.extend(
-            [
-                "0.0",
-                "0.0",
-                _mermaid_scaled_value(strut_value, unit_divisor_us),
-            ]
-        )
+        slot_labels = [f"{case_num}O"]
+        if include_mp:
+            slot_labels.append(f"{case_num}M")
+        slot_labels.append(f"{case_num}S")
+        x_labels.extend(_mermaid_label(label) for label in slot_labels)
+        mask_slots.extend("0.0" for _ in slot_labels)
+        for slot_idx, (_, engine_key) in enumerate(active_engines):
+            for other_idx, (_, other_engine_key) in enumerate(active_engines):
+                if slot_idx == other_idx:
+                    engine_slots[other_engine_key].append(
+                        _mermaid_scaled_value(engines[other_engine_key][idx], unit_divisor_us)
+                    )
+                else:
+                    engine_slots[other_engine_key].append("0.0")
+        if idx < len(base_labels) - 1:
+            x_labels.append(_mermaid_label(f"{case_num}-"))
+            mask_slots.append("0.0")
+            for engine_key in engine_slots:
+                engine_slots[engine_key].append("0.0")
     x_axis = ", ".join(x_labels)
     mask_values = ", ".join(mask_slots)
-    os_values = ", ".join(os_slots)
-    omp_values = ", ".join(omp_slots)
-    strut_values = ", ".join(strut_slots)
+    palette = [OPENSEES_BLUE]
+    if include_mp:
+        palette.append(OPENSEESMP_GREEN)
+    palette.extend([MOJO_ORANGE, "#d0d0d0"])
     return [
         "```mermaid",
         "---",
         "config:",
         "  themeVariables:",
         "    xyChart:",
-        f"      plotColorPalette: '{OPENSEES_BLUE}, {OPENSEESMP_GREEN}, {MOJO_ORANGE}, #d0d0d0'",
+        f"      plotColorPalette: '{', '.join(palette)}'",
         "---",
         "xychart-beta",
         f'    title "Benchmark: {example_title}"',
         f'    x-axis [{x_axis}]',
         f'    y-axis "Analysis time ({unit_label})" 0 --> {axis_max:.3f}',
-        f'    bar "OS" [{os_values}]',
-        f'    bar "OMP" [{omp_values}]',
-        f'    bar "STR" [{strut_values}]',
+        *[
+            f'    bar "{series_label}" [{", ".join(engine_slots[engine_key])}]'
+            for series_label, engine_key in active_engines
+        ],
         f'    bar "mask" [{mask_values}]',
         "```",
     ]
@@ -166,6 +157,7 @@ def write_opensees_examples_markdown(
     *,
     results_path: Path,
     output_path: Path,
+    include_mp: bool = False,
 ) -> Path:
     if not results_path.exists():
         raise SystemExit(f"Missing results summary: {results_path}")
@@ -212,21 +204,42 @@ def write_opensees_examples_markdown(
                     "",
                 ]
             )
-            lines.extend(_build_chart_lines(group_label, names, engines))
+            lines.extend(
+                _build_chart_lines(
+                    group_label,
+                    names,
+                    engines,
+                    include_mp=include_mp,
+                )
+            )
             lines.extend(
                 [
                     "",
-                    f"| # | Label | OpenSees ({unit_label}) | OpenSeesMP ({unit_label}) | Strut ({unit_label}) |",
-                    "| ---: | --- | ---: | ---: | ---: |",
+                    (
+                        f"| # | Label | OpenSees ({unit_label}) | OpenSeesMP ({unit_label}) | Strut ({unit_label}) |"
+                        if include_mp
+                        else f"| # | Label | OpenSees ({unit_label}) | Strut ({unit_label}) |"
+                    ),
+                    (
+                        "| ---: | --- | ---: | ---: | ---: |"
+                        if include_mp
+                        else "| ---: | --- | ---: | ---: |"
+                    ),
                 ]
             )
             base_labels = _relative_labels(names)
             for idx, label in enumerate(base_labels):
-                lines.append(
-                    f"| {idx + 1} | `{label}` | {_format_scaled(engines['opensees'][idx], unit_divisor_us)} | "
-                    f"{_format_scaled(engines['openseesmp'][idx], unit_divisor_us)} | "
-                    f"{_format_scaled(engines['strut'][idx], unit_divisor_us)} |"
-                )
+                if include_mp:
+                    lines.append(
+                        f"| {idx + 1} | `{label}` | {_format_scaled(engines['opensees'][idx], unit_divisor_us)} | "
+                        f"{_format_scaled(engines['openseesmp'][idx], unit_divisor_us)} | "
+                        f"{_format_scaled(engines['strut'][idx], unit_divisor_us)} |"
+                    )
+                else:
+                    lines.append(
+                        f"| {idx + 1} | `{label}` | {_format_scaled(engines['opensees'][idx], unit_divisor_us)} | "
+                        f"{_format_scaled(engines['strut'][idx], unit_divisor_us)} |"
+                    )
             lines.append("")
     else:
         lines.append("No enabled `opensees_example_*` benchmark cases were found.")
@@ -251,6 +264,11 @@ def main() -> None:
         default=None,
         help="Output Markdown path (default: docs/benchmark-opensees-examples.md)",
     )
+    parser.add_argument(
+        "--mp",
+        action="store_true",
+        help="Include OpenSeesMP bars and table columns in the Markdown charts.",
+    )
     args = parser.parse_args()
 
     repo_root = Path(__file__).resolve().parents[1]
@@ -268,6 +286,7 @@ def main() -> None:
     write_opensees_examples_markdown(
         results_path=results_path,
         output_path=output_path,
+        include_mp=args.mp,
     )
 
 

@@ -126,8 +126,8 @@ def test_write_opensees_examples_markdown_emits_per_example_charts(tmp_path: Pat
     assert "## ex60" in text
     assert "## ex70" in text
     assert "## ex80" in text
-    assert '"1O", "1M", "1S", "2O", "2M", "2S"' in text
-    assert '"1O", "1M", "1S"' in text
+    assert '"1O", "1S", "1-", "2O", "2S"' in text
+    assert '"1O", "1S"' in text
     assert '"cantilever_medium"' not in text
     assert "- Unit:" not in text
     assert "- Cases:" not in text
@@ -135,28 +135,72 @@ def test_write_opensees_examples_markdown_emits_per_example_charts(tmp_path: Pat
     assert 'y-axis "Analysis time (us)" 0 --> 8.250' in text
     assert 'y-axis "Analysis time (ms)" 0 --> 2.750' in text
     assert 'y-axis "Analysis time (ns)" 0 --> 7.701' in text
-    assert 'bar "mask" [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]' in text
-    assert 'bar "OS" [3.000, 0.0, 0.0, 3.500, 0.0, 0.0]' in text
-    assert 'bar "OMP" [0.0, 2.250, 0.0, 0.0, 2.750, 0.0]' in text
-    assert 'bar "STR" [0.0, 0.0, 1.500, 0.0, 0.0, 2.000]' in text
-    assert 'bar "OS" [7.500, 0.0, 0.0]' in text
-    assert 'bar "OMP" [0.0, 6.125, 0.0]' in text
-    assert 'bar "STR" [0.0, 0.0, 5.250]' in text
-    assert 'bar "OS" [2.500, 0.0, 0.0]' in text
-    assert 'bar "OMP" [0.0, 2.000, 0.0]' in text
-    assert 'bar "STR" [0.0, 0.0, 1.750]' in text
-    assert 'bar "OS" [7.000, 0.0, 0.0]' in text
-    assert 'bar "OMP" [0.0, 5.000, 0.0]' in text
-    assert 'bar "STR" [0.0, 0.0, 4.000]' in text
+    assert 'bar "mask" [0.0, 0.0, 0.0, 0.0, 0.0]' in text
+    assert 'bar "OS" [3.000, 0.0, 0.0, 3.500, 0.0]' in text
+    assert 'bar "OMP"' not in text
+    assert 'bar "STR" [0.0, 1.500, 0.0, 0.0, 2.000]' in text
+    assert 'bar "OS" [7.500, 0.0]' in text
+    assert 'bar "STR" [0.0, 5.250]' in text
+    assert 'bar "OS" [2.500, 0.0]' in text
+    assert 'bar "STR" [0.0, 1.750]' in text
+    assert 'bar "OS" [7.000, 0.0]' in text
+    assert 'bar "STR" [0.0, 4.000]' in text
+    assert "| # | Label | OpenSees (s) | Strut (s) |" in text
+    assert "| # | Label | OpenSees (us) | Strut (us) |" in text
+    assert "| # | Label | OpenSees (ms) | Strut (ms) |" in text
+    assert "| # | Label | OpenSees (ns) | Strut (ns) |" in text
+    assert "| 1 | `cycle` | 3.000 | 1.500 |" in text
+    assert "| 2 | `push` | 3.500 | 2.000 |" in text
+    assert "| 1 | `ex60_genericframe2d_analyze_dynamic_eq_uniform` | 7.500 | 5.250 |" in text
+    assert "| 1 | `ex70_microframe_run_fast` | 7.000 | 4.000 |" in text
+    assert "| 1 | `ex80_midframe_run_balanced` | 2.500 | 1.750 |" in text
+
+
+def test_write_opensees_examples_markdown_includes_mp_only_when_requested(
+    tmp_path: Path,
+):
+    summary_path = tmp_path / "summary.json"
+    output_path = tmp_path / "benchmark-large-cases.md"
+    summary_path.write_text(
+        json.dumps(
+            {
+                "generated_at": "2026-03-09T12:00:00Z",
+                "cases": [
+                    {
+                        "name": "opensees_example_ex50_frame2d_analyze_static_cycle",
+                        "size": "medium",
+                        "opensees": {"analysis_us": 3_000_000},
+                        "openseesmp": {"analysis_us": 2_250_000},
+                        "strut": {"analysis_us": 1_500_000},
+                    },
+                    {
+                        "name": "opensees_example_ex50_frame2d_analyze_static_push",
+                        "size": "medium",
+                        "opensees": {"analysis_us": 3_500_000},
+                        "openseesmp": {"analysis_us": 2_750_000},
+                        "strut": {"analysis_us": 2_000_000},
+                    },
+                ],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    plot_benchmarks.write_opensees_examples_markdown(
+        results_path=summary_path,
+        output_path=output_path,
+        include_mp=True,
+    )
+
+    text = output_path.read_text(encoding="utf-8")
+    assert '"1O", "1M", "1S", "1-", "2O", "2M", "2S"' in text
+    assert 'bar "OS" [3.000, 0.0, 0.0, 0.0, 3.500, 0.0, 0.0]' in text
+    assert 'bar "OMP" [0.0, 2.250, 0.0, 0.0, 0.0, 2.750, 0.0]' in text
+    assert 'bar "STR" [0.0, 0.0, 1.500, 0.0, 0.0, 0.0, 2.000]' in text
     assert "| # | Label | OpenSees (s) | OpenSeesMP (s) | Strut (s) |" in text
-    assert "| # | Label | OpenSees (us) | OpenSeesMP (us) | Strut (us) |" in text
-    assert "| # | Label | OpenSees (ms) | OpenSeesMP (ms) | Strut (ms) |" in text
-    assert "| # | Label | OpenSees (ns) | OpenSeesMP (ns) | Strut (ns) |" in text
     assert "| 1 | `cycle` | 3.000 | 2.250 | 1.500 |" in text
     assert "| 2 | `push` | 3.500 | 2.750 | 2.000 |" in text
-    assert "| 1 | `ex60_genericframe2d_analyze_dynamic_eq_uniform` | 7.500 | 6.125 | 5.250 |" in text
-    assert "| 1 | `ex70_microframe_run_fast` | 7.000 | 5.000 | 4.000 |" in text
-    assert "| 1 | `ex80_midframe_run_balanced` | 2.500 | 2.000 | 1.750 |" in text
 
 
 def test_write_plots_pdf_warns_when_summary_is_missing_openseesmp(

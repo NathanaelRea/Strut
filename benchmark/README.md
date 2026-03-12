@@ -81,10 +81,11 @@ The plot helper requires matplotlib:
 ```bash
 uv run scripts/plot_benchmarks.py --output benchmark/results/plots.pdf
 uv run scripts/plot_markdown_benchmarks.py --output docs/benchmark-opensees-examples.md
+uv run scripts/plot_markdown_benchmarks.py --mp --output docs/benchmark-opensees-examples.md
 ```
 
 Benchmark PDFs use a log-scale y-axis for both recent-case and archive charts.
-The Markdown mode writes separate Mermaid charts plus tables for enabled `opensees_example_*` cases, split by `ex1`, `ex2`, and so on.
+The Markdown mode writes separate Mermaid charts plus tables for enabled `opensees_example_*` cases, split by `ex1`, `ex2`, and so on. By default it plots OpenSees and Strut; pass `--mp` to include OpenSeesMP as well.
 
 Group and order cases in the bar chart (default is prefix grouping, disable with `--group-by none`):
 
