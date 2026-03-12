@@ -36,3 +36,4 @@ tests/validation/**/.parser-check
 
 # Temporary files
 ignore/
+.build/
