@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import plot_benchmarks
-from plot_constants import MOJO_ORANGE, OPENSEES_BLUE
+from plot_constants import MOJO_ORANGE, OPENSEES_BLUE, OPENSEESMP_GREEN
 
 
 def _format_scaled(value_us: float, unit_divisor_us: float) -> str:
@@ -24,7 +24,7 @@ def _mermaid_scaled_value(value_us: float, unit_divisor_us: float) -> str:
 
 def _plot_unit(engines: dict[str, list[float]]) -> tuple[str, float, float]:
     max_us = 0.0
-    for engine in ("opensees", "strut"):
+    for engine in ("opensees", "openseesmp", "strut"):
         for value in engines.get(engine, []):
             if isinstance(value, (int, float)) and math.isfinite(value):
                 max_us = max(max_us, float(value))
@@ -95,19 +95,23 @@ def _build_chart_lines(
     x_labels: list[str] = []
     mask_slots: list[str] = []
     os_slots: list[str] = []
+    omp_slots: list[str] = []
     strut_slots: list[str] = []
     for idx, _label in enumerate(base_labels):
         opensees_value = engines["opensees"][idx]
+        openseesmp_value = engines["openseesmp"][idx]
         strut_value = engines["strut"][idx]
         case_num = idx + 1
         x_labels.extend(
             [
                 _mermaid_label(f"{case_num}O"),
+                _mermaid_label(f"{case_num}M"),
                 _mermaid_label(f"{case_num}S"),
             ]
         )
         mask_slots.extend(
             [
+                "0.0",
                 "0.0",
                 "0.0",
             ]
@@ -116,10 +120,19 @@ def _build_chart_lines(
             [
                 _mermaid_scaled_value(opensees_value, unit_divisor_us),
                 "0.0",
+                "0.0",
+            ]
+        )
+        omp_slots.extend(
+            [
+                "0.0",
+                _mermaid_scaled_value(openseesmp_value, unit_divisor_us),
+                "0.0",
             ]
         )
         strut_slots.extend(
             [
+                "0.0",
                 "0.0",
                 _mermaid_scaled_value(strut_value, unit_divisor_us),
             ]
@@ -127,6 +140,7 @@ def _build_chart_lines(
     x_axis = ", ".join(x_labels)
     mask_values = ", ".join(mask_slots)
     os_values = ", ".join(os_slots)
+    omp_values = ", ".join(omp_slots)
     strut_values = ", ".join(strut_slots)
     return [
         "```mermaid",
@@ -134,13 +148,14 @@ def _build_chart_lines(
         "config:",
         "  themeVariables:",
         "    xyChart:",
-        f"      plotColorPalette: '{OPENSEES_BLUE}, {MOJO_ORANGE}, #d0d0d0'",
+        f"      plotColorPalette: '{OPENSEES_BLUE}, {OPENSEESMP_GREEN}, {MOJO_ORANGE}, #d0d0d0'",
         "---",
         "xychart-beta",
         f'    title "Benchmark: {example_title}"',
         f'    x-axis [{x_axis}]',
         f'    y-axis "Analysis time ({unit_label})" 0 --> {axis_max:.3f}',
         f'    bar "OS" [{os_values}]',
+        f'    bar "OMP" [{omp_values}]',
         f'    bar "STR" [{strut_values}]',
         f'    bar "mask" [{mask_values}]',
         "```",
@@ -201,14 +216,15 @@ def write_opensees_examples_markdown(
             lines.extend(
                 [
                     "",
-                    f"| # | Label | OpenSees ({unit_label}) | Strut ({unit_label}) |",
-                    "| ---: | --- | ---: | ---: |",
+                    f"| # | Label | OpenSees ({unit_label}) | OpenSeesMP ({unit_label}) | Strut ({unit_label}) |",
+                    "| ---: | --- | ---: | ---: | ---: |",
                 ]
             )
             base_labels = _relative_labels(names)
             for idx, label in enumerate(base_labels):
                 lines.append(
                     f"| {idx + 1} | `{label}` | {_format_scaled(engines['opensees'][idx], unit_divisor_us)} | "
+                    f"{_format_scaled(engines['openseesmp'][idx], unit_divisor_us)} | "
                     f"{_format_scaled(engines['strut'][idx], unit_divisor_us)} |"
                 )
             lines.append("")

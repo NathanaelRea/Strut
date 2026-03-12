@@ -18,6 +18,9 @@ scalapack_libs=""
 test_script=""
 mp_test_script=""
 mp_test_procs=2
+mpiexec_bin="${OPENSEESMP_MPIEXEC:-mpiexec}"
+mpiexec_extra_args="${OPENSEESMP_MPIEXEC_ARGS:-}"
+mpiexec_accelerator="${OPENSEESMP_MPI_ACCELERATOR:-null}"
 declare -a cmake_extra_args=()
 
 usage() {
@@ -180,7 +183,7 @@ need_command tclsh
 
 if [[ "${with_mp}" -eq 1 ]]; then
   need_command mpicxx
-  need_command mpiexec
+  need_command "${mpiexec_bin}"
   openmpi=1
   if [[ -z "${mumps_dir}" ]]; then
     mumps_dir="${default_mumps_dir}"
@@ -236,9 +239,17 @@ if [[ -n "${mp_test_script}" ]]; then
   [[ "${with_mp}" -eq 1 ]] || die "--mp-test-script requires --with-mp"
   [[ -f "${mp_test_script}" ]] || die "MP test script not found: ${mp_test_script}"
   echo "Running OpenSeesMP test: ${mp_test_script}"
+  declare -a mpiexec_cmd=("${mpiexec_bin}" "-n" "${mp_test_procs}")
+  if [[ -n "${mpiexec_accelerator}" ]]; then
+    mpiexec_cmd+=("--mca" "accelerator" "${mpiexec_accelerator}")
+  fi
+  if [[ -n "${mpiexec_extra_args}" ]]; then
+    read -r -a mpiexec_extra_parts <<<"${mpiexec_extra_args}"
+    mpiexec_cmd+=("${mpiexec_extra_parts[@]}")
+  fi
   (
     cd "$(dirname "${mp_test_script}")"
-    mpiexec -n "${mp_test_procs}" "${build_dir}/OpenSeesMP" "$(basename "${mp_test_script}")"
+    "${mpiexec_cmd[@]}" "${build_dir}/OpenSeesMP" "$(basename "${mp_test_script}")"
   )
 fi
 
@@ -248,4 +259,7 @@ if [[ "${with_mp}" -eq 1 ]]; then
   echo "  ${build_dir}/OpenSeesMP"
   echo "Using MUMPS_DIR=${mumps_dir}"
   echo "Using SCALAPACK_LIBRARIES=${scalapack_libs}"
+  if [[ -n "${mpiexec_accelerator}" ]]; then
+    echo "Using OPENSEESMP_MPI_ACCELERATOR=${mpiexec_accelerator}"
+  fi
 fi

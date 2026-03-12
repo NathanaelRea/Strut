@@ -136,7 +136,7 @@ def main() -> int:
     parser.add_argument(
         "--engine",
         default="strut",
-        choices=("strut", "opensees"),
+        choices=("strut", "opensees", "openseesmp"),
         help="Engine timing column to compare.",
     )
     parser.add_argument(

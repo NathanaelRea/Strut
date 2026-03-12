@@ -1,11 +1,11 @@
 # Benchmark
 
-Tools for comparing native Linux OpenSees and Strut (Mojo) runtime performance.
+Tools for comparing native Linux OpenSees, OpenSeesMP, and Strut runtime performance.
 
 ## Runner
 
 Use `scripts/run_benchmarks.py` to run the default enabled validation cases on
-both engines, or a custom case list from `tests/validation/`. The Mojo solver is precompiled before
+the selected engines, or a custom case list from `tests/validation/`. The Strut solver is precompiled before
 timing (cached at `build/strut/strut`, or `build/strut/strut_profile` for `--profile` runs).
 
 Examples:
@@ -15,11 +15,12 @@ uv run scripts/run_benchmarks.py
 uv run scripts/run_benchmarks.py --cases elastic_beam_cantilever,elastic_frame_portal
 uv run scripts/run_benchmarks.py --cases tests/validation/elastic_frame_two_story/elastic_frame_two_story.json
 uv run scripts/run_benchmarks.py --engine strut
+uv run scripts/run_benchmarks.py --engine all
 uv run scripts/run_benchmarks.py --no-batch
 uv run scripts/run_benchmarks.py --gen-frame-bays 18 --gen-frame-stories 17 --gen-frame-element forceBeamColumn2d --cases force_beam_column2d_fiber_frame_18bay_17story --no-archive
 uv run scripts/run_benchmarks.py --benchmark-suite root_cause_v1
 uv run scripts/run_benchmarks.py --benchmark-suite opt_fast_v1 --engine strut --profile benchmark/speedscope --no-archive
-uv run scripts/run_benchmarks.py --benchmark-suite opt_full_v1 --engine both --profile benchmark/speedscope --no-archive
+uv run scripts/run_benchmarks.py --benchmark-suite opt_full_v1 --engine all --profile benchmark/speedscope --no-archive
 uv run scripts/run_benchmarks.py --list-benchmark-suites
 uv run scripts/run_benchmarks.py --engine strut --cases opensees_example_rc_frame_earthquake --profile benchmark/speedscope --no-archive
 uv run scripts/run_benchmarks.py --engine strut --cases force_beam_column3d_portal_benchmark,nonlinear_beam_column3d_portal_benchmark,disp_beam_column3d_portal_benchmark --no-archive
@@ -51,7 +52,7 @@ uv run scripts/run_benchmarks.py --cases elastic_truss_basic,elastic_four_node_q
 - Runs with `--profile` write to `benchmark/results-profile/` and default to `--no-archive`.
 - `--profile` builds and reuses a dedicated `build/strut/strut_profile` binary, so switching between normal and profiled runs does not overwrite the default solver.
 - `--profile <DIR>` works in both per-case and batch runs and writes per-case files as `<case>.speedscope.json` into `DIR`.
-- Compute-only outputs are written to `benchmark/results/opensees/` and `benchmark/results/strut/` (or the `results-profile` equivalents when profiling).
+- Compute-only outputs are written to `benchmark/results/opensees/`, `benchmark/results/openseesmp/`, and `benchmark/results/strut/` (or the `results-profile` equivalents when profiling).
 - `metadata.json` records machine/build/run metadata for reproducible baseline/perf comparisons.
 - `uv run scripts/compare_benchmarks.py` compares two `summary.json` files and can fail on regressions or unmet improvement targets.
 - Use `--min-regression-us` to ignore tiny absolute timing swings on very small cases.
@@ -59,12 +60,14 @@ uv run scripts/run_benchmarks.py --cases elastic_truss_basic,elastic_four_node_q
 - `phase_rollup.csv` records phase-level aggregates (mean/median/min/max).
 - `benchmark/archive/` contains timestamped summary snapshots.
 - The benchmark runner is compute-only and does not perform parity checks. Run `uv run run_tests.py` for parity validation before benchmarking.
-- OpenSees and Mojo are timed from recorder-stripped inputs in both batch and non-batch modes.
+- OpenSees, OpenSeesMP, and Strut are timed from recorder-stripped inputs.
 - The runner prints progress per case and pass while running.
-- `analysis_time_us.txt` is solve-only for both engines (OpenSees `analyze/eigen`, Mojo solve phase).
-- Batch mode is enabled for both engines by default; use `--no-batch` for single-case process timings.
+- `analysis_time_us.txt` is solve-only for all engines (OpenSees/OpenSeesMP `analyze/eigen`, Strut solve phase).
+- Batch mode is enabled for OpenSees by default; use `--no-batch` for single-case process timings. OpenSeesMP and Strut run per case.
 - OpenSees batch mode prewarms `eigen` once outside case timers to remove first-call initialization skew.
-- Default runs benchmark all enabled cases in `tests/validation/` on both engines.
+- `--engine both` runs the legacy OpenSees + Strut pair. `--engine all` runs OpenSees + OpenSeesMP + Strut.
+- `uv run scripts/run_benchmarks.py` now defaults to `--engine all`.
+- Default runs benchmark all enabled cases in `tests/validation/` on the selected engines.
 - `--include-disabled` adds disabled validation cases to the default run.
 - Benchmark participation is controlled by case selection plus `enabled`, not by a separate `status` flag.
 - Default batch runs (without `--cases` or `--gen-frame-*`) also auto-include generated medium-size frame benchmarks.

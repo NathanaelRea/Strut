@@ -11,10 +11,10 @@ import math
 from typing import Dict, List, Optional, Tuple
 
 try:
-    from .plot_constants import MOJO_ORANGE, OPENSEES_BLUE
+    from .plot_constants import MOJO_ORANGE, OPENSEES_BLUE, OPENSEESMP_GREEN
 except ImportError:
     # Allow running as a standalone script.
-    from plot_constants import MOJO_ORANGE, OPENSEES_BLUE
+    from plot_constants import MOJO_ORANGE, OPENSEES_BLUE, OPENSEESMP_GREEN
 
 try:
     import matplotlib.pyplot as plt
@@ -24,6 +24,19 @@ except ModuleNotFoundError as exc:
         "matplotlib is required for plotting. Install it with "
         "`uv add --dev matplotlib` or `pip install matplotlib`."
     ) from exc
+
+
+ENGINE_ORDER = ("opensees", "openseesmp", "strut")
+ENGINE_LABELS = {
+    "opensees": "OpenSees",
+    "openseesmp": "OpenSeesMP",
+    "strut": "Strut",
+}
+ENGINE_COLORS = {
+    "opensees": OPENSEES_BLUE,
+    "openseesmp": OPENSEESMP_GREEN,
+    "strut": MOJO_ORANGE,
+}
 
 
 def load_summary(path: Path) -> dict:
@@ -85,7 +98,7 @@ def collect_recent_cases(
     names = [case["name"] for case in cases]
     engines = {}
     errors = {}
-    for engine in ("opensees", "strut"):
+    for engine in ENGINE_ORDER:
         values_us = []
         errs_us = []
         for case in cases:
@@ -102,6 +115,20 @@ def collect_recent_cases(
         engines[engine] = values_us
         errors[engine] = errs_us
     return names, engines, errors
+
+
+def _missing_analysis_engines(cases: List[dict]) -> List[str]:
+    missing: List[str] = []
+    for engine in ENGINE_ORDER:
+        has_analysis = False
+        for case in cases:
+            value = _case_time_seconds(case, engine)
+            if isinstance(value, (int, float)) and math.isfinite(value):
+                has_analysis = True
+                break
+        if not has_analysis:
+            missing.append(engine)
+    return missing
 
 
 def _count_constrained_dofs(node: dict, ndf: int) -> int:
@@ -214,7 +241,7 @@ def _case_size_from_timings(
     case: dict, medium_threshold_us: float, large_threshold_us: float
 ) -> str:
     max_analysis_us = 0.0
-    for engine in ("opensees", "strut"):
+    for engine in ENGINE_ORDER:
         stats = case.get(engine)
         if isinstance(stats, dict):
             analysis_us = stats.get("analysis_us")
@@ -244,8 +271,8 @@ def collect_archive_trend(
     start_timestamp: Optional[datetime] = None,
     end_timestamp: Optional[datetime] = None,
 ) -> Tuple[List[datetime], Dict[str, List[float]], Dict[str, List[float]]]:
-    engine_means: Dict[str, List[float]] = {"opensees": [], "strut": []}
-    engine_stds: Dict[str, List[float]] = {"opensees": [], "strut": []}
+    engine_means: Dict[str, List[float]] = {engine: [] for engine in ENGINE_ORDER}
+    engine_stds: Dict[str, List[float]] = {engine: [] for engine in ENGINE_ORDER}
     timestamps: List[datetime] = []
     files = sorted(archive_dir.glob("*-summary.json"))
     if not files:
@@ -262,7 +289,7 @@ def collect_archive_trend(
             continue
         run_medians: Dict[str, float] = {}
         cases = _filter_enabled_cases(data.get("cases", []))
-        for engine in ("opensees", "strut"):
+        for engine in ENGINE_ORDER:
             values: List[float] = []
             for case in cases:
                 if size_filter:
@@ -305,7 +332,7 @@ def collect_archive_trend(
 
     for latest_ts, entries in ordered_batches:
         timestamps.append(latest_ts)
-        for engine in ("opensees", "strut"):
+        for engine in ENGINE_ORDER:
             values = [run_vals.get(engine, float("nan")) for _, run_vals in entries]
             mean_val, std_val = _mean_std(values)
             engine_means[engine].append(mean_val)
@@ -478,23 +505,28 @@ def plot_recent_bar(
     else:
         x = list(range(len(names)))
         group_centers = []
-    width = 0.38
-    opensees_vals = [v * scale for v in engines.get("opensees", [])]
-    strut_vals = [v * scale for v in engines.get("strut", [])]
-
-    ax.bar(
-        [i - width / 2 for i in x],
-        opensees_vals,
-        width,
-        label="OpenSees",
-    )
-    ax.bar(
-        [i + width / 2 for i in x],
-        strut_vals,
-        width,
-        label="Strut",
-        color=MOJO_ORANGE,
-    )
+    active_engines = [
+        engine
+        for engine in ENGINE_ORDER
+        if any(
+            isinstance(value, (int, float)) and math.isfinite(value)
+            for value in engines.get(engine, [])
+        )
+    ]
+    if not active_engines:
+        active_engines = [engine for engine in ENGINE_ORDER if engine in engines]
+    width = 0.8 / max(len(active_engines), 1)
+    center_offset = (len(active_engines) - 1) / 2
+    for engine_idx, engine in enumerate(active_engines):
+        offset = (engine_idx - center_offset) * width
+        values = [v * scale for v in engines.get(engine, [])]
+        ax.bar(
+            [i + offset for i in x],
+            values,
+            width,
+            label=ENGINE_LABELS.get(engine, engine.title()),
+            color=ENGINE_COLORS.get(engine),
+        )
 
     ax.set_ylabel(f"Analysis time ({unit_label})")
     ax.set_title(title)
@@ -534,31 +566,24 @@ def plot_archive_trend(
 ):
     fig, ax = plt.subplots(figsize=(10, 4))
     if timestamps:
-        opensees_means = means.get("opensees", [])
-        strut_means = means.get("strut", [])
-        opensees_stds = stds.get("opensees", [])
-        strut_stds = stds.get("strut", [])
-        # Draw both series as filled circles and distinguish by color only.
-        ax.errorbar(
-            timestamps,
-            [v * scale for v in strut_means],
-            yerr=[v * scale for v in strut_stds],
-            marker="o",
-            linestyle="none",
-            label="Strut",
-            color=MOJO_ORANGE,
-            capsize=3,
-        )
-        ax.errorbar(
-            timestamps,
-            [v * scale for v in opensees_means],
-            yerr=[v * scale for v in opensees_stds],
-            marker="o",
-            linestyle="none",
-            label="OpenSees",
-            color=OPENSEES_BLUE,
-            capsize=3,
-        )
+        for engine in ENGINE_ORDER:
+            engine_means = means.get(engine, [])
+            engine_stds = stds.get(engine, [])
+            if not engine_means or not any(
+                isinstance(value, (int, float)) and math.isfinite(value)
+                for value in engine_means
+            ):
+                continue
+            ax.errorbar(
+                timestamps,
+                [v * scale for v in engine_means],
+                yerr=[v * scale for v in engine_stds],
+                marker="o",
+                linestyle="none",
+                label=ENGINE_LABELS.get(engine, engine.title()),
+                color=ENGINE_COLORS.get(engine),
+                capsize=3,
+            )
 
     ax.set_ylabel(f"Mean median analysis time ({unit_label})")
     ax.set_title(title)
@@ -592,6 +617,11 @@ def write_plots_pdf(
     cases = _filter_enabled_cases(summary.get("cases", []))
     filtered_summary = dict(summary)
     filtered_summary["cases"] = cases
+    for engine in _missing_analysis_engines(cases):
+        print(
+            f"warning: no {engine} analysis timings in {results_path}; "
+            "summary.json is missing those engine results"
+        )
     small_indices: List[int] = []
     medium_indices: List[int] = []
     large_indices: List[int] = []
@@ -614,12 +644,6 @@ def write_plots_pdf(
             group_by,
             group_config,
         )
-        for engine, values in engines.items():
-            if values and all(isinstance(v, float) and v != v for v in values):
-                print(
-                    f"warning: no analysis timings for {engine} in {results_path}; "
-                    "rebuild and rerun benchmarks to populate analysis_us"
-                )
         return names, engines, errors, group_spans
 
     small_names, small_engines, small_errors, small_spans = _prepare(small_indices)

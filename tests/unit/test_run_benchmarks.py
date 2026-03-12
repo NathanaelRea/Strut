@@ -204,6 +204,32 @@ def test_discover_all_cases_includes_direct_tcl_cases(tmp_path: Path):
     assert cases[0].tcl_path == entry_tcl.resolve()
 
 
+def test_resolve_engine_mode_defaults_to_both_without_mp():
+    assert run_benchmarks._resolve_engine_mode(None, False, env={}) == "both"
+
+
+def test_resolve_engine_mode_defaults_to_all_with_mp():
+    assert run_benchmarks._resolve_engine_mode(None, True, env={}) == "all"
+
+
+def test_resolve_engine_mode_uses_env_when_engine_unspecified():
+    assert (
+        run_benchmarks._resolve_engine_mode(
+            None, False, env={"STRUT_BENCH_ENGINE": "strut"}
+        )
+        == "strut"
+    )
+
+
+def test_resolve_engine_mode_prefers_explicit_engine_over_mp_and_env():
+    assert (
+        run_benchmarks._resolve_engine_mode(
+            "openseesmp", False, env={"STRUT_BENCH_ENGINE": "both"}
+        )
+        == "openseesmp"
+    )
+
+
 def test_expand_case_patterns_deduplicates_and_sorts(tmp_path: Path):
     validation_root = tmp_path / "validation"
     _write_case(validation_root / "beta_case" / "beta_case.json")
@@ -1415,11 +1441,18 @@ def test_write_benchmark_plots_calls_plot_helper(monkeypatch, tmp_path: Path):
 
 
 @pytest.mark.parametrize(
-    ("engine", "no_batch", "expected_batch", "expected_opensees_batch"),
+    (
+        "engine",
+        "no_batch",
+        "expected_batch",
+        "expected_opensees_batch",
+        "expected_openseesmp_batch",
+    ),
     [
-        ("strut", False, False, False),
-        ("both", False, True, True),
-        ("opensees", True, False, False),
+        ("strut", False, False, False, False),
+        ("both", False, True, True, False),
+        ("all", False, True, True, False),
+        ("opensees", True, False, False, False),
     ],
 )
 def test_collect_run_metadata_tracks_batch_mode_per_engine(
@@ -1429,6 +1462,7 @@ def test_collect_run_metadata_tracks_batch_mode_per_engine(
     no_batch: bool,
     expected_batch: bool,
     expected_opensees_batch: bool,
+    expected_openseesmp_batch: bool,
 ):
     monkeypatch.setattr(run_benchmarks, "git_rev", lambda repo_root: "deadbeef")
     monkeypatch.setattr(run_benchmarks, "_git_branch", lambda repo_root: "main")
@@ -1459,6 +1493,7 @@ def test_collect_run_metadata_tracks_batch_mode_per_engine(
     runner = metadata["runner"]
     assert runner["batch_mode"] is expected_batch
     assert runner["opensees_batch_mode"] is expected_opensees_batch
+    assert runner["openseesmp_batch_mode"] is expected_openseesmp_batch
     assert runner["strut_batch_mode"] is False
 
 

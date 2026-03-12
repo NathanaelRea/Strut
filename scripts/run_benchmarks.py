@@ -173,6 +173,86 @@ PHASE_FRAME_MAP = {
     "recorders_us": ("recorders",),
 }
 
+ENGINE_ORDER = ("opensees", "openseesmp", "strut")
+ENGINE_LABELS = {
+    "opensees": "OpenSees",
+    "openseesmp": "OpenSeesMP",
+    "strut": "Strut",
+}
+
+
+def _default_openseesmp_procs() -> int:
+    preferred = 8
+    try:
+        proc = subprocess.run(
+            ["lscpu", "-p=core"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if proc.returncode == 0:
+            core_ids = {
+                line.split(",", 1)[0].strip()
+                for line in proc.stdout.splitlines()
+                if line and not line.startswith("#")
+            }
+            core_ids.discard("")
+            if core_ids:
+                return min(preferred, len(core_ids))
+    except OSError:
+        pass
+
+    cpu_count = os.cpu_count() or preferred
+    if cpu_count < 1:
+        return preferred
+    return min(preferred, cpu_count)
+
+
+def _physical_core_count() -> int:
+    try:
+        proc = subprocess.run(
+            ["lscpu", "-p=core"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if proc.returncode == 0:
+            core_ids = {
+                line.split(",", 1)[0].strip()
+                for line in proc.stdout.splitlines()
+                if line and not line.startswith("#")
+            }
+            core_ids.discard("")
+            if core_ids:
+                return len(core_ids)
+    except OSError:
+        pass
+
+    cpu_count = os.cpu_count() or 1
+    return max(cpu_count, 1)
+
+
+def _selected_engines(engine_arg: str) -> Tuple[str, ...]:
+    if engine_arg == "both":
+        return ("opensees", "strut")
+    if engine_arg == "all":
+        return ENGINE_ORDER
+    return (engine_arg,)
+
+
+def _resolve_engine_mode(
+    engine_arg: Optional[str],
+    mp_enabled: bool,
+    env: Optional[dict] = None,
+) -> str:
+    resolved_env = os.environ if env is None else env
+    if engine_arg:
+        return engine_arg
+    env_engine = resolved_env.get("STRUT_BENCH_ENGINE")
+    if env_engine:
+        return env_engine
+    return "all" if mp_enabled else "both"
+
 
 def run(
     cmd: List[str], env=None, verbose=False, capture_on_error: bool = False
@@ -1372,9 +1452,12 @@ def collect_run_metadata(
     results_root: Path,
     profile_root: Optional[Path],
     strut_solver: Optional[Path],
+    active_engines: Optional[Tuple[str, ...]] = None,
 ) -> dict:
     requested_batch_mode = not args.no_batch
-    opensees_batch_mode = requested_batch_mode and args.engine in {"both", "opensees"}
+    selected_engines = active_engines or _selected_engines(args.engine)
+    opensees_batch_mode = requested_batch_mode and "opensees" in selected_engines
+    openseesmp_batch_mode = False
     strut_batch_mode = False
     metadata = {
         "platform": {
@@ -1383,6 +1466,7 @@ def collect_run_metadata(
             "machine": platform.machine(),
             "python_version": platform.python_version(),
             "cpu_model": _read_cpu_model(),
+            "physical_cores": _physical_core_count(),
         },
         "git": {
             "rev": git_rev(repo_root),
@@ -1391,8 +1475,10 @@ def collect_run_metadata(
         "runner": {
             "benchmark_suite": args.benchmark_suite,
             "engine": args.engine,
-            "batch_mode": opensees_batch_mode or strut_batch_mode,
+            "engines": list(selected_engines),
+            "batch_mode": opensees_batch_mode or openseesmp_batch_mode or strut_batch_mode,
             "opensees_batch_mode": opensees_batch_mode,
+            "openseesmp_batch_mode": openseesmp_batch_mode,
             "strut_batch_mode": strut_batch_mode,
             "repeat": args.repeat,
             "warmup": args.warmup,
@@ -1403,6 +1489,11 @@ def collect_run_metadata(
         },
         "build": {
             "strut_solver": str(strut_solver) if strut_solver is not None else None,
+            "opensees_runner": str(repo_root / "scripts" / "run_opensees.sh"),
+            "openseesmp_runner": str(repo_root / "scripts" / "run_openseesmp.sh"),
+            "openseesmp_procs": int(
+                os.getenv("OPENSEESMP_PROCS", str(_default_openseesmp_procs()))
+            ),
             "profile_instrumented": bool(args.profile),
             "mojo_version": _safe_check_output(
                 ["uv", "run", "mojo", "--version"], cwd=repo_root
@@ -1410,6 +1501,35 @@ def collect_run_metadata(
         },
     }
     return metadata
+
+
+def _check_openseesmp_available(
+    repo_root: Path,
+    results_root: Path,
+    env: dict,
+    verbose: bool,
+) -> Tuple[bool, Optional[str]]:
+    smoke_root = results_root / ".tmp" / "openseesmp_smoke"
+    ensure_clean_dir(smoke_root)
+    smoke_tcl = smoke_root / "smoke.tcl"
+    smoke_out = smoke_root / "out"
+    smoke_tcl.write_text("wipe\n", encoding="utf-8")
+    try:
+        run(
+            [
+                str(repo_root / "scripts" / "run_openseesmp.sh"),
+                "--script",
+                str(smoke_tcl),
+                "--output",
+                str(smoke_out),
+            ],
+            env=env,
+            verbose=verbose,
+            capture_on_error=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        return False, _format_subprocess_failure("openseesmp preflight failed", exc)
+    return True, None
 
 
 def _load_phase_times(path: Path) -> Dict[str, int]:
@@ -1915,16 +2035,25 @@ def _strut_slower_than_opensees_lines(case_entries: List[dict]) -> List[str]:
 def _read_runtime_failures(
     case_entries: List[dict],
     results_root: Path,
-    run_opensees: bool,
-    run_strut: bool,
+    engines: Optional[Iterable[str]] = None,
+    run_opensees: Optional[bool] = None,
+    run_strut: Optional[bool] = None,
 ) -> List[RuntimeFailure]:
     failures: List[RuntimeFailure] = []
     seen = set()
     locations = []
-    if run_opensees:
-        locations.append(("opensees", "compute-only", results_root / "opensees"))
-    if run_strut:
-        locations.append(("strut", "compute-only", results_root / "strut"))
+
+    selected_engines: List[str] = []
+    if engines is not None:
+        selected_engines.extend(list(engines))
+    else:
+        if run_opensees:
+            selected_engines.append("opensees")
+        if run_strut:
+            selected_engines.append("strut")
+
+    for engine in selected_engines:
+        locations.append((engine, "compute-only", results_root / engine))
 
     for case_entry in case_entries:
         case_name = case_entry["name"]
@@ -2122,6 +2251,7 @@ def _summarize_parity_failures(parity_failures: List[str]) -> List[str]:
 
 
 def main() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
     parser = argparse.ArgumentParser(description="Run OpenSees vs Mojo benchmarks")
     parser.add_argument(
         "--cases",
@@ -2170,14 +2300,19 @@ def main() -> None:
     )
     parser.add_argument(
         "--engine",
-        choices=("both", "opensees", "strut"),
-        default=os.getenv("STRUT_BENCH_ENGINE", "both"),
+        choices=("both", "all", "opensees", "openseesmp", "strut"),
+        default=None,
         help="Which engine(s) to benchmark.",
+    )
+    parser.add_argument(
+        "--mp",
+        action="store_true",
+        help="Enable OpenSeesMP in the default engine selection. Without this flag, the default is the normal OpenSees + Strut run.",
     )
     parser.add_argument(
         "--no-batch",
         action="store_true",
-        help="Disable OpenSees batch mode and run OpenSees cases in separate processes. Mojo always runs per case.",
+        help="Disable OpenSees batch mode and run OpenSees cases in separate processes. OpenSeesMP and Strut run per case.",
     )
     parser.add_argument(
         "--warmup",
@@ -2223,7 +2358,6 @@ def main() -> None:
             print(f"- {key}: {value}")
         return
 
-    repo_root = Path(__file__).resolve().parents[1]
     validation_root = repo_root / "tests" / "validation"
     generated_cases: List[CaseSpec] = []
     generate_suite_force_pair = False
@@ -2238,8 +2372,14 @@ def main() -> None:
                 args.gen_frame_stories = 17
                 generate_suite_force_pair = True
 
+    args.engine = _resolve_engine_mode(args.engine, args.mp)
     requested_batch_mode = not args.no_batch
-    opensees_batch_mode = requested_batch_mode and args.engine in {"both", "opensees"}
+    selected_engines = _selected_engines(args.engine)
+    run_opensees = "opensees" in selected_engines
+    run_openseesmp = "openseesmp" in selected_engines
+    run_strut = "strut" in selected_engines
+    opensees_batch_mode = requested_batch_mode and run_opensees
+    openseesmp_batch_mode = False
     auto_batch_default_gen = (
         opensees_batch_mode
         and args.cases is None
@@ -2377,6 +2517,7 @@ def main() -> None:
 
     for sub in (
         "opensees",
+        "openseesmp",
         "strut",
         "tcl",
         ".tmp",
@@ -2385,6 +2526,31 @@ def main() -> None:
 
     env = os.environ.copy()
     verbose = env.get("STRUT_VERBOSE") == "1"
+
+    if run_openseesmp:
+        log(
+            "OpenSeesMP core usage: "
+            f"physical_cores={_physical_core_count()} "
+            f"mpi_ranks={int(env.get('OPENSEESMP_PROCS', str(_default_openseesmp_procs())))}"
+        )
+
+    if run_openseesmp:
+        openseesmp_ok, openseesmp_reason = _check_openseesmp_available(
+            repo_root=repo_root,
+            results_root=results_root,
+            env=env,
+            verbose=verbose,
+        )
+        if not openseesmp_ok:
+            log_err(
+                "OpenSeesMP preflight failed; skipping OpenSeesMP benchmarks. "
+                + (openseesmp_reason or "")
+            )
+            run_openseesmp = False
+            openseesmp_batch_mode = False
+            selected_engines = tuple(
+                engine for engine in selected_engines if engine != "openseesmp"
+            )
 
     summary_cases = []
     csv_rows = []
@@ -2397,8 +2563,6 @@ def main() -> None:
         f"skipped as disabled: {skipped_disabled_count}."
     )
 
-    run_opensees = args.engine in ("both", "opensees")
-    run_strut = args.engine in ("both", "strut")
     strut_solver = None
     if run_strut:
         strut_solver = ensure_strut_solver(repo_root, verbose, args.profile)
@@ -2408,10 +2572,15 @@ def main() -> None:
         results_root=results_root,
         profile_root=profile_root,
         strut_solver=strut_solver,
+        active_engines=selected_engines,
     )
 
-    if not run_opensees and not run_strut:
-        raise SystemExit("No engines selected. Use --engine opensees|strut|both.")
+    if run_openseesmp and not (repo_root / "scripts" / "run_openseesmp.sh").exists():
+        raise SystemExit("OpenSeesMP runner missing: scripts/run_openseesmp.sh")
+    if not selected_engines:
+        raise SystemExit(
+            "No engines selected. Use --engine opensees|openseesmp|strut|both|all."
+        )
 
     prepared_case_data: Dict[str, dict] = {}
     for case in case_specs:
@@ -2530,24 +2699,24 @@ def main() -> None:
                 log_err(failure)
             raise SystemExit(1)
         raise SystemExit("No runnable benchmark cases remain after preparation.")
-    opensees_batch_entries = case_entries
-    skipped_opensees_batch_cases: List[str] = []
-    if opensees_batch_mode:
+    batch_entries = case_entries
+    skipped_batch_cases: List[str] = []
+    if opensees_batch_mode or openseesmp_batch_mode:
         batch_case_entries = []
-        for entry in opensees_batch_entries:
+        for entry in batch_entries:
             if entry.get("uses_eigen", False):
-                skipped_opensees_batch_cases.append(entry["name"])
+                skipped_batch_cases.append(entry["name"])
                 continue
             batch_case_entries.append(entry)
-        if skipped_opensees_batch_cases:
+        if skipped_batch_cases:
             log(
-                "OpenSees batch mode: skipping eigen/modal cases: "
-                + ", ".join(sorted(skipped_opensees_batch_cases))
+                "Batch mode: skipping eigen/modal cases: "
+                + ", ".join(sorted(skipped_batch_cases))
             )
-        opensees_batch_entries = batch_case_entries
-        if not opensees_batch_entries and run_opensees and not run_strut:
+        batch_entries = batch_case_entries
+        if not batch_entries and (run_opensees or run_openseesmp) and not run_strut:
             raise SystemExit(
-                "No non-eigen OpenSees cases remain for batch mode. Use --no-batch to run OpenSees eigen/modal cases."
+                "No non-eigen OpenSees/OpenSeesMP cases remain for batch mode. Use --no-batch to run eigen/modal cases."
             )
     case_entries_by_name = {entry["name"]: entry for entry in case_entries}
 
@@ -2601,13 +2770,15 @@ def main() -> None:
         batch_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         return batch_path
 
-    def run_opensees_batch(entries: List[dict], output_root: Path) -> bool:
+    def run_reference_batch(
+        entries: List[dict], output_root: Path, runner_path: Path, label: str
+    ) -> bool:
         ensure_clean_dir(output_root)
         batch_script = _write_batch_tcl(entries, output_root)
         try:
             run(
                 [
-                    str(repo_root / "scripts" / "run_opensees.sh"),
+                    str(runner_path),
                     "--script",
                     str(batch_script),
                     "--output",
@@ -2618,14 +2789,19 @@ def main() -> None:
                 capture_on_error=True,
             )
         except subprocess.CalledProcessError as exc:
-            message = _format_subprocess_failure("opensees batch aborted", exc)
+            message = _format_subprocess_failure(f"{label} batch aborted", exc)
             for entry in entries:
                 _write_case_error(output_root / entry["name"], message)
             return False
         return True
 
-    def run_opensees_batch_repeated(
-        entries: List[dict], output_root: Path, repeat: int, warmup: int
+    def run_reference_batch_repeated(
+        entries: List[dict],
+        output_root: Path,
+        repeat: int,
+        warmup: int,
+        runner_path: Path,
+        label: str,
     ):
         if not entries:
             return [], {}, {}, False
@@ -2638,20 +2814,20 @@ def main() -> None:
         had_abort = False
 
         for i in range(warmup):
-            log(f"OpenSees batch {pass_label} warmup {i + 1}/{warmup}...")
+            log(f"{label} batch {pass_label} warmup {i + 1}/{warmup}...")
             offset = i % n
             rotated = entries[offset:] + entries[:offset]
-            ok = run_opensees_batch(rotated, output_root)
+            ok = run_reference_batch(rotated, output_root, runner_path, label)
             if not ok:
                 had_abort = True
 
         times = []
         for i in range(repeat):
-            log(f"OpenSees batch {pass_label} repeat {i + 1}/{repeat}...")
+            log(f"{label} batch {pass_label} repeat {i + 1}/{repeat}...")
             offset = i % n
             rotated = entries[offset:] + entries[:offset]
             start = time.perf_counter()
-            ok = run_opensees_batch(rotated, output_root)
+            ok = run_reference_batch(rotated, output_root, runner_path, label)
             end = time.perf_counter()
             if not ok:
                 had_abort = True
@@ -2672,8 +2848,9 @@ def main() -> None:
         return times, analysis_by_case, total_by_case, had_abort
 
     run_opensees_per_case = run_opensees and not opensees_batch_mode
+    run_openseesmp_per_case = run_openseesmp and not openseesmp_batch_mode
     run_strut_per_case = run_strut
-    if run_opensees and opensees_batch_mode and opensees_batch_entries:
+    if run_opensees and opensees_batch_mode and batch_entries:
         log("Running OpenSees in batch mode.")
         (
             opensees_times,
@@ -2681,11 +2858,13 @@ def main() -> None:
             batch_total_hist,
             opensees_batch_had_abort,
         ) = (
-            run_opensees_batch_repeated(
-                opensees_batch_entries,
+            run_reference_batch_repeated(
+                batch_entries,
                 results_root / "opensees",
                 repeat=args.repeat,
                 warmup=args.warmup,
+                runner_path=repo_root / "scripts" / "run_opensees.sh",
+                label="OpenSees",
             )
         )
         if opensees_batch_had_abort:
@@ -2712,7 +2891,7 @@ def main() -> None:
                 "analysis_us": "",
             }
         )
-        for case_entry in opensees_batch_entries:
+        for case_entry in batch_entries:
             case_name = case_entry["name"]
             analysis_hist = batch_analysis_hist.get(case_name, [])
             total_hist = batch_total_hist.get(case_name, [])
@@ -2742,6 +2921,97 @@ def main() -> None:
                     "case": case_name,
                     "dofs": entry.get("dofs", ""),
                     "engine": "opensees",
+                    "mode": "compute_only_batch_case",
+                    "repeat": "",
+                    "warmup": "",
+                    "mean_s": (
+                        f"{(total_us or 0) / 1e6:.6f}" if total_us is not None else ""
+                    ),
+                    "median_s": (
+                        f"{(total_median or 0) / 1e6:.6f}"
+                        if total_median is not None
+                        else ""
+                    ),
+                    "min_s": (
+                        f"{(min(total_hist) if total_hist else 0) / 1e6:.6f}"
+                        if total_hist
+                        else ""
+                    ),
+                    "analysis_us": analysis_us,
+                }
+            )
+
+    if run_openseesmp and openseesmp_batch_mode and batch_entries:
+        log("Running OpenSeesMP in batch mode.")
+        (
+            openseesmp_times,
+            batch_analysis_hist,
+            batch_total_hist,
+            openseesmp_batch_had_abort,
+        ) = (
+            run_reference_batch_repeated(
+                batch_entries,
+                results_root / "openseesmp",
+                repeat=args.repeat,
+                warmup=args.warmup,
+                runner_path=repo_root / "scripts" / "run_openseesmp.sh",
+                label="OpenSeesMP",
+            )
+        )
+        if openseesmp_batch_had_abort:
+            log_err("OpenSeesMP batch compute-only aborted for one or more cases.")
+        else:
+            log_ok("OpenSeesMP batch compute-only pass OK.")
+        batch_stats = {
+            "times_s": openseesmp_times,
+            "mean_s": mean(openseesmp_times),
+            "median_s": median(openseesmp_times),
+            "min_s": min(openseesmp_times),
+        }
+        csv_rows.append(
+            {
+                "case": "openseesmp_batch",
+                "dofs": "",
+                "engine": "openseesmp",
+                "mode": "compute_only_batch",
+                "repeat": args.repeat,
+                "warmup": args.warmup,
+                "mean_s": f"{batch_stats['mean_s']:.6f}",
+                "median_s": f"{batch_stats['median_s']:.6f}",
+                "min_s": f"{batch_stats['min_s']:.6f}",
+                "analysis_us": "",
+            }
+        )
+        for case_entry in batch_entries:
+            case_name = case_entry["name"]
+            analysis_hist = batch_analysis_hist.get(case_name, [])
+            total_hist = batch_total_hist.get(case_name, [])
+            analysis_mean = int(mean(analysis_hist)) if analysis_hist else None
+            total_mean = int(mean(total_hist)) if total_hist else None
+            analysis_median = int(median(analysis_hist)) if analysis_hist else None
+            total_median = int(median(total_hist)) if total_hist else None
+            analysis_us = analysis_median
+            total_us = total_median
+            entry = case_entries_by_name.get(case_name)
+            if entry is None:
+                continue
+            batch_entry = {
+                "times_s": [],
+                "analysis_us": analysis_us,
+                "total_us": total_us,
+                "analysis_mean_us": analysis_mean,
+                "total_mean_us": total_mean,
+                "analysis_median_us": analysis_median,
+                "total_median_us": total_median,
+                "repeats": len(analysis_hist),
+            }
+            entry["openseesmp"] = dict(batch_entry)
+            entry["openseesmp_batch"] = dict(batch_entry)
+            csv_rows.append(
+                {
+                    "case": case_name,
+                    "dofs": entry.get("dofs", ""),
+                    "engine": "openseesmp",
                     "mode": "compute_only_batch_case",
                     "repeat": "",
                     "warmup": "",
@@ -2817,6 +3087,30 @@ def main() -> None:
             if not last_run:
                 shutil.rmtree(target_dir, ignore_errors=True)
 
+        def openseesmp_cmd(output_dir: Path, last_run: bool) -> None:
+            tcl_compute = Path(case_entry["tcl_compute"])
+            if last_run:
+                ensure_clean_dir(output_dir)
+                target_dir = output_dir
+            else:
+                tmp_dir = results_root / ".tmp" / "openseesmp" / case_name
+                ensure_clean_dir(tmp_dir)
+                target_dir = tmp_dir
+            run(
+                [
+                    str(repo_root / "scripts" / "run_openseesmp.sh"),
+                    "--script",
+                    str(tcl_compute),
+                    "--output",
+                    str(target_dir),
+                ],
+                env=env,
+                verbose=verbose,
+                capture_on_error=True,
+            )
+            if not last_run:
+                shutil.rmtree(target_dir, ignore_errors=True)
+
         if run_opensees_per_case:
             log(f"[{case_name}] OpenSees compute-only pass...")
             try:
@@ -2871,7 +3165,7 @@ def main() -> None:
                 )
 
         if run_strut_per_case:
-            log(f"[{case_name}] Mojo compute-only pass...")
+            log(f"[{case_name}] Strut compute-only pass...")
             try:
                 strut_times = run_engine(
                     lambda out, last_run: strut_cmd(out / case_name, last_run),
@@ -2885,10 +3179,10 @@ def main() -> None:
                     _format_subprocess_failure("strut compute-only pass aborted", exc),
                 )
                 log_err(
-                    f"[{case_name}] Mojo compute-only pass aborted (exit {exc.returncode})."
+                    f"[{case_name}] Strut compute-only pass aborted (exit {exc.returncode})."
                 )
             else:
-                log_ok(f"[{case_name}] Mojo compute-only pass OK.")
+                log_ok(f"[{case_name}] Strut compute-only pass OK.")
                 stats = {
                     "times_s": strut_times,
                     "mean_s": mean(strut_times),
@@ -2905,6 +3199,53 @@ def main() -> None:
                         "case": case_name,
                         "dofs": case_entry.get("dofs", ""),
                         "engine": "strut",
+                        "mode": "compute_only",
+                        "repeat": args.repeat,
+                        "warmup": args.warmup,
+                        "mean_s": f"{stats['mean_s']:.6f}",
+                        "median_s": f"{stats['median_s']:.6f}",
+                        "min_s": f"{stats['min_s']:.6f}",
+                        "analysis_us": stats["analysis_us"],
+                    }
+                )
+
+        if run_openseesmp_per_case:
+            log(f"[{case_name}] OpenSeesMP compute-only pass...")
+            try:
+                openseesmp_times = run_engine(
+                    lambda out, last_run: openseesmp_cmd(out / case_name, last_run),
+                    results_root / "openseesmp",
+                    args.repeat,
+                    args.warmup,
+                )
+            except subprocess.CalledProcessError as exc:
+                _write_case_error(
+                    results_root / "openseesmp" / case_name,
+                    _format_subprocess_failure(
+                        "openseesmp compute-only pass aborted", exc
+                    ),
+                )
+                log_err(
+                    f"[{case_name}] OpenSeesMP compute-only pass aborted (exit {exc.returncode})."
+                )
+            else:
+                log_ok(f"[{case_name}] OpenSeesMP compute-only pass OK.")
+                stats = {
+                    "times_s": openseesmp_times,
+                    "mean_s": mean(openseesmp_times),
+                    "median_s": median(openseesmp_times),
+                    "min_s": min(openseesmp_times),
+                }
+                analysis_file = (
+                    results_root / "openseesmp" / case_name / "analysis_time_us.txt"
+                )
+                stats["analysis_us"] = _read_analysis_us(analysis_file)
+                case_entry["openseesmp"] = stats
+                csv_rows.append(
+                    {
+                        "case": case_name,
+                        "dofs": case_entry.get("dofs", ""),
+                        "engine": "openseesmp",
                         "mode": "compute_only",
                         "repeat": args.repeat,
                         "warmup": args.warmup,
@@ -2983,8 +3324,7 @@ def main() -> None:
     runtime_failures = setup_failures + _read_runtime_failures(
         case_entries,
         results_root,
-        run_opensees=run_opensees,
-        run_strut=run_strut,
+        engines=selected_engines,
     )
     case_file_map = {entry["name"]: str(entry.get("case_file", "")) for entry in case_entries}
     if runtime_failures:
