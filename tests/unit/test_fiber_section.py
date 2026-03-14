@@ -294,6 +294,133 @@ def test_fiber_section_quadr_patch_elastic_aggregation():
     assert math.isclose(got["k22"], expected["k22"], rel_tol=1e-10, abs_tol=1e-10)
 
 
+def _mixed_family_section_case(layer_order):
+    layers = []
+    for material, y, area in layer_order:
+        layers.append(
+            {
+                "type": "straight",
+                "material": material,
+                "num_bars": 1,
+                "bar_area": area,
+                "y_start": y,
+                "z_start": 0.0,
+                "y_end": y,
+                "z_end": 0.0,
+            }
+        )
+    return {
+        "materials": [
+            {
+                "id": 1,
+                "type": "Concrete02",
+                "params": {
+                    "fpc": -32.0,
+                    "epsc0": -0.0021,
+                    "fpcu": -18.0,
+                    "epscu": -0.0058,
+                    "rat": 0.12,
+                    "ft": 2.8,
+                    "Ets": 180.0,
+                },
+            },
+            {
+                "id": 2,
+                "type": "Concrete02",
+                "params": {
+                    "fpc": -36.0,
+                    "epsc0": -0.0024,
+                    "fpcu": -21.0,
+                    "epscu": -0.0064,
+                    "rat": 0.1,
+                    "ft": 3.1,
+                    "Ets": 220.0,
+                },
+            },
+            {
+                "id": 3,
+                "type": "Steel02",
+                "params": {
+                    "Fy": 420.0,
+                    "E0": 200000.0,
+                    "b": 0.012,
+                    "R0": 18.0,
+                    "cR1": 0.925,
+                    "cR2": 0.15,
+                    "a1": 0.01,
+                    "a2": 1.0,
+                    "a3": 0.01,
+                    "a4": 1.0,
+                },
+            },
+            {
+                "id": 4,
+                "type": "Steel02",
+                "params": {
+                    "Fy": 460.0,
+                    "E0": 200000.0,
+                    "b": 0.01,
+                    "R0": 20.0,
+                    "cR1": 0.92,
+                    "cR2": 0.18,
+                    "a1": 0.015,
+                    "a2": 1.0,
+                    "a3": 0.015,
+                    "a4": 1.0,
+                },
+            },
+        ],
+        "section": {
+            "id": 9,
+            "type": "FiberSection2d",
+            "params": {"patches": [], "layers": layers},
+        },
+        "deformation_path": [
+            {"eps0": -8.0e-4, "kappa": 6.0e-3},
+            {"eps0": -1.6e-3, "kappa": 1.0e-2},
+            {"eps0": -2.0e-4, "kappa": -4.0e-3},
+            {"eps0": 4.0e-4, "kappa": -8.0e-3},
+            {"eps0": -6.0e-4, "kappa": 5.0e-3},
+        ],
+    }
+
+
+def test_fiber_section_mixed_material_order_is_response_invariant():
+    alternating_order = [
+        (1, -0.30, 0.0042),
+        (3, -0.24, 0.00045),
+        (2, -0.10, 0.0040),
+        (4, -0.04, 0.00055),
+        (3, 0.04, 0.00045),
+        (1, 0.10, 0.0042),
+        (4, 0.24, 0.00055),
+        (2, 0.30, 0.0040),
+    ]
+    grouped_order = [
+        (1, -0.30, 0.0042),
+        (1, 0.10, 0.0042),
+        (2, -0.10, 0.0040),
+        (2, 0.30, 0.0040),
+        (3, -0.24, 0.00045),
+        (3, 0.04, 0.00045),
+        (4, -0.04, 0.00055),
+        (4, 0.24, 0.00055),
+    ]
+
+    alternating_rows = _run_section_path(_mixed_family_section_case(alternating_order))
+    grouped_rows = _run_section_path(_mixed_family_section_case(grouped_order))
+
+    assert len(alternating_rows) == len(grouped_rows)
+    for alternating_row, grouped_row in zip(alternating_rows, grouped_rows):
+        for key in alternating_row:
+            assert math.isclose(
+                alternating_row[key],
+                grouped_row[key],
+                rel_tol=1e-10,
+                abs_tol=1e-8,
+            )
+
+
 def _expected_elastic_response_3d(case_data, eps0, ky, kz):
     e_by_mat = {
         m["id"]: m["params"]["E"]

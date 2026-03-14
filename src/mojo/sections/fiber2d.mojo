@@ -74,11 +74,19 @@ struct FiberSection2dDef(Defaultable, Movable, ImplicitlyCopyable):
     var steel02_mat_defs: List[UniMaterialDef]
     var steel02_single_definition: Bool
     var steel02_single_mat_def: UniMaterialDef
+    var steel02_group_offsets: List[Int]
+    var steel02_group_counts: List[Int]
+    var steel02_group_padded_counts: List[Int]
+    var steel02_group_mat_defs: List[UniMaterialDef]
     var concrete02_y_rel: List[Float64]
     var concrete02_area: List[Float64]
     var concrete02_mat_defs: List[UniMaterialDef]
     var concrete02_single_definition: Bool
     var concrete02_single_mat_def: UniMaterialDef
+    var concrete02_group_offsets: List[Int]
+    var concrete02_group_counts: List[Int]
+    var concrete02_group_padded_counts: List[Int]
+    var concrete02_group_mat_defs: List[UniMaterialDef]
     var steel01_nonlinear_indices: List[Int]
     var concrete01_nonlinear_indices: List[Int]
     var steel02_nonlinear_indices: List[Int]
@@ -168,11 +176,19 @@ struct FiberSection2dDef(Defaultable, Movable, ImplicitlyCopyable):
         self.steel02_mat_defs = []
         self.steel02_single_definition = False
         self.steel02_single_mat_def = UniMaterialDef()
+        self.steel02_group_offsets = []
+        self.steel02_group_counts = []
+        self.steel02_group_padded_counts = []
+        self.steel02_group_mat_defs = []
         self.concrete02_y_rel = []
         self.concrete02_area = []
         self.concrete02_mat_defs = []
         self.concrete02_single_definition = False
         self.concrete02_single_mat_def = UniMaterialDef()
+        self.concrete02_group_offsets = []
+        self.concrete02_group_counts = []
+        self.concrete02_group_padded_counts = []
+        self.concrete02_group_mat_defs = []
         self.steel01_nonlinear_indices = []
         self.concrete01_nonlinear_indices = []
         self.steel02_nonlinear_indices = []
@@ -262,11 +278,19 @@ struct FiberSection2dDef(Defaultable, Movable, ImplicitlyCopyable):
         self.steel02_mat_defs = []
         self.steel02_single_definition = False
         self.steel02_single_mat_def = UniMaterialDef()
+        self.steel02_group_offsets = []
+        self.steel02_group_counts = []
+        self.steel02_group_padded_counts = []
+        self.steel02_group_mat_defs = []
         self.concrete02_y_rel = []
         self.concrete02_area = []
         self.concrete02_mat_defs = []
         self.concrete02_single_definition = False
         self.concrete02_single_mat_def = UniMaterialDef()
+        self.concrete02_group_offsets = []
+        self.concrete02_group_counts = []
+        self.concrete02_group_padded_counts = []
+        self.concrete02_group_mat_defs = []
         self.steel01_nonlinear_indices = []
         self.concrete01_nonlinear_indices = []
         self.steel02_nonlinear_indices = []
@@ -356,11 +380,21 @@ struct FiberSection2dDef(Defaultable, Movable, ImplicitlyCopyable):
         self.steel02_mat_defs = existing.steel02_mat_defs.copy()
         self.steel02_single_definition = existing.steel02_single_definition
         self.steel02_single_mat_def = existing.steel02_single_mat_def
+        self.steel02_group_offsets = existing.steel02_group_offsets.copy()
+        self.steel02_group_counts = existing.steel02_group_counts.copy()
+        self.steel02_group_padded_counts = existing.steel02_group_padded_counts.copy()
+        self.steel02_group_mat_defs = existing.steel02_group_mat_defs.copy()
         self.concrete02_y_rel = existing.concrete02_y_rel.copy()
         self.concrete02_area = existing.concrete02_area.copy()
         self.concrete02_mat_defs = existing.concrete02_mat_defs.copy()
         self.concrete02_single_definition = existing.concrete02_single_definition
         self.concrete02_single_mat_def = existing.concrete02_single_mat_def
+        self.concrete02_group_offsets = existing.concrete02_group_offsets.copy()
+        self.concrete02_group_counts = existing.concrete02_group_counts.copy()
+        self.concrete02_group_padded_counts = (
+            existing.concrete02_group_padded_counts.copy()
+        )
+        self.concrete02_group_mat_defs = existing.concrete02_group_mat_defs.copy()
         self.steel01_nonlinear_indices = existing.steel01_nonlinear_indices.copy()
         self.concrete01_nonlinear_indices = existing.concrete01_nonlinear_indices.copy()
         self.steel02_nonlinear_indices = existing.steel02_nonlinear_indices.copy()
@@ -1512,6 +1546,7 @@ fn _fiber_section2d_runtime_apply_concrete02_range_simd_mixed[width: Int](
 @always_inline
 fn _fiber_section2d_runtime_apply_concrete02_range_simd_homogeneous[width: Int](
     mut sec_def: FiberSection2dDef,
+    family_offset: Int,
     slot_start: Int,
     count: Int,
     mat_def: UniMaterialDef,
@@ -1540,8 +1575,13 @@ fn _fiber_section2d_runtime_apply_concrete02_range_simd_homogeneous[width: Int](
 
     var i = 0
     while i < count:
-        var y_vec = load_float64_contiguous_simd[width](sec_def.concrete02_y_rel, i)
-        var area_vec = load_float64_contiguous_simd[width](sec_def.concrete02_area, i)
+        var family_index = family_offset + i
+        var y_vec = load_float64_contiguous_simd[width](
+            sec_def.concrete02_y_rel, family_index
+        )
+        var area_vec = load_float64_contiguous_simd[width](
+            sec_def.concrete02_area, family_index
+        )
         var strain = SIMD[DType.float64, width](eps0) - y_vec * SIMD[DType.float64, width](kappa)
         var slot = slot_start + i
 
@@ -1642,6 +1682,7 @@ fn _fiber_section2d_runtime_apply_concrete02_range_simd[width: Int](
         var mat_def = sec_def.concrete02_single_mat_def
         _fiber_section2d_runtime_apply_concrete02_range_simd_homogeneous[width](
             sec_def,
+            0,
             slot_start,
             count,
             mat_def,
@@ -1653,6 +1694,24 @@ fn _fiber_section2d_runtime_apply_concrete02_range_simd[width: Int](
             k12,
             k22,
         )
+        return
+    if len(sec_def.concrete02_group_offsets) > 0:
+        for i in range(len(sec_def.concrete02_group_offsets)):
+            var mat_def = sec_def.concrete02_group_mat_defs[i]
+            _fiber_section2d_runtime_apply_concrete02_range_simd_homogeneous[width](
+                sec_def,
+                sec_def.concrete02_group_offsets[i],
+                slot_start + sec_def.concrete02_group_offsets[i],
+                sec_def.concrete02_group_padded_counts[i],
+                mat_def,
+                eps0,
+                kappa,
+                axial_force,
+                moment_z,
+                k11,
+                k12,
+                k22,
+            )
         return
     _fiber_section2d_runtime_apply_concrete02_range_simd_mixed[width](
         sec_def, slot_start, count, eps0, kappa, axial_force, moment_z, k11, k12, k22
@@ -1865,6 +1924,7 @@ fn _fiber_section2d_runtime_apply_steel02_range_simd_mixed[width: Int](
 @always_inline
 fn _fiber_section2d_runtime_apply_steel02_range_simd_homogeneous[width: Int](
     mut sec_def: FiberSection2dDef,
+    family_offset: Int,
     slot_start: Int,
     count: Int,
     mat_def: UniMaterialDef,
@@ -1896,8 +1956,13 @@ fn _fiber_section2d_runtime_apply_steel02_range_simd_homogeneous[width: Int](
 
     var i = 0
     while i < count:
-        var y_vec = load_float64_contiguous_simd[width](sec_def.steel02_y_rel, i)
-        var area_vec = load_float64_contiguous_simd[width](sec_def.steel02_area, i)
+        var family_index = family_offset + i
+        var y_vec = load_float64_contiguous_simd[width](
+            sec_def.steel02_y_rel, family_index
+        )
+        var area_vec = load_float64_contiguous_simd[width](
+            sec_def.steel02_area, family_index
+        )
         var trial_eps = SIMD[DType.float64, width](eps0) - y_vec * SIMD[
             DType.float64, width
         ](kappa)
@@ -2071,6 +2136,7 @@ fn _fiber_section2d_runtime_apply_steel02_range_simd[width: Int](
         var mat_def = sec_def.steel02_single_mat_def
         _fiber_section2d_runtime_apply_steel02_range_simd_homogeneous[width](
             sec_def,
+            0,
             slot_start,
             count,
             mat_def,
@@ -2082,6 +2148,24 @@ fn _fiber_section2d_runtime_apply_steel02_range_simd[width: Int](
             k12,
             k22,
         )
+        return
+    if len(sec_def.steel02_group_offsets) > 0:
+        for i in range(len(sec_def.steel02_group_offsets)):
+            var mat_def = sec_def.steel02_group_mat_defs[i]
+            _fiber_section2d_runtime_apply_steel02_range_simd_homogeneous[width](
+                sec_def,
+                sec_def.steel02_group_offsets[i],
+                slot_start + sec_def.steel02_group_offsets[i],
+                sec_def.steel02_group_padded_counts[i],
+                mat_def,
+                eps0,
+                kappa,
+                axial_force,
+                moment_z,
+                k11,
+                k12,
+                k22,
+            )
         return
     _fiber_section2d_runtime_apply_steel02_range_simd_mixed[width](
         sec_def, slot_start, count, eps0, kappa, axial_force, moment_z, k11, k12, k22
@@ -2683,20 +2767,67 @@ fn _resolve_uniaxial_def_index(
     return uniaxial_def_by_id[mat_id]
 
 
-fn _fiber_section2d_pad_family_arrays(
-    mut y_rel: List[Float64],
-    mut area: List[Float64],
-    mut mat_defs: List[UniMaterialDef],
-    padded_count: Int,
+fn _fiber_section2d_rebuild_grouped_family(
+    nonlinear_indices: List[Int],
+    nonlinear_def_index: List[Int],
+    family_y_rel: List[Float64],
+    family_area: List[Float64],
+    family_mat_defs: List[UniMaterialDef],
+    mut family_position_by_nonlinear_index: List[Int],
+    mut grouped_nonlinear_indices: List[Int],
+    mut grouped_y_rel: List[Float64],
+    mut grouped_area: List[Float64],
+    mut grouped_mat_defs: List[UniMaterialDef],
+    mut group_offsets: List[Int],
+    mut group_counts: List[Int],
+    mut group_padded_counts: List[Int],
+    mut group_mat_defs: List[UniMaterialDef],
 ):
-    var count = len(y_rel)
-    if count <= 0 or padded_count <= count:
-        return
-    var pad_mat_def = mat_defs[0]
-    for _ in range(count, padded_count):
-        y_rel.append(0.0)
-        area.append(0.0)
-        mat_defs.append(pad_mat_def)
+    if len(nonlinear_indices) != len(family_y_rel) or len(nonlinear_indices) != len(
+        family_area
+    ) or len(nonlinear_indices) != len(family_mat_defs):
+        abort("FiberSection2d grouped family arrays out of sync")
+
+    var unique_def_indices: List[Int] = []
+    for i in range(len(nonlinear_indices)):
+        var nonlinear_index = nonlinear_indices[i]
+        var def_index = nonlinear_def_index[nonlinear_index]
+        var seen = False
+        for j in range(len(unique_def_indices)):
+            if unique_def_indices[j] == def_index:
+                seen = True
+                break
+        if not seen:
+            unique_def_indices.append(def_index)
+
+    for group_index in range(len(unique_def_indices)):
+        var def_index = unique_def_indices[group_index]
+        var group_offset = len(grouped_y_rel)
+        var group_count = 0
+        var group_mat_def = UniMaterialDef()
+        for i in range(len(nonlinear_indices)):
+            var nonlinear_index = nonlinear_indices[i]
+            if nonlinear_def_index[nonlinear_index] != def_index:
+                continue
+            grouped_nonlinear_indices.append(nonlinear_index)
+            grouped_y_rel.append(family_y_rel[i])
+            grouped_area.append(family_area[i])
+            grouped_mat_defs.append(family_mat_defs[i])
+            family_position_by_nonlinear_index[nonlinear_index] = len(grouped_y_rel) - 1
+            if group_count == 0:
+                group_mat_def = family_mat_defs[i]
+            group_count += 1
+        if group_count <= 0:
+            continue
+        var group_padded_count = _fiber_section2d_padded_family_count(group_count)
+        group_offsets.append(group_offset)
+        group_counts.append(group_count)
+        group_padded_counts.append(group_padded_count)
+        group_mat_defs.append(group_mat_def)
+        for _ in range(group_count, group_padded_count):
+            grouped_y_rel.append(0.0)
+            grouped_area.append(0.0)
+            grouped_mat_defs.append(group_mat_def)
 
 
 fn _fiber_section2d_is_single_definition_family(
@@ -2770,38 +2901,70 @@ fn _build_fiber_section2d_def(
                 sec_def.other_nonlinear_indices.append(nonlinear_index)
     sec_def.elastic_count = len(sec_def.elastic_y_rel)
     sec_def.nonlinear_count = len(sec_def.nonlinear_y_rel)
+    var steel02_nonlinear_indices = sec_def.steel02_nonlinear_indices.copy()
+    var steel02_y_rel = sec_def.steel02_y_rel.copy()
+    var steel02_area = sec_def.steel02_area.copy()
+    var steel02_mat_defs = sec_def.steel02_mat_defs.copy()
+    sec_def.steel02_nonlinear_indices = []
+    sec_def.steel02_y_rel = []
+    sec_def.steel02_area = []
+    sec_def.steel02_mat_defs = []
+    _fiber_section2d_rebuild_grouped_family(
+        steel02_nonlinear_indices,
+        sec_def.nonlinear_def_index,
+        steel02_y_rel,
+        steel02_area,
+        steel02_mat_defs,
+        sec_def.steel02_family_position_by_nonlinear_index,
+        sec_def.steel02_nonlinear_indices,
+        sec_def.steel02_y_rel,
+        sec_def.steel02_area,
+        sec_def.steel02_mat_defs,
+        sec_def.steel02_group_offsets,
+        sec_def.steel02_group_counts,
+        sec_def.steel02_group_padded_counts,
+        sec_def.steel02_group_mat_defs,
+    )
+    var concrete02_nonlinear_indices = sec_def.concrete02_nonlinear_indices.copy()
+    var concrete02_y_rel = sec_def.concrete02_y_rel.copy()
+    var concrete02_area = sec_def.concrete02_area.copy()
+    var concrete02_mat_defs = sec_def.concrete02_mat_defs.copy()
+    sec_def.concrete02_nonlinear_indices = []
+    sec_def.concrete02_y_rel = []
+    sec_def.concrete02_area = []
+    sec_def.concrete02_mat_defs = []
+    _fiber_section2d_rebuild_grouped_family(
+        concrete02_nonlinear_indices,
+        sec_def.nonlinear_def_index,
+        concrete02_y_rel,
+        concrete02_area,
+        concrete02_mat_defs,
+        sec_def.concrete02_family_position_by_nonlinear_index,
+        sec_def.concrete02_nonlinear_indices,
+        sec_def.concrete02_y_rel,
+        sec_def.concrete02_area,
+        sec_def.concrete02_mat_defs,
+        sec_def.concrete02_group_offsets,
+        sec_def.concrete02_group_counts,
+        sec_def.concrete02_group_padded_counts,
+        sec_def.concrete02_group_mat_defs,
+    )
     sec_def.steel02_count = len(sec_def.steel02_nonlinear_indices)
     sec_def.concrete02_count = len(sec_def.concrete02_nonlinear_indices)
     sec_def.steel02_single_definition = _fiber_section2d_is_single_definition_family(
         sec_def.steel02_nonlinear_indices, sec_def.nonlinear_def_index
     )
     if sec_def.steel02_single_definition:
-        sec_def.steel02_single_mat_def = sec_def.steel02_mat_defs[0]
+        sec_def.steel02_single_mat_def = sec_def.steel02_group_mat_defs[0]
     sec_def.concrete02_single_definition = _fiber_section2d_is_single_definition_family(
         sec_def.concrete02_nonlinear_indices, sec_def.nonlinear_def_index
     )
     if sec_def.concrete02_single_definition:
-        sec_def.concrete02_single_mat_def = sec_def.concrete02_mat_defs[0]
-    sec_def.steel02_padded_count = _fiber_section2d_padded_family_count(
-        sec_def.steel02_count
-    )
+        sec_def.concrete02_single_mat_def = sec_def.concrete02_group_mat_defs[0]
+    sec_def.steel02_padded_count = len(sec_def.steel02_y_rel)
     sec_def.steel02_instance_stride = sec_def.steel02_padded_count
-    sec_def.concrete02_padded_count = _fiber_section2d_padded_family_count(
-        sec_def.concrete02_count
-    )
+    sec_def.concrete02_padded_count = len(sec_def.concrete02_y_rel)
     sec_def.concrete02_instance_stride = sec_def.concrete02_padded_count
-    _fiber_section2d_pad_family_arrays(
-        sec_def.steel02_y_rel,
-        sec_def.steel02_area,
-        sec_def.steel02_mat_defs,
-        sec_def.steel02_padded_count,
-    )
-    _fiber_section2d_pad_family_arrays(
-        sec_def.concrete02_y_rel,
-        sec_def.concrete02_area,
-        sec_def.concrete02_mat_defs,
-        sec_def.concrete02_padded_count,
-    )
     var det = initial_k11 * initial_k22 - initial_k12 * initial_k12
     if abs(det) > 1.0e-40:
         var inv_det = 1.0 / det
