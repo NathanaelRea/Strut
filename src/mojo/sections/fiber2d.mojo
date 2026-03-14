@@ -111,6 +111,8 @@ struct FiberSection2dDef(Defaultable, Movable, ImplicitlyCopyable):
     var concrete02_ft: List[Float64]
     var concrete02_ets: List[Float64]
     var concrete02_ec0: List[Float64]
+    var concrete02_eps0: List[Float64]
+    var concrete02_epsu: List[Float64]
     var concrete02_epsr: List[Float64]
     var concrete02_sigmr: List[Float64]
     var steel01_nonlinear_indices: List[Int]
@@ -239,6 +241,8 @@ struct FiberSection2dDef(Defaultable, Movable, ImplicitlyCopyable):
         self.concrete02_ft = []
         self.concrete02_ets = []
         self.concrete02_ec0 = []
+        self.concrete02_eps0 = []
+        self.concrete02_epsu = []
         self.concrete02_epsr = []
         self.concrete02_sigmr = []
         self.steel01_nonlinear_indices = []
@@ -367,6 +371,8 @@ struct FiberSection2dDef(Defaultable, Movable, ImplicitlyCopyable):
         self.concrete02_ft = []
         self.concrete02_ets = []
         self.concrete02_ec0 = []
+        self.concrete02_eps0 = []
+        self.concrete02_epsu = []
         self.concrete02_epsr = []
         self.concrete02_sigmr = []
         self.steel01_nonlinear_indices = []
@@ -497,6 +503,8 @@ struct FiberSection2dDef(Defaultable, Movable, ImplicitlyCopyable):
         self.concrete02_ft = existing.concrete02_ft.copy()
         self.concrete02_ets = existing.concrete02_ets.copy()
         self.concrete02_ec0 = existing.concrete02_ec0.copy()
+        self.concrete02_eps0 = existing.concrete02_eps0.copy()
+        self.concrete02_epsu = existing.concrete02_epsu.copy()
         self.concrete02_epsr = existing.concrete02_epsr.copy()
         self.concrete02_sigmr = existing.concrete02_sigmr.copy()
         self.steel01_nonlinear_indices = existing.steel01_nonlinear_indices.copy()
@@ -1479,6 +1487,20 @@ fn _concrete02_compr_envlp_simd[width: Int](
     strain: SIMD[DType.float64, width],
 ) -> (SIMD[DType.float64, width], SIMD[DType.float64, width]):
     var ec0 = (SIMD[DType.float64, width](2.0) * fc) / epsc0
+    return _concrete02_compr_envlp_precomputed_ec0_simd[width](
+        fc, epsc0, fcu, epscu, ec0, strain
+    )
+
+
+@always_inline
+fn _concrete02_compr_envlp_precomputed_ec0_simd[width: Int](
+    fc: SIMD[DType.float64, width],
+    epsc0: SIMD[DType.float64, width],
+    fcu: SIMD[DType.float64, width],
+    epscu: SIMD[DType.float64, width],
+    ec0: SIMD[DType.float64, width],
+    strain: SIMD[DType.float64, width],
+) -> (SIMD[DType.float64, width], SIMD[DType.float64, width]):
     var rat = strain / epsc0
     var sig = fc * rat * (SIMD[DType.float64, width](2.0) - rat)
     var tangent = ec0 * (SIMD[DType.float64, width](1.0) - rat)
@@ -1508,6 +1530,20 @@ fn _concrete02_tens_envlp_simd[width: Int](
     var epsu = ft * (
         SIMD[DType.float64, width](1.0) / ets + SIMD[DType.float64, width](1.0) / ec0
     )
+    return _concrete02_tens_envlp_precomputed_simd[width](
+        ft, ets, ec0, eps0, epsu, strain
+    )
+
+
+@always_inline
+fn _concrete02_tens_envlp_precomputed_simd[width: Int](
+    ft: SIMD[DType.float64, width],
+    ets: SIMD[DType.float64, width],
+    ec0: SIMD[DType.float64, width],
+    eps0: SIMD[DType.float64, width],
+    epsu: SIMD[DType.float64, width],
+    strain: SIMD[DType.float64, width],
+) -> (SIMD[DType.float64, width], SIMD[DType.float64, width]):
     var sig = strain * ec0
     var tangent = ec0
 
@@ -1520,6 +1556,44 @@ fn _concrete02_tens_envlp_simd[width: Int](
     sig = zero_mask.select(SIMD[DType.float64, width](0.0), sig)
     tangent = zero_mask.select(SIMD[DType.float64, width](1.0e-10), tangent)
     return (sig, tangent)
+
+
+@always_inline
+fn _fiber_section2d_store_concrete02_trial_state_simd[width: Int](
+    mut sec_def: FiberSection2dDef,
+    slot: Int,
+    eps_t: SIMD[DType.float64, width],
+    sig_t: SIMD[DType.float64, width],
+    tangent_t: SIMD[DType.float64, width],
+    ecmin_t: SIMD[DType.float64, width],
+    dept_t: SIMD[DType.float64, width],
+):
+    store_float64_contiguous_simd[width](sec_def.runtime_c2_eps_t, slot, eps_t)
+    store_float64_contiguous_simd[width](sec_def.runtime_c2_sig_t, slot, sig_t)
+    store_float64_contiguous_simd[width](sec_def.runtime_c2_tangent_t, slot, tangent_t)
+    store_float64_contiguous_simd[width](sec_def.runtime_c2_ecmin_t, slot, ecmin_t)
+    store_float64_contiguous_simd[width](sec_def.runtime_c2_dept_t, slot, dept_t)
+
+
+@always_inline
+fn _fiber_section2d_accumulate_concrete02_response_simd[width: Int](
+    y_vec: SIMD[DType.float64, width],
+    area_vec: SIMD[DType.float64, width],
+    sig_t: SIMD[DType.float64, width],
+    tangent_t: SIMD[DType.float64, width],
+    mut axial_force: Float64,
+    mut moment_z: Float64,
+    mut k11: Float64,
+    mut k12: Float64,
+    mut k22: Float64,
+):
+    var fs_vec = sig_t * area_vec
+    var ks_vec = tangent_t * area_vec
+    axial_force += fs_vec.reduce_add()
+    moment_z += (-fs_vec * y_vec).reduce_add()
+    k11 += ks_vec.reduce_add()
+    k12 += (-ks_vec * y_vec).reduce_add()
+    k22 += (ks_vec * y_vec * y_vec).reduce_add()
 
 
 @always_inline
@@ -1560,6 +1634,8 @@ fn _fiber_section2d_runtime_apply_concrete02_range_simd_mixed[width: Int](
         var ft = load_float64_contiguous_simd[width](sec_def.concrete02_ft, i)
         var ets = load_float64_contiguous_simd[width](sec_def.concrete02_ets, i)
         var ec0 = load_float64_contiguous_simd[width](sec_def.concrete02_ec0, i)
+        var eps0_tension = load_float64_contiguous_simd[width](sec_def.concrete02_eps0, i)
+        var epsu_tension = load_float64_contiguous_simd[width](sec_def.concrete02_epsu, i)
         var epsr = load_float64_contiguous_simd[width](sec_def.concrete02_epsr, i)
         var sigmr = load_float64_contiguous_simd[width](sec_def.concrete02_sigmr, i)
         var deps = strain - eps_c
@@ -1572,15 +1648,54 @@ fn _fiber_section2d_runtime_apply_concrete02_range_simd_mixed[width: Int](
         var dept_t = dept_c
 
         var no_change_mask = _simd_abs_float64[width](deps).lt(tol)
+        if all(no_change_mask):
+            _fiber_section2d_store_concrete02_trial_state_simd[width](
+                sec_def, slot, eps_t, sig_t, tangent_t, ecmin_t, dept_t
+            )
+            _fiber_section2d_accumulate_concrete02_response_simd[width](
+                y_vec,
+                area_vec,
+                sig_t,
+                tangent_t,
+                axial_force,
+                moment_z,
+                k11,
+                k12,
+                k22,
+            )
+            i += width
+            continue
+
         var compression_mask = strain.lt(ecmin_t) & ~no_change_mask
-        var compr_env = _concrete02_compr_envlp_simd[width](fc, epsc0, fcu, epscu, strain)
+        var compr_env = _concrete02_compr_envlp_precomputed_ec0_simd[width](
+            fc, epsc0, fcu, epscu, ec0, strain
+        )
         sig_t = compression_mask.select(compr_env[0], sig_t)
         tangent_t = compression_mask.select(compr_env[1], tangent_t)
         ecmin_t = compression_mask.select(strain, ecmin_t)
+        if all(compression_mask):
+            _fiber_section2d_store_concrete02_trial_state_simd[width](
+                sec_def, slot, eps_t, sig_t, tangent_t, ecmin_t, dept_t
+            )
+            _fiber_section2d_accumulate_concrete02_response_simd[width](
+                y_vec,
+                area_vec,
+                sig_t,
+                tangent_t,
+                axial_force,
+                moment_z,
+                k11,
+                k12,
+                k22,
+            )
+            i += width
+            continue
 
         var remaining_mask = ~(no_change_mask | compression_mask)
         var half = SIMD[DType.float64, width](0.5)
-        var sigmm_env = _concrete02_compr_envlp_simd[width](fc, epsc0, fcu, epscu, ecmin_t)
+        var sigmm_env = _concrete02_compr_envlp_precomputed_ec0_simd[width](
+            fc, epsc0, fcu, epscu, ec0, ecmin_t
+        )
         var sigmm = sigmm_env[0]
         var er = (sigmm - sigmr) / (ecmin_t - epsr)
         var ept = ecmin_t - sigmm / er
@@ -1598,40 +1713,66 @@ fn _fiber_section2d_runtime_apply_concrete02_range_simd_mixed[width: Int](
         tangent_trial = reload_high_mask.select(half * er, tangent_trial)
         sig_t = reload_mask.select(sig_trial, sig_t)
         tangent_t = reload_mask.select(tangent_trial, tangent_t)
+        if all(no_change_mask | reload_mask):
+            _fiber_section2d_store_concrete02_trial_state_simd[width](
+                sec_def, slot, eps_t, sig_t, tangent_t, ecmin_t, dept_t
+            )
+            _fiber_section2d_accumulate_concrete02_response_simd[width](
+                y_vec,
+                area_vec,
+                sig_t,
+                tangent_t,
+                axial_force,
+                moment_z,
+                k11,
+                k12,
+                k22,
+            )
+            i += width
+            continue
 
         var tension_mask = remaining_mask & ~reload_mask
         var epn = ept + dept_t
         var pre_tension_mask = tension_mask & strain.le(epn)
-        var sicn_env = _concrete02_tens_envlp_simd[width](fc, epsc0, ft, ets, dept_t)
+        var sicn_env = _concrete02_tens_envlp_precomputed_simd[width](
+            ft, ets, ec0, eps0_tension, epsu_tension, dept_t
+        )
         var dept_nonzero_mask = dept_t.ne(0.0)
         var e = dept_nonzero_mask.select(sicn_env[0] / dept_t, ec0)
         var sig_pre_tension = e * (strain - ept)
         sig_t = pre_tension_mask.select(sig_pre_tension, sig_t)
         tangent_t = pre_tension_mask.select(e, tangent_t)
+        if all(no_change_mask | pre_tension_mask):
+            _fiber_section2d_store_concrete02_trial_state_simd[width](
+                sec_def, slot, eps_t, sig_t, tangent_t, ecmin_t, dept_t
+            )
+            _fiber_section2d_accumulate_concrete02_response_simd[width](
+                y_vec,
+                area_vec,
+                sig_t,
+                tangent_t,
+                axial_force,
+                moment_z,
+                k11,
+                k12,
+                k22,
+            )
+            i += width
+            continue
 
         var tension_env_mask = tension_mask & ~pre_tension_mask
-        var tens_env = _concrete02_tens_envlp_simd[width](
-            fc, epsc0, ft, ets, strain - ept
+        var tens_env = _concrete02_tens_envlp_precomputed_simd[width](
+            ft, ets, ec0, eps0_tension, epsu_tension, strain - ept
         )
         sig_t = tension_env_mask.select(tens_env[0], sig_t)
         tangent_t = tension_env_mask.select(tens_env[1], tangent_t)
         dept_t = tension_env_mask.select(strain - ept, dept_t)
-
-        store_float64_contiguous_simd[width](sec_def.runtime_c2_eps_t, slot, eps_t)
-        store_float64_contiguous_simd[width](sec_def.runtime_c2_sig_t, slot, sig_t)
-        store_float64_contiguous_simd[width](
-            sec_def.runtime_c2_tangent_t, slot, tangent_t
+        _fiber_section2d_store_concrete02_trial_state_simd[width](
+            sec_def, slot, eps_t, sig_t, tangent_t, ecmin_t, dept_t
         )
-        store_float64_contiguous_simd[width](sec_def.runtime_c2_ecmin_t, slot, ecmin_t)
-        store_float64_contiguous_simd[width](sec_def.runtime_c2_dept_t, slot, dept_t)
-
-        var fs_vec = sig_t * area_vec
-        var ks_vec = tangent_t * area_vec
-        axial_force += fs_vec.reduce_add()
-        moment_z += (-fs_vec * y_vec).reduce_add()
-        k11 += ks_vec.reduce_add()
-        k12 += (-ks_vec * y_vec).reduce_add()
-        k22 += (ks_vec * y_vec * y_vec).reduce_add()
+        _fiber_section2d_accumulate_concrete02_response_simd[width](
+            y_vec, area_vec, sig_t, tangent_t, axial_force, moment_z, k11, k12, k22
+        )
         i += width
 
 
@@ -1661,9 +1802,15 @@ fn _fiber_section2d_runtime_apply_concrete02_range_simd_homogeneous[width: Int](
     var ft = SIMD[DType.float64, width](mat_def.p5)
     var ets = SIMD[DType.float64, width](mat_def.p6)
     var ec0 = (SIMD[DType.float64, width](2.0) * fc) / epsc0
+    var eps0_tension = ft / ec0
+    var epsu_tension = ft * (
+        SIMD[DType.float64, width](1.0) / ets + SIMD[DType.float64, width](1.0) / ec0
+    )
     var tol = SIMD[DType.float64, width](2.220446049250313e-16)
     var one = SIMD[DType.float64, width](1.0)
     var half = SIMD[DType.float64, width](0.5)
+    var epsr = (fcu - rat * ec0 * epscu) / (ec0 * (one - rat))
+    var sigmr = ec0 * epsr
 
     var i = 0
     while i < count:
@@ -1693,16 +1840,53 @@ fn _fiber_section2d_runtime_apply_concrete02_range_simd_homogeneous[width: Int](
         var dept_t = dept_c
 
         var no_change_mask = _simd_abs_float64[width](deps).lt(tol)
+        if all(no_change_mask):
+            _fiber_section2d_store_concrete02_trial_state_simd[width](
+                sec_def, slot, eps_t, sig_t, tangent_t, ecmin_t, dept_t
+            )
+            _fiber_section2d_accumulate_concrete02_response_simd[width](
+                y_vec,
+                area_vec,
+                sig_t,
+                tangent_t,
+                axial_force,
+                moment_z,
+                k11,
+                k12,
+                k22,
+            )
+            i += width
+            continue
+
         var compression_mask = strain.lt(ecmin_t) & ~no_change_mask
-        var compr_env = _concrete02_compr_envlp_simd[width](fc, epsc0, fcu, epscu, strain)
+        var compr_env = _concrete02_compr_envlp_precomputed_ec0_simd[width](
+            fc, epsc0, fcu, epscu, ec0, strain
+        )
         sig_t = compression_mask.select(compr_env[0], sig_t)
         tangent_t = compression_mask.select(compr_env[1], tangent_t)
         ecmin_t = compression_mask.select(strain, ecmin_t)
+        if all(compression_mask):
+            _fiber_section2d_store_concrete02_trial_state_simd[width](
+                sec_def, slot, eps_t, sig_t, tangent_t, ecmin_t, dept_t
+            )
+            _fiber_section2d_accumulate_concrete02_response_simd[width](
+                y_vec,
+                area_vec,
+                sig_t,
+                tangent_t,
+                axial_force,
+                moment_z,
+                k11,
+                k12,
+                k22,
+            )
+            i += width
+            continue
 
         var remaining_mask = ~(no_change_mask | compression_mask)
-        var epsr = (fcu - rat * ec0 * epscu) / (ec0 * (one - rat))
-        var sigmr = ec0 * epsr
-        var sigmm_env = _concrete02_compr_envlp_simd[width](fc, epsc0, fcu, epscu, ecmin_t)
+        var sigmm_env = _concrete02_compr_envlp_precomputed_ec0_simd[width](
+            fc, epsc0, fcu, epscu, ec0, ecmin_t
+        )
         var sigmm = sigmm_env[0]
         var er = (sigmm - sigmr) / (ecmin_t - epsr)
         var ept = ecmin_t - sigmm / er
@@ -1720,40 +1904,66 @@ fn _fiber_section2d_runtime_apply_concrete02_range_simd_homogeneous[width: Int](
         tangent_trial = reload_high_mask.select(half * er, tangent_trial)
         sig_t = reload_mask.select(sig_trial, sig_t)
         tangent_t = reload_mask.select(tangent_trial, tangent_t)
+        if all(no_change_mask | reload_mask):
+            _fiber_section2d_store_concrete02_trial_state_simd[width](
+                sec_def, slot, eps_t, sig_t, tangent_t, ecmin_t, dept_t
+            )
+            _fiber_section2d_accumulate_concrete02_response_simd[width](
+                y_vec,
+                area_vec,
+                sig_t,
+                tangent_t,
+                axial_force,
+                moment_z,
+                k11,
+                k12,
+                k22,
+            )
+            i += width
+            continue
 
         var tension_mask = remaining_mask & ~reload_mask
         var epn = ept + dept_t
         var pre_tension_mask = tension_mask & strain.le(epn)
-        var sicn_env = _concrete02_tens_envlp_simd[width](fc, epsc0, ft, ets, dept_t)
+        var sicn_env = _concrete02_tens_envlp_precomputed_simd[width](
+            ft, ets, ec0, eps0_tension, epsu_tension, dept_t
+        )
         var dept_nonzero_mask = dept_t.ne(0.0)
         var e = dept_nonzero_mask.select(sicn_env[0] / dept_t, ec0)
         var sig_pre_tension = e * (strain - ept)
         sig_t = pre_tension_mask.select(sig_pre_tension, sig_t)
         tangent_t = pre_tension_mask.select(e, tangent_t)
+        if all(no_change_mask | pre_tension_mask):
+            _fiber_section2d_store_concrete02_trial_state_simd[width](
+                sec_def, slot, eps_t, sig_t, tangent_t, ecmin_t, dept_t
+            )
+            _fiber_section2d_accumulate_concrete02_response_simd[width](
+                y_vec,
+                area_vec,
+                sig_t,
+                tangent_t,
+                axial_force,
+                moment_z,
+                k11,
+                k12,
+                k22,
+            )
+            i += width
+            continue
 
         var tension_env_mask = tension_mask & ~pre_tension_mask
-        var tens_env = _concrete02_tens_envlp_simd[width](
-            fc, epsc0, ft, ets, strain - ept
+        var tens_env = _concrete02_tens_envlp_precomputed_simd[width](
+            ft, ets, ec0, eps0_tension, epsu_tension, strain - ept
         )
         sig_t = tension_env_mask.select(tens_env[0], sig_t)
         tangent_t = tension_env_mask.select(tens_env[1], tangent_t)
         dept_t = tension_env_mask.select(strain - ept, dept_t)
-
-        store_float64_contiguous_simd[width](sec_def.runtime_c2_eps_t, slot, eps_t)
-        store_float64_contiguous_simd[width](sec_def.runtime_c2_sig_t, slot, sig_t)
-        store_float64_contiguous_simd[width](
-            sec_def.runtime_c2_tangent_t, slot, tangent_t
+        _fiber_section2d_store_concrete02_trial_state_simd[width](
+            sec_def, slot, eps_t, sig_t, tangent_t, ecmin_t, dept_t
         )
-        store_float64_contiguous_simd[width](sec_def.runtime_c2_ecmin_t, slot, ecmin_t)
-        store_float64_contiguous_simd[width](sec_def.runtime_c2_dept_t, slot, dept_t)
-
-        var fs_vec = sig_t * area_vec
-        var ks_vec = tangent_t * area_vec
-        axial_force += fs_vec.reduce_add()
-        moment_z += (-fs_vec * y_vec).reduce_add()
-        k11 += ks_vec.reduce_add()
-        k12 += (-ks_vec * y_vec).reduce_add()
-        k22 += (ks_vec * y_vec * y_vec).reduce_add()
+        _fiber_section2d_accumulate_concrete02_response_simd[width](
+            y_vec, area_vec, sig_t, tangent_t, axial_force, moment_z, k11, k12, k22
+        )
         i += width
 
 
@@ -2963,6 +3173,8 @@ fn _fiber_section2d_build_concrete02_param_arrays(mut sec_def: FiberSection2dDef
     sec_def.concrete02_ft = []
     sec_def.concrete02_ets = []
     sec_def.concrete02_ec0 = []
+    sec_def.concrete02_eps0 = []
+    sec_def.concrete02_epsu = []
     sec_def.concrete02_epsr = []
     sec_def.concrete02_sigmr = []
     for i in range(len(sec_def.concrete02_mat_defs)):
@@ -2972,16 +3184,22 @@ fn _fiber_section2d_build_concrete02_param_arrays(mut sec_def: FiberSection2dDef
         var fcu = mat_def.p2
         var epscu = mat_def.p3
         var rat = mat_def.p4
+        var ft = mat_def.p5
+        var ets = mat_def.p6
         var ec0 = (2.0 * fc) / epsc0
+        var eps0 = ft / ec0
+        var epsu = ft * (1.0 / ets + 1.0 / ec0)
         var epsr = (fcu - rat * ec0 * epscu) / (ec0 * (1.0 - rat))
         sec_def.concrete02_fc.append(fc)
         sec_def.concrete02_epsc0.append(epsc0)
         sec_def.concrete02_fcu.append(fcu)
         sec_def.concrete02_epscu.append(epscu)
         sec_def.concrete02_rat.append(rat)
-        sec_def.concrete02_ft.append(mat_def.p5)
-        sec_def.concrete02_ets.append(mat_def.p6)
+        sec_def.concrete02_ft.append(ft)
+        sec_def.concrete02_ets.append(ets)
         sec_def.concrete02_ec0.append(ec0)
+        sec_def.concrete02_eps0.append(eps0)
+        sec_def.concrete02_epsu.append(epsu)
         sec_def.concrete02_epsr.append(epsr)
         sec_def.concrete02_sigmr.append(ec0 * epsr)
 
