@@ -2021,6 +2021,63 @@ fn _fiber_section2d_runtime_apply_concrete02_range_simd[width: Int](
 
 
 @always_inline
+fn _fiber_section2d_store_steel02_trial_state_simd[width: Int](
+    mut sec_def: FiberSection2dDef,
+    slot: Int,
+    eps_t: SIMD[DType.float64, width],
+    sig_t: SIMD[DType.float64, width],
+    tangent_t: SIMD[DType.float64, width],
+    epsmin_t: SIMD[DType.float64, width],
+    epsmax_t: SIMD[DType.float64, width],
+    epspl_t: SIMD[DType.float64, width],
+    epss0_t: SIMD[DType.float64, width],
+    sigs0_t: SIMD[DType.float64, width],
+    epsr_t: SIMD[DType.float64, width],
+    sigr_t: SIMD[DType.float64, width],
+    kon_t: SIMD[DType.int32, width],
+):
+    store_float64_contiguous_simd[width](sec_def.runtime_s2_eps_t, slot, eps_t)
+    store_float64_contiguous_simd[width](sec_def.runtime_s2_sig_t, slot, sig_t)
+    store_float64_contiguous_simd[width](
+        sec_def.runtime_s2_tangent_t, slot, tangent_t
+    )
+    store_float64_contiguous_simd[width](
+        sec_def.runtime_s2_epsmin_t, slot, epsmin_t
+    )
+    store_float64_contiguous_simd[width](
+        sec_def.runtime_s2_epsmax_t, slot, epsmax_t
+    )
+    store_float64_contiguous_simd[width](sec_def.runtime_s2_epspl_t, slot, epspl_t)
+    store_float64_contiguous_simd[width](sec_def.runtime_s2_epss0_t, slot, epss0_t)
+    store_float64_contiguous_simd[width](sec_def.runtime_s2_sigs0_t, slot, sigs0_t)
+    store_float64_contiguous_simd[width](sec_def.runtime_s2_epsr_t, slot, epsr_t)
+    store_float64_contiguous_simd[width](sec_def.runtime_s2_sigr_t, slot, sigr_t)
+    for lane in range(width):
+        sec_def.runtime_s2_kon_t[slot + lane] = Int(kon_t[lane])
+
+
+@always_inline
+fn _fiber_section2d_accumulate_steel02_response_simd[width: Int](
+    y_vec: SIMD[DType.float64, width],
+    area_vec: SIMD[DType.float64, width],
+    sig_t: SIMD[DType.float64, width],
+    tangent_t: SIMD[DType.float64, width],
+    mut axial_force: Float64,
+    mut moment_z: Float64,
+    mut k11: Float64,
+    mut k12: Float64,
+    mut k22: Float64,
+):
+    var fs_vec = sig_t * area_vec
+    var ks_vec = tangent_t * area_vec
+    axial_force += fs_vec.reduce_add()
+    moment_z += (-fs_vec * y_vec).reduce_add()
+    k11 += ks_vec.reduce_add()
+    k12 += (-ks_vec * y_vec).reduce_add()
+    k22 += (ks_vec * y_vec * y_vec).reduce_add()
+
+
+@always_inline
 fn _fiber_section2d_runtime_apply_steel02_range_simd_mixed[width: Int](
     mut sec_def: FiberSection2dDef,
     slot_start: Int,
@@ -2112,6 +2169,35 @@ fn _fiber_section2d_runtime_apply_steel02_range_simd_mixed[width: Int](
         sig_t = no_change_mask.select(sigini, sig_t)
         tangent_t = no_change_mask.select(e0, tangent_t)
         kon_t = no_change_mask.select(SIMD[DType.int32, width](3), kon_t)
+        if all(no_change_mask):
+            _fiber_section2d_store_steel02_trial_state_simd[width](
+                sec_def,
+                slot,
+                eps,
+                sig_t,
+                tangent_t,
+                epsmin_t,
+                epsmax_t,
+                epspl_t,
+                epss0_t,
+                sigs0_t,
+                epsr_t,
+                sigr_t,
+                kon_t,
+            )
+            _fiber_section2d_accumulate_steel02_response_simd[width](
+                y_vec,
+                area_vec,
+                sig_t,
+                tangent_t,
+                axial_force,
+                moment_z,
+                k11,
+                k12,
+                k22,
+            )
+            i += width
+            continue
 
         var active_mask = ~no_change_mask
         var initial_mask = active_mask & (kon_c.eq(0) | kon_c.eq(3))
@@ -2131,40 +2217,42 @@ fn _fiber_section2d_runtime_apply_steel02_range_simd_mixed[width: Int](
         epspl_t = initial_pos_mask.select(epsmax_t, epspl_t)
 
         var pos_reversal_mask = active_mask & kon_t.eq(2) & deps.gt(0.0)
-        var epsmin_after_pos = eps_c.lt(epsmin_t).select(eps_c, epsmin_t)
-        var d1_pos = (epsmax_t - epsmin_after_pos) * pos_inv_denom
-        var shft_pos = SIMD[DType.float64, width](1.0) + a3 * (d1_pos ** SIMD[
-            DType.float64, width
-        ](0.8))
-        var epss0_pos = (
-            fy * shft_pos - esh * epsy * shft_pos - sig_c + e0 * eps_c
-        ) / (e0 - esh)
-        var sigs0_pos = fy * shft_pos + esh * (epss0_pos - epsy * shft_pos)
-        kon_t = pos_reversal_mask.select(SIMD[DType.int32, width](1), kon_t)
-        epsr_t = pos_reversal_mask.select(eps_c, epsr_t)
-        sigr_t = pos_reversal_mask.select(sig_c, sigr_t)
-        epsmin_t = pos_reversal_mask.select(epsmin_after_pos, epsmin_t)
-        epss0_t = pos_reversal_mask.select(epss0_pos, epss0_t)
-        sigs0_t = pos_reversal_mask.select(sigs0_pos, sigs0_t)
-        epspl_t = pos_reversal_mask.select(epsmax_t, epspl_t)
+        if not all(~pos_reversal_mask):
+            var epsmin_after_pos = eps_c.lt(epsmin_t).select(eps_c, epsmin_t)
+            var d1_pos = (epsmax_t - epsmin_after_pos) * pos_inv_denom
+            var shft_pos = SIMD[DType.float64, width](1.0) + a3 * (d1_pos ** SIMD[
+                DType.float64, width
+            ](0.8))
+            var epss0_pos = (
+                fy * shft_pos - esh * epsy * shft_pos - sig_c + e0 * eps_c
+            ) / (e0 - esh)
+            var sigs0_pos = fy * shft_pos + esh * (epss0_pos - epsy * shft_pos)
+            kon_t = pos_reversal_mask.select(SIMD[DType.int32, width](1), kon_t)
+            epsr_t = pos_reversal_mask.select(eps_c, epsr_t)
+            sigr_t = pos_reversal_mask.select(sig_c, sigr_t)
+            epsmin_t = pos_reversal_mask.select(epsmin_after_pos, epsmin_t)
+            epss0_t = pos_reversal_mask.select(epss0_pos, epss0_t)
+            sigs0_t = pos_reversal_mask.select(sigs0_pos, sigs0_t)
+            epspl_t = pos_reversal_mask.select(epsmax_t, epspl_t)
 
         var neg_reversal_mask = active_mask & kon_t.eq(1) & deps.lt(0.0)
-        var epsmax_after_neg = eps_c.gt(epsmax_t).select(eps_c, epsmax_t)
-        var d1_neg = (epsmax_after_neg - epsmin_t) * neg_inv_denom
-        var shft_neg = SIMD[DType.float64, width](1.0) + a1 * (d1_neg ** SIMD[
-            DType.float64, width
-        ](0.8))
-        var epss0_neg = (
-            -fy * shft_neg + esh * epsy * shft_neg - sig_c + e0 * eps_c
-        ) / (e0 - esh)
-        var sigs0_neg = -fy * shft_neg + esh * (epss0_neg + epsy * shft_neg)
-        kon_t = neg_reversal_mask.select(SIMD[DType.int32, width](2), kon_t)
-        epsr_t = neg_reversal_mask.select(eps_c, epsr_t)
-        sigr_t = neg_reversal_mask.select(sig_c, sigr_t)
-        epsmax_t = neg_reversal_mask.select(epsmax_after_neg, epsmax_t)
-        epss0_t = neg_reversal_mask.select(epss0_neg, epss0_t)
-        sigs0_t = neg_reversal_mask.select(sigs0_neg, sigs0_t)
-        epspl_t = neg_reversal_mask.select(epsmin_t, epspl_t)
+        if not all(~neg_reversal_mask):
+            var epsmax_after_neg = eps_c.gt(epsmax_t).select(eps_c, epsmax_t)
+            var d1_neg = (epsmax_after_neg - epsmin_t) * neg_inv_denom
+            var shft_neg = SIMD[DType.float64, width](1.0) + a1 * (d1_neg ** SIMD[
+                DType.float64, width
+            ](0.8))
+            var epss0_neg = (
+                -fy * shft_neg + esh * epsy * shft_neg - sig_c + e0 * eps_c
+            ) / (e0 - esh)
+            var sigs0_neg = -fy * shft_neg + esh * (epss0_neg + epsy * shft_neg)
+            kon_t = neg_reversal_mask.select(SIMD[DType.int32, width](2), kon_t)
+            epsr_t = neg_reversal_mask.select(eps_c, epsr_t)
+            sigr_t = neg_reversal_mask.select(sig_c, sigr_t)
+            epsmax_t = neg_reversal_mask.select(epsmax_after_neg, epsmax_t)
+            epss0_t = neg_reversal_mask.select(epss0_neg, epss0_t)
+            sigs0_t = neg_reversal_mask.select(sigs0_neg, sigs0_t)
+            epspl_t = neg_reversal_mask.select(epsmin_t, epspl_t)
 
         var xi = _simd_abs_float64[width]((epspl_t - epss0_t) / epsy)
         var r = r0 * (
@@ -2183,34 +2271,24 @@ fn _fiber_section2d_runtime_apply_steel02_range_simd_mixed[width: Int](
         sig_t = active_mask.select(sig_active, sig_t)
         tangent_t = active_mask.select(tangent_active, tangent_t)
 
-        store_float64_contiguous_simd[width](sec_def.runtime_s2_eps_t, slot, eps)
-        store_float64_contiguous_simd[width](sec_def.runtime_s2_sig_t, slot, sig_t)
-        store_float64_contiguous_simd[width](
-            sec_def.runtime_s2_tangent_t, slot, tangent_t
+        _fiber_section2d_store_steel02_trial_state_simd[width](
+            sec_def,
+            slot,
+            eps,
+            sig_t,
+            tangent_t,
+            epsmin_t,
+            epsmax_t,
+            epspl_t,
+            epss0_t,
+            sigs0_t,
+            epsr_t,
+            sigr_t,
+            kon_t,
         )
-        store_float64_contiguous_simd[width](
-            sec_def.runtime_s2_epsmin_t, slot, epsmin_t
+        _fiber_section2d_accumulate_steel02_response_simd[width](
+            y_vec, area_vec, sig_t, tangent_t, axial_force, moment_z, k11, k12, k22
         )
-        store_float64_contiguous_simd[width](
-            sec_def.runtime_s2_epsmax_t, slot, epsmax_t
-        )
-        store_float64_contiguous_simd[width](sec_def.runtime_s2_epspl_t, slot, epspl_t)
-        store_float64_contiguous_simd[width](sec_def.runtime_s2_epss0_t, slot, epss0_t)
-        store_float64_contiguous_simd[width](
-            sec_def.runtime_s2_sigs0_t, slot, sigs0_t
-        )
-        store_float64_contiguous_simd[width](sec_def.runtime_s2_epsr_t, slot, epsr_t)
-        store_float64_contiguous_simd[width](sec_def.runtime_s2_sigr_t, slot, sigr_t)
-        for lane in range(width):
-            sec_def.runtime_s2_kon_t[slot + lane] = Int(kon_t[lane])
-
-        var fs_vec = sig_t * area_vec
-        var ks_vec = tangent_t * area_vec
-        axial_force += fs_vec.reduce_add()
-        moment_z += (-fs_vec * y_vec).reduce_add()
-        k11 += ks_vec.reduce_add()
-        k12 += (-ks_vec * y_vec).reduce_add()
-        k22 += (ks_vec * y_vec * y_vec).reduce_add()
         i += width
 
 
@@ -2306,6 +2384,35 @@ fn _fiber_section2d_runtime_apply_steel02_range_simd_homogeneous[width: Int](
         sig_t = no_change_mask.select(sigini, sig_t)
         tangent_t = no_change_mask.select(e0, tangent_t)
         kon_t = no_change_mask.select(SIMD[DType.int32, width](3), kon_t)
+        if all(no_change_mask):
+            _fiber_section2d_store_steel02_trial_state_simd[width](
+                sec_def,
+                slot,
+                eps,
+                sig_t,
+                tangent_t,
+                epsmin_t,
+                epsmax_t,
+                epspl_t,
+                epss0_t,
+                sigs0_t,
+                epsr_t,
+                sigr_t,
+                kon_t,
+            )
+            _fiber_section2d_accumulate_steel02_response_simd[width](
+                y_vec,
+                area_vec,
+                sig_t,
+                tangent_t,
+                axial_force,
+                moment_z,
+                k11,
+                k12,
+                k22,
+            )
+            i += width
+            continue
 
         var active_mask = ~no_change_mask
         var initial_mask = active_mask & (kon_c.eq(0) | kon_c.eq(3))
@@ -2325,44 +2432,46 @@ fn _fiber_section2d_runtime_apply_steel02_range_simd_homogeneous[width: Int](
         epspl_t = initial_pos_mask.select(epsmax_t, epspl_t)
 
         var pos_reversal_mask = active_mask & kon_t.eq(2) & deps.gt(0.0)
-        var epsmin_after_pos = eps_c.lt(epsmin_t).select(eps_c, epsmin_t)
-        var d1_pos = (epsmax_t - epsmin_after_pos) / (
-            SIMD[DType.float64, width](2.0) * (a4 * epsy)
-        )
-        var shft_pos = SIMD[DType.float64, width](1.0) + a3 * (d1_pos ** SIMD[
-            DType.float64, width
-        ](0.8))
-        var epss0_pos = (
-            fy * shft_pos - esh * epsy * shft_pos - sig_c + e0 * eps_c
-        ) / (e0 - esh)
-        var sigs0_pos = fy * shft_pos + esh * (epss0_pos - epsy * shft_pos)
-        kon_t = pos_reversal_mask.select(SIMD[DType.int32, width](1), kon_t)
-        epsr_t = pos_reversal_mask.select(eps_c, epsr_t)
-        sigr_t = pos_reversal_mask.select(sig_c, sigr_t)
-        epsmin_t = pos_reversal_mask.select(epsmin_after_pos, epsmin_t)
-        epss0_t = pos_reversal_mask.select(epss0_pos, epss0_t)
-        sigs0_t = pos_reversal_mask.select(sigs0_pos, sigs0_t)
-        epspl_t = pos_reversal_mask.select(epsmax_t, epspl_t)
+        if not all(~pos_reversal_mask):
+            var epsmin_after_pos = eps_c.lt(epsmin_t).select(eps_c, epsmin_t)
+            var d1_pos = (epsmax_t - epsmin_after_pos) / (
+                SIMD[DType.float64, width](2.0) * (a4 * epsy)
+            )
+            var shft_pos = SIMD[DType.float64, width](1.0) + a3 * (d1_pos ** SIMD[
+                DType.float64, width
+            ](0.8))
+            var epss0_pos = (
+                fy * shft_pos - esh * epsy * shft_pos - sig_c + e0 * eps_c
+            ) / (e0 - esh)
+            var sigs0_pos = fy * shft_pos + esh * (epss0_pos - epsy * shft_pos)
+            kon_t = pos_reversal_mask.select(SIMD[DType.int32, width](1), kon_t)
+            epsr_t = pos_reversal_mask.select(eps_c, epsr_t)
+            sigr_t = pos_reversal_mask.select(sig_c, sigr_t)
+            epsmin_t = pos_reversal_mask.select(epsmin_after_pos, epsmin_t)
+            epss0_t = pos_reversal_mask.select(epss0_pos, epss0_t)
+            sigs0_t = pos_reversal_mask.select(sigs0_pos, sigs0_t)
+            epspl_t = pos_reversal_mask.select(epsmax_t, epspl_t)
 
         var neg_reversal_mask = active_mask & kon_t.eq(1) & deps.lt(0.0)
-        var epsmax_after_neg = eps_c.gt(epsmax_t).select(eps_c, epsmax_t)
-        var d1_neg = (epsmax_after_neg - epsmin_t) / (
-            SIMD[DType.float64, width](2.0) * (a2 * epsy)
-        )
-        var shft_neg = SIMD[DType.float64, width](1.0) + a1 * (d1_neg ** SIMD[
-            DType.float64, width
-        ](0.8))
-        var epss0_neg = (
-            -fy * shft_neg + esh * epsy * shft_neg - sig_c + e0 * eps_c
-        ) / (e0 - esh)
-        var sigs0_neg = -fy * shft_neg + esh * (epss0_neg + epsy * shft_neg)
-        kon_t = neg_reversal_mask.select(SIMD[DType.int32, width](2), kon_t)
-        epsr_t = neg_reversal_mask.select(eps_c, epsr_t)
-        sigr_t = neg_reversal_mask.select(sig_c, sigr_t)
-        epsmax_t = neg_reversal_mask.select(epsmax_after_neg, epsmax_t)
-        epss0_t = neg_reversal_mask.select(epss0_neg, epss0_t)
-        sigs0_t = neg_reversal_mask.select(sigs0_neg, sigs0_t)
-        epspl_t = neg_reversal_mask.select(epsmin_t, epspl_t)
+        if not all(~neg_reversal_mask):
+            var epsmax_after_neg = eps_c.gt(epsmax_t).select(eps_c, epsmax_t)
+            var d1_neg = (epsmax_after_neg - epsmin_t) / (
+                SIMD[DType.float64, width](2.0) * (a2 * epsy)
+            )
+            var shft_neg = SIMD[DType.float64, width](1.0) + a1 * (d1_neg ** SIMD[
+                DType.float64, width
+            ](0.8))
+            var epss0_neg = (
+                -fy * shft_neg + esh * epsy * shft_neg - sig_c + e0 * eps_c
+            ) / (e0 - esh)
+            var sigs0_neg = -fy * shft_neg + esh * (epss0_neg + epsy * shft_neg)
+            kon_t = neg_reversal_mask.select(SIMD[DType.int32, width](2), kon_t)
+            epsr_t = neg_reversal_mask.select(eps_c, epsr_t)
+            sigr_t = neg_reversal_mask.select(sig_c, sigr_t)
+            epsmax_t = neg_reversal_mask.select(epsmax_after_neg, epsmax_t)
+            epss0_t = neg_reversal_mask.select(epss0_neg, epss0_t)
+            sigs0_t = neg_reversal_mask.select(sigs0_neg, sigs0_t)
+            epspl_t = neg_reversal_mask.select(epsmin_t, epspl_t)
 
         var xi = _simd_abs_float64[width]((epspl_t - epss0_t) / epsy)
         var r = r0 * (
@@ -2381,34 +2490,24 @@ fn _fiber_section2d_runtime_apply_steel02_range_simd_homogeneous[width: Int](
         sig_t = active_mask.select(sig_active, sig_t)
         tangent_t = active_mask.select(tangent_active, tangent_t)
 
-        store_float64_contiguous_simd[width](sec_def.runtime_s2_eps_t, slot, eps)
-        store_float64_contiguous_simd[width](sec_def.runtime_s2_sig_t, slot, sig_t)
-        store_float64_contiguous_simd[width](
-            sec_def.runtime_s2_tangent_t, slot, tangent_t
+        _fiber_section2d_store_steel02_trial_state_simd[width](
+            sec_def,
+            slot,
+            eps,
+            sig_t,
+            tangent_t,
+            epsmin_t,
+            epsmax_t,
+            epspl_t,
+            epss0_t,
+            sigs0_t,
+            epsr_t,
+            sigr_t,
+            kon_t,
         )
-        store_float64_contiguous_simd[width](
-            sec_def.runtime_s2_epsmin_t, slot, epsmin_t
+        _fiber_section2d_accumulate_steel02_response_simd[width](
+            y_vec, area_vec, sig_t, tangent_t, axial_force, moment_z, k11, k12, k22
         )
-        store_float64_contiguous_simd[width](
-            sec_def.runtime_s2_epsmax_t, slot, epsmax_t
-        )
-        store_float64_contiguous_simd[width](sec_def.runtime_s2_epspl_t, slot, epspl_t)
-        store_float64_contiguous_simd[width](sec_def.runtime_s2_epss0_t, slot, epss0_t)
-        store_float64_contiguous_simd[width](
-            sec_def.runtime_s2_sigs0_t, slot, sigs0_t
-        )
-        store_float64_contiguous_simd[width](sec_def.runtime_s2_epsr_t, slot, epsr_t)
-        store_float64_contiguous_simd[width](sec_def.runtime_s2_sigr_t, slot, sigr_t)
-        for lane in range(width):
-            sec_def.runtime_s2_kon_t[slot + lane] = Int(kon_t[lane])
-
-        var fs_vec = sig_t * area_vec
-        var ks_vec = tangent_t * area_vec
-        axial_force += fs_vec.reduce_add()
-        moment_z += (-fs_vec * y_vec).reduce_add()
-        k11 += ks_vec.reduce_add()
-        k12 += (-ks_vec * y_vec).reduce_add()
-        k22 += (ks_vec * y_vec * y_vec).reduce_add()
         i += width
 
 
