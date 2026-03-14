@@ -6,14 +6,23 @@ Currently we beat the performance of OpenSees by about 2x in large examples that
 
 ## Warnings
 
-- I haven't put much work to generalize the environment, so it might be difficult to get this running on your machine right now
-- We are testing/validating against the full OpenSees example suite, up through "Advanced Example 6". However, there are some tests we skip because I have not done a thorough validation pass. Please don't use this for anything important, as the test coverage is severely limited.
+- I haven't put much work to generalize the environment, so there might be extra steps to build the OpenSees binary for the validation tests/benchmarks.
+- We test/validate against the full OpenSees example suite, up through "Advanced Example 6". However, there are some tests we skip because I have not done a thorough validation pass. Please don't use this for anything important, as it's currently a work in progress and the test coverage is limited.
 
 ## Quick Start
+
+For building and running Strut
+
+1. Fetch the dependencies `uv sync`
+2. Build `uv run mojo build src/mojo/strut.mojo`
+3. Run analysis against a json model (see validation tests for examples)
+
+For testing or benchmarking
 
 1. Fetch the dependencies `uv sync`
 2. Run the [setup script](./scripts/setup.sh) to clone reference repos, download modular docs, and download OpenSees example tcl files and ground motions.
 3. Build the native Linux OpenSees reference binary with [scripts/build_opensees_linux.sh](./scripts/build_opensees_linux.sh). The harness uses [`.build/opensees-linux/OpenSees`](./.build/opensees-linux/OpenSees) by default.
+4. Run unit tests `uv run run_tests.py` or benchmarks `uv run scripts/run_benchmarks.py`
 
 ## OpenSees Implementation Coverage
 
