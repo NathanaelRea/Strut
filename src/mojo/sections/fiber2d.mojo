@@ -78,6 +78,22 @@ struct FiberSection2dDef(Defaultable, Movable, ImplicitlyCopyable):
     var steel02_group_counts: List[Int]
     var steel02_group_padded_counts: List[Int]
     var steel02_group_mat_defs: List[UniMaterialDef]
+    var steel02_fy: List[Float64]
+    var steel02_e0: List[Float64]
+    var steel02_b: List[Float64]
+    var steel02_r0: List[Float64]
+    var steel02_cr1: List[Float64]
+    var steel02_cr2: List[Float64]
+    var steel02_a1: List[Float64]
+    var steel02_a2: List[Float64]
+    var steel02_a3: List[Float64]
+    var steel02_a4: List[Float64]
+    var steel02_sigini: List[Float64]
+    var steel02_esh: List[Float64]
+    var steel02_epsy: List[Float64]
+    var steel02_sigini_over_e0: List[Float64]
+    var steel02_pos_inv_denom: List[Float64]
+    var steel02_neg_inv_denom: List[Float64]
     var concrete02_y_rel: List[Float64]
     var concrete02_area: List[Float64]
     var concrete02_mat_defs: List[UniMaterialDef]
@@ -87,6 +103,16 @@ struct FiberSection2dDef(Defaultable, Movable, ImplicitlyCopyable):
     var concrete02_group_counts: List[Int]
     var concrete02_group_padded_counts: List[Int]
     var concrete02_group_mat_defs: List[UniMaterialDef]
+    var concrete02_fc: List[Float64]
+    var concrete02_epsc0: List[Float64]
+    var concrete02_fcu: List[Float64]
+    var concrete02_epscu: List[Float64]
+    var concrete02_rat: List[Float64]
+    var concrete02_ft: List[Float64]
+    var concrete02_ets: List[Float64]
+    var concrete02_ec0: List[Float64]
+    var concrete02_epsr: List[Float64]
+    var concrete02_sigmr: List[Float64]
     var steel01_nonlinear_indices: List[Int]
     var concrete01_nonlinear_indices: List[Int]
     var steel02_nonlinear_indices: List[Int]
@@ -180,6 +206,22 @@ struct FiberSection2dDef(Defaultable, Movable, ImplicitlyCopyable):
         self.steel02_group_counts = []
         self.steel02_group_padded_counts = []
         self.steel02_group_mat_defs = []
+        self.steel02_fy = []
+        self.steel02_e0 = []
+        self.steel02_b = []
+        self.steel02_r0 = []
+        self.steel02_cr1 = []
+        self.steel02_cr2 = []
+        self.steel02_a1 = []
+        self.steel02_a2 = []
+        self.steel02_a3 = []
+        self.steel02_a4 = []
+        self.steel02_sigini = []
+        self.steel02_esh = []
+        self.steel02_epsy = []
+        self.steel02_sigini_over_e0 = []
+        self.steel02_pos_inv_denom = []
+        self.steel02_neg_inv_denom = []
         self.concrete02_y_rel = []
         self.concrete02_area = []
         self.concrete02_mat_defs = []
@@ -189,6 +231,16 @@ struct FiberSection2dDef(Defaultable, Movable, ImplicitlyCopyable):
         self.concrete02_group_counts = []
         self.concrete02_group_padded_counts = []
         self.concrete02_group_mat_defs = []
+        self.concrete02_fc = []
+        self.concrete02_epsc0 = []
+        self.concrete02_fcu = []
+        self.concrete02_epscu = []
+        self.concrete02_rat = []
+        self.concrete02_ft = []
+        self.concrete02_ets = []
+        self.concrete02_ec0 = []
+        self.concrete02_epsr = []
+        self.concrete02_sigmr = []
         self.steel01_nonlinear_indices = []
         self.concrete01_nonlinear_indices = []
         self.steel02_nonlinear_indices = []
@@ -282,6 +334,22 @@ struct FiberSection2dDef(Defaultable, Movable, ImplicitlyCopyable):
         self.steel02_group_counts = []
         self.steel02_group_padded_counts = []
         self.steel02_group_mat_defs = []
+        self.steel02_fy = []
+        self.steel02_e0 = []
+        self.steel02_b = []
+        self.steel02_r0 = []
+        self.steel02_cr1 = []
+        self.steel02_cr2 = []
+        self.steel02_a1 = []
+        self.steel02_a2 = []
+        self.steel02_a3 = []
+        self.steel02_a4 = []
+        self.steel02_sigini = []
+        self.steel02_esh = []
+        self.steel02_epsy = []
+        self.steel02_sigini_over_e0 = []
+        self.steel02_pos_inv_denom = []
+        self.steel02_neg_inv_denom = []
         self.concrete02_y_rel = []
         self.concrete02_area = []
         self.concrete02_mat_defs = []
@@ -291,6 +359,16 @@ struct FiberSection2dDef(Defaultable, Movable, ImplicitlyCopyable):
         self.concrete02_group_counts = []
         self.concrete02_group_padded_counts = []
         self.concrete02_group_mat_defs = []
+        self.concrete02_fc = []
+        self.concrete02_epsc0 = []
+        self.concrete02_fcu = []
+        self.concrete02_epscu = []
+        self.concrete02_rat = []
+        self.concrete02_ft = []
+        self.concrete02_ets = []
+        self.concrete02_ec0 = []
+        self.concrete02_epsr = []
+        self.concrete02_sigmr = []
         self.steel01_nonlinear_indices = []
         self.concrete01_nonlinear_indices = []
         self.steel02_nonlinear_indices = []
@@ -384,6 +462,22 @@ struct FiberSection2dDef(Defaultable, Movable, ImplicitlyCopyable):
         self.steel02_group_counts = existing.steel02_group_counts.copy()
         self.steel02_group_padded_counts = existing.steel02_group_padded_counts.copy()
         self.steel02_group_mat_defs = existing.steel02_group_mat_defs.copy()
+        self.steel02_fy = existing.steel02_fy.copy()
+        self.steel02_e0 = existing.steel02_e0.copy()
+        self.steel02_b = existing.steel02_b.copy()
+        self.steel02_r0 = existing.steel02_r0.copy()
+        self.steel02_cr1 = existing.steel02_cr1.copy()
+        self.steel02_cr2 = existing.steel02_cr2.copy()
+        self.steel02_a1 = existing.steel02_a1.copy()
+        self.steel02_a2 = existing.steel02_a2.copy()
+        self.steel02_a3 = existing.steel02_a3.copy()
+        self.steel02_a4 = existing.steel02_a4.copy()
+        self.steel02_sigini = existing.steel02_sigini.copy()
+        self.steel02_esh = existing.steel02_esh.copy()
+        self.steel02_epsy = existing.steel02_epsy.copy()
+        self.steel02_sigini_over_e0 = existing.steel02_sigini_over_e0.copy()
+        self.steel02_pos_inv_denom = existing.steel02_pos_inv_denom.copy()
+        self.steel02_neg_inv_denom = existing.steel02_neg_inv_denom.copy()
         self.concrete02_y_rel = existing.concrete02_y_rel.copy()
         self.concrete02_area = existing.concrete02_area.copy()
         self.concrete02_mat_defs = existing.concrete02_mat_defs.copy()
@@ -395,6 +489,16 @@ struct FiberSection2dDef(Defaultable, Movable, ImplicitlyCopyable):
             existing.concrete02_group_padded_counts.copy()
         )
         self.concrete02_group_mat_defs = existing.concrete02_group_mat_defs.copy()
+        self.concrete02_fc = existing.concrete02_fc.copy()
+        self.concrete02_epsc0 = existing.concrete02_epsc0.copy()
+        self.concrete02_fcu = existing.concrete02_fcu.copy()
+        self.concrete02_epscu = existing.concrete02_epscu.copy()
+        self.concrete02_rat = existing.concrete02_rat.copy()
+        self.concrete02_ft = existing.concrete02_ft.copy()
+        self.concrete02_ets = existing.concrete02_ets.copy()
+        self.concrete02_ec0 = existing.concrete02_ec0.copy()
+        self.concrete02_epsr = existing.concrete02_epsr.copy()
+        self.concrete02_sigmr = existing.concrete02_sigmr.copy()
         self.steel01_nonlinear_indices = existing.steel01_nonlinear_indices.copy()
         self.concrete01_nonlinear_indices = existing.concrete01_nonlinear_indices.copy()
         self.steel02_nonlinear_indices = existing.steel02_nonlinear_indices.copy()
@@ -1449,24 +1553,15 @@ fn _fiber_section2d_runtime_apply_concrete02_range_simd_mixed[width: Int](
         var ecmin_c = load_float64_contiguous_simd[width](sec_def.runtime_c2_ecmin_c, slot)
         var dept_c = load_float64_contiguous_simd[width](sec_def.runtime_c2_dept_c, slot)
 
-        var fc = SIMD[DType.float64, width](0.0)
-        var epsc0 = SIMD[DType.float64, width](0.0)
-        var fcu = SIMD[DType.float64, width](0.0)
-        var epscu = SIMD[DType.float64, width](0.0)
-        var rat = SIMD[DType.float64, width](0.0)
-        var ft = SIMD[DType.float64, width](0.0)
-        var ets = SIMD[DType.float64, width](0.0)
-        for lane in range(width):
-            var mat_def = sec_def.concrete02_mat_defs[i + lane]
-            fc[lane] = mat_def.p0
-            epsc0[lane] = mat_def.p1
-            fcu[lane] = mat_def.p2
-            epscu[lane] = mat_def.p3
-            rat[lane] = mat_def.p4
-            ft[lane] = mat_def.p5
-            ets[lane] = mat_def.p6
-
-        var ec0 = (SIMD[DType.float64, width](2.0) * fc) / epsc0
+        var fc = load_float64_contiguous_simd[width](sec_def.concrete02_fc, i)
+        var epsc0 = load_float64_contiguous_simd[width](sec_def.concrete02_epsc0, i)
+        var fcu = load_float64_contiguous_simd[width](sec_def.concrete02_fcu, i)
+        var epscu = load_float64_contiguous_simd[width](sec_def.concrete02_epscu, i)
+        var ft = load_float64_contiguous_simd[width](sec_def.concrete02_ft, i)
+        var ets = load_float64_contiguous_simd[width](sec_def.concrete02_ets, i)
+        var ec0 = load_float64_contiguous_simd[width](sec_def.concrete02_ec0, i)
+        var epsr = load_float64_contiguous_simd[width](sec_def.concrete02_epsr, i)
+        var sigmr = load_float64_contiguous_simd[width](sec_def.concrete02_sigmr, i)
         var deps = strain - eps_c
         var tol = SIMD[DType.float64, width](2.220446049250313e-16)
 
@@ -1484,10 +1579,7 @@ fn _fiber_section2d_runtime_apply_concrete02_range_simd_mixed[width: Int](
         ecmin_t = compression_mask.select(strain, ecmin_t)
 
         var remaining_mask = ~(no_change_mask | compression_mask)
-        var one = SIMD[DType.float64, width](1.0)
         var half = SIMD[DType.float64, width](0.5)
-        var epsr = (fcu - rat * ec0 * epscu) / (ec0 * (one - rat))
-        var sigmr = ec0 * epsr
         var sigmm_env = _concrete02_compr_envlp_simd[width](fc, epsc0, fcu, epscu, ecmin_t)
         var sigmm = sigmm_env[0]
         var er = (sigmm - sigmr) / (ecmin_t - epsr)
@@ -1763,36 +1855,31 @@ fn _fiber_section2d_runtime_apply_steel02_range_simd_mixed[width: Int](
         var epsr_c = load_float64_contiguous_simd[width](sec_def.runtime_s2_epsr_c, slot)
         var sigr_c = load_float64_contiguous_simd[width](sec_def.runtime_s2_sigr_c, slot)
 
-        var fy = SIMD[DType.float64, width](0.0)
-        var e0 = SIMD[DType.float64, width](0.0)
-        var b = SIMD[DType.float64, width](0.0)
-        var r0 = SIMD[DType.float64, width](0.0)
-        var cr1 = SIMD[DType.float64, width](0.0)
-        var cr2 = SIMD[DType.float64, width](0.0)
-        var a1 = SIMD[DType.float64, width](0.0)
-        var a2 = SIMD[DType.float64, width](0.0)
-        var a3 = SIMD[DType.float64, width](0.0)
-        var a4 = SIMD[DType.float64, width](0.0)
-        var sigini = SIMD[DType.float64, width](0.0)
+        var fy = load_float64_contiguous_simd[width](sec_def.steel02_fy, i)
+        var e0 = load_float64_contiguous_simd[width](sec_def.steel02_e0, i)
+        var b = load_float64_contiguous_simd[width](sec_def.steel02_b, i)
+        var r0 = load_float64_contiguous_simd[width](sec_def.steel02_r0, i)
+        var cr1 = load_float64_contiguous_simd[width](sec_def.steel02_cr1, i)
+        var cr2 = load_float64_contiguous_simd[width](sec_def.steel02_cr2, i)
+        var a1 = load_float64_contiguous_simd[width](sec_def.steel02_a1, i)
+        var a3 = load_float64_contiguous_simd[width](sec_def.steel02_a3, i)
+        var sigini = load_float64_contiguous_simd[width](sec_def.steel02_sigini, i)
+        var esh = load_float64_contiguous_simd[width](sec_def.steel02_esh, i)
+        var epsy = load_float64_contiguous_simd[width](sec_def.steel02_epsy, i)
+        var sigini_over_e0 = load_float64_contiguous_simd[width](
+            sec_def.steel02_sigini_over_e0, i
+        )
+        var pos_inv_denom = load_float64_contiguous_simd[width](
+            sec_def.steel02_pos_inv_denom, i
+        )
+        var neg_inv_denom = load_float64_contiguous_simd[width](
+            sec_def.steel02_neg_inv_denom, i
+        )
         var kon_c = SIMD[DType.int32, width](0)
         for lane in range(width):
-            var mat_def = sec_def.steel02_mat_defs[i + lane]
-            fy[lane] = mat_def.p0
-            e0[lane] = mat_def.p1
-            b[lane] = mat_def.p2
-            r0[lane] = mat_def.p3
-            cr1[lane] = mat_def.p4
-            cr2[lane] = mat_def.p5
-            a1[lane] = mat_def.p6
-            a2[lane] = mat_def.p7
-            a3[lane] = mat_def.p8
-            a4[lane] = mat_def.p9
-            sigini[lane] = mat_def.p10
             kon_c[lane] = Int32(sec_def.runtime_s2_kon_c[slot + lane])
 
-        var esh = b * e0
-        var epsy = fy / e0
-        var eps = sigini.ne(0.0).select(trial_eps + sigini / e0, trial_eps)
+        var eps = sigini.ne(0.0).select(trial_eps + sigini_over_e0, trial_eps)
         var deps = eps - eps_c
 
         var epsmin_t = epsmin_c
@@ -1835,9 +1922,7 @@ fn _fiber_section2d_runtime_apply_steel02_range_simd_mixed[width: Int](
 
         var pos_reversal_mask = active_mask & kon_t.eq(2) & deps.gt(0.0)
         var epsmin_after_pos = eps_c.lt(epsmin_t).select(eps_c, epsmin_t)
-        var d1_pos = (epsmax_t - epsmin_after_pos) / (
-            SIMD[DType.float64, width](2.0) * (a4 * epsy)
-        )
+        var d1_pos = (epsmax_t - epsmin_after_pos) * pos_inv_denom
         var shft_pos = SIMD[DType.float64, width](1.0) + a3 * (d1_pos ** SIMD[
             DType.float64, width
         ](0.8))
@@ -1855,9 +1940,7 @@ fn _fiber_section2d_runtime_apply_steel02_range_simd_mixed[width: Int](
 
         var neg_reversal_mask = active_mask & kon_t.eq(1) & deps.lt(0.0)
         var epsmax_after_neg = eps_c.gt(epsmax_t).select(eps_c, epsmax_t)
-        var d1_neg = (epsmax_after_neg - epsmin_t) / (
-            SIMD[DType.float64, width](2.0) * (a2 * epsy)
-        )
+        var d1_neg = (epsmax_after_neg - epsmin_t) * neg_inv_denom
         var shft_neg = SIMD[DType.float64, width](1.0) + a1 * (d1_neg ** SIMD[
             DType.float64, width
         ](0.8))
@@ -2830,6 +2913,79 @@ fn _fiber_section2d_rebuild_grouped_family(
             grouped_mat_defs.append(group_mat_def)
 
 
+fn _fiber_section2d_build_steel02_param_arrays(mut sec_def: FiberSection2dDef):
+    sec_def.steel02_fy = []
+    sec_def.steel02_e0 = []
+    sec_def.steel02_b = []
+    sec_def.steel02_r0 = []
+    sec_def.steel02_cr1 = []
+    sec_def.steel02_cr2 = []
+    sec_def.steel02_a1 = []
+    sec_def.steel02_a2 = []
+    sec_def.steel02_a3 = []
+    sec_def.steel02_a4 = []
+    sec_def.steel02_sigini = []
+    sec_def.steel02_esh = []
+    sec_def.steel02_epsy = []
+    sec_def.steel02_sigini_over_e0 = []
+    sec_def.steel02_pos_inv_denom = []
+    sec_def.steel02_neg_inv_denom = []
+    for i in range(len(sec_def.steel02_mat_defs)):
+        var mat_def = sec_def.steel02_mat_defs[i]
+        var fy = mat_def.p0
+        var e0 = mat_def.p1
+        var b = mat_def.p2
+        var epsy = fy / e0
+        sec_def.steel02_fy.append(fy)
+        sec_def.steel02_e0.append(e0)
+        sec_def.steel02_b.append(b)
+        sec_def.steel02_r0.append(mat_def.p3)
+        sec_def.steel02_cr1.append(mat_def.p4)
+        sec_def.steel02_cr2.append(mat_def.p5)
+        sec_def.steel02_a1.append(mat_def.p6)
+        sec_def.steel02_a2.append(mat_def.p7)
+        sec_def.steel02_a3.append(mat_def.p8)
+        sec_def.steel02_a4.append(mat_def.p9)
+        sec_def.steel02_sigini.append(mat_def.p10)
+        sec_def.steel02_esh.append(b * e0)
+        sec_def.steel02_epsy.append(epsy)
+        sec_def.steel02_sigini_over_e0.append(mat_def.p10 / e0)
+        sec_def.steel02_pos_inv_denom.append(1.0 / (2.0 * mat_def.p9 * epsy))
+        sec_def.steel02_neg_inv_denom.append(1.0 / (2.0 * mat_def.p7 * epsy))
+
+
+fn _fiber_section2d_build_concrete02_param_arrays(mut sec_def: FiberSection2dDef):
+    sec_def.concrete02_fc = []
+    sec_def.concrete02_epsc0 = []
+    sec_def.concrete02_fcu = []
+    sec_def.concrete02_epscu = []
+    sec_def.concrete02_rat = []
+    sec_def.concrete02_ft = []
+    sec_def.concrete02_ets = []
+    sec_def.concrete02_ec0 = []
+    sec_def.concrete02_epsr = []
+    sec_def.concrete02_sigmr = []
+    for i in range(len(sec_def.concrete02_mat_defs)):
+        var mat_def = sec_def.concrete02_mat_defs[i]
+        var fc = mat_def.p0
+        var epsc0 = mat_def.p1
+        var fcu = mat_def.p2
+        var epscu = mat_def.p3
+        var rat = mat_def.p4
+        var ec0 = (2.0 * fc) / epsc0
+        var epsr = (fcu - rat * ec0 * epscu) / (ec0 * (1.0 - rat))
+        sec_def.concrete02_fc.append(fc)
+        sec_def.concrete02_epsc0.append(epsc0)
+        sec_def.concrete02_fcu.append(fcu)
+        sec_def.concrete02_epscu.append(epscu)
+        sec_def.concrete02_rat.append(rat)
+        sec_def.concrete02_ft.append(mat_def.p5)
+        sec_def.concrete02_ets.append(mat_def.p6)
+        sec_def.concrete02_ec0.append(ec0)
+        sec_def.concrete02_epsr.append(epsr)
+        sec_def.concrete02_sigmr.append(ec0 * epsr)
+
+
 fn _fiber_section2d_is_single_definition_family(
     nonlinear_indices: List[Int], nonlinear_def_index: List[Int]
 ) -> Bool:
@@ -2949,6 +3105,8 @@ fn _build_fiber_section2d_def(
         sec_def.concrete02_group_padded_counts,
         sec_def.concrete02_group_mat_defs,
     )
+    _fiber_section2d_build_steel02_param_arrays(sec_def)
+    _fiber_section2d_build_concrete02_param_arrays(sec_def)
     sec_def.steel02_count = len(sec_def.steel02_nonlinear_indices)
     sec_def.concrete02_count = len(sec_def.concrete02_nonlinear_indices)
     sec_def.steel02_single_definition = _fiber_section2d_is_single_definition_family(
