@@ -1,20 +1,21 @@
 # 🔥 Strut 🔥
 
-Performance-first finite element analysis (FEA) engine written in Mojo. The project focuses on structural engineering transient analysis (Buildings/Earthquakes), and aims to squeeze out as much performance as possible. Benchmarks and validation is run against OpenSees.
+Performance-first finite element analysis (FEA) engine written in Mojo. The project focuses on structural engineering transient analysis (Buildings/Earthquakes), and aims to be as fast as possible for large models. Benchmarks and tests are run against OpenSees.
 
-## Background
+Currently we beat the performance of OpenSees by about 2x in large examples that take several seconds to run. Check out the [current benchmarks](./docs/benchmark-opensees-examples.md).
 
-This is a test project for now, primarily just to see how far I can push the vibes. The setup is a bit specific for my environment, and I haven't put much effort into making the best DX for other developers.
+## Warnings
+
+- I haven't put much work to generalize the environment, so it might be difficult to get this running on your machine right now
+- We are testing/validating against the full OpenSees example suite, up through "Advanced Example 6". However, there are some tests we skip because I have not done a thorough validation pass. Please don't use this for anything important, as the test coverage is severely limited.
 
 ## Quick Start
 
 1. Fetch the dependencies `uv sync`
-2. Run the [setup script](./scripts/setup.sh) to clone reference repos, download modular docs, and download OpenSees examples.
+2. Run the [setup script](./scripts/setup.sh) to clone reference repos, download modular docs, and download OpenSees example tcl files and ground motions.
 3. Build the native Linux OpenSees reference binary with [scripts/build_opensees_linux.sh](./scripts/build_opensees_linux.sh). The harness uses [`.build/opensees-linux/OpenSees`](./.build/opensees-linux/OpenSees) by default.
 
-## OpenSees Coverage Checklist
-
-Element families below are based on current Strut implementation status. This is a summary view of implemented or will implement, not the full list of items.
+## OpenSees Implementation Coverage
 
 | Element family     | 2D  | 3D  |
 | ------------------ | --- | --- |
