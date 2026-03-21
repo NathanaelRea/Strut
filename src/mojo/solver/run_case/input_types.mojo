@@ -715,6 +715,31 @@ struct MPConstraintInput(Movable, ImplicitlyCopyable):
     var dof_4: Int
     var dof_5: Int
     var dof_6: Int
+    # Preserve the canonical rigidDiaphragm JSON shape in a fixed-size
+    # allocation-light form for later loader/runtime phases.
+    var rigid_perp_dirn: Int
+    var rigid_constrained_dof_count: Int
+    var rigid_constrained_dof_1: Int
+    var rigid_constrained_dof_2: Int
+    var rigid_constrained_dof_3: Int
+    var rigid_retained_dof_count: Int
+    var rigid_retained_dof_1: Int
+    var rigid_retained_dof_2: Int
+    var rigid_retained_dof_3: Int
+    var rigid_matrix_row_count: Int
+    var rigid_matrix_col_count: Int
+    var rigid_matrix_11: Float64
+    var rigid_matrix_12: Float64
+    var rigid_matrix_13: Float64
+    var rigid_matrix_21: Float64
+    var rigid_matrix_22: Float64
+    var rigid_matrix_23: Float64
+    var rigid_matrix_31: Float64
+    var rigid_matrix_32: Float64
+    var rigid_matrix_33: Float64
+    var rigid_dx: Float64
+    var rigid_dy: Float64
+    var rigid_dz: Float64
 
     fn __init__(out self):
         self.type = ""
@@ -727,6 +752,29 @@ struct MPConstraintInput(Movable, ImplicitlyCopyable):
         self.dof_4 = 0
         self.dof_5 = 0
         self.dof_6 = 0
+        self.rigid_perp_dirn = 0
+        self.rigid_constrained_dof_count = 0
+        self.rigid_constrained_dof_1 = 0
+        self.rigid_constrained_dof_2 = 0
+        self.rigid_constrained_dof_3 = 0
+        self.rigid_retained_dof_count = 0
+        self.rigid_retained_dof_1 = 0
+        self.rigid_retained_dof_2 = 0
+        self.rigid_retained_dof_3 = 0
+        self.rigid_matrix_row_count = 0
+        self.rigid_matrix_col_count = 0
+        self.rigid_matrix_11 = 0.0
+        self.rigid_matrix_12 = 0.0
+        self.rigid_matrix_13 = 0.0
+        self.rigid_matrix_21 = 0.0
+        self.rigid_matrix_22 = 0.0
+        self.rigid_matrix_23 = 0.0
+        self.rigid_matrix_31 = 0.0
+        self.rigid_matrix_32 = 0.0
+        self.rigid_matrix_33 = 0.0
+        self.rigid_dx = 0.0
+        self.rigid_dy = 0.0
+        self.rigid_dz = 0.0
 
     fn __init__(out self, type: String, retained_node: Int, constrained_node: Int):
         self.type = type
@@ -739,6 +787,29 @@ struct MPConstraintInput(Movable, ImplicitlyCopyable):
         self.dof_4 = 0
         self.dof_5 = 0
         self.dof_6 = 0
+        self.rigid_perp_dirn = 0
+        self.rigid_constrained_dof_count = 0
+        self.rigid_constrained_dof_1 = 0
+        self.rigid_constrained_dof_2 = 0
+        self.rigid_constrained_dof_3 = 0
+        self.rigid_retained_dof_count = 0
+        self.rigid_retained_dof_1 = 0
+        self.rigid_retained_dof_2 = 0
+        self.rigid_retained_dof_3 = 0
+        self.rigid_matrix_row_count = 0
+        self.rigid_matrix_col_count = 0
+        self.rigid_matrix_11 = 0.0
+        self.rigid_matrix_12 = 0.0
+        self.rigid_matrix_13 = 0.0
+        self.rigid_matrix_21 = 0.0
+        self.rigid_matrix_22 = 0.0
+        self.rigid_matrix_23 = 0.0
+        self.rigid_matrix_31 = 0.0
+        self.rigid_matrix_32 = 0.0
+        self.rigid_matrix_33 = 0.0
+        self.rigid_dx = 0.0
+        self.rigid_dy = 0.0
+        self.rigid_dz = 0.0
 
 
 struct PatternInput(Movable, ImplicitlyCopyable):
@@ -2653,6 +2724,120 @@ fn parse_case_input_native_from_source(
                     parsed.dof_5 = _json_int_value(doc, doc.array_item(dofs, 4), "mp_constraint dofs")
                 if dof_count > 5:
                     parsed.dof_6 = _json_int_value(doc, doc.array_item(dofs, 5), "mp_constraint dofs")
+            var perp_dirn = _json_key(doc, mpc, "perp_dirn")
+            if _json_has_value(doc, perp_dirn):
+                parsed.rigid_perp_dirn = _json_int_value(doc, perp_dirn, "mp_constraint perp_dirn")
+            var constrained_dofs = _json_key(doc, mpc, "constrained_dofs")
+            if _json_has_value(doc, constrained_dofs):
+                var constrained_count = _json_expect_array_len(
+                    doc, constrained_dofs, "mp_constraint constrained_dofs"
+                )
+                if constrained_count > 3:
+                    abort("mp_constraint constrained_dofs supports at most 3 entries")
+                parsed.rigid_constrained_dof_count = constrained_count
+                if constrained_count > 0:
+                    parsed.rigid_constrained_dof_1 = _json_int_value(
+                        doc,
+                        doc.array_item(constrained_dofs, 0),
+                        "mp_constraint constrained_dofs",
+                    )
+                if constrained_count > 1:
+                    parsed.rigid_constrained_dof_2 = _json_int_value(
+                        doc,
+                        doc.array_item(constrained_dofs, 1),
+                        "mp_constraint constrained_dofs",
+                    )
+                if constrained_count > 2:
+                    parsed.rigid_constrained_dof_3 = _json_int_value(
+                        doc,
+                        doc.array_item(constrained_dofs, 2),
+                        "mp_constraint constrained_dofs",
+                    )
+            var retained_dofs = _json_key(doc, mpc, "retained_dofs")
+            if _json_has_value(doc, retained_dofs):
+                var retained_count = _json_expect_array_len(
+                    doc, retained_dofs, "mp_constraint retained_dofs"
+                )
+                if retained_count > 3:
+                    abort("mp_constraint retained_dofs supports at most 3 entries")
+                parsed.rigid_retained_dof_count = retained_count
+                if retained_count > 0:
+                    parsed.rigid_retained_dof_1 = _json_int_value(
+                        doc,
+                        doc.array_item(retained_dofs, 0),
+                        "mp_constraint retained_dofs",
+                    )
+                if retained_count > 1:
+                    parsed.rigid_retained_dof_2 = _json_int_value(
+                        doc,
+                        doc.array_item(retained_dofs, 1),
+                        "mp_constraint retained_dofs",
+                    )
+                if retained_count > 2:
+                    parsed.rigid_retained_dof_3 = _json_int_value(
+                        doc,
+                        doc.array_item(retained_dofs, 2),
+                        "mp_constraint retained_dofs",
+                    )
+            var matrix = _json_key(doc, mpc, "matrix")
+            if _json_has_value(doc, matrix):
+                var row_count = _json_expect_array_len(doc, matrix, "mp_constraint matrix")
+                if row_count > 3:
+                    abort("mp_constraint matrix supports at most 3 rows")
+                parsed.rigid_matrix_row_count = row_count
+                for row in range(row_count):
+                    var row_index = doc.array_item(matrix, row)
+                    var col_count = _json_expect_array_len(
+                        doc, row_index, "mp_constraint matrix row"
+                    )
+                    if col_count > 3:
+                        abort("mp_constraint matrix supports at most 3 columns")
+                    if row == 0:
+                        parsed.rigid_matrix_col_count = col_count
+                    elif col_count != parsed.rigid_matrix_col_count:
+                        abort("mp_constraint matrix rows must have consistent column counts")
+                    if col_count > 0:
+                        var value_1 = _json_number_value(
+                            doc,
+                            doc.array_item(row_index, 0),
+                            "mp_constraint matrix row",
+                        )
+                        if row == 0:
+                            parsed.rigid_matrix_11 = value_1
+                        elif row == 1:
+                            parsed.rigid_matrix_21 = value_1
+                        else:
+                            parsed.rigid_matrix_31 = value_1
+                    if col_count > 1:
+                        var value_2 = _json_number_value(
+                            doc,
+                            doc.array_item(row_index, 1),
+                            "mp_constraint matrix row",
+                        )
+                        if row == 0:
+                            parsed.rigid_matrix_12 = value_2
+                        elif row == 1:
+                            parsed.rigid_matrix_22 = value_2
+                        else:
+                            parsed.rigid_matrix_32 = value_2
+                    if col_count > 2:
+                        var value_3 = _json_number_value(
+                            doc,
+                            doc.array_item(row_index, 2),
+                            "mp_constraint matrix row",
+                        )
+                        if row == 0:
+                            parsed.rigid_matrix_13 = value_3
+                        elif row == 1:
+                            parsed.rigid_matrix_23 = value_3
+                        else:
+                            parsed.rigid_matrix_33 = value_3
+            if _json_has_key(doc, mpc, "dx"):
+                parsed.rigid_dx = _json_get_float(doc, mpc, "dx", 0.0)
+            if _json_has_key(doc, mpc, "dy"):
+                parsed.rigid_dy = _json_get_float(doc, mpc, "dy", 0.0)
+            if _json_has_key(doc, mpc, "dz"):
+                parsed.rigid_dz = _json_get_float(doc, mpc, "dz", 0.0)
             case_input.mp_constraints.append(parsed)
 
     case_input.pattern = parse_pattern_input_from_native(

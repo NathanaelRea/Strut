@@ -58,12 +58,13 @@ from solver.run_case.input_types import (
     parse_case_input_native_from_source,
 )
 from solver.run_case.helpers import (
+    _collapse_vector_by_mpc,
     _drift_value,
     _element_basic_force_for_recorder,
     _element_force_global_for_recorder,
     _element_local_force_for_recorder,
     _element_deformation_for_recorder,
-    _enforce_equal_dof_values,
+    _enforce_mpc_values,
     _format_values_line,
     _has_recorder_type,
     _section_response_for_recorder,
@@ -101,7 +102,14 @@ fn _write_output_chunk_files(
 
 
 fn _build_stage_nodal_force_vector(
-    loads: List[NodalLoadInput], id_to_index: List[Int], ndf: Int, total_dofs: Int
+    loads: List[NodalLoadInput],
+    id_to_index: List[Int],
+    ndf: Int,
+    total_dofs: Int,
+    has_transformation_mpc: Bool,
+    mpc_row_offsets: List[Int],
+    mpc_dof_pool: List[Int],
+    mpc_coeff_pool: List[Float64],
 ) raises -> List[Float64]:
     var F_stage: List[Float64] = []
     F_stage.resize(total_dofs, 0.0)
@@ -114,6 +122,10 @@ fn _build_stage_nodal_force_vector(
         require_dof_in_range(dof, ndf, "load")
         var idx = node_dof_index(id_to_index[node_id], dof, ndf)
         F_stage[idx] += load.value
+    if has_transformation_mpc:
+        return _collapse_vector_by_mpc(
+            F_stage, mpc_row_offsets, mpc_dof_pool, mpc_coeff_pool
+        )
     return F_stage^
 
 
@@ -324,7 +336,10 @@ def run_case_input(
     var constrained = state.constrained.copy()
     var free = state.free.copy()
     var free_index = state.free_index.copy()
-    var rep_dof = state.rep_dof.copy()
+    var mpc_row_offsets = state.mpc_row_offsets.copy()
+    var mpc_dof_pool = state.mpc_dof_pool.copy()
+    var mpc_coeff_pool = state.mpc_coeff_pool.copy()
+    var mpc_slave_dof = state.mpc_slave_dof.copy()
     var M_total = state.M_total.copy()
     var M_rayleigh_total = state.M_rayleigh_total.copy()
     var analysis_integrator_targets_pool = (
@@ -435,7 +450,10 @@ def run_case_input(
             frame_solve_linear,
             total_dofs,
             has_transformation_mpc,
-            rep_dof,
+            mpc_slave_dof,
+            mpc_row_offsets,
+            mpc_dof_pool,
+            mpc_coeff_pool,
             constrained,
             runtime_metrics,
         )
@@ -535,7 +553,10 @@ def run_case_input(
                 frame_uniaxial_revert_all,
                 frame_uniaxial_commit_all,
                 has_transformation_mpc,
-                rep_dof,
+                mpc_slave_dof,
+                mpc_row_offsets,
+                mpc_dof_pool,
+                mpc_coeff_pool,
                 constrained,
                 runtime_metrics,
             )
@@ -628,7 +649,10 @@ def run_case_input(
                 frame_uniaxial_revert_all,
                 frame_uniaxial_commit_all,
                 has_transformation_mpc,
-                rep_dof,
+                mpc_slave_dof,
+                mpc_row_offsets,
+                mpc_dof_pool,
+                mpc_coeff_pool,
                 runtime_metrics,
             )
         else:
@@ -725,7 +749,10 @@ def run_case_input(
             transient_output_files,
             transient_output_buffers,
             has_transformation_mpc,
-            rep_dof,
+            mpc_slave_dof,
+            mpc_row_offsets,
+            mpc_dof_pool,
+            mpc_coeff_pool,
             constrained,
             do_profile,
             t0,
@@ -828,7 +855,10 @@ def run_case_input(
             transient_output_files,
             transient_output_buffers,
             has_transformation_mpc,
-            rep_dof,
+            mpc_slave_dof,
+            mpc_row_offsets,
+            mpc_dof_pool,
+            mpc_coeff_pool,
             constrained,
             do_profile,
             t0,
@@ -913,7 +943,14 @@ def run_case_input(
                         abort("time_series tag not found")
                     if has_stage_loads:
                         stage_F = _build_stage_nodal_force_vector(
-                            stage.loads, id_to_index, ndf, total_dofs
+                            stage.loads,
+                            id_to_index,
+                            ndf,
+                            total_dofs,
+                            has_transformation_mpc,
+                            mpc_row_offsets,
+                            mpc_dof_pool,
+                            mpc_coeff_pool,
                         )
                     elif stage_idx > 0:
                         stage_F = _zero_nodal_force_vector(total_dofs)
@@ -1055,7 +1092,10 @@ def run_case_input(
                     frame_solve_linear,
                     total_dofs,
                     has_transformation_mpc,
-                    rep_dof,
+                    mpc_slave_dof,
+                    mpc_row_offsets,
+                    mpc_dof_pool,
+                    mpc_coeff_pool,
                     constrained,
                     runtime_metrics,
                 )
@@ -1163,7 +1203,10 @@ def run_case_input(
                         frame_uniaxial_revert_all,
                         frame_uniaxial_commit_all,
                         has_transformation_mpc,
-                        rep_dof,
+                        mpc_slave_dof,
+                        mpc_row_offsets,
+                        mpc_dof_pool,
+                        mpc_coeff_pool,
                         constrained,
                         runtime_metrics,
                     )
@@ -1265,7 +1308,10 @@ def run_case_input(
                         frame_uniaxial_revert_all,
                         frame_uniaxial_commit_all,
                         has_transformation_mpc,
-                        rep_dof,
+                        mpc_slave_dof,
+                        mpc_row_offsets,
+                        mpc_dof_pool,
+                        mpc_coeff_pool,
                         runtime_metrics,
                     )
                 else:
@@ -1365,7 +1411,10 @@ def run_case_input(
                     transient_output_files,
                     transient_output_buffers,
                     has_transformation_mpc,
-                    rep_dof,
+                    mpc_slave_dof,
+                    mpc_row_offsets,
+                    mpc_dof_pool,
+                    mpc_coeff_pool,
                     constrained,
                     do_profile,
                     t0,
@@ -1477,7 +1526,10 @@ def run_case_input(
                     transient_output_files,
                     transient_output_buffers,
                     has_transformation_mpc,
-                    rep_dof,
+                    mpc_slave_dof,
+                    mpc_row_offsets,
+                    mpc_dof_pool,
+                    mpc_coeff_pool,
                     constrained,
                     do_profile,
                     t0,
@@ -1546,7 +1598,10 @@ def run_case_input(
                     constrained,
                     free,
                     has_transformation_mpc,
-                    rep_dof,
+                    mpc_slave_dof,
+                    mpc_row_offsets,
+                    mpc_dof_pool,
+                    mpc_coeff_pool,
                     recorders,
                     recorder_nodes_pool,
                     recorder_dofs_pool,
@@ -1611,7 +1666,10 @@ def run_case_input(
             constrained,
             free,
             has_transformation_mpc,
-            rep_dof,
+            mpc_slave_dof,
+            mpc_row_offsets,
+            mpc_dof_pool,
+            mpc_coeff_pool,
             recorders,
             recorder_nodes_pool,
             recorder_dofs_pool,
@@ -1654,7 +1712,14 @@ def run_case_input(
         _write_output_chunk_files(out_dir, static_output_files, static_output_buffers)
     else:
         if has_transformation_mpc:
-            _enforce_equal_dof_values(u, rep_dof, constrained)
+            _enforce_mpc_values(
+                u,
+                constrained,
+                mpc_slave_dof,
+                mpc_row_offsets,
+                mpc_dof_pool,
+                mpc_coeff_pool,
+            )
         var has_reaction_recorder = _has_recorder_type(recorders, RecorderTypeTag.NodeReaction)
         var final_load_scale = 1.0
         if analysis_type_tag == AnalysisTypeTag.StaticLinear and ts_index >= 0:

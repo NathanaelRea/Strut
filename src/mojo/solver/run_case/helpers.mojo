@@ -3261,16 +3261,68 @@ fn _solve_linear_system(
     return True
 
 
-fn _collapse_vector_by_rep(values: List[Float64], rep_dof: List[Int]) -> List[Float64]:
+fn _collapse_vector_by_mpc(
+    values: List[Float64],
+    row_offsets: List[Int],
+    dof_pool: List[Int],
+    coeff_pool: List[Float64],
+) -> List[Float64]:
     var out: List[Float64] = []
     out.resize(len(values), 0.0)
     for i in range(len(values)):
-        out[rep_dof[i]] += values[i]
+        var row_start = row_offsets[i]
+        var row_end = row_offsets[i + 1]
+        for row_term in range(row_start, row_end):
+            out[dof_pool[row_term]] += coeff_pool[row_term] * values[i]
     return out^
 
 
-fn _collapse_matrix_by_rep(
-    matrix: List[List[Float64]], rep_dof: List[Int]
+fn _build_reduced_diagonal_matrix_by_mpc(
+    diag_values: List[Float64],
+    free_index_by_dof: List[Int],
+    row_offsets: List[Int],
+    dof_pool: List[Int],
+    coeff_pool: List[Float64],
+) -> List[List[Float64]]:
+    var free_count = len(free_index_by_dof)
+    var max_free = -1
+    for i in range(free_count):
+        if free_index_by_dof[i] > max_free:
+            max_free = free_index_by_dof[i]
+    free_count = max_free + 1
+
+    var out: List[List[Float64]] = []
+    for _ in range(free_count):
+        var row: List[Float64] = []
+        row.resize(free_count, 0.0)
+        out.append(row^)
+
+    for i in range(len(diag_values)):
+        var mass = diag_values[i]
+        if mass == 0.0:
+            continue
+        var row_start = row_offsets[i]
+        var row_end = row_offsets[i + 1]
+        for term_i in range(row_start, row_end):
+            var reduced_i = free_index_by_dof[dof_pool[term_i]]
+            if reduced_i < 0:
+                continue
+            var coeff_i = coeff_pool[term_i]
+            for term_j in range(row_start, row_end):
+                var reduced_j = free_index_by_dof[dof_pool[term_j]]
+                if reduced_j < 0:
+                    continue
+                out[reduced_i][reduced_j] += (
+                    mass * coeff_i * coeff_pool[term_j]
+                )
+    return out^
+
+
+fn _collapse_matrix_by_mpc(
+    matrix: List[List[Float64]],
+    row_offsets: List[Int],
+    dof_pool: List[Int],
+    coeff_pool: List[Float64],
 ) -> List[List[Float64]]:
     var n = len(matrix)
     var out: List[List[Float64]] = []
@@ -3279,18 +3331,43 @@ fn _collapse_matrix_by_rep(
         row.resize(n, 0.0)
         out.append(row^)
     for i in range(n):
-        var ri = rep_dof[i]
+        var row_i_start = row_offsets[i]
+        var row_i_end = row_offsets[i + 1]
+        if row_i_start == row_i_end:
+            continue
         for j in range(n):
-            out[ri][rep_dof[j]] += matrix[i][j]
+            var value = matrix[i][j]
+            if value == 0.0:
+                continue
+            var row_j_start = row_offsets[j]
+            var row_j_end = row_offsets[j + 1]
+            if row_j_start == row_j_end:
+                continue
+            for term_i in range(row_i_start, row_i_end):
+                var reduced_i = dof_pool[term_i]
+                var coeff_i = coeff_pool[term_i]
+                for term_j in range(row_j_start, row_j_end):
+                    out[reduced_i][dof_pool[term_j]] += (
+                        coeff_i * value * coeff_pool[term_j]
+                    )
     return out^
 
 
-fn _enforce_equal_dof_values(
-    mut values: List[Float64], rep_dof: List[Int], constrained: List[Bool]
+fn _enforce_mpc_values(
+    mut values: List[Float64],
+    constrained: List[Bool],
+    slave_dof: List[Bool],
+    row_offsets: List[Int],
+    dof_pool: List[Int],
+    coeff_pool: List[Float64],
 ):
     for i in range(len(values)):
-        var rep = rep_dof[i]
-        if constrained[rep]:
+        if slave_dof[i]:
+            var value = 0.0
+            var row_start = row_offsets[i]
+            var row_end = row_offsets[i + 1]
+            for row_term in range(row_start, row_end):
+                value += coeff_pool[row_term] * values[dof_pool[row_term]]
+            values[i] = value
+        elif constrained[i]:
             values[i] = 0.0
-        else:
-            values[i] = values[rep]

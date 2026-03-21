@@ -38,7 +38,22 @@ Minimum required fields (v1.0):
     - `params.layers`: list of `straight` layers:
       - `{ type: "straight", material, num_bars, bar_area, y_start, z_start, y_end, z_end }`
 - `elements`: list of `{ id, type, nodes, section, geomTransf }`
-- `mp_constraints`: list of `{ type: "equalDOF", retained_node, constrained_node, dofs }` (optional; requires transformation handler)
+- `mp_constraints`: optional list of multi-point constraints; requires `analysis.constraints: "Transformation"` or `"Lagrange"`
+  - `equalDOF`: `{ type: "equalDOF", retained_node, constrained_node, dofs }`
+  - `rigidDiaphragm`: `{ type: "rigidDiaphragm", retained_node, constrained_node, perp_dirn, constrained_dofs, retained_dofs, matrix, dx, dy, dz }`
+    - This is the canonical JSON/runtime shape. It matches the direct-Tcl converter output exactly.
+    - Native runtime storage keeps this external JSON schema unchanged and normalizes `matrix` into fixed-size internal coefficient rows.
+    - Supported OpenSees forms:
+      - `ndm=3`, `ndf=6`
+      - `ndm=2`, `ndf=3`
+    - Canonical DOF mappings already emitted by the converter:
+      - 3D `perp_dirn=3` -> `constrained_dofs = retained_dofs = [1, 2, 6]`
+      - 3D `perp_dirn=2` -> `constrained_dofs = retained_dofs = [1, 3, 5]`
+      - 3D `perp_dirn=1` -> `constrained_dofs = retained_dofs = [2, 3, 4]`
+      - 2D `perp_dirn=3` -> `constrained_dofs = retained_dofs = [1, 2, 3]`
+      - 2D `perp_dirn=1` -> `constrained_dofs = retained_dofs = [1]`
+      - 2D `perp_dirn=2` -> `constrained_dofs = retained_dofs = [2]`
+    - `dx`, `dy`, and `dz` are retained as canonical converter/runtime fields for diagnostics and parity work.
 - `time_series`: list of `{ type, tag, ... }` (optional; top-level)
   - `Constant`: `{ tag, factor? }`
   - `Linear`: `{ tag, factor? }`

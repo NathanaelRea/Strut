@@ -64,8 +64,8 @@ from tag_types import (
 
 from solver.run_case.helpers import (
     _append_output,
-    _collapse_matrix_by_rep,
-    _collapse_vector_by_rep,
+    _collapse_matrix_by_mpc,
+    _collapse_vector_by_mpc,
     _drift_value,
     _element_basic_force_for_recorder,
     _element_deformation_for_recorder,
@@ -73,7 +73,7 @@ from solver.run_case.helpers import (
     _force_beam_column2d_force_global_from_basic_state,
     _force_beam_column2d_section_response_from_basic_state,
     _element_local_force_for_recorder,
-    _enforce_equal_dof_values,
+    _enforce_mpc_values,
     _flush_envelope_outputs,
     _format_values_line,
     _has_recorder_type,
@@ -373,7 +373,9 @@ fn _static_load_control_residual(
     free: List[Int],
     free_count: Int,
     has_transformation_mpc: Bool,
-    rep_dof: List[Int],
+    mpc_row_offsets: List[Int],
+    mpc_dof_pool: List[Int],
+    mpc_coeff_pool: List[Float64],
     mut residual: List[Float64],
 ) raises:
     var F_int = assemble_internal_forces_typed_soa(
@@ -437,7 +439,9 @@ fn _static_load_control_residual(
         force_beam_column3d_scratch,
     )
     if has_transformation_mpc:
-        F_int = _collapse_vector_by_rep(F_int, rep_dof)
+        F_int = _collapse_vector_by_mpc(
+            F_int, mpc_row_offsets, mpc_dof_pool, mpc_coeff_pool
+        )
     for i in range(free_count):
         var row_i = free[i]
         residual[i] = F_step[row_i] - F_int[row_i]
@@ -501,7 +505,9 @@ fn _static_displacement_control_residual(
     free: List[Int],
     free_count: Int,
     has_transformation_mpc: Bool,
-    rep_dof: List[Int],
+    mpc_row_offsets: List[Int],
+    mpc_dof_pool: List[Int],
+    mpc_coeff_pool: List[Float64],
     F_const_free: List[Float64],
     F_pattern_free: List[Float64],
     load_factor: Float64,
@@ -574,7 +580,9 @@ fn _static_displacement_control_residual(
         force_beam_column3d_scratch,
     )
     if has_transformation_mpc:
-        F_int = _collapse_vector_by_rep(F_int, rep_dof)
+        F_int = _collapse_vector_by_mpc(
+            F_int, mpc_row_offsets, mpc_dof_pool, mpc_coeff_pool
+        )
     for i in range(free_count):
         residual_aug[i] = (
             F_const_free[i] + load_factor * F_pattern_free[i] - F_int[free[i]]
@@ -863,7 +871,10 @@ fn run_static_nonlinear_load_control(
     frame_uniaxial_revert_all: Int,
     frame_uniaxial_commit_all: Int,
     has_transformation_mpc: Bool,
-    rep_dof: List[Int],
+    mpc_slave_dof: List[Bool],
+    mpc_row_offsets: List[Int],
+    mpc_dof_pool: List[Int],
+    mpc_coeff_pool: List[Float64],
     constrained: List[Bool],
     mut runtime_metrics: RuntimeProfileMetrics,
 ) raises:
@@ -1096,7 +1107,7 @@ fn run_static_nonlinear_load_control(
             runtime_metrics,
         )
         if has_transformation_mpc:
-            K = _collapse_matrix_by_rep(K, rep_dof)
+            K = _collapse_matrix_by_mpc(K, mpc_row_offsets, mpc_dof_pool, mpc_coeff_pool)
         if not use_banded_loadcontrol:
             for i in range(free_count):
                 for j in range(free_count):
@@ -1158,7 +1169,14 @@ fn run_static_nonlinear_load_control(
                 events, events_need_comma, "O", frame_nonlinear_step, step_start_us
             )
         if has_transformation_mpc:
-            _enforce_equal_dof_values(u, rep_dof, constrained)
+            _enforce_mpc_values(
+                u,
+                constrained,
+                mpc_slave_dof,
+                mpc_row_offsets,
+                mpc_dof_pool,
+                mpc_coeff_pool,
+            )
         var step_size = current_step_size
         if adaptive_step:
             if last_step_iters > 0:
@@ -1446,8 +1464,12 @@ fn run_static_nonlinear_load_control(
                         runtime_metrics,
                     )
                     if has_transformation_mpc:
-                        K = _collapse_matrix_by_rep(K, rep_dof)
-                        F_int = _collapse_vector_by_rep(F_int, rep_dof)
+                        K = _collapse_matrix_by_mpc(
+                            K, mpc_row_offsets, mpc_dof_pool, mpc_coeff_pool
+                        )
+                        F_int = _collapse_vector_by_mpc(
+                            F_int, mpc_row_offsets, mpc_dof_pool, mpc_coeff_pool
+                        )
                 if do_profile:
                     var t_asm_end = Int(time.perf_counter_ns())
                     var asm_end_us = (t_asm_end - t0) // 1000
@@ -1646,7 +1668,14 @@ fn run_static_nonlinear_load_control(
                     if abs_val > max_u:
                         max_u = abs_val
                 if has_transformation_mpc:
-                    _enforce_equal_dof_values(u, rep_dof, constrained)
+                    _enforce_mpc_values(
+                        u,
+                        constrained,
+                        mpc_slave_dof,
+                        mpc_row_offsets,
+                        mpc_dof_pool,
+                        mpc_coeff_pool,
+                    )
                 if attempt_algorithm_tag == AnalysisAlgorithmTag.NewtonLineSearch:
                     var line_search_tol = _default_line_search_tol(attempt_line_search_eta)
                     var s0 = -dot_float64_contiguous(u_f, F_f, free_count)
@@ -1713,7 +1742,9 @@ fn run_static_nonlinear_load_control(
                             free,
                             free_count,
                             has_transformation_mpc,
-                            rep_dof,
+                            mpc_row_offsets,
+                            mpc_dof_pool,
+                            mpc_coeff_pool,
                             F_f,
                         )
                         var s = -dot_float64_contiguous(u_f, F_f, free_count)
@@ -1732,7 +1763,14 @@ fn run_static_nonlinear_load_control(
                             for i in range(free_count):
                                 u[free[i]] += delta_eta * u_f[i]
                             if has_transformation_mpc:
-                                _enforce_equal_dof_values(u, rep_dof, constrained)
+                                _enforce_mpc_values(
+                                    u,
+                                    constrained,
+                                    mpc_slave_dof,
+                                    mpc_row_offsets,
+                                    mpc_dof_pool,
+                                    mpc_coeff_pool,
+                                )
                             _static_load_control_residual(
                                 typed_nodes,
                                 typed_elements,
@@ -1795,7 +1833,9 @@ fn run_static_nonlinear_load_control(
                                 free,
                                 free_count,
                                 has_transformation_mpc,
-                                rep_dof,
+                                mpc_row_offsets,
+                                mpc_dof_pool,
+                                mpc_coeff_pool,
                                 F_f,
                             )
                             s = dot_float64_contiguous(u_f, F_f, free_count)
@@ -2451,7 +2491,10 @@ fn run_static_nonlinear_displacement_control(
     frame_uniaxial_revert_all: Int,
     frame_uniaxial_commit_all: Int,
     has_transformation_mpc: Bool,
-    rep_dof: List[Int],
+    mpc_slave_dof: List[Bool],
+    mpc_row_offsets: List[Int],
+    mpc_dof_pool: List[Int],
+    mpc_coeff_pool: List[Float64],
     mut runtime_metrics: RuntimeProfileMetrics,
 ) raises -> Float64:
     var time = Python.import_module("time")
@@ -2581,8 +2624,8 @@ fn run_static_nonlinear_displacement_control(
     var control_idx = node_dof_index(id_to_index[control_node], control_dof, ndf)
     if constrained[control_idx]:
         abort("DisplacementControl dof is constrained")
-    if has_transformation_mpc and rep_dof[control_idx] != control_idx:
-        abort("DisplacementControl dof must be retained for equalDOF")
+    if has_transformation_mpc and mpc_slave_dof[control_idx]:
+        abort("DisplacementControl dof must be retained for transformation mp_constraints")
     var control_free = -1
     for i in range(free_count):
         if free[i] == control_idx:
@@ -2794,7 +2837,7 @@ fn run_static_nonlinear_displacement_control(
             runtime_metrics,
         )
         if has_transformation_mpc:
-            K = _collapse_matrix_by_rep(K, rep_dof)
+            K = _collapse_matrix_by_mpc(K, mpc_row_offsets, mpc_dof_pool, mpc_coeff_pool)
         for i in range(free_count):
             for j in range(free_count):
                 K_init_ff[i][j] = K[free[i]][free[j]]
@@ -2829,7 +2872,14 @@ fn run_static_nonlinear_displacement_control(
                 events, events_need_comma, "O", frame_nonlinear_step, step_start_us
             )
         if has_transformation_mpc:
-            _enforce_equal_dof_values(u, rep_dof, constrained)
+            _enforce_mpc_values(
+                u,
+                constrained,
+                mpc_slave_dof,
+                mpc_row_offsets,
+                mpc_dof_pool,
+                mpc_coeff_pool,
+            )
 
         var target: Float64
         if has_explicit_targets:
@@ -3197,8 +3247,15 @@ fn run_static_nonlinear_displacement_control(
                                 runtime_metrics,
                             )
                             if has_transformation_mpc:
-                                K = _collapse_matrix_by_rep(K, rep_dof)
-                                F_int = _collapse_vector_by_rep(F_int, rep_dof)
+                                K = _collapse_matrix_by_mpc(
+                                    K, mpc_row_offsets, mpc_dof_pool, mpc_coeff_pool
+                                )
+                                F_int = _collapse_vector_by_mpc(
+                                    F_int,
+                                    mpc_row_offsets,
+                                    mpc_dof_pool,
+                                    mpc_coeff_pool,
+                                )
                         if do_profile:
                             var t_asm_end = Int(time.perf_counter_ns())
                             var asm_end_us = (t_asm_end - t0) // 1000
@@ -3458,7 +3515,14 @@ fn run_static_nonlinear_displacement_control(
                                 max_u = abs_val
                         load_factor += sol_aug[free_count] * update_eta
                         if has_transformation_mpc:
-                            _enforce_equal_dof_values(u, rep_dof, constrained)
+                            _enforce_mpc_values(
+                                u,
+                                constrained,
+                                mpc_slave_dof,
+                                mpc_row_offsets,
+                                mpc_dof_pool,
+                                mpc_coeff_pool,
+                            )
                         if attempt_algorithm_tag == AnalysisAlgorithmTag.NewtonLineSearch:
                             var line_search_tol = _default_line_search_tol(
                                 attempt_line_search_eta
@@ -3525,7 +3589,9 @@ fn run_static_nonlinear_displacement_control(
                                     free,
                                     free_count,
                                     has_transformation_mpc,
-                                    rep_dof,
+                                    mpc_row_offsets,
+                                    mpc_dof_pool,
+                                    mpc_coeff_pool,
                                     F_const_free,
                                     F_pattern_free,
                                     load_factor,
@@ -3553,8 +3619,13 @@ fn run_static_nonlinear_displacement_control(
                                         u[free[i]] += delta_eta * sol_aug[i]
                                     load_factor += delta_eta * sol_aug[free_count]
                                     if has_transformation_mpc:
-                                        _enforce_equal_dof_values(
-                                            u, rep_dof, constrained
+                                        _enforce_mpc_values(
+                                            u,
+                                            constrained,
+                                            mpc_slave_dof,
+                                            mpc_row_offsets,
+                                            mpc_dof_pool,
+                                            mpc_coeff_pool,
                                         )
                                     _static_displacement_control_residual(
                                         typed_nodes,
@@ -3614,7 +3685,9 @@ fn run_static_nonlinear_displacement_control(
                                         free,
                                         free_count,
                                         has_transformation_mpc,
-                                        rep_dof,
+                                        mpc_row_offsets,
+                                        mpc_dof_pool,
+                                        mpc_coeff_pool,
                                         F_const_free,
                                         F_pattern_free,
                                         load_factor,

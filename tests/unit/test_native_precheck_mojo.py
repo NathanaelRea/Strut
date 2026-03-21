@@ -37,15 +37,36 @@ def _run_precheck_script(tmp_path: Path, case_json: str, include_recorders: bool
     )
 
 
-def test_native_precheck_rejects_unsupported_mp_constraint_type(tmp_path: Path):
+def test_native_precheck_allows_rigid_diaphragm(tmp_path: Path):
     proc = _run_precheck_script(
         tmp_path,
-        '{"model":{"ndm":3,"ndf":6},"nodes":[],"elements":[],"analysis":{"type":"static_linear","constraints":"Transformation"},"mp_constraints":[{"type":"rigidDiaphragm"}]}',
+        '{"model":{"ndm":2,"ndf":3},"nodes":[],"elements":[],"analysis":{"type":"static_linear","constraints":"Transformation"},"mp_constraints":[{"type":"rigidDiaphragm","perp_dirn":3}]}',
+        include_recorders=True,
+    )
+
+    assert proc.returncode == 0, proc.stdout
+
+
+def test_native_precheck_rejects_invalid_rigid_diaphragm_perp_dirn(tmp_path: Path):
+    proc = _run_precheck_script(
+        tmp_path,
+        '{"model":{"ndm":2,"ndf":3},"nodes":[],"elements":[],"analysis":{"type":"static_linear","constraints":"Transformation"},"mp_constraints":[{"type":"rigidDiaphragm","perp_dirn":4}]}',
         include_recorders=True,
     )
 
     assert proc.returncode != 0
-    assert "unsupported mp constraint type: rigidDiaphragm" in proc.stdout
+    assert "rigidDiaphragm perp_dirn must be in 1..3" in proc.stdout
+
+
+def test_native_precheck_rejects_rigid_diaphragm_on_incompatible_model(tmp_path: Path):
+    proc = _run_precheck_script(
+        tmp_path,
+        '{"model":{"ndm":2,"ndf":2},"nodes":[],"elements":[],"analysis":{"type":"static_linear","constraints":"Transformation"},"mp_constraints":[{"type":"rigidDiaphragm","perp_dirn":3}]}',
+        include_recorders=True,
+    )
+
+    assert proc.returncode != 0
+    assert "rigidDiaphragm requires a 3D/6DOF or 2D/3DOF model" in proc.stdout
 
 
 def test_native_precheck_rejects_unsupported_recorders_when_enabled(tmp_path: Path):

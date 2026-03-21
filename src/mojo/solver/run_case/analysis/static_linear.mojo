@@ -37,9 +37,9 @@ from solver.run_case.linear_solver_backend import (
     solve,
 )
 from solver.run_case.helpers import (
-    _collapse_matrix_by_rep,
-    _collapse_vector_by_rep,
-    _enforce_equal_dof_values,
+    _collapse_matrix_by_mpc,
+    _collapse_vector_by_mpc,
+    _enforce_mpc_values,
 )
 from solver.run_case.load_state import (
     build_active_element_load_state,
@@ -127,7 +127,10 @@ fn run_static_linear(
     frame_solve_linear: Int,
     total_dofs: Int,
     has_transformation_mpc: Bool,
-    rep_dof: List[Int],
+    mpc_slave_dof: List[Bool],
+    mpc_row_offsets: List[Int],
+    mpc_dof_pool: List[Int],
+    mpc_coeff_pool: List[Float64],
     constrained: List[Bool],
     mut runtime_metrics: RuntimeProfileMetrics,
 ) raises:
@@ -421,8 +424,12 @@ fn run_static_linear(
             runtime_metrics,
         )
         if has_transformation_mpc:
-            K = _collapse_matrix_by_rep(K, rep_dof)
-            F_int_dummy = _collapse_vector_by_rep(F_int_dummy, rep_dof)
+            K = _collapse_matrix_by_mpc(
+                K, mpc_row_offsets, mpc_dof_pool, mpc_coeff_pool
+            )
+            F_int_dummy = _collapse_vector_by_mpc(
+                F_int_dummy, mpc_row_offsets, mpc_dof_pool, mpc_coeff_pool
+            )
     if do_profile:
         var t_asm_end = Int(time.perf_counter_ns())
         var asm_end_us = (t_asm_end - t0) // 1000
@@ -478,4 +485,11 @@ fn run_static_linear(
     for i in range(free_count):
         u[free[i]] = u_f[i]
     if has_transformation_mpc:
-        _enforce_equal_dof_values(u, rep_dof, constrained)
+        _enforce_mpc_values(
+            u,
+            constrained,
+            mpc_slave_dof,
+            mpc_row_offsets,
+            mpc_dof_pool,
+            mpc_coeff_pool,
+        )

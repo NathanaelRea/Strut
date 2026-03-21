@@ -17,8 +17,9 @@ from sections import FiberCell, FiberSection2dDef, FiberSection3dDef, LayeredShe
 
 from solver.run_case.helpers import (
     _append_output,
-    _collapse_matrix_by_rep,
-    _enforce_equal_dof_values,
+    _build_reduced_diagonal_matrix_by_mpc,
+    _collapse_matrix_by_mpc,
+    _enforce_mpc_values,
     _format_values_line,
 )
 from tag_types import RecorderTypeTag
@@ -43,6 +44,100 @@ fn _sorted_indices_ascending(values: List[Float64]) -> List[Int]:
             idx[i] = idx[min_i]
             idx[min_i] = tmp
     return idx^
+
+
+fn _cholesky_factor_dense_spd(matrix: List[List[Float64]]) -> List[List[Float64]]:
+    var n = len(matrix)
+    var factor: List[List[Float64]] = []
+    for _ in range(n):
+        var row: List[Float64] = []
+        row.resize(n, 0.0)
+        factor.append(row^)
+
+    var eps = 1.0e-18
+    for i in range(n):
+        for j in range(i + 1):
+            var value = matrix[i][j]
+            for k in range(j):
+                value -= factor[i][k] * factor[j][k]
+            if i == j:
+                if value <= eps:
+                    abort("modal_eigen mass matrix is not positive definite")
+                factor[i][j] = sqrt(value)
+            else:
+                factor[i][j] = value / factor[j][j]
+    return factor^
+
+
+fn _solve_lower_triangular(lower: List[List[Float64]], rhs: List[Float64]) -> List[Float64]:
+    var n = len(lower)
+    var solution: List[Float64] = []
+    solution.resize(n, 0.0)
+    for i in range(n):
+        var value = rhs[i]
+        for j in range(i):
+            value -= lower[i][j] * solution[j]
+        solution[i] = value / lower[i][i]
+    return solution^
+
+
+fn _solve_upper_from_lower_transpose(
+    lower: List[List[Float64]], rhs: List[Float64]
+) -> List[Float64]:
+    var n = len(lower)
+    var solution: List[Float64] = []
+    solution.resize(n, 0.0)
+    for i in range(n - 1, -1, -1):
+        var value = rhs[i]
+        for j in range(i + 1, n):
+            value -= lower[j][i] * solution[j]
+        solution[i] = value / lower[i][i]
+    return solution^
+
+
+fn _multiply_dense_matrices(left: List[List[Float64]], right: List[List[Float64]]) -> List[List[Float64]]:
+    var rows = len(left)
+    var inner = len(right)
+    var cols = 0
+    if inner > 0:
+        cols = len(right[0])
+    var out: List[List[Float64]] = []
+    for _ in range(rows):
+        var row: List[Float64] = []
+        row.resize(cols, 0.0)
+        out.append(row^)
+
+    for i in range(rows):
+        for k in range(inner):
+            var left_ik = left[i][k]
+            if left_ik == 0.0:
+                continue
+            for j in range(cols):
+                out[i][j] += left_ik * right[k][j]
+    return out^
+
+
+fn _multiply_dense_by_transpose(
+    left: List[List[Float64]], right: List[List[Float64]]
+) -> List[List[Float64]]:
+    var rows = len(left)
+    var cols = len(right)
+    var inner = 0
+    if len(right) > 0:
+        inner = len(right[0])
+    var out: List[List[Float64]] = []
+    for _ in range(rows):
+        var row: List[Float64] = []
+        row.resize(cols, 0.0)
+        out.append(row^)
+
+    for i in range(rows):
+        for j in range(cols):
+            var value = 0.0
+            for k in range(inner):
+                value += left[i][k] * right[j][k]
+            out[i][j] = value
+    return out^
 
 
 fn run_modal_eigen(
@@ -81,7 +176,10 @@ fn run_modal_eigen(
     constrained: List[Bool],
     free: List[Int],
     has_transformation_mpc: Bool,
-    rep_dof: List[Int],
+    mpc_slave_dof: List[Bool],
+    mpc_row_offsets: List[Int],
+    mpc_dof_pool: List[Int],
+    mpc_coeff_pool: List[Float64],
     recorders: List[RecorderInput],
     recorder_nodes_pool: List[Int],
     recorder_dofs_pool: List[Int],
@@ -121,7 +219,7 @@ fn run_modal_eigen(
         shell_elem_instance_offsets,
     )
     if has_transformation_mpc:
-        K = _collapse_matrix_by_rep(K, rep_dof)
+        K = _collapse_matrix_by_mpc(K, mpc_row_offsets, mpc_dof_pool, mpc_coeff_pool)
 
     var free_count = len(free)
     if modal_num_modes > free_count:
@@ -134,14 +232,30 @@ fn run_modal_eigen(
         K_ff.append(row^)
     var M_f: List[Float64] = []
     M_f.resize(free_count, 0.0)
+    var free_index: List[Int] = []
+    free_index.resize(total_dofs, -1)
     var max_mass = 0.0
     for i in range(free_count):
+        free_index[free[i]] = i
         for j in range(free_count):
             K_ff[i][j] = K[free[i]][free[j]]
-        var m = M_total[free[i]]
-        M_f[i] = m
-        if m > max_mass:
-            max_mass = m
+    var M_ff = _build_reduced_diagonal_matrix_by_mpc(
+        M_total,
+        free_index,
+        mpc_row_offsets,
+        mpc_dof_pool,
+        mpc_coeff_pool,
+    )
+    var has_mass = False
+    for i in range(free_count):
+        M_f[i] = M_ff[i][i]
+        if M_f[i] > max_mass:
+            max_mass = M_f[i]
+        for j in range(free_count):
+            if M_ff[i][j] != 0.0:
+                has_mass = True
+    if not has_mass:
+        abort("modal_eigen requires masses on free dofs")
     var msmall = 1.0e-10
     var mass_floor = max_mass * 1.0e-12
     if mass_floor <= 0.0:
@@ -151,15 +265,24 @@ fn run_modal_eigen(
             M_f[i] = K_ff[i][i] * msmall
         if M_f[i] <= 0.0:
             M_f[i] = mass_floor
+        M_ff[i][i] = M_f[i]
 
-    var A: List[List[Float64]] = []
-    for i in range(free_count):
+    var mass_cholesky = _cholesky_factor_dense_spd(M_ff)
+    var mass_inverse: List[List[Float64]] = []
+    for _ in range(free_count):
         var row: List[Float64] = []
         row.resize(free_count, 0.0)
-        var mi = M_f[i]
-        for j in range(free_count):
-            row[j] = K_ff[i][j] / sqrt(mi * M_f[j])
-        A.append(row^)
+        mass_inverse.append(row^)
+    for col in range(free_count):
+        var basis: List[Float64] = []
+        basis.resize(free_count, 0.0)
+        basis[col] = 1.0
+        var inverse_col = _solve_lower_triangular(mass_cholesky, basis)
+        for row in range(free_count):
+            mass_inverse[row][col] = inverse_col[row]
+
+    var A = _multiply_dense_matrices(mass_inverse, K_ff)
+    A = _multiply_dense_by_transpose(A, mass_inverse)
 
     var eigvals_raw: List[Float64] = []
     var eigvecs: List[List[Float64]] = []
@@ -193,11 +316,25 @@ fn run_modal_eigen(
             if mode_no < 1 or mode_no > modal_num_modes:
                 abort("modal_eigen recorder mode out of range")
             var col = order[mode_no - 1]
+            var reduced_mode: List[Float64] = []
+            reduced_mode.resize(free_count, 0.0)
+            for i in range(free_count):
+                reduced_mode[i] = eigvecs[i][col]
+            reduced_mode = _solve_upper_from_lower_transpose(
+                mass_cholesky, reduced_mode
+            )
             var full_mode: List[Float64] = []
             full_mode.resize(total_dofs, 0.0)
             for i in range(free_count):
-                full_mode[free[i]] = eigvecs[i][col] / sqrt(M_f[i])
-            _enforce_equal_dof_values(full_mode, rep_dof, constrained)
+                full_mode[free[i]] = reduced_mode[i]
+            _enforce_mpc_values(
+                full_mode,
+                constrained,
+                mpc_slave_dof,
+                mpc_row_offsets,
+                mpc_dof_pool,
+                mpc_coeff_pool,
+            )
             for nidx in range(rec.node_count):
                 var node_id = recorder_nodes_pool[rec.node_offset + nidx]
                 if node_id >= len(id_to_index) or id_to_index[node_id] < 0:

@@ -29,7 +29,6 @@ from sys import simd_width_of
 
 from solver.run_case.linear_solver_backend import (
     LinearSolverBackend,
-    add_diagonal,
     add_reduced_matrix,
     clear,
     factorize_loaded,
@@ -81,15 +80,16 @@ from solver.time_series import TimeSeriesInput, eval_time_series_input, find_tim
 
 from solver.run_case.helpers import (
     _append_output_at_index,
+    _build_reduced_diagonal_matrix_by_mpc,
     _element_basic_force_for_recorder,
     _element_deformation_for_recorder,
-    _collapse_matrix_by_rep,
-    _collapse_vector_by_rep,
+    _collapse_matrix_by_mpc,
+    _collapse_vector_by_mpc,
     _element_force_global_for_recorder,
     _force_beam_column2d_force_global_from_basic_state,
     _force_beam_column2d_section_response_from_basic_state,
     _element_local_force_for_recorder,
-    _enforce_equal_dof_values,
+    _enforce_mpc_values,
     _flush_envelope_outputs,
     _format_values_line,
     _has_recorder_type,
@@ -257,7 +257,7 @@ fn _transient_residual(
     gamma: Float64,
     dt: Float64,
     P_ext_f: List[Float64],
-    M_f: List[Float64],
+    M_ff: List[List[Float64]],
     C_ff: List[List[Float64]],
     mut uniaxial_states: List[UniMaterialState],
     uniaxial_defs: List[UniMaterialDef],
@@ -282,7 +282,9 @@ fn _transient_residual(
     mut force_beam_column2d_scratch: ForceBeamColumn2dScratch,
     mut force_beam_column3d_scratch: ForceBeamColumn3dScratch,
     has_transformation_mpc: Bool,
-    rep_dof: List[Int],
+    mpc_row_offsets: List[Int],
+    mpc_dof_pool: List[Int],
+    mpc_coeff_pool: List[Float64],
     free: List[Int],
     free_count: Int,
     dampings: List[DampingInput],
@@ -357,7 +359,9 @@ fn _transient_residual(
         force_beam_column3d_scratch,
     )
     if has_transformation_mpc:
-        F_int = _collapse_vector_by_rep(F_int, rep_dof)
+        F_int = _collapse_vector_by_mpc(
+            F_int, mpc_row_offsets, mpc_dof_pool, mpc_coeff_pool
+        )
     if has_zero_length_dampers:
         var K_zero_length_damp_global: List[List[Float64]] = []
         var F_zero_length_damp: List[Float64] = []
@@ -385,7 +389,9 @@ fn _transient_residual(
             F_zero_length_damp,
         )
         if has_transformation_mpc:
-            F_zero_length_damp = _collapse_vector_by_rep(F_zero_length_damp, rep_dof)
+            F_zero_length_damp = _collapse_vector_by_mpc(
+                F_zero_length_damp, mpc_row_offsets, mpc_dof_pool, mpc_coeff_pool
+            )
         for i in range(free_count):
             F_zero_length_damp_f[i] = F_zero_length_damp[free[i]]
     else:
@@ -396,12 +402,13 @@ fn _transient_residual(
     )
     for i in range(free_count):
         var damping_force = dot_float64_contiguous(C_ff[i], v_trial, free_count)
+        var inertia_force = dot_float64_contiguous(M_ff[i], a_trial, free_count)
         R_f[i] = (
             P_ext_f[i]
             - F_int[free[i]]
             - F_zero_length_damp_f[i]
             - damping_force
-            - M_f[i] * a_trial[i]
+            - inertia_force
         )
 
 
@@ -883,7 +890,10 @@ fn run_transient_nonlinear(
     mut transient_output_files: List[String],
     mut transient_output_buffers: List[List[String]],
     has_transformation_mpc: Bool,
-    rep_dof: List[Int],
+    mpc_slave_dof: List[Bool],
+    mpc_row_offsets: List[Int],
+    mpc_dof_pool: List[Int],
+    mpc_coeff_pool: List[Float64],
     constrained: List[Bool],
     do_profile: Bool,
     t0: Int,
@@ -970,20 +980,32 @@ fn run_transient_nonlinear(
         abort("Newmark beta must be > 0")
 
     var free_count = len(free)
-    var M_f: List[Float64] = []
-    M_f.resize(free_count, 0.0)
-    var M_rayleigh_f: List[Float64] = []
-    M_rayleigh_f.resize(free_count, 0.0)
     var free_index: List[Int] = []
     free_index.resize(total_dofs, -1)
     var has_mass = False
     for i in range(free_count):
         free_index[free[i]] = i
-        var m = M_total[free[i]]
-        M_f[i] = m
-        M_rayleigh_f[i] = M_rayleigh_total[free[i]]
-        if m != 0.0:
-            has_mass = True
+    var M_ff = _build_reduced_diagonal_matrix_by_mpc(
+        M_total,
+        free_index,
+        mpc_row_offsets,
+        mpc_dof_pool,
+        mpc_coeff_pool,
+    )
+    var M_rayleigh_ff = _build_reduced_diagonal_matrix_by_mpc(
+        M_rayleigh_total,
+        free_index,
+        mpc_row_offsets,
+        mpc_dof_pool,
+        mpc_coeff_pool,
+    )
+    for i in range(free_count):
+        for j in range(free_count):
+            if M_ff[i][j] != 0.0:
+                has_mass = True
+                break
+        if has_mass:
+            break
     if not has_mass:
         abort("transient_nonlinear requires masses on free dofs")
 
@@ -1206,7 +1228,9 @@ fn run_transient_nonlinear(
             C_zero_length_global,
         )
         if has_transformation_mpc:
-            C_zero_length_global = _collapse_matrix_by_rep(C_zero_length_global, rep_dof)
+            C_zero_length_global = _collapse_matrix_by_mpc(
+                C_zero_length_global, mpc_row_offsets, mpc_dof_pool, mpc_coeff_pool
+            )
         for i in range(free_count):
             for j in range(free_count):
                 C_zero_length_damp_ff[i][j] = C_zero_length_global[free[i]][free[j]]
@@ -1221,7 +1245,7 @@ fn run_transient_nonlinear(
                 frame_constraints,
                 constraints_start_us,
             )
-        K = _collapse_matrix_by_rep(K, rep_dof)
+        K = _collapse_matrix_by_mpc(K, mpc_row_offsets, mpc_dof_pool, mpc_coeff_pool)
         if do_profile:
             var t_constraints_end = Int(time.perf_counter_ns())
             var constraints_end_us = (t_constraints_end - t0) // 1000
@@ -1314,8 +1338,12 @@ fn run_transient_nonlinear(
             K_link_rayleigh,
         )
         if has_transformation_mpc:
-            K_link_all = _collapse_matrix_by_rep(K_link_all, rep_dof)
-            K_link_rayleigh = _collapse_matrix_by_rep(K_link_rayleigh, rep_dof)
+            K_link_all = _collapse_matrix_by_mpc(
+                K_link_all, mpc_row_offsets, mpc_dof_pool, mpc_coeff_pool
+            )
+            K_link_rayleigh = _collapse_matrix_by_mpc(
+                K_link_rayleigh, mpc_row_offsets, mpc_dof_pool, mpc_coeff_pool
+            )
         for i in range(free_count):
             for j in range(free_count):
                 K_init_damp_ff[i][j] = (
@@ -1606,9 +1634,30 @@ fn run_transient_nonlinear(
                     frame_constraints,
                     constraints_start_us,
                 )
-            _enforce_equal_dof_values(u, rep_dof, constrained)
-            _enforce_equal_dof_values(v, rep_dof, constrained)
-            _enforce_equal_dof_values(a, rep_dof, constrained)
+            _enforce_mpc_values(
+                u,
+                constrained,
+                mpc_slave_dof,
+                mpc_row_offsets,
+                mpc_dof_pool,
+                mpc_coeff_pool,
+            )
+            _enforce_mpc_values(
+                v,
+                constrained,
+                mpc_slave_dof,
+                mpc_row_offsets,
+                mpc_dof_pool,
+                mpc_coeff_pool,
+            )
+            _enforce_mpc_values(
+                a,
+                constrained,
+                mpc_slave_dof,
+                mpc_row_offsets,
+                mpc_dof_pool,
+                mpc_coeff_pool,
+            )
             if do_profile:
                 var t_constraints_end = Int(time.perf_counter_ns())
                 var constraints_end_us = (t_constraints_end - t0) // 1000
@@ -1636,7 +1685,14 @@ fn run_transient_nonlinear(
                     frame_constraints,
                     constraints_start_us,
                 )
-            _enforce_equal_dof_values(u, rep_dof, constrained)
+            _enforce_mpc_values(
+                u,
+                constrained,
+                mpc_slave_dof,
+                mpc_row_offsets,
+                mpc_dof_pool,
+                mpc_coeff_pool,
+            )
             if do_profile:
                 var t_constraints_end = Int(time.perf_counter_ns())
                 var constraints_end_us = (t_constraints_end - t0) // 1000
@@ -1689,9 +1745,20 @@ fn run_transient_nonlinear(
                     frame_time_series_eval,
                     ts_end_us,
                 )
+            var uniform_inertia_load: List[Float64] = []
+            uniform_inertia_load.resize(total_dofs, 0.0)
             for i in range(len(uniform_excitation_dofs)):
                 var dof_idx = uniform_excitation_dofs[i]
-                F_ext_step[dof_idx] += -M_total[dof_idx] * ag
+                uniform_inertia_load[dof_idx] += -M_total[dof_idx] * ag
+            if has_transformation_mpc:
+                uniform_inertia_load = _collapse_vector_by_mpc(
+                    uniform_inertia_load,
+                    mpc_row_offsets,
+                    mpc_dof_pool,
+                    mpc_coeff_pool,
+                )
+            for i in range(total_dofs):
+                F_ext_step[i] += uniform_inertia_load[i]
         else:
             if ts_index >= 0:
                 if do_profile:
@@ -1922,8 +1989,12 @@ fn run_transient_nonlinear(
                             constraints_start_us,
                         )
                     if need_tangent_matrix:
-                        K = _collapse_matrix_by_rep(K, rep_dof)
-                    F_int = _collapse_vector_by_rep(F_int, rep_dof)
+                        K = _collapse_matrix_by_mpc(
+                            K, mpc_row_offsets, mpc_dof_pool, mpc_coeff_pool
+                        )
+                    F_int = _collapse_vector_by_mpc(
+                        F_int, mpc_row_offsets, mpc_dof_pool, mpc_coeff_pool
+                    )
                     if do_profile:
                         var t_constraints_end = Int(time.perf_counter_ns())
                         var constraints_end_us = (t_constraints_end - t0) // 1000
@@ -2013,8 +2084,15 @@ fn run_transient_nonlinear(
                         K_link_rayleigh,
                     )
                     if has_transformation_mpc:
-                        K_link_all = _collapse_matrix_by_rep(K_link_all, rep_dof)
-                        K_link_rayleigh = _collapse_matrix_by_rep(K_link_rayleigh, rep_dof)
+                        K_link_all = _collapse_matrix_by_mpc(
+                            K_link_all, mpc_row_offsets, mpc_dof_pool, mpc_coeff_pool
+                        )
+                        K_link_rayleigh = _collapse_matrix_by_mpc(
+                            K_link_rayleigh,
+                            mpc_row_offsets,
+                            mpc_dof_pool,
+                            mpc_coeff_pool,
+                        )
                     for i in range(free_count):
                         for j in range(free_count):
                             K_current_damp_ff[i][j] = (
@@ -2080,11 +2158,17 @@ fn run_transient_nonlinear(
                         F_zero_length_damp,
                     )
                     if has_transformation_mpc:
-                        K_zero_length_damp_global = _collapse_matrix_by_rep(
-                            K_zero_length_damp_global, rep_dof
+                        K_zero_length_damp_global = _collapse_matrix_by_mpc(
+                            K_zero_length_damp_global,
+                            mpc_row_offsets,
+                            mpc_dof_pool,
+                            mpc_coeff_pool,
                         )
-                        F_zero_length_damp = _collapse_vector_by_rep(
-                            F_zero_length_damp, rep_dof
+                        F_zero_length_damp = _collapse_vector_by_mpc(
+                            F_zero_length_damp,
+                            mpc_row_offsets,
+                            mpc_dof_pool,
+                            mpc_coeff_pool,
                         )
                     for i in range(free_count):
                         F_zero_length_damp_f[i] = F_zero_length_damp[free[i]]
@@ -2102,7 +2186,9 @@ fn run_transient_nonlinear(
                     for i in range(free_count):
                         for j in range(free_count):
                             C_ff[i][j] = 0.0
-                        C_ff[i][i] = rayleigh_alpha_m * M_rayleigh_f[i]
+                    for i in range(free_count):
+                        for j in range(free_count):
+                            C_ff[i][j] = rayleigh_alpha_m * M_rayleigh_ff[i][j]
                     if rayleigh_beta_k != 0.0:
                         for i in range(free_count):
                             for j in range(free_count):
@@ -2127,12 +2213,15 @@ fn run_transient_nonlinear(
 
                 for i in range(free_count):
                     var damping_force = dot_float64_contiguous(C_ff[i], v_trial, free_count)
+                    var inertia_force = dot_float64_contiguous(
+                        M_ff[i], a_trial, free_count
+                    )
                     R_f[i] = (
                         P_ext_f[i]
                         - F_int[free[i]]
                         - F_zero_length_damp_f[i]
                         - damping_force
-                        - M_f[i] * a_trial[i]
+                        - inertia_force
                     )
                 if attempt_test_mode == 2:
                     var residual_norm = sqrt(sum_sq_float64_contiguous(R_f, free_count))
@@ -2180,7 +2269,7 @@ fn run_transient_nonlinear(
                     if has_zero_length_dampers:
                         add_reduced_matrix(backend, K_zero_length_damp_ff)
                     add_reduced_matrix(backend, C_ff, a1)
-                    add_diagonal(backend, M_f, a0)
+                    add_reduced_matrix(backend, M_ff, a0)
                     factorize_loaded(backend, runtime_metrics)
                     k_eff_initialized = True
                     k_eff_factored = True
@@ -2215,7 +2304,7 @@ fn run_transient_nonlinear(
                         if has_zero_length_dampers:
                             add_reduced_matrix(backend, K_zero_length_damp_ff)
                         add_reduced_matrix(backend, C_ff, a1)
-                        add_diagonal(backend, M_f, a0)
+                        add_reduced_matrix(backend, M_ff, a0)
                         factorize_loaded(backend, runtime_metrics)
                         k_eff_initialized = True
                     if did_factor:
@@ -2316,7 +2405,14 @@ fn run_transient_nonlinear(
                             frame_constraints,
                             constraints_start_us,
                         )
-                    _enforce_equal_dof_values(u, rep_dof, constrained)
+                    _enforce_mpc_values(
+                        u,
+                        constrained,
+                        mpc_slave_dof,
+                        mpc_row_offsets,
+                        mpc_dof_pool,
+                        mpc_coeff_pool,
+                    )
                     if do_profile:
                         var t_constraints_end = Int(time.perf_counter_ns())
                         var constraints_end_us = (t_constraints_end - t0) // 1000
@@ -2377,7 +2473,7 @@ fn run_transient_nonlinear(
                             gamma,
                             dt,
                             P_ext_f,
-                            M_f,
+                            M_ff,
                             C_ff,
                             uniaxial_states,
                             uniaxial_defs,
@@ -2402,7 +2498,9 @@ fn run_transient_nonlinear(
                             force_beam_column2d_scratch,
                             force_beam_column3d_scratch,
                             has_transformation_mpc,
-                            rep_dof,
+                            mpc_row_offsets,
+                            mpc_dof_pool,
+                            mpc_coeff_pool,
                             free,
                             free_count,
                             dampings,
@@ -2433,7 +2531,14 @@ fn run_transient_nonlinear(
                                 u_f[i] += delta_eta * du_f[i]
                             _scatter_free_vector_to_full(free, u_f, u)
                             if has_transformation_mpc:
-                                _enforce_equal_dof_values(u, rep_dof, constrained)
+                                _enforce_mpc_values(
+                                    u,
+                                    constrained,
+                                    mpc_slave_dof,
+                                    mpc_row_offsets,
+                                    mpc_dof_pool,
+                                    mpc_coeff_pool,
+                                )
                             _transient_residual(
                                 typed_nodes,
                                 typed_elements,
@@ -2480,7 +2585,7 @@ fn run_transient_nonlinear(
                                 gamma,
                                 dt,
                                 P_ext_f,
-                                M_f,
+                                M_ff,
                                 C_ff,
                                 uniaxial_states,
                                 uniaxial_defs,
@@ -2505,7 +2610,9 @@ fn run_transient_nonlinear(
                                 force_beam_column2d_scratch,
                                 force_beam_column3d_scratch,
                                 has_transformation_mpc,
-                                rep_dof,
+                                mpc_row_offsets,
+                                mpc_dof_pool,
+                                mpc_coeff_pool,
                                 free,
                                 free_count,
                                 dampings,
@@ -2688,7 +2795,9 @@ fn run_transient_nonlinear(
                         frame_constraints,
                         constraints_start_us,
                     )
-                K = _collapse_matrix_by_rep(K, rep_dof)
+                K = _collapse_matrix_by_mpc(
+                    K, mpc_row_offsets, mpc_dof_pool, mpc_coeff_pool
+                )
                 if do_profile:
                     var t_constraints_end = Int(time.perf_counter_ns())
                     var constraints_end_us = (t_constraints_end - t0) // 1000
@@ -2781,8 +2890,12 @@ fn run_transient_nonlinear(
                     K_link_rayleigh,
                 )
                 if has_transformation_mpc:
-                    K_link_all = _collapse_matrix_by_rep(K_link_all, rep_dof)
-                    K_link_rayleigh = _collapse_matrix_by_rep(K_link_rayleigh, rep_dof)
+                    K_link_all = _collapse_matrix_by_mpc(
+                        K_link_all, mpc_row_offsets, mpc_dof_pool, mpc_coeff_pool
+                    )
+                    K_link_rayleigh = _collapse_matrix_by_mpc(
+                        K_link_rayleigh, mpc_row_offsets, mpc_dof_pool, mpc_coeff_pool
+                    )
                 for i in range(free_count):
                     for j in range(free_count):
                         K_comm_damp_ff[i][j] = (
@@ -2843,9 +2956,30 @@ fn run_transient_nonlinear(
                     frame_constraints,
                     constraints_start_us,
                 )
-            _enforce_equal_dof_values(u, rep_dof, constrained)
-            _enforce_equal_dof_values(v, rep_dof, constrained)
-            _enforce_equal_dof_values(a, rep_dof, constrained)
+            _enforce_mpc_values(
+                u,
+                constrained,
+                mpc_slave_dof,
+                mpc_row_offsets,
+                mpc_dof_pool,
+                mpc_coeff_pool,
+            )
+            _enforce_mpc_values(
+                v,
+                constrained,
+                mpc_slave_dof,
+                mpc_row_offsets,
+                mpc_dof_pool,
+                mpc_coeff_pool,
+            )
+            _enforce_mpc_values(
+                a,
+                constrained,
+                mpc_slave_dof,
+                mpc_row_offsets,
+                mpc_dof_pool,
+                mpc_coeff_pool,
+            )
             if do_profile:
                 var t_constraints_end = Int(time.perf_counter_ns())
                 var constraints_end_us = (t_constraints_end - t0) // 1000

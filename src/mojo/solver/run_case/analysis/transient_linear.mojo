@@ -21,7 +21,6 @@ from sys import simd_width_of
 
 from solver.run_case.linear_solver_backend import (
     LinearSolverBackend,
-    add_diagonal,
     add_reduced_matrix,
     clear,
     factorize_loaded,
@@ -49,10 +48,7 @@ from solver.simd_contiguous import (
     load_float64_contiguous_simd,
     store_float64_contiguous_simd,
 )
-from solver.simd_indexed import (
-    gather_float64_by_index_simd,
-    scatter_float64_by_index_simd,
-)
+from solver.simd_indexed import scatter_float64_by_index_simd
 from solver.run_case.input_types import (
     AnalysisInput,
     DampingInput,
@@ -71,13 +67,14 @@ from solver.time_series import TimeSeriesInput, eval_time_series_input, find_tim
 
 from solver.run_case.helpers import (
     _append_output,
-    _collapse_matrix_by_rep,
-    _collapse_vector_by_rep,
+    _build_reduced_diagonal_matrix_by_mpc,
+    _collapse_matrix_by_mpc,
+    _collapse_vector_by_mpc,
     _element_basic_force_for_recorder,
     _element_deformation_for_recorder,
     _element_force_global_for_recorder,
     _element_local_force_for_recorder,
-    _enforce_equal_dof_values,
+    _enforce_mpc_values,
     _flush_envelope_outputs,
     _format_values_line,
     _has_recorder_type,
@@ -164,14 +161,13 @@ fn _build_solver_load_vector_with_element_loads(
 
 
 
-@always_inline
-fn _build_effective_rhs_newmark_simd_impl[width: Int](
+fn _build_effective_rhs_newmark(
     free: List[Int],
     u_f: List[Float64],
     v_f: List[Float64],
     a_f: List[Float64],
     F_ext_step: List[Float64],
-    M_f: List[Float64],
+    M_ff: List[List[Float64]],
     a0: Float64,
     a1: Float64,
     a2: Float64,
@@ -183,66 +179,14 @@ fn _build_effective_rhs_newmark_simd_impl[width: Int](
     mut P_eff: List[Float64],
 ):
     var n = len(free)
-
-    @parameter
-    fn build_chunk[chunk: Int](i: Int):
-        var u_vec = load_float64_contiguous_simd[chunk](u_f, i)
-        var v_vec = load_float64_contiguous_simd[chunk](v_f, i)
-        var a_vec = load_float64_contiguous_simd[chunk](a_f, i)
-        var c_vec = (
-            SIMD[DType.float64, chunk](a1) * u_vec
-            + SIMD[DType.float64, chunk](a4) * v_vec
-            + SIMD[DType.float64, chunk](a5) * a_vec
-        )
-        var p_ext_vec = gather_float64_by_index_simd[chunk](free, i, F_ext_step)
-        var m_vec = load_float64_contiguous_simd[chunk](M_f, i)
-        var p_eff_vec = p_ext_vec + m_vec * (
-            SIMD[DType.float64, chunk](a0) * u_vec
-            + SIMD[DType.float64, chunk](a2) * v_vec
-            + SIMD[DType.float64, chunk](a3) * a_vec
-        )
-        store_float64_contiguous_simd[chunk](P_ext_f, i, p_ext_vec)
-        store_float64_contiguous_simd[chunk](C_term, i, c_vec)
-        store_float64_contiguous_simd[chunk](P_eff, i, p_eff_vec)
-
-    vectorize[build_chunk, width](n)
-
-
-@always_inline
-fn _build_effective_rhs_newmark_simd(
-    free: List[Int],
-    u_f: List[Float64],
-    v_f: List[Float64],
-    a_f: List[Float64],
-    F_ext_step: List[Float64],
-    M_f: List[Float64],
-    a0: Float64,
-    a1: Float64,
-    a2: Float64,
-    a3: Float64,
-    a4: Float64,
-    a5: Float64,
-    mut P_ext_f: List[Float64],
-    mut C_term: List[Float64],
-    mut P_eff: List[Float64],
-):
-    _build_effective_rhs_newmark_simd_impl[simd_width_of[DType.float64]()](
-        free,
-        u_f,
-        v_f,
-        a_f,
-        F_ext_step,
-        M_f,
-        a0,
-        a1,
-        a2,
-        a3,
-        a4,
-        a5,
-        P_ext_f,
-        C_term,
-        P_eff,
-    )
+    var inertia_term: List[Float64] = []
+    inertia_term.resize(n, 0.0)
+    for i in range(n):
+        P_ext_f[i] = F_ext_step[free[i]]
+        C_term[i] = a1 * u_f[i] + a4 * v_f[i] + a5 * a_f[i]
+        inertia_term[i] = a0 * u_f[i] + a2 * v_f[i] + a3 * a_f[i]
+    for i in range(n):
+        P_eff[i] = P_ext_f[i] + dot_float64_contiguous(M_ff[i], inertia_term, n)
 
 
 @always_inline
@@ -407,7 +351,10 @@ fn run_transient_linear(
     mut transient_output_files: List[String],
     mut transient_output_buffers: List[List[String]],
     has_transformation_mpc: Bool,
-    rep_dof: List[Int],
+    mpc_slave_dof: List[Bool],
+    mpc_row_offsets: List[Int],
+    mpc_dof_pool: List[Int],
+    mpc_coeff_pool: List[Float64],
     constrained: List[Bool],
     do_profile: Bool,
     t0: Int,
@@ -454,20 +401,32 @@ fn run_transient_linear(
         abort("Newmark beta must be > 0")
 
     var free_count = len(free)
-    var M_f: List[Float64] = []
-    M_f.resize(free_count, 0.0)
-    var M_rayleigh_f: List[Float64] = []
-    M_rayleigh_f.resize(free_count, 0.0)
     var free_index: List[Int] = []
     free_index.resize(total_dofs, -1)
     var has_mass = False
     for i in range(free_count):
         free_index[free[i]] = i
-        var m = M_total[free[i]]
-        M_f[i] = m
-        M_rayleigh_f[i] = M_rayleigh_total[free[i]]
-        if m != 0.0:
-            has_mass = True
+    var M_ff = _build_reduced_diagonal_matrix_by_mpc(
+        M_total,
+        free_index,
+        mpc_row_offsets,
+        mpc_dof_pool,
+        mpc_coeff_pool,
+    )
+    var M_rayleigh_ff = _build_reduced_diagonal_matrix_by_mpc(
+        M_rayleigh_total,
+        free_index,
+        mpc_row_offsets,
+        mpc_dof_pool,
+        mpc_coeff_pool,
+    )
+    for i in range(free_count):
+        for j in range(free_count):
+            if M_ff[i][j] != 0.0:
+                has_mass = True
+                break
+        if has_mass:
+            break
     if not has_mass:
         abort("transient_linear requires masses on free dofs")
     var force_beam_column2d_scratch = ForceBeamColumn2dScratch()
@@ -594,7 +553,7 @@ fn run_transient_linear(
                 frame_constraints,
                 constraints_start_us,
             )
-        K = _collapse_matrix_by_rep(K, rep_dof)
+        K = _collapse_matrix_by_mpc(K, mpc_row_offsets, mpc_dof_pool, mpc_coeff_pool)
         if do_profile:
             var t_constraints_end = Int(time.perf_counter_ns())
             var constraints_end_us = (t_constraints_end - t0) // 1000
@@ -721,8 +680,12 @@ fn run_transient_linear(
             K_link_rayleigh,
         )
         if has_transformation_mpc:
-            K_link_all = _collapse_matrix_by_rep(K_link_all, rep_dof)
-            K_link_rayleigh = _collapse_matrix_by_rep(K_link_rayleigh, rep_dof)
+            K_link_all = _collapse_matrix_by_mpc(
+                K_link_all, mpc_row_offsets, mpc_dof_pool, mpc_coeff_pool
+            )
+            K_link_rayleigh = _collapse_matrix_by_mpc(
+                K_link_rayleigh, mpc_row_offsets, mpc_dof_pool, mpc_coeff_pool
+            )
         for i in range(free_count):
             for j in range(free_count):
                 K_damping_ff[i][j] = (
@@ -737,14 +700,16 @@ fn run_transient_linear(
 
     var C_ff: List[List[Float64]] = []
     var C_zero_length_damp_ff: List[List[Float64]] = []
-    for i in range(free_count):
+    for _ in range(free_count):
         var row_c: List[Float64] = []
         row_c.resize(free_count, 0.0)
         C_ff.append(row_c^)
         var row_zero_length_damp: List[Float64] = []
         row_zero_length_damp.resize(free_count, 0.0)
         C_zero_length_damp_ff.append(row_zero_length_damp^)
-        C_ff[i][i] = rayleigh_alpha_m * M_rayleigh_f[i]
+    for i in range(free_count):
+        for j in range(free_count):
+            C_ff[i][j] = rayleigh_alpha_m * M_rayleigh_ff[i][j]
     if has_zero_length_damp_mats:
         var C_zero_length_global: List[List[Float64]] = []
         for _ in range(total_dofs):
@@ -761,7 +726,9 @@ fn run_transient_linear(
             C_zero_length_global,
         )
         if has_transformation_mpc:
-            C_zero_length_global = _collapse_matrix_by_rep(C_zero_length_global, rep_dof)
+            C_zero_length_global = _collapse_matrix_by_mpc(
+                C_zero_length_global, mpc_row_offsets, mpc_dof_pool, mpc_coeff_pool
+            )
         for i in range(free_count):
             for j in range(free_count):
                 C_zero_length_damp_ff[i][j] = C_zero_length_global[free[i]][free[j]]
@@ -791,7 +758,7 @@ fn run_transient_linear(
             _append_event(events, events_need_comma, "O", frame_factorize, fac_start_us)
         load_reduced_matrix(backend, K_ff)
         add_reduced_matrix(backend, C_ff, a1)
-        add_diagonal(backend, M_f, a0)
+        add_reduced_matrix(backend, M_ff, a0)
         factorize_loaded(backend, runtime_metrics)
         if do_profile:
             var t_fac_end = Int(time.perf_counter_ns())
@@ -860,9 +827,30 @@ fn run_transient_linear(
                     frame_constraints,
                     constraints_start_us,
                 )
-            _enforce_equal_dof_values(u, rep_dof, constrained)
-            _enforce_equal_dof_values(v, rep_dof, constrained)
-            _enforce_equal_dof_values(a, rep_dof, constrained)
+            _enforce_mpc_values(
+                u,
+                constrained,
+                mpc_slave_dof,
+                mpc_row_offsets,
+                mpc_dof_pool,
+                mpc_coeff_pool,
+            )
+            _enforce_mpc_values(
+                v,
+                constrained,
+                mpc_slave_dof,
+                mpc_row_offsets,
+                mpc_dof_pool,
+                mpc_coeff_pool,
+            )
+            _enforce_mpc_values(
+                a,
+                constrained,
+                mpc_slave_dof,
+                mpc_row_offsets,
+                mpc_dof_pool,
+                mpc_coeff_pool,
+            )
             if do_profile:
                 var t_constraints_end = Int(time.perf_counter_ns())
                 var constraints_end_us = (t_constraints_end - t0) // 1000
@@ -931,9 +919,20 @@ fn run_transient_linear(
                     frame_time_series_eval,
                     ts_end_us,
                 )
+            var uniform_inertia_load: List[Float64] = []
+            uniform_inertia_load.resize(total_dofs, 0.0)
             for i in range(len(uniform_excitation_dofs)):
                 var dof_idx = uniform_excitation_dofs[i]
-                F_ext_step[dof_idx] += -M_total[dof_idx] * ag
+                uniform_inertia_load[dof_idx] += -M_total[dof_idx] * ag
+            if has_transformation_mpc:
+                uniform_inertia_load = _collapse_vector_by_mpc(
+                    uniform_inertia_load,
+                    mpc_row_offsets,
+                    mpc_dof_pool,
+                    mpc_coeff_pool,
+                )
+            for i in range(total_dofs):
+                F_ext_step[i] += uniform_inertia_load[i]
         else:
             if ts_index >= 0:
                 if do_profile:
@@ -1042,13 +1041,13 @@ fn run_transient_linear(
             F_ext_step,
             F_solve_step,
         )
-        _build_effective_rhs_newmark_simd(
+        _build_effective_rhs_newmark(
             free,
             u_f,
             v_f,
             a_f,
             F_solve_step,
-            M_f,
+            M_ff,
             a0,
             a1,
             a2,
@@ -1086,11 +1085,17 @@ fn run_transient_linear(
                 F_zero_length_damp_committed,
             )
             if has_transformation_mpc:
-                K_zero_length_damp_global = _collapse_matrix_by_rep(
-                    K_zero_length_damp_global, rep_dof
+                K_zero_length_damp_global = _collapse_matrix_by_mpc(
+                    K_zero_length_damp_global,
+                    mpc_row_offsets,
+                    mpc_dof_pool,
+                    mpc_coeff_pool,
                 )
-                F_zero_length_damp_committed = _collapse_vector_by_rep(
-                    F_zero_length_damp_committed, rep_dof
+                F_zero_length_damp_committed = _collapse_vector_by_mpc(
+                    F_zero_length_damp_committed,
+                    mpc_row_offsets,
+                    mpc_dof_pool,
+                    mpc_coeff_pool,
                 )
             for i in range(free_count):
                 F_zero_length_damp_committed_f[i] = F_zero_length_damp_committed[free[i]]
@@ -1103,7 +1108,7 @@ fn run_transient_linear(
             load_reduced_matrix(backend, K_ff)
             add_reduced_matrix(backend, K_zero_length_damp_ff)
             add_reduced_matrix(backend, C_ff, a1)
-            add_diagonal(backend, M_f, a0)
+            add_reduced_matrix(backend, M_ff, a0)
             factorize_loaded(backend, runtime_metrics)
             if do_profile:
                 var t_fac_end = Int(time.perf_counter_ns())
@@ -1147,9 +1152,30 @@ fn run_transient_linear(
                     frame_constraints,
                     constraints_start_us,
                 )
-            _enforce_equal_dof_values(u, rep_dof, constrained)
-            _enforce_equal_dof_values(v, rep_dof, constrained)
-            _enforce_equal_dof_values(a, rep_dof, constrained)
+            _enforce_mpc_values(
+                u,
+                constrained,
+                mpc_slave_dof,
+                mpc_row_offsets,
+                mpc_dof_pool,
+                mpc_coeff_pool,
+            )
+            _enforce_mpc_values(
+                v,
+                constrained,
+                mpc_slave_dof,
+                mpc_row_offsets,
+                mpc_dof_pool,
+                mpc_coeff_pool,
+            )
+            _enforce_mpc_values(
+                a,
+                constrained,
+                mpc_slave_dof,
+                mpc_row_offsets,
+                mpc_dof_pool,
+                mpc_coeff_pool,
+            )
             if do_profile:
                 var t_constraints_end = Int(time.perf_counter_ns())
                 var constraints_end_us = (t_constraints_end - t0) // 1000

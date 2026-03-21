@@ -1410,7 +1410,7 @@ def test_format_subprocess_failure_prefers_abort_marker_over_stack_tail():
         ["build/strut/strut", "--input", "case.json"],
         stderr="\n".join(
             [
-                "ABORT: [precheck-fail] unsupported mp constraint type: rigidDiaphragm",
+                "ABORT: [precheck-fail] rigidDiaphragm perp_dirn must be in 1..3",
                 "#0 stack frame",
                 "strut.mojo:0:0",
             ]
@@ -1420,7 +1420,7 @@ def test_format_subprocess_failure_prefers_abort_marker_over_stack_tail():
     message = run_benchmarks._format_subprocess_failure("strut compute-only pass aborted", exc)
 
     assert (
-        "stderr=ABORT: [precheck-fail] unsupported mp constraint type: rigidDiaphragm"
+        "stderr=ABORT: [precheck-fail] rigidDiaphragm perp_dirn must be in 1..3"
         in message
     )
 
@@ -1432,7 +1432,7 @@ def test_format_subprocess_failure_prefers_load_fail_marker():
         stderr="\n".join(
             [
                 "note: setup info",
-                "[load-fail] unsupported mp constraint type: rigidDiaphragm",
+                "[load-fail] rigidDiaphragm constrained_node not found",
                 "tail line",
             ]
         ),
@@ -1440,7 +1440,7 @@ def test_format_subprocess_failure_prefers_load_fail_marker():
 
     message = run_benchmarks._format_subprocess_failure("strut compute-only pass aborted", exc)
 
-    assert "stderr=[load-fail] unsupported mp constraint type: rigidDiaphragm" in message
+    assert "stderr=[load-fail] rigidDiaphragm constrained_node not found" in message
 
 
 def test_read_runtime_failures_collects_case_error_files(tmp_path: Path):

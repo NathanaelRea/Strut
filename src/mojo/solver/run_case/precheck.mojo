@@ -97,6 +97,22 @@ fn _precheck_abort(message: String) -> None:
     abort("[precheck-fail] " + message)
 
 
+fn _precheck_rigid_diaphragm(
+    doc: JsonDocument,
+    root_index: Int,
+    constraint_index: Int,
+) raises:
+    var model_index = _json_key(doc, root_index, "model")
+    var ndm = _json_int_key(doc, model_index, "ndm", 0)
+    var ndf = _json_int_key(doc, model_index, "ndf", 0)
+    if not ((ndm == 3 and ndf == 6) or (ndm == 2 and ndf == 3)):
+        _precheck_abort("rigidDiaphragm requires a 3D/6DOF or 2D/3DOF model")
+    var perp_dirn = _json_int_key(doc, constraint_index, "perp_dirn", 0)
+    if perp_dirn < 1 or perp_dirn > 3:
+        _precheck_abort("rigidDiaphragm perp_dirn must be in 1..3")
+    return
+
+
 fn _precheck_analysis(doc: JsonDocument, analysis_index: Int) raises:
     if not _json_has_value(doc, analysis_index):
         return
@@ -394,7 +410,12 @@ fn precheck_case_input_native(doc: JsonDocument, include_recorders: Bool) raises
         for i in range(doc.node_len(mpc_index)):
             var constraint_index = doc.array_item(mpc_index, i)
             var constraint_type = _json_string_key(doc, constraint_index, "type", "")
-            if constraint_type != "equalDOF":
+            if constraint_type == "equalDOF":
+                continue
+            if constraint_type == "rigidDiaphragm":
+                _precheck_rigid_diaphragm(doc, root_index, constraint_index)
+                continue
+            else:
                 _precheck_abort("unsupported mp constraint type: " + constraint_type)
 
     if not include_recorders:
