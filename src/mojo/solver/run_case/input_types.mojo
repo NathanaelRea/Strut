@@ -1,13 +1,10 @@
 from collections import List
+from pathlib import Path
 from os import abort
-from python import Python, PythonObject
 
-from strut_io import py_len
-from solver.time_series import (
-    TimeSeriesInput,
-    find_time_series_input,
-    parse_time_series_inputs,
-)
+from json_native import JsonDocument, JsonValueTag
+from strut_io import CaseSourceInfo, read_text_native
+from solver.time_series import TimeSeriesInput, find_time_series_input
 from tag_types import (
     AnalysisAlgorithmTag,
     AnalysisTypeTag,
@@ -23,6 +20,7 @@ from tag_types import (
     NumbererTag,
     PatternTypeTag,
     RecorderTypeTag,
+    TimeSeriesTypeTag,
 )
 
 
@@ -1359,58 +1357,438 @@ fn element_load_type_tag(type_name: String) -> Int:
     return ElementLoadTypeTag.Unknown
 
 
-fn parse_analysis_input_from_raw(
-    analysis_raw: PythonObject,
+fn _json_has_value(doc: JsonDocument, node_index: Int) -> Bool:
+    return node_index >= 0 and doc.node_tag(node_index) != JsonValueTag.Null
+
+
+fn _json_key(doc: JsonDocument, object_index: Int, key: StringSlice) raises -> Int:
+    if object_index < 0:
+        return -1
+    var tag = doc.node_tag(object_index)
+    if tag == JsonValueTag.Null:
+        return -1
+    if tag != JsonValueTag.Object:
+        abort("expected object for key lookup: " + String(key))
+    return doc.object_find(object_index, key)
+
+
+fn _json_require_key(
+    doc: JsonDocument, object_index: Int, key: StringSlice
+) raises -> Int:
+    var node_index = _json_key(doc, object_index, key)
+    if node_index < 0:
+        abort("missing required key: " + String(key))
+    return node_index
+
+
+fn _json_expect_array_len(doc: JsonDocument, array_index: Int, field: String) -> Int:
+    if array_index < 0 or doc.node_tag(array_index) == JsonValueTag.Null:
+        return 0
+    if doc.node_tag(array_index) != JsonValueTag.Array:
+        abort(field + " must be an array")
+    return doc.node_len(array_index)
+
+
+fn _json_string_value(doc: JsonDocument, node_index: Int, field: String) -> String:
+    if doc.node_tag(node_index) != JsonValueTag.String:
+        abort(field + " must be a string")
+    return doc.node_text(node_index)
+
+
+fn _json_number_value(
+    doc: JsonDocument, node_index: Int, field: String
+) -> Float64:
+    if doc.node_tag(node_index) != JsonValueTag.Number:
+        abort(field + " must be a number")
+    return doc.node_number(node_index)
+
+
+fn _json_int_value(doc: JsonDocument, node_index: Int, field: String) -> Int:
+    return Int(_json_number_value(doc, node_index, field))
+
+
+fn _json_bool_value(doc: JsonDocument, node_index: Int, field: String) -> Bool:
+    if doc.node_tag(node_index) != JsonValueTag.Bool:
+        abort(field + " must be a boolean")
+    return doc.node_bool(node_index)
+
+
+fn _json_get_string(
+    doc: JsonDocument,
+    object_index: Int,
+    key: StringSlice,
+    default: String,
+) raises -> String:
+    var node_index = _json_key(doc, object_index, key)
+    if node_index < 0:
+        return default
+    return _json_string_value(doc, node_index, String(key))
+
+
+fn _json_get_float(
+    doc: JsonDocument,
+    object_index: Int,
+    key: StringSlice,
+    default: Float64,
+) raises -> Float64:
+    var node_index = _json_key(doc, object_index, key)
+    if node_index < 0:
+        return default
+    return _json_number_value(doc, node_index, String(key))
+
+
+fn _json_get_int(
+    doc: JsonDocument, object_index: Int, key: StringSlice, default: Int
+) raises -> Int:
+    var node_index = _json_key(doc, object_index, key)
+    if node_index < 0:
+        return default
+    return _json_int_value(doc, node_index, String(key))
+
+
+fn _json_get_bool(
+    doc: JsonDocument, object_index: Int, key: StringSlice, default: Bool
+) raises -> Bool:
+    var node_index = _json_key(doc, object_index, key)
+    if node_index < 0:
+        return default
+    return _json_bool_value(doc, node_index, String(key))
+
+
+fn _json_has_key(doc: JsonDocument, object_index: Int, key: StringSlice) raises -> Bool:
+    return _json_key(doc, object_index, key) >= 0
+
+
+fn _json_get_array_item(
+    doc: JsonDocument, array_index: Int, item_index: Int, field: String
+) raises -> Int:
+    if doc.node_tag(array_index) != JsonValueTag.Array:
+        abort(field + " must be an array")
+    return doc.array_item(array_index, item_index)
+
+
+fn _json_get_float_alias2(
+    doc: JsonDocument,
+    object_index: Int,
+    key_1: StringSlice,
+    key_2: StringSlice,
+    default: Float64,
+) raises -> Float64:
+    var node_index = _json_key(doc, object_index, key_1)
+    if node_index >= 0:
+        return _json_number_value(doc, node_index, String(key_1))
+    node_index = _json_key(doc, object_index, key_2)
+    if node_index >= 0:
+        return _json_number_value(doc, node_index, String(key_2))
+    return default
+
+
+fn _json_get_float_alias3(
+    doc: JsonDocument,
+    object_index: Int,
+    key_1: StringSlice,
+    key_2: StringSlice,
+    key_3: StringSlice,
+    default: Float64,
+) raises -> Float64:
+    var node_index = _json_key(doc, object_index, key_1)
+    if node_index >= 0:
+        return _json_number_value(doc, node_index, String(key_1))
+    node_index = _json_key(doc, object_index, key_2)
+    if node_index >= 0:
+        return _json_number_value(doc, node_index, String(key_2))
+    node_index = _json_key(doc, object_index, key_3)
+    if node_index >= 0:
+        return _json_number_value(doc, node_index, String(key_3))
+    return default
+
+
+fn _numeric_token_start(bytes: Span[Byte], idx: Int) -> Bool:
+    var ch = bytes[idx]
+    if ch >= Byte(ord("0")) and ch <= Byte(ord("9")):
+        return True
+    if ch == Byte(ord(".")):
+        return idx + 1 < len(bytes) and bytes[idx + 1] >= Byte(ord("0")) and bytes[idx + 1] <= Byte(ord("9"))
+    if ch == Byte(ord("+")) or ch == Byte(ord("-")):
+        if idx + 1 >= len(bytes):
+            return False
+        var next = bytes[idx + 1]
+        return (
+            (next >= Byte(ord("0")) and next <= Byte(ord("9")))
+            or next == Byte(ord("."))
+        )
+    return False
+
+
+fn _parse_numeric_values_text(text: String, values_path: String) raises -> List[Float64]:
+    var values: List[Float64] = []
+    var bytes = text.as_bytes()
+    var i = 0
+    while i < len(bytes):
+        if not _numeric_token_start(bytes, i):
+            i += 1
+            continue
+
+        var start = i
+        if bytes[i] == Byte(ord("+")) or bytes[i] == Byte(ord("-")):
+            i += 1
+        var digit_count = 0
+        while i < len(bytes) and bytes[i] >= Byte(ord("0")) and bytes[i] <= Byte(ord("9")):
+            i += 1
+            digit_count += 1
+        if i < len(bytes) and bytes[i] == Byte(ord(".")):
+            i += 1
+            while i < len(bytes) and bytes[i] >= Byte(ord("0")) and bytes[i] <= Byte(ord("9")):
+                i += 1
+                digit_count += 1
+        if digit_count == 0:
+            i = start + 1
+            continue
+
+        if (
+            i < len(bytes)
+            and (
+                bytes[i] == Byte(ord("e"))
+                or bytes[i] == Byte(ord("E"))
+                or bytes[i] == Byte(ord("d"))
+                or bytes[i] == Byte(ord("D"))
+            )
+        ):
+            var exponent_end = i + 1
+            if exponent_end < len(bytes) and (
+                bytes[exponent_end] == Byte(ord("+"))
+                or bytes[exponent_end] == Byte(ord("-"))
+            ):
+                exponent_end += 1
+            var exponent_digits = 0
+            while (
+                exponent_end < len(bytes)
+                and bytes[exponent_end] >= Byte(ord("0"))
+                and bytes[exponent_end] <= Byte(ord("9"))
+            ):
+                exponent_end += 1
+                exponent_digits += 1
+            if exponent_digits > 0:
+                i = exponent_end
+
+        var token = String(StringSlice(unsafe_from_utf8=bytes[start:i]))
+        token = token.replace("D", "E").replace("d", "e")
+        values.append(atof(StringSlice(token)))
+    if len(values) == 0:
+        abort("Path time_series values_path had no numeric values: " + values_path)
+    return values^
+
+
+fn _load_path_time_series_values_native(
+    doc: JsonDocument, ts_index: Int, source_info: CaseSourceInfo
+) raises -> List[Float64]:
+    var values_path = _json_get_string(doc, ts_index, "values_path", "")
+    if values_path == "":
+        values_path = _json_get_string(doc, ts_index, "path", "")
+    if values_path == "":
+        abort("Path time_series missing values_path")
+
+    var resolved_path = values_path
+    if (
+        not values_path.startswith("/")
+        and source_info.case_dir != ""
+    ):
+        var candidate = String(Path(source_info.case_dir) / values_path)
+        if Path(candidate).exists():
+            resolved_path = candidate
+    if not Path(resolved_path).exists():
+        abort("Path time_series values_path not found: " + values_path)
+    return _parse_numeric_values_text(read_text_native(resolved_path), resolved_path)
+
+
+fn _append_time_series_entry_native(
+    doc: JsonDocument,
+    ts_index: Int,
+    source_info: CaseSourceInfo,
+    mut parsed: List[TimeSeriesInput],
+    mut values_pool: List[Float64],
+    mut time_pool: List[Float64],
+) raises:
+    if doc.node_tag(ts_index) != JsonValueTag.Object:
+        abort("time_series entry must be object")
+    var parsed_entry = TimeSeriesInput()
+    parsed_entry.tag = _json_get_int(doc, ts_index, "tag", -1)
+    parsed_entry.factor = _json_get_float(doc, ts_index, "factor", 1.0)
+
+    var typ = _json_get_string(doc, ts_index, "type", "")
+    if typ == "PathFile":
+        typ = "Path"
+
+    if typ == "Constant":
+        parsed_entry.type_tag = TimeSeriesTypeTag.Constant
+        parsed.append(parsed_entry)
+        return
+    if typ == "Linear":
+        parsed_entry.type_tag = TimeSeriesTypeTag.Linear
+        parsed.append(parsed_entry)
+        return
+    if typ == "Path":
+        parsed_entry.type_tag = TimeSeriesTypeTag.Path
+        var values_index = _json_key(doc, ts_index, "values")
+        if values_index >= 0 and (
+            _json_has_key(doc, ts_index, "values_path") or _json_has_key(doc, ts_index, "path")
+        ):
+            abort("Path time_series cannot specify both values and values_path/path")
+
+        parsed_entry.values_offset = len(values_pool)
+        if values_index >= 0:
+            var values_count = _json_expect_array_len(doc, values_index, "time_series values")
+            parsed_entry.values_count = values_count
+            for i in range(values_count):
+                values_pool.append(
+                    _json_number_value(
+                        doc,
+                        _json_get_array_item(doc, values_index, i, "time_series values"),
+                        "time_series values",
+                    )
+                )
+        else:
+            var loaded_values = _load_path_time_series_values_native(
+                doc, ts_index, source_info
+            )
+            parsed_entry.values_count = len(loaded_values)
+            for i in range(len(loaded_values)):
+                values_pool.append(loaded_values[i])
+        parsed_entry.has_dt = _json_has_key(doc, ts_index, "dt")
+        if parsed_entry.has_dt:
+            parsed_entry.dt = _json_get_float(doc, ts_index, "dt", 0.0)
+        parsed_entry.start_time = _json_get_float(doc, ts_index, "start_time", 0.0)
+        parsed_entry.use_last = _json_get_bool(doc, ts_index, "use_last", False)
+        var time_index = _json_key(doc, ts_index, "time")
+        if time_index >= 0:
+            parsed_entry.time_offset = len(time_pool)
+            parsed_entry.time_count = _json_expect_array_len(doc, time_index, "time_series time")
+            for i in range(parsed_entry.time_count):
+                time_pool.append(
+                    _json_number_value(
+                        doc,
+                        _json_get_array_item(doc, time_index, i, "time_series time"),
+                        "time_series time",
+                    )
+                )
+        parsed.append(parsed_entry)
+        return
+    if typ == "Trig":
+        parsed_entry.type_tag = TimeSeriesTypeTag.Trig
+        if not _json_has_key(doc, ts_index, "t_start") or not _json_has_key(doc, ts_index, "t_finish"):
+            abort("Trig time_series missing t_start/t_finish")
+        if not _json_has_key(doc, ts_index, "period"):
+            abort("Trig time_series missing period")
+        parsed_entry.t_start = _json_get_float(doc, ts_index, "t_start", 0.0)
+        parsed_entry.t_finish = _json_get_float(doc, ts_index, "t_finish", 0.0)
+        parsed_entry.period = _json_get_float(doc, ts_index, "period", 0.0)
+        parsed_entry.phase_shift = _json_get_float(doc, ts_index, "phase_shift", 0.0)
+        parsed_entry.zero_shift = _json_get_float(doc, ts_index, "zero_shift", 0.0)
+        parsed.append(parsed_entry)
+        return
+    abort("unsupported time_series type: " + typ)
+
+
+fn _append_time_series_inputs_native(
+    doc: JsonDocument,
+    owner_index: Int,
+    source_info: CaseSourceInfo,
+    mut parsed: List[TimeSeriesInput],
+    mut values_pool: List[Float64],
+    mut time_pool: List[Float64],
+) raises:
+    var ts_index = _json_key(doc, owner_index, "time_series")
+    if ts_index < 0:
+        return
+    if doc.node_tag(ts_index) == JsonValueTag.Array:
+        for i in range(doc.node_len(ts_index)):
+            _append_time_series_entry_native(
+                doc,
+                doc.array_item(ts_index, i),
+                source_info,
+                parsed,
+                values_pool,
+                time_pool,
+            )
+        return
+    if doc.node_tag(ts_index) == JsonValueTag.Object:
+        _append_time_series_entry_native(
+            doc, ts_index, source_info, parsed, values_pool, time_pool
+        )
+        return
+    if doc.node_tag(ts_index) == JsonValueTag.Null:
+        return
+    abort("time_series must be list or object")
+
+
+fn parse_analysis_input_from_native(
+    doc: JsonDocument,
+    analysis_index: Int,
     mut integrator_targets_pool: List[Float64],
     mut solver_chain_pool: List[SolverAttemptInput],
 ) raises -> AnalysisInput:
     var analysis = AnalysisInput()
-    analysis.type = String(analysis_raw.get("type", "static_linear"))
+    analysis.type = _json_get_string(doc, analysis_index, "type", "static_linear")
     analysis.type_tag = analysis_type_tag(analysis.type)
-    analysis.constraints = String(analysis_raw.get("constraints", "Plain"))
+    analysis.constraints = _json_get_string(doc, analysis_index, "constraints", "Plain")
     analysis.constraints_tag = constraint_handler_tag(analysis.constraints)
-    analysis.numberer_tag = numberer_tag(String(analysis_raw.get("numberer", "")))
-    analysis.steps = Int(analysis_raw.get("steps", 1))
-    analysis.num_modes = Int(analysis_raw.get("num_modes", 0))
-    analysis.force_beam_mode = String(analysis_raw.get("force_beam_mode", "auto"))
-    analysis.force_beam_mode_tag = force_beam_mode_tag(analysis.force_beam_mode)
-    analysis.dt = Float64(analysis_raw.get("dt", 0.0))
-    analysis.algorithm = String(analysis_raw.get("algorithm", "Newton"))
-    analysis.algorithm_tag = analysis_algorithm_tag(analysis.algorithm)
-    analysis.max_iters = Int(analysis_raw.get("max_iters", 20))
-    analysis.tol = Float64(analysis_raw.get("tol", 1.0e-10))
-    if analysis_raw.__contains__("rel_tol"):
-        abort("analysis rel_tol is unsupported")
-    analysis.test_type = String(analysis_raw.get("test_type", "NormUnbalance"))
-    analysis.test_type_tag = nonlinear_test_type_tag(analysis.test_type)
-    var step_retry_raw = analysis_raw.get("step_retry", {})
-    analysis.step_retry_restore_primary_after_success = Bool(
-        step_retry_raw.get("restore_primary_after_success", True)
+    analysis.numberer_tag = numberer_tag(
+        _json_get_string(doc, analysis_index, "numberer", "")
     )
-    analysis.step_retry_continue_after_failure = Bool(
-        String(step_retry_raw.get("continue_after_failure", "")) != ""
+    analysis.steps = _json_get_int(doc, analysis_index, "steps", 1)
+    analysis.num_modes = _json_get_int(doc, analysis_index, "num_modes", 0)
+    analysis.force_beam_mode = _json_get_string(
+        doc, analysis_index, "force_beam_mode", "auto"
+    )
+    analysis.force_beam_mode_tag = force_beam_mode_tag(analysis.force_beam_mode)
+    analysis.dt = _json_get_float(doc, analysis_index, "dt", 0.0)
+    analysis.algorithm = _json_get_string(doc, analysis_index, "algorithm", "Newton")
+    analysis.algorithm_tag = analysis_algorithm_tag(analysis.algorithm)
+    analysis.max_iters = _json_get_int(doc, analysis_index, "max_iters", 20)
+    analysis.tol = _json_get_float(doc, analysis_index, "tol", 1.0e-10)
+    if _json_has_key(doc, analysis_index, "rel_tol"):
+        abort("analysis rel_tol is unsupported")
+    analysis.test_type = _json_get_string(
+        doc, analysis_index, "test_type", "NormUnbalance"
+    )
+    analysis.test_type_tag = nonlinear_test_type_tag(analysis.test_type)
+
+    var step_retry_index = _json_key(doc, analysis_index, "step_retry")
+    analysis.step_retry_restore_primary_after_success = _json_get_bool(
+        doc, step_retry_index, "restore_primary_after_success", True
+    )
+    analysis.step_retry_continue_after_failure = (
+        _json_get_string(doc, step_retry_index, "continue_after_failure", "") != ""
     )
     analysis.step_retry_enabled = analysis.step_retry_continue_after_failure
-    analysis.step_retry_continue_target_disp = Float64(
-        step_retry_raw.get("continue_target_disp", 0.0)
+    analysis.step_retry_continue_target_disp = _json_get_float(
+        doc, step_retry_index, "continue_target_disp", 0.0
     )
-    analysis.step_retry_continue_max_steps = Int(
-        step_retry_raw.get("continue_max_steps", 0)
+    analysis.step_retry_continue_max_steps = _json_get_int(
+        doc, step_retry_index, "continue_max_steps", 0
     )
-    var builtins = Python.import_module("builtins")
+
     var system_name = ""
-    if analysis_raw.__contains__("system"):
-        system_name = String(analysis_raw["system"])
-    elif analysis_raw.__contains__("solver"):
-        system_name = String(analysis_raw["solver"])
+    if _json_has_key(doc, analysis_index, "system"):
+        system_name = _json_get_string(doc, analysis_index, "system", "")
+    elif _json_has_key(doc, analysis_index, "solver"):
+        system_name = _json_get_string(doc, analysis_index, "solver", "")
     analysis.system = canonical_analysis_system_name(system_name)
     analysis.system_tag = analysis_system_tag(analysis.system)
-    var system_options_raw = analysis_raw.get("system_options", builtins.list())
-    if not Bool(builtins.isinstance(system_options_raw, builtins.list)):
-        abort("analysis system_options must be a list")
+
+    var system_options_index = _json_key(doc, analysis_index, "system_options")
     var system_options: List[String] = []
-    for i in range(py_len(system_options_raw)):
-        system_options.append(String(system_options_raw[i]))
+    if _json_has_value(doc, system_options_index):
+        if doc.node_tag(system_options_index) != JsonValueTag.Array:
+            abort("analysis system_options must be a list")
+        for i in range(doc.node_len(system_options_index)):
+            system_options.append(
+                _json_string_value(
+                    doc,
+                    doc.array_item(system_options_index, i),
+                    "analysis system_options",
+                )
+            )
     _validate_analysis_system_options(
         analysis.system, analysis.system_tag, system_options
     )
@@ -1419,8 +1797,10 @@ fn parse_analysis_input_from_raw(
         if i > 0:
             analysis.system_options_serialized += "\x1f"
         analysis.system_options_serialized += system_options[i]
-    analysis.band_threshold = Int(analysis_raw.get("band_threshold", 128))
-    var integrator_raw = analysis_raw.get("integrator", {})
+
+    analysis.band_threshold = _json_get_int(doc, analysis_index, "band_threshold", 128)
+
+    var integrator_index = _json_key(doc, analysis_index, "integrator")
     var default_integrator_type = ""
     if analysis.type_tag == AnalysisTypeTag.StaticNonlinear:
         default_integrator_type = "LoadControl"
@@ -1429,213 +1809,293 @@ fn parse_analysis_input_from_raw(
         or analysis.type_tag == AnalysisTypeTag.TransientNonlinear
     ):
         default_integrator_type = "Newmark"
-    analysis.integrator_type = String(
-        integrator_raw.get("type", default_integrator_type)
+    analysis.integrator_type = _json_get_string(
+        doc, integrator_index, "type", default_integrator_type
     )
     analysis.integrator_tag = integrator_type_tag(analysis.integrator_type)
-    analysis.integrator_gamma = Float64(integrator_raw.get("gamma", 0.5))
-    analysis.integrator_beta = Float64(integrator_raw.get("beta", 0.25))
+    analysis.integrator_gamma = _json_get_float(doc, integrator_index, "gamma", 0.5)
+    analysis.integrator_beta = _json_get_float(doc, integrator_index, "beta", 0.25)
     analysis.has_integrator_num_iter = (
-        integrator_raw.__contains__("num_iter")
-        or integrator_raw.__contains__("numIter")
+        _json_has_key(doc, integrator_index, "num_iter")
+        or _json_has_key(doc, integrator_index, "numIter")
     )
-    analysis.integrator_num_iter = Int(
-        integrator_raw.get("num_iter", integrator_raw.get("numIter", 1))
+    analysis.integrator_num_iter = _json_get_int(
+        doc,
+        integrator_index,
+        "num_iter",
+        _json_get_int(doc, integrator_index, "numIter", 1),
     )
-    analysis.has_integrator_step = integrator_raw.__contains__("step")
-    analysis.integrator_step = Float64(integrator_raw.get("step", 1.0))
-    analysis.has_integrator_min_step = integrator_raw.__contains__("min_step")
-    analysis.integrator_min_step = Float64(
-        integrator_raw.get("min_step", analysis.integrator_step)
+    analysis.has_integrator_step = _json_has_key(doc, integrator_index, "step")
+    analysis.integrator_step = _json_get_float(doc, integrator_index, "step", 1.0)
+    analysis.has_integrator_min_step = _json_has_key(doc, integrator_index, "min_step")
+    analysis.integrator_min_step = _json_get_float(
+        doc, integrator_index, "min_step", analysis.integrator_step
     )
-    analysis.has_integrator_max_step = integrator_raw.__contains__("max_step")
-    analysis.integrator_max_step = Float64(
-        integrator_raw.get("max_step", analysis.integrator_step)
+    analysis.has_integrator_max_step = _json_has_key(doc, integrator_index, "max_step")
+    analysis.integrator_max_step = _json_get_float(
+        doc, integrator_index, "max_step", analysis.integrator_step
     )
-    if integrator_raw.__contains__("node"):
-        analysis.integrator_node = Int(integrator_raw["node"])
-    if integrator_raw.__contains__("dof"):
-        analysis.integrator_dof = Int(integrator_raw["dof"])
-    analysis.integrator_cutback = Float64(
-        integrator_raw.get("cutback", analysis_raw.get("cutback", 0.5))
+    if _json_has_key(doc, integrator_index, "node"):
+        analysis.integrator_node = _json_get_int(doc, integrator_index, "node", 0)
+    if _json_has_key(doc, integrator_index, "dof"):
+        analysis.integrator_dof = _json_get_int(doc, integrator_index, "dof", 0)
+    analysis.integrator_cutback = _json_get_float(
+        doc,
+        integrator_index,
+        "cutback",
+        _json_get_float(doc, analysis_index, "cutback", 0.5),
     )
-    analysis.integrator_max_cutbacks = Int(
-        integrator_raw.get("max_cutbacks", analysis_raw.get("max_cutbacks", 8))
+    analysis.integrator_max_cutbacks = _json_get_int(
+        doc,
+        integrator_index,
+        "max_cutbacks",
+        _json_get_int(doc, analysis_index, "max_cutbacks", 8),
     )
     analysis.has_integrator_min_du = (
-        integrator_raw.__contains__("min_du")
-        or integrator_raw.__contains__("minIncrement")
+        _json_has_key(doc, integrator_index, "min_du")
+        or _json_has_key(doc, integrator_index, "minIncrement")
     )
-    analysis.integrator_min_du = Float64(
-        integrator_raw.get(
-            "min_du",
-            integrator_raw.get("minIncrement", analysis_raw.get("min_du", 1.0e-10)),
-        )
+    analysis.integrator_min_du = _json_get_float(
+        doc,
+        integrator_index,
+        "min_du",
+        _json_get_float(
+            doc,
+            integrator_index,
+            "minIncrement",
+            _json_get_float(doc, analysis_index, "min_du", 1.0e-10),
+        ),
     )
     analysis.has_integrator_max_du = (
-        integrator_raw.__contains__("max_du")
-        or integrator_raw.__contains__("maxIncrement")
+        _json_has_key(doc, integrator_index, "max_du")
+        or _json_has_key(doc, integrator_index, "maxIncrement")
     )
-    analysis.integrator_max_du = Float64(
-        integrator_raw.get("max_du", integrator_raw.get("maxIncrement", 0.0))
+    analysis.integrator_max_du = _json_get_float(
+        doc,
+        integrator_index,
+        "max_du",
+        _json_get_float(doc, integrator_index, "maxIncrement", 0.0),
     )
-    analysis.has_integrator_du = integrator_raw.__contains__("du")
+    analysis.has_integrator_du = _json_has_key(doc, integrator_index, "du")
     if analysis.has_integrator_du:
-        analysis.integrator_du = Float64(integrator_raw["du"])
-    if integrator_raw.__contains__("targets"):
-        var targets = integrator_raw["targets"]
+        analysis.integrator_du = _json_get_float(doc, integrator_index, "du", 0.0)
+    var targets_index = _json_key(doc, integrator_index, "targets")
+    if _json_has_value(doc, targets_index):
         analysis.integrator_targets_offset = len(integrator_targets_pool)
-        analysis.integrator_targets_count = py_len(targets)
-        for i in range(py_len(targets)):
-            integrator_targets_pool.append(Float64(targets[i]))
-    var primary_algorithm_options = analysis_raw.get("algorithm_options", {})
+        analysis.integrator_targets_count = _json_expect_array_len(
+            doc, targets_index, "integrator targets"
+        )
+        for i in range(analysis.integrator_targets_count):
+            integrator_targets_pool.append(
+                _json_number_value(
+                    doc,
+                    doc.array_item(targets_index, i),
+                    "integrator targets",
+                )
+            )
+    var primary_algorithm_options_index = _json_key(
+        doc, analysis_index, "algorithm_options"
+    )
     analysis.solver_chain_offset = len(solver_chain_pool)
-    analysis.has_solver_chain_override = analysis_raw.__contains__("solver_chain")
+    analysis.has_solver_chain_override = _json_has_key(
+        doc, analysis_index, "solver_chain"
+    )
     if analysis.has_solver_chain_override:
-        var solver_chain_raw = analysis_raw["solver_chain"]
-        for i in range(py_len(solver_chain_raw)):
-            var attempt_raw = solver_chain_raw[i]
+        var solver_chain_index = _json_require_key(doc, analysis_index, "solver_chain")
+        for i in range(_json_expect_array_len(doc, solver_chain_index, "solver_chain")):
+            var attempt_index = doc.array_item(solver_chain_index, i)
             var attempt = SolverAttemptInput()
-            var attempt_algorithm_options = attempt_raw.get("algorithm_options", {})
-            attempt.algorithm = String(
-                attempt_raw.get("algorithm", analysis.algorithm)
+            var attempt_algorithm_options_index = _json_key(
+                doc, attempt_index, "algorithm_options"
+            )
+            attempt.algorithm = _json_get_string(
+                doc, attempt_index, "algorithm", analysis.algorithm
             )
             attempt.algorithm_tag = analysis_algorithm_tag(attempt.algorithm)
-            attempt.broyden_count = Int(
-                attempt_raw.get(
-                    "broyden_count",
-                    attempt_algorithm_options.get("max_iters", 0),
-                )
+            attempt.broyden_count = _json_get_int(
+                doc,
+                attempt_index,
+                "broyden_count",
+                _json_get_int(doc, attempt_algorithm_options_index, "max_iters", 0),
             )
-            attempt.line_search_eta = Float64(
-                attempt_raw.get(
-                    "line_search_eta",
-                    attempt_algorithm_options.get("alpha", 1.0),
-                )
+            attempt.line_search_eta = _json_get_float(
+                doc,
+                attempt_index,
+                "line_search_eta",
+                _json_get_float(doc, attempt_algorithm_options_index, "alpha", 1.0),
             )
-            attempt.test_type = String(
-                attempt_raw.get("test_type", analysis.test_type)
+            attempt.test_type = _json_get_string(
+                doc, attempt_index, "test_type", analysis.test_type
             )
             attempt.test_type_tag = nonlinear_test_type_tag(attempt.test_type)
-            attempt.max_iters = Int(
-                attempt_raw.get("max_iters", analysis.max_iters)
+            attempt.max_iters = _json_get_int(
+                doc, attempt_index, "max_iters", analysis.max_iters
             )
-            attempt.tol = Float64(attempt_raw.get("tol", analysis.tol))
-            if attempt_raw.__contains__("rel_tol"):
+            attempt.tol = _json_get_float(doc, attempt_index, "tol", analysis.tol)
+            if _json_has_key(doc, attempt_index, "rel_tol"):
                 abort("solver_chain rel_tol is unsupported")
             solver_chain_pool.append(attempt^)
             analysis.solver_chain_count += 1
-    else:
-        var primary_attempt = SolverAttemptInput()
-        primary_attempt.algorithm = analysis.algorithm
-        primary_attempt.algorithm_tag = analysis.algorithm_tag
-        primary_attempt.broyden_count = Int(
-            primary_algorithm_options.get("max_iters", 0)
-        )
-        primary_attempt.line_search_eta = Float64(
-            primary_algorithm_options.get("alpha", 1.0)
-        )
-        primary_attempt.test_type = analysis.test_type
-        primary_attempt.test_type_tag = analysis.test_type_tag
-        primary_attempt.max_iters = analysis.max_iters
-        primary_attempt.tol = analysis.tol
-        solver_chain_pool.append(primary_attempt^)
-        analysis.solver_chain_count += 1
+        return analysis^
+
+    var primary_attempt = SolverAttemptInput()
+    primary_attempt.algorithm = analysis.algorithm
+    primary_attempt.algorithm_tag = analysis.algorithm_tag
+    primary_attempt.broyden_count = _json_get_int(
+        doc, primary_algorithm_options_index, "max_iters", 0
+    )
+    primary_attempt.line_search_eta = _json_get_float(
+        doc, primary_algorithm_options_index, "alpha", 1.0
+    )
+    primary_attempt.test_type = analysis.test_type
+    primary_attempt.test_type_tag = analysis.test_type_tag
+    primary_attempt.max_iters = analysis.max_iters
+    primary_attempt.tol = analysis.tol
+    solver_chain_pool.append(primary_attempt^)
+    analysis.solver_chain_count += 1
     return analysis^
 
 
-fn _normalize_dampings_raw(dampings_raw: PythonObject) raises -> PythonObject:
-    var builtins = Python.import_module("builtins")
-    if Bool(builtins.isinstance(dampings_raw, builtins.list)):
-        return dampings_raw
-    if Bool(builtins.isinstance(dampings_raw, builtins.dict)):
-        var dampings_list = builtins.list()
-        dampings_list.append(dampings_raw)
-        return dampings_list
-    abort("dampings must be list or object")
-    return builtins.list()
-
-
-fn parse_pattern_input_from_raw(pattern_raw: PythonObject) raises -> PatternInput:
+fn parse_pattern_input_from_native(
+    doc: JsonDocument, pattern_index: Int
+) raises -> PatternInput:
     var pattern = PatternInput()
-    if pattern_raw is None:
+    if not _json_has_value(doc, pattern_index):
         return pattern^
     pattern.has_pattern = True
-    pattern.type = String(pattern_raw.get("type", "Plain"))
+    pattern.type = _json_get_string(doc, pattern_index, "type", "Plain")
     pattern.type_tag = pattern_type_tag(pattern.type)
-    if pattern_raw.__contains__("time_series"):
+    if _json_has_key(doc, pattern_index, "time_series"):
         pattern.has_time_series = True
-        pattern.time_series = Int(pattern_raw["time_series"])
-    if pattern_raw.__contains__("direction"):
+        pattern.time_series = _json_get_int(doc, pattern_index, "time_series", -1)
+    if _json_has_key(doc, pattern_index, "direction"):
         pattern.has_direction = True
-        pattern.direction = Int(pattern_raw["direction"])
-    if pattern_raw.__contains__("accel"):
+        pattern.direction = _json_get_int(doc, pattern_index, "direction", 0)
+    if _json_has_key(doc, pattern_index, "accel"):
         pattern.has_accel = True
-        pattern.accel = Int(pattern_raw["accel"])
+        pattern.accel = _json_get_int(doc, pattern_index, "accel", 0)
     return pattern^
 
 
-fn parse_rayleigh_input_from_raw(rayleigh_raw: PythonObject) raises -> RayleighInput:
+fn parse_rayleigh_input_from_native(
+    doc: JsonDocument, rayleigh_index: Int
+) raises -> RayleighInput:
     var rayleigh = RayleighInput()
-    if rayleigh_raw is None:
+    if not _json_has_value(doc, rayleigh_index):
         return rayleigh^
     rayleigh.has_rayleigh = True
-    rayleigh.alpha_m = Float64(rayleigh_raw.get("alphaM", 0.0))
-    rayleigh.beta_k = Float64(rayleigh_raw.get("betaK", 0.0))
-    rayleigh.beta_k_init = Float64(rayleigh_raw.get("betaKInit", 0.0))
-    rayleigh.beta_k_comm = Float64(rayleigh_raw.get("betaKComm", 0.0))
+    rayleigh.alpha_m = _json_get_float(doc, rayleigh_index, "alphaM", 0.0)
+    rayleigh.beta_k = _json_get_float(doc, rayleigh_index, "betaK", 0.0)
+    rayleigh.beta_k_init = _json_get_float(doc, rayleigh_index, "betaKInit", 0.0)
+    rayleigh.beta_k_comm = _json_get_float(doc, rayleigh_index, "betaKComm", 0.0)
     return rayleigh^
 
 
-fn parse_element_load_input_from_raw(load: PythonObject) raises -> ElementLoadInput:
-    var load_type = String(load.get("type", ""))
+fn parse_element_load_input_from_native(
+    doc: JsonDocument, load_index: Int
+) raises -> ElementLoadInput:
+    var load_type = _json_get_string(doc, load_index, "type", "")
     return ElementLoadInput(
-        Int(load["element"]),
+        _json_get_int(doc, load_index, "element", 0),
         load_type,
         element_load_type_tag(load_type),
-        Float64(load.get("wy", load.get("w", 0.0))),
-        Float64(load.get("wz", 0.0)),
-        Float64(load.get("wx", load.get("wa", load.get("axial", 0.0)))),
-        Float64(load.get("py", load.get("P", load.get("Ptrans", 0.0)))),
-        Float64(load.get("pz", 0.0)),
-        Float64(load.get("px", load.get("N", load.get("Paxial", 0.0)))),
-        Float64(load.get("x", load.get("xL", load.get("aOverL", 0.0)))),
+        _json_get_float_alias2(doc, load_index, "wy", "w", 0.0),
+        _json_get_float(doc, load_index, "wz", 0.0),
+        _json_get_float_alias3(doc, load_index, "wx", "wa", "axial", 0.0),
+        _json_get_float_alias3(doc, load_index, "py", "P", "Ptrans", 0.0),
+        _json_get_float(doc, load_index, "pz", 0.0),
+        _json_get_float_alias3(doc, load_index, "px", "N", "Paxial", 0.0),
+        _json_get_float_alias3(doc, load_index, "x", "xL", "aOverL", 0.0),
     )
 
 
-fn parse_nodal_load_input_from_raw(load: PythonObject) raises -> NodalLoadInput:
-    return NodalLoadInput(Int(load["node"]), Int(load["dof"]), Float64(load["value"]))
+fn parse_nodal_load_input_from_native(
+    doc: JsonDocument, load_index: Int
+) raises -> NodalLoadInput:
+    return NodalLoadInput(
+        _json_get_int(doc, load_index, "node", 0),
+        _json_get_int(doc, load_index, "dof", 0),
+        _json_get_float(doc, load_index, "value", 0.0),
+    )
 
 
-fn parse_damping_inputs_from_raw(
-    dampings_raw: PythonObject, time_series: List[TimeSeriesInput]
+fn parse_damping_inputs_from_native(
+    doc: JsonDocument,
+    dampings_index: Int,
+    time_series: List[TimeSeriesInput],
 ) raises -> List[DampingInput]:
-    var normalized = _normalize_dampings_raw(dampings_raw)
     var parsed: List[DampingInput] = []
-    for i in range(py_len(normalized)):
-        var raw = normalized[i]
+    if not _json_has_value(doc, dampings_index):
+        return parsed^
+
+    if doc.node_tag(dampings_index) == JsonValueTag.Array:
+        for i in range(doc.node_len(dampings_index)):
+            var raw = doc.array_item(dampings_index, i)
+            var damping = DampingInput()
+            damping.tag = _json_get_int(
+                doc, raw, "id", _json_get_int(doc, raw, "tag", -1)
+            )
+            if damping.tag < 0:
+                abort("damping requires id")
+            for j in range(len(parsed)):
+                if parsed[j].tag == damping.tag:
+                    abort("duplicate damping id")
+            damping.type = _json_get_string(doc, raw, "type", "")
+            if damping.type == "SecStiff":
+                damping.type = "SecStif"
+            if damping.type != "SecStif":
+                abort("unsupported damping type: " + damping.type)
+            damping.beta = _json_get_float(doc, raw, "beta", 0.0)
+            if damping.beta <= 0.0:
+                abort("SecStif damping requires beta > 0")
+            damping.activate_time = _json_get_float_alias2(
+                doc, raw, "activateTime", "activate_time", 0.0
+            )
+            damping.deactivate_time = _json_get_float_alias2(
+                doc, raw, "deactivateTime", "deactivate_time", 1.0e20
+            )
+            damping.factor_ts_tag = _json_get_int(
+                doc,
+                raw,
+                "factor",
+                _json_get_int(doc, raw, "factor_time_series", -1),
+            )
+            if damping.factor_ts_tag >= 0:
+                damping.factor_ts_index = find_time_series_input(
+                    time_series, damping.factor_ts_tag
+                )
+                if damping.factor_ts_index < 0:
+                    abort("damping factor time_series tag not found")
+            parsed.append(damping^)
+        return parsed^
+
+    if doc.node_tag(dampings_index) == JsonValueTag.Object:
         var damping = DampingInput()
-        damping.tag = Int(raw.get("id", raw.get("tag", -1)))
+        damping.tag = _json_get_int(
+            doc, dampings_index, "id", _json_get_int(doc, dampings_index, "tag", -1)
+        )
         if damping.tag < 0:
             abort("damping requires id")
-        for j in range(len(parsed)):
-            if parsed[j].tag == damping.tag:
-                abort("duplicate damping id")
-        damping.type = String(raw.get("type", ""))
+        damping.type = _json_get_string(doc, dampings_index, "type", "")
         if damping.type == "SecStiff":
             damping.type = "SecStif"
         if damping.type != "SecStif":
             abort("unsupported damping type: " + damping.type)
-        damping.beta = Float64(raw.get("beta", 0.0))
+        damping.beta = _json_get_float(doc, dampings_index, "beta", 0.0)
         if damping.beta <= 0.0:
             abort("SecStif damping requires beta > 0")
-        damping.activate_time = Float64(
-            raw.get("activateTime", raw.get("activate_time", 0.0))
+        damping.activate_time = _json_get_float_alias2(
+            doc, dampings_index, "activateTime", "activate_time", 0.0
         )
-        damping.deactivate_time = Float64(
-            raw.get("deactivateTime", raw.get("deactivate_time", 1.0e20))
+        damping.deactivate_time = _json_get_float_alias2(
+            doc, dampings_index, "deactivateTime", "deactivate_time", 1.0e20
         )
-        damping.factor_ts_tag = Int(raw.get("factor", raw.get("factor_time_series", -1)))
+        damping.factor_ts_tag = _json_get_int(
+            doc,
+            dampings_index,
+            "factor",
+            _json_get_int(doc, dampings_index, "factor_time_series", -1),
+        )
         if damping.factor_ts_tag >= 0:
             damping.factor_ts_index = find_time_series_input(
                 time_series, damping.factor_ts_tag
@@ -1643,486 +2103,588 @@ fn parse_damping_inputs_from_raw(
             if damping.factor_ts_index < 0:
                 abort("damping factor time_series tag not found")
         parsed.append(damping^)
+        return parsed^
+    abort("dampings must be list or object")
     return parsed^
 
 
-fn parse_stage_input_from_raw(
-    stage_raw: PythonObject, data: PythonObject
+fn parse_stage_input_from_native(
+    doc: JsonDocument, stage_index: Int, source_info: CaseSourceInfo
 ) raises -> StageInput:
     var stage = StageInput()
-    var stage_analysis_raw = stage_raw.get("analysis", stage_raw)
-    stage.analysis = parse_analysis_input_from_raw(
-        stage_analysis_raw,
+    var stage_analysis_index = _json_key(doc, stage_index, "analysis")
+    if stage_analysis_index < 0:
+        stage_analysis_index = stage_index
+    stage.analysis = parse_analysis_input_from_native(
+        doc,
+        stage_analysis_index,
         stage.analysis_integrator_targets_pool,
         stage.analysis_solver_chain_pool,
     )
-    stage.pattern = parse_pattern_input_from_raw(stage_raw.get("pattern", None))
-    stage.rayleigh = parse_rayleigh_input_from_raw(stage_raw.get("rayleigh", None))
-    if stage_raw.__contains__("load_const"):
-        var load_const = stage_raw["load_const"]
-        if load_const is not None:
-            var builtins = Python.import_module("builtins")
-            if Bool(builtins.isinstance(load_const, builtins.bool)):
-                stage.has_load_const = Bool(load_const)
-            else:
-                stage.has_load_const = True
-                stage.load_const_time = Float64(load_const.get("time", 0.0))
-    if stage_raw.__contains__("loads"):
-        var loads_raw = stage_raw["loads"]
-        for i in range(py_len(loads_raw)):
-            stage.loads.append(parse_nodal_load_input_from_raw(loads_raw[i]))
-    if stage_raw.__contains__("element_loads"):
-        var element_loads_raw = stage_raw["element_loads"]
-        for i in range(py_len(element_loads_raw)):
-            stage.element_loads.append(
-                parse_element_load_input_from_raw(element_loads_raw[i])
+    stage.pattern = parse_pattern_input_from_native(
+        doc, _json_key(doc, stage_index, "pattern")
+    )
+    stage.rayleigh = parse_rayleigh_input_from_native(
+        doc, _json_key(doc, stage_index, "rayleigh")
+    )
+
+    var load_const_index = _json_key(doc, stage_index, "load_const")
+    if _json_has_value(doc, load_const_index):
+        if doc.node_tag(load_const_index) == JsonValueTag.Bool:
+            stage.has_load_const = doc.node_bool(load_const_index)
+        else:
+            stage.has_load_const = True
+            stage.load_const_time = _json_get_float(doc, load_const_index, "time", 0.0)
+
+    var loads_index = _json_key(doc, stage_index, "loads")
+    if _json_has_value(doc, loads_index):
+        for i in range(_json_expect_array_len(doc, loads_index, "stage loads")):
+            stage.loads.append(
+                parse_nodal_load_input_from_native(doc, doc.array_item(loads_index, i))
             )
-    if stage_raw.__contains__("time_series"):
-        var builtins = Python.import_module("builtins")
-        var stage_data = builtins.dict()
-        stage_data["time_series"] = stage_raw["time_series"]
-        if data.__contains__("__strut_case_dir"):
-            stage_data["__strut_case_dir"] = data["__strut_case_dir"]
-        parse_time_series_inputs(
-            stage_data,
-            stage.time_series,
-            stage.time_series_values,
-            stage.time_series_times,
-        )
+
+    var element_loads_index = _json_key(doc, stage_index, "element_loads")
+    if _json_has_value(doc, element_loads_index):
+        for i in range(
+            _json_expect_array_len(doc, element_loads_index, "stage element_loads")
+        ):
+            stage.element_loads.append(
+                parse_element_load_input_from_native(
+                    doc, doc.array_item(element_loads_index, i)
+                )
+            )
+
+    _append_time_series_inputs_native(
+        doc,
+        stage_index,
+        source_info,
+        stage.time_series,
+        stage.time_series_values,
+        stage.time_series_times,
+    )
     return stage^
 
 
-fn parse_case_input(data: PythonObject) raises -> CaseInput:
+fn parse_case_input_native(doc: JsonDocument) raises -> CaseInput:
+    return parse_case_input_native_from_source(doc, CaseSourceInfo(), True)
+
+
+fn parse_case_input_native_from_source(
+    doc: JsonDocument, source_info: CaseSourceInfo
+) raises -> CaseInput:
+    return parse_case_input_native_from_source(doc, source_info, True)
+
+
+fn parse_case_input_native_from_source(
+    doc: JsonDocument, source_info: CaseSourceInfo, include_recorders: Bool
+) raises -> CaseInput:
     var case_input = CaseInput()
+    var root = doc.root_index
 
-    var model = data["model"]
-    case_input.model = ModelInput(Int(model["ndm"]), Int(model["ndf"]))
+    var model = _json_require_key(doc, root, "model")
+    case_input.model = ModelInput(
+        _json_get_int(doc, model, "ndm", 0),
+        _json_get_int(doc, model, "ndf", 0),
+    )
 
-    var nodes_raw = data["nodes"]
-    for i in range(py_len(nodes_raw)):
-        var node = nodes_raw[i]
-        var has_z = node.__contains__("z")
+    var nodes_raw = _json_require_key(doc, root, "nodes")
+    for i in range(_json_expect_array_len(doc, nodes_raw, "nodes")):
+        var node = doc.array_item(nodes_raw, i)
+        var has_z = _json_has_key(doc, node, "z")
         var z = 0.0
         if has_z:
-            z = Float64(node["z"])
+            z = _json_get_float(doc, node, "z", 0.0)
         var parsed = NodeInput(
-            Int(node["id"]), Float64(node["x"]), Float64(node["y"]), z, has_z
+            _json_get_int(doc, node, "id", 0),
+            _json_get_float(doc, node, "x", 0.0),
+            _json_get_float(doc, node, "y", 0.0),
+            z,
+            has_z,
         )
-        if node.__contains__("constraints"):
-            var constraints = node["constraints"]
-            var count = py_len(constraints)
+        var constraints = _json_key(doc, node, "constraints")
+        if _json_has_value(doc, constraints):
+            var count = _json_expect_array_len(doc, constraints, "node constraints")
             if count > 6:
                 count = 6
             parsed.constraint_count = count
             if count > 0:
-                parsed.constraint_1 = Int(constraints[0])
+                parsed.constraint_1 = _json_int_value(
+                    doc, doc.array_item(constraints, 0), "node constraints"
+                )
             if count > 1:
-                parsed.constraint_2 = Int(constraints[1])
+                parsed.constraint_2 = _json_int_value(
+                    doc, doc.array_item(constraints, 1), "node constraints"
+                )
             if count > 2:
-                parsed.constraint_3 = Int(constraints[2])
+                parsed.constraint_3 = _json_int_value(
+                    doc, doc.array_item(constraints, 2), "node constraints"
+                )
             if count > 3:
-                parsed.constraint_4 = Int(constraints[3])
+                parsed.constraint_4 = _json_int_value(
+                    doc, doc.array_item(constraints, 3), "node constraints"
+                )
             if count > 4:
-                parsed.constraint_5 = Int(constraints[4])
+                parsed.constraint_5 = _json_int_value(
+                    doc, doc.array_item(constraints, 4), "node constraints"
+                )
             if count > 5:
-                parsed.constraint_6 = Int(constraints[5])
+                parsed.constraint_6 = _json_int_value(
+                    doc, doc.array_item(constraints, 5), "node constraints"
+                )
         case_input.nodes.append(parsed)
 
-    var sections_raw = data.get("sections", [])
-    for i in range(py_len(sections_raw)):
-        var sec = sections_raw[i]
-        var parsed = SectionInput(Int(sec["id"]), String(sec["type"]))
-        var params = sec.get("params", {})
-        if params.__contains__("E"):
-            parsed.E = Float64(params["E"])
-        if params.__contains__("A"):
-            parsed.A = Float64(params["A"])
-        if params.__contains__("I"):
-            parsed.I = Float64(params["I"])
-        if params.__contains__("Iz"):
-            parsed.Iz = Float64(params["Iz"])
-        if params.__contains__("Iy"):
-            parsed.Iy = Float64(params["Iy"])
-        if params.__contains__("G"):
-            parsed.G = Float64(params["G"])
-        if params.__contains__("J"):
-            parsed.J = Float64(params["J"])
-        if params.__contains__("nu"):
-            parsed.nu = Float64(params["nu"])
-        if params.__contains__("h"):
-            parsed.h = Float64(params["h"])
-        if params.__contains__("rho"):
-            parsed.rho = Float64(params["rho"])
-        if params.__contains__("axial_material"):
-            parsed.axial_material = Int(params["axial_material"])
-        if params.__contains__("flexural_material"):
-            parsed.flexural_material = Int(params["flexural_material"])
-        if params.__contains__("moment_y_material"):
-            parsed.moment_y_material = Int(params["moment_y_material"])
-        if params.__contains__("torsion_material"):
-            parsed.torsion_material = Int(params["torsion_material"])
-        if params.__contains__("shear_y_material"):
-            parsed.shear_y_material = Int(params["shear_y_material"])
-        if params.__contains__("shear_z_material"):
-            parsed.shear_z_material = Int(params["shear_z_material"])
-        if params.__contains__("base_section"):
-            parsed.base_section = Int(params["base_section"])
-        if parsed.type == "FiberSection2d" or parsed.type == "FiberSection3d":
-            var patches_raw = params.get("patches", [])
-            parsed.fiber_patch_offset = len(case_input.fiber_patches)
-            parsed.fiber_patch_count = py_len(patches_raw)
-            for j in range(py_len(patches_raw)):
-                var patch = patches_raw[j]
-                var patch_input = FiberPatchInput()
-                patch_input.type = String(patch["type"])
-                if patch_input.type == "quad":
-                    patch_input.type = "quadr"
-                patch_input.material = Int(patch["material"])
-                patch_input.num_subdiv_y = Int(patch["num_subdiv_y"])
-                patch_input.num_subdiv_z = Int(patch["num_subdiv_z"])
-                if patch.__contains__("y_i"):
-                    patch_input.y_i = Float64(patch["y_i"])
-                if patch.__contains__("z_i"):
-                    patch_input.z_i = Float64(patch["z_i"])
-                if patch.__contains__("y_j"):
-                    patch_input.y_j = Float64(patch["y_j"])
-                if patch.__contains__("z_j"):
-                    patch_input.z_j = Float64(patch["z_j"])
-                if patch.__contains__("y_k"):
-                    patch_input.y_k = Float64(patch["y_k"])
-                if patch.__contains__("z_k"):
-                    patch_input.z_k = Float64(patch["z_k"])
-                if patch.__contains__("y_l"):
-                    patch_input.y_l = Float64(patch["y_l"])
-                if patch.__contains__("z_l"):
-                    patch_input.z_l = Float64(patch["z_l"])
-                case_input.fiber_patches.append(patch_input)
+    var sections_raw = _json_key(doc, root, "sections")
+    if _json_has_value(doc, sections_raw):
+        for i in range(_json_expect_array_len(doc, sections_raw, "sections")):
+            var sec = doc.array_item(sections_raw, i)
+            var parsed = SectionInput(
+                _json_get_int(doc, sec, "id", -1),
+                _json_get_string(doc, sec, "type", ""),
+            )
+            var params = _json_key(doc, sec, "params")
+            if _json_has_key(doc, params, "E"):
+                parsed.E = _json_get_float(doc, params, "E", 0.0)
+            if _json_has_key(doc, params, "A"):
+                parsed.A = _json_get_float(doc, params, "A", 0.0)
+            if _json_has_key(doc, params, "I"):
+                parsed.I = _json_get_float(doc, params, "I", 0.0)
+            if _json_has_key(doc, params, "Iz"):
+                parsed.Iz = _json_get_float(doc, params, "Iz", 0.0)
+            if _json_has_key(doc, params, "Iy"):
+                parsed.Iy = _json_get_float(doc, params, "Iy", 0.0)
+            if _json_has_key(doc, params, "G"):
+                parsed.G = _json_get_float(doc, params, "G", 0.0)
+            if _json_has_key(doc, params, "J"):
+                parsed.J = _json_get_float(doc, params, "J", 0.0)
+            if _json_has_key(doc, params, "nu"):
+                parsed.nu = _json_get_float(doc, params, "nu", 0.0)
+            if _json_has_key(doc, params, "h"):
+                parsed.h = _json_get_float(doc, params, "h", 0.0)
+            if _json_has_key(doc, params, "rho"):
+                parsed.rho = _json_get_float(doc, params, "rho", 0.0)
+            if _json_has_key(doc, params, "axial_material"):
+                parsed.axial_material = _json_get_int(doc, params, "axial_material", -1)
+            if _json_has_key(doc, params, "flexural_material"):
+                parsed.flexural_material = _json_get_int(
+                    doc, params, "flexural_material", -1
+                )
+            if _json_has_key(doc, params, "moment_y_material"):
+                parsed.moment_y_material = _json_get_int(
+                    doc, params, "moment_y_material", -1
+                )
+            if _json_has_key(doc, params, "torsion_material"):
+                parsed.torsion_material = _json_get_int(
+                    doc, params, "torsion_material", -1
+                )
+            if _json_has_key(doc, params, "shear_y_material"):
+                parsed.shear_y_material = _json_get_int(
+                    doc, params, "shear_y_material", -1
+                )
+            if _json_has_key(doc, params, "shear_z_material"):
+                parsed.shear_z_material = _json_get_int(
+                    doc, params, "shear_z_material", -1
+                )
+            if _json_has_key(doc, params, "base_section"):
+                parsed.base_section = _json_get_int(doc, params, "base_section", -1)
+            if parsed.type == "FiberSection2d" or parsed.type == "FiberSection3d":
+                var patches_raw = _json_key(doc, params, "patches")
+                parsed.fiber_patch_offset = len(case_input.fiber_patches)
+                parsed.fiber_patch_count = _json_expect_array_len(
+                    doc, patches_raw, "section patches"
+                )
+                for j in range(parsed.fiber_patch_count):
+                    var patch = doc.array_item(patches_raw, j)
+                    var patch_input = FiberPatchInput()
+                    patch_input.type = _json_get_string(doc, patch, "type", "")
+                    if patch_input.type == "quad":
+                        patch_input.type = "quadr"
+                    patch_input.material = _json_get_int(doc, patch, "material", -1)
+                    patch_input.num_subdiv_y = _json_get_int(doc, patch, "num_subdiv_y", 0)
+                    patch_input.num_subdiv_z = _json_get_int(doc, patch, "num_subdiv_z", 0)
+                    if _json_has_key(doc, patch, "y_i"):
+                        patch_input.y_i = _json_get_float(doc, patch, "y_i", 0.0)
+                    if _json_has_key(doc, patch, "z_i"):
+                        patch_input.z_i = _json_get_float(doc, patch, "z_i", 0.0)
+                    if _json_has_key(doc, patch, "y_j"):
+                        patch_input.y_j = _json_get_float(doc, patch, "y_j", 0.0)
+                    if _json_has_key(doc, patch, "z_j"):
+                        patch_input.z_j = _json_get_float(doc, patch, "z_j", 0.0)
+                    if _json_has_key(doc, patch, "y_k"):
+                        patch_input.y_k = _json_get_float(doc, patch, "y_k", 0.0)
+                    if _json_has_key(doc, patch, "z_k"):
+                        patch_input.z_k = _json_get_float(doc, patch, "z_k", 0.0)
+                    if _json_has_key(doc, patch, "y_l"):
+                        patch_input.y_l = _json_get_float(doc, patch, "y_l", 0.0)
+                    if _json_has_key(doc, patch, "z_l"):
+                        patch_input.z_l = _json_get_float(doc, patch, "z_l", 0.0)
+                    case_input.fiber_patches.append(patch_input)
 
-            var layers_raw = params.get("layers", [])
-            parsed.fiber_layer_offset = len(case_input.fiber_layers)
-            parsed.fiber_layer_count = py_len(layers_raw)
-            for j in range(py_len(layers_raw)):
-                var layer = layers_raw[j]
-                var layer_input = FiberLayerInput()
-                layer_input.type = String(layer["type"])
-                layer_input.material = Int(layer["material"])
-                layer_input.num_bars = Int(layer["num_bars"])
-                layer_input.bar_area = Float64(layer["bar_area"])
-                layer_input.y_start = Float64(layer["y_start"])
-                layer_input.z_start = Float64(layer["z_start"])
-                layer_input.y_end = Float64(layer["y_end"])
-                layer_input.z_end = Float64(layer["z_end"])
-                case_input.fiber_layers.append(layer_input)
-        elif parsed.type == "LayeredShellSection":
-            var layers_raw = params.get("layers", [])
-            parsed.shell_layer_offset = len(case_input.shell_layers)
-            parsed.shell_layer_count = py_len(layers_raw)
-            for j in range(py_len(layers_raw)):
-                var layer = layers_raw[j]
-                var layer_input = ShellLayerInput()
-                layer_input.material = Int(layer["material"])
-                layer_input.thickness = Float64(layer["thickness"])
-                case_input.shell_layers.append(layer_input)
-        case_input.sections.append(parsed)
+                var layers_raw = _json_key(doc, params, "layers")
+                parsed.fiber_layer_offset = len(case_input.fiber_layers)
+                parsed.fiber_layer_count = _json_expect_array_len(
+                    doc, layers_raw, "section layers"
+                )
+                for j in range(parsed.fiber_layer_count):
+                    var layer = doc.array_item(layers_raw, j)
+                    var layer_input = FiberLayerInput()
+                    layer_input.type = _json_get_string(doc, layer, "type", "")
+                    layer_input.material = _json_get_int(doc, layer, "material", -1)
+                    layer_input.num_bars = _json_get_int(doc, layer, "num_bars", 0)
+                    layer_input.bar_area = _json_get_float(doc, layer, "bar_area", 0.0)
+                    layer_input.y_start = _json_get_float(doc, layer, "y_start", 0.0)
+                    layer_input.z_start = _json_get_float(doc, layer, "z_start", 0.0)
+                    layer_input.y_end = _json_get_float(doc, layer, "y_end", 0.0)
+                    layer_input.z_end = _json_get_float(doc, layer, "z_end", 0.0)
+                    case_input.fiber_layers.append(layer_input)
+            elif parsed.type == "LayeredShellSection":
+                var layers_raw = _json_key(doc, params, "layers")
+                parsed.shell_layer_offset = len(case_input.shell_layers)
+                parsed.shell_layer_count = _json_expect_array_len(
+                    doc, layers_raw, "shell layers"
+                )
+                for j in range(parsed.shell_layer_count):
+                    var layer = doc.array_item(layers_raw, j)
+                    var layer_input = ShellLayerInput()
+                    layer_input.material = _json_get_int(doc, layer, "material", -1)
+                    layer_input.thickness = _json_get_float(doc, layer, "thickness", 0.0)
+                    case_input.shell_layers.append(layer_input)
+            case_input.sections.append(parsed)
 
-    var materials_raw = data.get("materials", [])
-    for i in range(py_len(materials_raw)):
-        var mat = materials_raw[i]
-        var params = mat.get("params", {})
-        var parsed = MaterialInput()
-        parsed.id = Int(mat["id"])
-        parsed.type = String(mat["type"])
-        if params.__contains__("E"):
-            parsed.E = Float64(params["E"])
-        if params.__contains__("Fy"):
-            parsed.Fy = Float64(params["Fy"])
-        if params.__contains__("E0"):
-            parsed.E0 = Float64(params["E0"])
-        if params.__contains__("b"):
-            parsed.b = Float64(params["b"])
-        if params.__contains__("fpc"):
-            parsed.fpc = Float64(params["fpc"])
-        if params.__contains__("epsc0"):
-            parsed.epsc0 = Float64(params["epsc0"])
-        if params.__contains__("fpcu"):
-            parsed.fpcu = Float64(params["fpcu"])
-        if params.__contains__("epscu"):
-            parsed.epscu = Float64(params["epscu"])
-        parsed.has_r0 = params.__contains__("R0")
-        parsed.has_cr1 = params.__contains__("cR1")
-        parsed.has_cr2 = params.__contains__("cR2")
-        if parsed.has_r0:
-            parsed.R0 = Float64(params["R0"])
-        if parsed.has_cr1:
-            parsed.cR1 = Float64(params["cR1"])
-        if parsed.has_cr2:
-            parsed.cR2 = Float64(params["cR2"])
-        parsed.has_a1 = params.__contains__("a1")
-        parsed.has_a2 = params.__contains__("a2")
-        parsed.has_a3 = params.__contains__("a3")
-        parsed.has_a4 = params.__contains__("a4")
-        if parsed.has_a1:
-            parsed.a1 = Float64(params["a1"])
-        if parsed.has_a2:
-            parsed.a2 = Float64(params["a2"])
-        if parsed.has_a3:
-            parsed.a3 = Float64(params["a3"])
-        if parsed.has_a4:
-            parsed.a4 = Float64(params["a4"])
-        parsed.has_siginit = params.__contains__("sigInit")
-        if parsed.has_siginit:
-            parsed.sigInit = Float64(params["sigInit"])
-        parsed.has_rat = params.__contains__("rat")
-        parsed.has_ft = params.__contains__("ft")
-        parsed.has_ets = params.__contains__("Ets")
-        if parsed.has_rat:
-            parsed.rat = Float64(params["rat"])
-        if parsed.has_ft:
-            parsed.ft = Float64(params["ft"])
-        if parsed.has_ets:
-            parsed.Ets = Float64(params["Ets"])
-        if params.__contains__("nu"):
-            parsed.nu = Float64(params["nu"])
-        if params.__contains__("rho"):
-            parsed.rho = Float64(params["rho"])
-        if params.__contains__("material"):
-            parsed.base_material = Int(params["material"])
-        if params.__contains__("angle"):
-            parsed.angle = Float64(params["angle"])
-        if params.__contains__("gmod"):
-            parsed.gmod = Float64(params["gmod"])
-        if params.__contains__("nstatevs"):
-            parsed.nstatevs = Int(params["nstatevs"])
-        if params.__contains__("props"):
-            var props_raw = params["props"]
-            parsed.props_offset = len(case_input.shell_material_props)
-            parsed.props_count = py_len(props_raw)
-            for j in range(py_len(props_raw)):
-                case_input.shell_material_props.append(Float64(props_raw[j]))
-        case_input.materials.append(parsed^)
+    var materials_raw = _json_key(doc, root, "materials")
+    if _json_has_value(doc, materials_raw):
+        for i in range(_json_expect_array_len(doc, materials_raw, "materials")):
+            var mat = doc.array_item(materials_raw, i)
+            var params = _json_key(doc, mat, "params")
+            var parsed = MaterialInput()
+            parsed.id = _json_get_int(doc, mat, "id", -1)
+            parsed.type = _json_get_string(doc, mat, "type", "")
+            if _json_has_key(doc, params, "E"):
+                parsed.E = _json_get_float(doc, params, "E", 0.0)
+            if _json_has_key(doc, params, "Fy"):
+                parsed.Fy = _json_get_float(doc, params, "Fy", 0.0)
+            if _json_has_key(doc, params, "E0"):
+                parsed.E0 = _json_get_float(doc, params, "E0", 0.0)
+            if _json_has_key(doc, params, "b"):
+                parsed.b = _json_get_float(doc, params, "b", 0.0)
+            if _json_has_key(doc, params, "fpc"):
+                parsed.fpc = _json_get_float(doc, params, "fpc", 0.0)
+            if _json_has_key(doc, params, "epsc0"):
+                parsed.epsc0 = _json_get_float(doc, params, "epsc0", 0.0)
+            if _json_has_key(doc, params, "fpcu"):
+                parsed.fpcu = _json_get_float(doc, params, "fpcu", 0.0)
+            if _json_has_key(doc, params, "epscu"):
+                parsed.epscu = _json_get_float(doc, params, "epscu", 0.0)
+            parsed.has_r0 = _json_has_key(doc, params, "R0")
+            parsed.has_cr1 = _json_has_key(doc, params, "cR1")
+            parsed.has_cr2 = _json_has_key(doc, params, "cR2")
+            if parsed.has_r0:
+                parsed.R0 = _json_get_float(doc, params, "R0", 0.0)
+            if parsed.has_cr1:
+                parsed.cR1 = _json_get_float(doc, params, "cR1", 0.0)
+            if parsed.has_cr2:
+                parsed.cR2 = _json_get_float(doc, params, "cR2", 0.0)
+            parsed.has_a1 = _json_has_key(doc, params, "a1")
+            parsed.has_a2 = _json_has_key(doc, params, "a2")
+            parsed.has_a3 = _json_has_key(doc, params, "a3")
+            parsed.has_a4 = _json_has_key(doc, params, "a4")
+            if parsed.has_a1:
+                parsed.a1 = _json_get_float(doc, params, "a1", 0.0)
+            if parsed.has_a2:
+                parsed.a2 = _json_get_float(doc, params, "a2", 0.0)
+            if parsed.has_a3:
+                parsed.a3 = _json_get_float(doc, params, "a3", 0.0)
+            if parsed.has_a4:
+                parsed.a4 = _json_get_float(doc, params, "a4", 0.0)
+            parsed.has_siginit = _json_has_key(doc, params, "sigInit")
+            if parsed.has_siginit:
+                parsed.sigInit = _json_get_float(doc, params, "sigInit", 0.0)
+            parsed.has_rat = _json_has_key(doc, params, "rat")
+            parsed.has_ft = _json_has_key(doc, params, "ft")
+            parsed.has_ets = _json_has_key(doc, params, "Ets")
+            if parsed.has_rat:
+                parsed.rat = _json_get_float(doc, params, "rat", 0.0)
+            if parsed.has_ft:
+                parsed.ft = _json_get_float(doc, params, "ft", 0.0)
+            if parsed.has_ets:
+                parsed.Ets = _json_get_float(doc, params, "Ets", 0.0)
+            if _json_has_key(doc, params, "nu"):
+                parsed.nu = _json_get_float(doc, params, "nu", 0.0)
+            if _json_has_key(doc, params, "rho"):
+                parsed.rho = _json_get_float(doc, params, "rho", 0.0)
+            if _json_has_key(doc, params, "material"):
+                parsed.base_material = _json_get_int(doc, params, "material", -1)
+            if _json_has_key(doc, params, "angle"):
+                parsed.angle = _json_get_float(doc, params, "angle", 0.0)
+            if _json_has_key(doc, params, "gmod"):
+                parsed.gmod = _json_get_float(doc, params, "gmod", 0.0)
+            if _json_has_key(doc, params, "nstatevs"):
+                parsed.nstatevs = _json_get_int(doc, params, "nstatevs", 0)
+            var props_raw = _json_key(doc, params, "props")
+            if _json_has_value(doc, props_raw):
+                parsed.props_offset = len(case_input.shell_material_props)
+                parsed.props_count = _json_expect_array_len(doc, props_raw, "material props")
+                for j in range(parsed.props_count):
+                    case_input.shell_material_props.append(
+                        _json_number_value(
+                            doc, doc.array_item(props_raw, j), "material props"
+                        )
+                    )
+            case_input.materials.append(parsed^)
 
-    var elements_raw = data["elements"]
-    for i in range(py_len(elements_raw)):
-        var elem = elements_raw[i]
+    var elements_raw = _json_require_key(doc, root, "elements")
+    for i in range(_json_expect_array_len(doc, elements_raw, "elements")):
+        var elem = doc.array_item(elements_raw, i)
         var parsed = ElementInput()
-        parsed.id = Int(elem["id"])
-        parsed.type = String(elem["type"])
-        var nodes = elem["nodes"]
-        var node_count = py_len(nodes)
+        parsed.id = _json_get_int(doc, elem, "id", 0)
+        parsed.type = _json_get_string(doc, elem, "type", "")
+        var nodes = _json_require_key(doc, elem, "nodes")
+        var node_count = _json_expect_array_len(doc, nodes, "element nodes")
         if node_count > 4:
             node_count = 4
         parsed.node_count = node_count
         if node_count > 0:
-            parsed.node_1 = Int(nodes[0])
+            parsed.node_1 = _json_int_value(doc, doc.array_item(nodes, 0), "element nodes")
         if node_count > 1:
-            parsed.node_2 = Int(nodes[1])
+            parsed.node_2 = _json_int_value(doc, doc.array_item(nodes, 1), "element nodes")
         if node_count > 2:
-            parsed.node_3 = Int(nodes[2])
+            parsed.node_3 = _json_int_value(doc, doc.array_item(nodes, 2), "element nodes")
         if node_count > 3:
-            parsed.node_4 = Int(nodes[3])
-        if elem.__contains__("section"):
-            parsed.section = Int(elem["section"])
-        if elem.__contains__("material"):
-            parsed.material = Int(elem["material"])
-        if elem.__contains__("materials"):
-            var mat_ids = elem["materials"]
-            var material_count = py_len(mat_ids)
+            parsed.node_4 = _json_int_value(doc, doc.array_item(nodes, 3), "element nodes")
+        if _json_has_key(doc, elem, "section"):
+            parsed.section = _json_get_int(doc, elem, "section", -1)
+        if _json_has_key(doc, elem, "material"):
+            parsed.material = _json_get_int(doc, elem, "material", -1)
+        var mat_ids = _json_key(doc, elem, "materials")
+        if _json_has_value(doc, mat_ids):
+            var material_count = _json_expect_array_len(doc, mat_ids, "element materials")
             if material_count > 6:
                 material_count = 6
             parsed.material_count = material_count
             if material_count > 0:
-                parsed.material_1 = Int(mat_ids[0])
+                parsed.material_1 = _json_int_value(doc, doc.array_item(mat_ids, 0), "element materials")
             if material_count > 1:
-                parsed.material_2 = Int(mat_ids[1])
+                parsed.material_2 = _json_int_value(doc, doc.array_item(mat_ids, 1), "element materials")
             if material_count > 2:
-                parsed.material_3 = Int(mat_ids[2])
+                parsed.material_3 = _json_int_value(doc, doc.array_item(mat_ids, 2), "element materials")
             if material_count > 3:
-                parsed.material_4 = Int(mat_ids[3])
+                parsed.material_4 = _json_int_value(doc, doc.array_item(mat_ids, 3), "element materials")
             if material_count > 4:
-                parsed.material_5 = Int(mat_ids[4])
+                parsed.material_5 = _json_int_value(doc, doc.array_item(mat_ids, 4), "element materials")
             if material_count > 5:
-                parsed.material_6 = Int(mat_ids[5])
-        if elem.__contains__("dampMats"):
-            var damp_mat_ids = elem["dampMats"]
-            var damp_material_count = py_len(damp_mat_ids)
+                parsed.material_6 = _json_int_value(doc, doc.array_item(mat_ids, 5), "element materials")
+        var damp_mat_ids = _json_key(doc, elem, "dampMats")
+        if _json_has_value(doc, damp_mat_ids):
+            var damp_material_count = _json_expect_array_len(
+                doc, damp_mat_ids, "element dampMats"
+            )
             if damp_material_count > 6:
                 damp_material_count = 6
             parsed.damp_material_count = damp_material_count
             if damp_material_count > 0:
-                parsed.damp_material_1 = Int(damp_mat_ids[0])
+                parsed.damp_material_1 = _json_int_value(doc, doc.array_item(damp_mat_ids, 0), "element dampMats")
             if damp_material_count > 1:
-                parsed.damp_material_2 = Int(damp_mat_ids[1])
+                parsed.damp_material_2 = _json_int_value(doc, doc.array_item(damp_mat_ids, 1), "element dampMats")
             if damp_material_count > 2:
-                parsed.damp_material_3 = Int(damp_mat_ids[2])
+                parsed.damp_material_3 = _json_int_value(doc, doc.array_item(damp_mat_ids, 2), "element dampMats")
             if damp_material_count > 3:
-                parsed.damp_material_4 = Int(damp_mat_ids[3])
+                parsed.damp_material_4 = _json_int_value(doc, doc.array_item(damp_mat_ids, 3), "element dampMats")
             if damp_material_count > 4:
-                parsed.damp_material_5 = Int(damp_mat_ids[4])
+                parsed.damp_material_5 = _json_int_value(doc, doc.array_item(damp_mat_ids, 4), "element dampMats")
             if damp_material_count > 5:
-                parsed.damp_material_6 = Int(damp_mat_ids[5])
-        if elem.__contains__("damp"):
-            parsed.damping_tag = Int(elem["damp"])
-        if elem.__contains__("dirs"):
-            var dirs = elem["dirs"]
-            var dir_count = py_len(dirs)
+                parsed.damp_material_6 = _json_int_value(doc, doc.array_item(damp_mat_ids, 5), "element dampMats")
+        if _json_has_key(doc, elem, "damp"):
+            parsed.damping_tag = _json_get_int(doc, elem, "damp", -1)
+        var dirs = _json_key(doc, elem, "dirs")
+        if _json_has_value(doc, dirs):
+            var dir_count = _json_expect_array_len(doc, dirs, "element dirs")
             if dir_count > 6:
                 dir_count = 6
             parsed.dir_count = dir_count
             if dir_count > 0:
-                parsed.dir_1 = Int(dirs[0])
+                parsed.dir_1 = _json_int_value(doc, doc.array_item(dirs, 0), "element dirs")
             if dir_count > 1:
-                parsed.dir_2 = Int(dirs[1])
+                parsed.dir_2 = _json_int_value(doc, doc.array_item(dirs, 1), "element dirs")
             if dir_count > 2:
-                parsed.dir_3 = Int(dirs[2])
+                parsed.dir_3 = _json_int_value(doc, doc.array_item(dirs, 2), "element dirs")
             if dir_count > 3:
-                parsed.dir_4 = Int(dirs[3])
+                parsed.dir_4 = _json_int_value(doc, doc.array_item(dirs, 3), "element dirs")
             if dir_count > 4:
-                parsed.dir_5 = Int(dirs[4])
+                parsed.dir_5 = _json_int_value(doc, doc.array_item(dirs, 4), "element dirs")
             if dir_count > 5:
-                parsed.dir_6 = Int(dirs[5])
-        if elem.__contains__("area"):
-            parsed.area = Float64(elem["area"])
-        if elem.__contains__("thickness"):
-            parsed.thickness = Float64(elem["thickness"])
-        parsed.formulation = String(elem.get("formulation", "PlaneStress"))
-        parsed.geom_transf = String(elem.get("geomTransf", "Linear"))
-        if elem.__contains__("vecxz"):
-            var vecxz = elem["vecxz"]
-            if py_len(vecxz) > 0:
-                parsed.geom_vecxz_1 = Float64(vecxz[0])
-            if py_len(vecxz) > 1:
-                parsed.geom_vecxz_2 = Float64(vecxz[1])
-            if py_len(vecxz) > 2:
-                parsed.geom_vecxz_3 = Float64(vecxz[2])
+                parsed.dir_6 = _json_int_value(doc, doc.array_item(dirs, 5), "element dirs")
+        if _json_has_key(doc, elem, "area"):
+            parsed.area = _json_get_float(doc, elem, "area", 0.0)
+        if _json_has_key(doc, elem, "thickness"):
+            parsed.thickness = _json_get_float(doc, elem, "thickness", 0.0)
+        parsed.formulation = _json_get_string(doc, elem, "formulation", "PlaneStress")
+        parsed.geom_transf = _json_get_string(doc, elem, "geomTransf", "Linear")
+        var vecxz = _json_key(doc, elem, "vecxz")
+        if _json_has_value(doc, vecxz):
+            var vec_count = _json_expect_array_len(doc, vecxz, "element vecxz")
+            if vec_count > 0:
+                parsed.geom_vecxz_1 = _json_number_value(doc, doc.array_item(vecxz, 0), "element vecxz")
+            if vec_count > 1:
+                parsed.geom_vecxz_2 = _json_number_value(doc, doc.array_item(vecxz, 1), "element vecxz")
+            if vec_count > 2:
+                parsed.geom_vecxz_3 = _json_number_value(doc, doc.array_item(vecxz, 2), "element vecxz")
             parsed.has_geom_vecxz = True
-        parsed.integration = String(elem.get("integration", "Lobatto"))
-        parsed.num_int_pts = Int(elem.get("num_int_pts", 3))
-        parsed.rho = Float64(elem.get("rho", 0.0))
-        parsed.use_cmass = Bool(elem.get("cMass", False))
-        parsed.element_mass = Float64(elem.get("mass", 0.0))
-        parsed.do_rayleigh = Bool(elem.get("doRayleigh", False))
-        if elem.__contains__("orient"):
-            var orient = elem["orient"]
-            if orient.__contains__("x"):
-                var x_vals = orient["x"]
-                if py_len(x_vals) > 0:
-                    parsed.orient_x_1 = Float64(x_vals[0])
-                if py_len(x_vals) > 1:
-                    parsed.orient_x_2 = Float64(x_vals[1])
-                if py_len(x_vals) > 2:
-                    parsed.orient_x_3 = Float64(x_vals[2])
+        parsed.integration = _json_get_string(doc, elem, "integration", "Lobatto")
+        parsed.num_int_pts = _json_get_int(doc, elem, "num_int_pts", 3)
+        parsed.rho = _json_get_float(doc, elem, "rho", 0.0)
+        parsed.use_cmass = _json_get_bool(doc, elem, "cMass", False)
+        parsed.element_mass = _json_get_float(doc, elem, "mass", 0.0)
+        parsed.do_rayleigh = _json_get_bool(doc, elem, "doRayleigh", False)
+        var orient = _json_key(doc, elem, "orient")
+        if _json_has_value(doc, orient):
+            var x_vals = _json_key(doc, orient, "x")
+            if _json_has_value(doc, x_vals):
+                var x_count = _json_expect_array_len(doc, x_vals, "element orient x")
+                if x_count > 0:
+                    parsed.orient_x_1 = _json_number_value(doc, doc.array_item(x_vals, 0), "element orient x")
+                if x_count > 1:
+                    parsed.orient_x_2 = _json_number_value(doc, doc.array_item(x_vals, 1), "element orient x")
+                if x_count > 2:
+                    parsed.orient_x_3 = _json_number_value(doc, doc.array_item(x_vals, 2), "element orient x")
                 parsed.has_orient_x = True
-            if orient.__contains__("y"):
-                var y_vals = orient["y"]
-                if py_len(y_vals) > 0:
-                    parsed.orient_y_1 = Float64(y_vals[0])
-                if py_len(y_vals) > 1:
-                    parsed.orient_y_2 = Float64(y_vals[1])
-                if py_len(y_vals) > 2:
-                    parsed.orient_y_3 = Float64(y_vals[2])
+            var y_vals = _json_key(doc, orient, "y")
+            if _json_has_value(doc, y_vals):
+                var y_count = _json_expect_array_len(doc, y_vals, "element orient y")
+                if y_count > 0:
+                    parsed.orient_y_1 = _json_number_value(doc, doc.array_item(y_vals, 0), "element orient y")
+                if y_count > 1:
+                    parsed.orient_y_2 = _json_number_value(doc, doc.array_item(y_vals, 1), "element orient y")
+                if y_count > 2:
+                    parsed.orient_y_3 = _json_number_value(doc, doc.array_item(y_vals, 2), "element orient y")
                 parsed.has_orient_y = True
-        if elem.__contains__("pDelta"):
-            var p_delta = elem["pDelta"]
-            var p_delta_count = py_len(p_delta)
+        var p_delta = _json_key(doc, elem, "pDelta")
+        if _json_has_value(doc, p_delta):
+            var p_delta_count = _json_expect_array_len(doc, p_delta, "element pDelta")
             if p_delta_count > 0:
-                parsed.pdelta_1 = Float64(p_delta[0])
+                parsed.pdelta_1 = _json_number_value(doc, doc.array_item(p_delta, 0), "element pDelta")
             if p_delta_count > 1:
-                parsed.pdelta_2 = Float64(p_delta[1])
+                parsed.pdelta_2 = _json_number_value(doc, doc.array_item(p_delta, 1), "element pDelta")
             if p_delta_count > 2:
-                parsed.pdelta_3 = Float64(p_delta[2])
+                parsed.pdelta_3 = _json_number_value(doc, doc.array_item(p_delta, 2), "element pDelta")
             if p_delta_count > 3:
-                parsed.pdelta_4 = Float64(p_delta[3])
+                parsed.pdelta_4 = _json_number_value(doc, doc.array_item(p_delta, 3), "element pDelta")
             parsed.has_pdelta = p_delta_count > 0
-        if elem.__contains__("shearDist"):
-            var shear_dist = elem["shearDist"]
-            var shear_dist_count = py_len(shear_dist)
+        var shear_dist = _json_key(doc, elem, "shearDist")
+        if _json_has_value(doc, shear_dist):
+            var shear_dist_count = _json_expect_array_len(doc, shear_dist, "element shearDist")
             if shear_dist_count > 0:
-                parsed.shear_dist_1 = Float64(shear_dist[0])
+                parsed.shear_dist_1 = _json_number_value(doc, doc.array_item(shear_dist, 0), "element shearDist")
             if shear_dist_count > 1:
-                parsed.shear_dist_2 = Float64(shear_dist[1])
+                parsed.shear_dist_2 = _json_number_value(doc, doc.array_item(shear_dist, 1), "element shearDist")
             parsed.has_shear_dist = shear_dist_count > 0
         parsed.type_tag = element_type_tag(parsed.type)
         parsed.geom_tag = geom_transf_tag(parsed.geom_transf)
         case_input.elements.append(parsed^)
 
-    var element_loads_raw = data.get("element_loads", [])
-    for i in range(py_len(element_loads_raw)):
-        case_input.element_loads.append(
-            parse_element_load_input_from_raw(element_loads_raw[i])
-        )
+    var element_loads_raw = _json_key(doc, root, "element_loads")
+    if _json_has_value(doc, element_loads_raw):
+        for i in range(_json_expect_array_len(doc, element_loads_raw, "element_loads")):
+            case_input.element_loads.append(
+                parse_element_load_input_from_native(
+                    doc, doc.array_item(element_loads_raw, i)
+                )
+            )
 
-    var loads_raw = data.get("loads", [])
-    for i in range(py_len(loads_raw)):
-        case_input.loads.append(parse_nodal_load_input_from_raw(loads_raw[i]))
+    var loads_raw = _json_key(doc, root, "loads")
+    if _json_has_value(doc, loads_raw):
+        for i in range(_json_expect_array_len(doc, loads_raw, "loads")):
+            case_input.loads.append(
+                parse_nodal_load_input_from_native(doc, doc.array_item(loads_raw, i))
+            )
 
-    var masses_raw = data.get("masses", [])
-    for i in range(py_len(masses_raw)):
-        var mass = masses_raw[i]
-        case_input.masses.append(
-            MassInput(Int(mass["node"]), Int(mass["dof"]), Float64(mass["value"]))
-        )
+    var masses_raw = _json_key(doc, root, "masses")
+    if _json_has_value(doc, masses_raw):
+        for i in range(_json_expect_array_len(doc, masses_raw, "masses")):
+            var mass = doc.array_item(masses_raw, i)
+            case_input.masses.append(
+                MassInput(
+                    _json_get_int(doc, mass, "node", 0),
+                    _json_get_int(doc, mass, "dof", 0),
+                    _json_get_float(doc, mass, "value", 0.0),
+                )
+            )
 
-    var analysis_raw = data.get("analysis", {"type": "static_linear", "steps": 1})
-    case_input.analysis = parse_analysis_input_from_raw(
+    var analysis_raw = _json_key(doc, root, "analysis")
+    case_input.analysis = parse_analysis_input_from_native(
+        doc,
         analysis_raw,
         case_input.analysis_integrator_targets_pool,
         case_input.analysis_solver_chain_pool,
     )
     if case_input.analysis.type_tag == AnalysisTypeTag.Staged:
-        if not analysis_raw.__contains__("stages"):
+        if not _json_has_key(doc, analysis_raw, "stages"):
             abort("staged analysis requires analysis.stages")
-        var stages_raw = analysis_raw["stages"]
-        if py_len(stages_raw) < 1:
+        var stages_raw = _json_require_key(doc, analysis_raw, "stages")
+        if _json_expect_array_len(doc, stages_raw, "analysis stages") < 1:
             abort("staged analysis requires non-empty analysis.stages")
-        for i in range(py_len(stages_raw)):
-            case_input.stages.append(parse_stage_input_from_raw(stages_raw[i], data))
+        for i in range(_json_expect_array_len(doc, stages_raw, "analysis stages")):
+            case_input.stages.append(
+                parse_stage_input_from_native(doc, doc.array_item(stages_raw, i), source_info)
+            )
 
-    var mpc_raw = data.get("mp_constraints", [])
-    for i in range(py_len(mpc_raw)):
-        var mpc = mpc_raw[i]
-        var parsed = MPConstraintInput(
-            String(mpc.get("type", "")),
-            Int(mpc["retained_node"]),
-            Int(mpc["constrained_node"]),
-        )
-        if mpc.__contains__("dofs"):
-            var dofs = mpc["dofs"]
-            var dof_count = py_len(dofs)
-            if dof_count > 6:
-                dof_count = 6
-            parsed.dof_count = dof_count
-            if dof_count > 0:
-                parsed.dof_1 = Int(dofs[0])
-            if dof_count > 1:
-                parsed.dof_2 = Int(dofs[1])
-            if dof_count > 2:
-                parsed.dof_3 = Int(dofs[2])
-            if dof_count > 3:
-                parsed.dof_4 = Int(dofs[3])
-            if dof_count > 4:
-                parsed.dof_5 = Int(dofs[4])
-            if dof_count > 5:
-                parsed.dof_6 = Int(dofs[5])
-        case_input.mp_constraints.append(parsed)
+    var mpc_raw = _json_key(doc, root, "mp_constraints")
+    if _json_has_value(doc, mpc_raw):
+        for i in range(_json_expect_array_len(doc, mpc_raw, "mp_constraints")):
+            var mpc = doc.array_item(mpc_raw, i)
+            var parsed = MPConstraintInput(
+                _json_get_string(doc, mpc, "type", ""),
+                _json_get_int(doc, mpc, "retained_node", 0),
+                _json_get_int(doc, mpc, "constrained_node", 0),
+            )
+            var dofs = _json_key(doc, mpc, "dofs")
+            if _json_has_value(doc, dofs):
+                var dof_count = _json_expect_array_len(doc, dofs, "mp_constraint dofs")
+                if dof_count > 6:
+                    dof_count = 6
+                parsed.dof_count = dof_count
+                if dof_count > 0:
+                    parsed.dof_1 = _json_int_value(doc, doc.array_item(dofs, 0), "mp_constraint dofs")
+                if dof_count > 1:
+                    parsed.dof_2 = _json_int_value(doc, doc.array_item(dofs, 1), "mp_constraint dofs")
+                if dof_count > 2:
+                    parsed.dof_3 = _json_int_value(doc, doc.array_item(dofs, 2), "mp_constraint dofs")
+                if dof_count > 3:
+                    parsed.dof_4 = _json_int_value(doc, doc.array_item(dofs, 3), "mp_constraint dofs")
+                if dof_count > 4:
+                    parsed.dof_5 = _json_int_value(doc, doc.array_item(dofs, 4), "mp_constraint dofs")
+                if dof_count > 5:
+                    parsed.dof_6 = _json_int_value(doc, doc.array_item(dofs, 5), "mp_constraint dofs")
+            case_input.mp_constraints.append(parsed)
 
-    case_input.pattern = parse_pattern_input_from_raw(data.get("pattern", None))
-    case_input.rayleigh = parse_rayleigh_input_from_raw(data.get("rayleigh", None))
-    parse_time_series_inputs(
-        data,
+    case_input.pattern = parse_pattern_input_from_native(
+        doc, _json_key(doc, root, "pattern")
+    )
+    case_input.rayleigh = parse_rayleigh_input_from_native(
+        doc, _json_key(doc, root, "rayleigh")
+    )
+    _append_time_series_inputs_native(
+        doc,
+        root,
+        source_info,
         case_input.time_series,
         case_input.time_series_values,
         case_input.time_series_times,
     )
-    if data.__contains__("dampings"):
-        case_input.dampings = parse_damping_inputs_from_raw(
-            data["dampings"], case_input.time_series
-        )
+    case_input.dampings = parse_damping_inputs_from_native(
+        doc,
+        _json_key(doc, root, "dampings"),
+        case_input.time_series,
+    )
 
-    var recorders_raw = data.get("recorders", [])
-    for i in range(py_len(recorders_raw)):
-        var rec = recorders_raw[i]
+    if not include_recorders:
+        return case_input^
+
+    var recorders_raw = _json_key(doc, root, "recorders")
+    if not _json_has_value(doc, recorders_raw):
+        return case_input^
+    for i in range(_json_expect_array_len(doc, recorders_raw, "recorders")):
+        var rec = doc.array_item(recorders_raw, i)
         var parsed = RecorderInput()
-        parsed.type_tag = recorder_type_tag(String(rec["type"]))
+        parsed.type_tag = recorder_type_tag(_json_get_string(doc, rec, "type", ""))
         if parsed.type_tag == RecorderTypeTag.Unknown:
             abort("unsupported recorder type")
         if (
@@ -2131,153 +2693,165 @@ fn parse_case_input(data: PythonObject) raises -> CaseInput:
             or parsed.type_tag == RecorderTypeTag.EnvelopeNodeAcceleration
         ):
             if parsed.type_tag == RecorderTypeTag.NodeDisplacement:
-                parsed.output = String(rec.get("output", "node_disp"))
+                parsed.output = _json_get_string(doc, rec, "output", "node_disp")
             elif parsed.type_tag == RecorderTypeTag.EnvelopeNodeDisplacement:
-                parsed.output = String(rec.get("output", "envelope_node_displacement"))
+                parsed.output = _json_get_string(
+                    doc, rec, "output", "envelope_node_displacement"
+                )
             else:
-                parsed.output = String(rec.get("output", "envelope_node_acceleration"))
-            if not rec.__contains__("nodes") or not rec.__contains__("dofs"):
+                parsed.output = _json_get_string(
+                    doc, rec, "output", "envelope_node_acceleration"
+                )
+            var recorder_nodes = _json_key(doc, rec, "nodes")
+            var recorder_dofs = _json_key(doc, rec, "dofs")
+            if not _json_has_value(doc, recorder_nodes) or not _json_has_value(doc, recorder_dofs):
                 abort("node recorder requires nodes and dofs")
-            var nodes_raw = rec["nodes"]
             parsed.node_offset = len(case_input.recorder_nodes_pool)
-            parsed.node_count = py_len(nodes_raw)
-            for j in range(py_len(nodes_raw)):
-                case_input.recorder_nodes_pool.append(Int(nodes_raw[j]))
-            var dofs_raw = rec["dofs"]
+            parsed.node_count = _json_expect_array_len(doc, recorder_nodes, "recorder nodes")
+            for j in range(parsed.node_count):
+                case_input.recorder_nodes_pool.append(
+                    _json_int_value(doc, doc.array_item(recorder_nodes, j), "recorder nodes")
+                )
             parsed.dof_offset = len(case_input.recorder_dofs_pool)
-            parsed.dof_count = py_len(dofs_raw)
-            for j in range(py_len(dofs_raw)):
-                case_input.recorder_dofs_pool.append(Int(dofs_raw[j]))
-            if rec.__contains__("time_series"):
-                parsed.time_series_tag = Int(rec["time_series"])
-        elif parsed.type_tag == RecorderTypeTag.ElementForce:
-            parsed.output = String(rec.get("output", "element_force"))
-            if not rec.__contains__("elements"):
-                abort("element_force recorder requires elements")
-            var elements_raw = rec["elements"]
+            parsed.dof_count = _json_expect_array_len(doc, recorder_dofs, "recorder dofs")
+            for j in range(parsed.dof_count):
+                case_input.recorder_dofs_pool.append(
+                    _json_int_value(doc, doc.array_item(recorder_dofs, j), "recorder dofs")
+                )
+            if _json_has_key(doc, rec, "time_series"):
+                parsed.time_series_tag = _json_get_int(doc, rec, "time_series", -1)
+        elif (
+            parsed.type_tag == RecorderTypeTag.ElementForce
+            or parsed.type_tag == RecorderTypeTag.ElementLocalForce
+            or parsed.type_tag == RecorderTypeTag.ElementBasicForce
+            or parsed.type_tag == RecorderTypeTag.ElementDeformation
+            or parsed.type_tag == RecorderTypeTag.EnvelopeElementForce
+            or parsed.type_tag == RecorderTypeTag.EnvelopeElementLocalForce
+        ):
+            if parsed.type_tag == RecorderTypeTag.ElementForce:
+                parsed.output = _json_get_string(doc, rec, "output", "element_force")
+            elif parsed.type_tag == RecorderTypeTag.ElementLocalForce:
+                parsed.output = _json_get_string(doc, rec, "output", "element_local_force")
+            elif parsed.type_tag == RecorderTypeTag.ElementBasicForce:
+                parsed.output = _json_get_string(doc, rec, "output", "element_basic_force")
+            elif parsed.type_tag == RecorderTypeTag.ElementDeformation:
+                parsed.output = _json_get_string(doc, rec, "output", "element_deformation")
+            elif parsed.type_tag == RecorderTypeTag.EnvelopeElementForce:
+                parsed.output = _json_get_string(
+                    doc, rec, "output", "envelope_element_force"
+                )
+            else:
+                parsed.output = _json_get_string(
+                    doc, rec, "output", "envelope_element_local_force"
+                )
+            var recorder_elements = _json_key(doc, rec, "elements")
+            if not _json_has_value(doc, recorder_elements):
+                abort("element recorder requires elements")
             parsed.element_offset = len(case_input.recorder_elements_pool)
-            parsed.element_count = py_len(elements_raw)
-            for j in range(py_len(elements_raw)):
-                case_input.recorder_elements_pool.append(Int(elements_raw[j]))
-        elif parsed.type_tag == RecorderTypeTag.ElementLocalForce:
-            parsed.output = String(rec.get("output", "element_local_force"))
-            if not rec.__contains__("elements"):
-                abort("element_local_force recorder requires elements")
-            var elements_raw = rec["elements"]
-            parsed.element_offset = len(case_input.recorder_elements_pool)
-            parsed.element_count = py_len(elements_raw)
-            for j in range(py_len(elements_raw)):
-                case_input.recorder_elements_pool.append(Int(elements_raw[j]))
-        elif parsed.type_tag == RecorderTypeTag.ElementBasicForce:
-            parsed.output = String(rec.get("output", "element_basic_force"))
-            if not rec.__contains__("elements"):
-                abort("element_basic_force recorder requires elements")
-            var elements_raw = rec["elements"]
-            parsed.element_offset = len(case_input.recorder_elements_pool)
-            parsed.element_count = py_len(elements_raw)
-            for j in range(py_len(elements_raw)):
-                case_input.recorder_elements_pool.append(Int(elements_raw[j]))
-        elif parsed.type_tag == RecorderTypeTag.ElementDeformation:
-            parsed.output = String(rec.get("output", "element_deformation"))
-            if not rec.__contains__("elements"):
-                abort("element_deformation recorder requires elements")
-            var elements_raw = rec["elements"]
-            parsed.element_offset = len(case_input.recorder_elements_pool)
-            parsed.element_count = py_len(elements_raw)
-            for j in range(py_len(elements_raw)):
-                case_input.recorder_elements_pool.append(Int(elements_raw[j]))
+            parsed.element_count = _json_expect_array_len(
+                doc, recorder_elements, "recorder elements"
+            )
+            for j in range(parsed.element_count):
+                case_input.recorder_elements_pool.append(
+                    _json_int_value(doc, doc.array_item(recorder_elements, j), "recorder elements")
+                )
         elif parsed.type_tag == RecorderTypeTag.NodeReaction:
-            parsed.output = String(rec.get("output", "reaction"))
-            if not rec.__contains__("nodes") or not rec.__contains__("dofs"):
+            parsed.output = _json_get_string(doc, rec, "output", "reaction")
+            var recorder_nodes = _json_key(doc, rec, "nodes")
+            var recorder_dofs = _json_key(doc, rec, "dofs")
+            if not _json_has_value(doc, recorder_nodes) or not _json_has_value(doc, recorder_dofs):
                 abort("node_reaction recorder requires nodes and dofs")
-            var nodes_raw = rec["nodes"]
             parsed.node_offset = len(case_input.recorder_nodes_pool)
-            parsed.node_count = py_len(nodes_raw)
-            for j in range(py_len(nodes_raw)):
-                case_input.recorder_nodes_pool.append(Int(nodes_raw[j]))
-            var dofs_raw = rec["dofs"]
+            parsed.node_count = _json_expect_array_len(doc, recorder_nodes, "recorder nodes")
+            for j in range(parsed.node_count):
+                case_input.recorder_nodes_pool.append(
+                    _json_int_value(doc, doc.array_item(recorder_nodes, j), "recorder nodes")
+                )
             parsed.dof_offset = len(case_input.recorder_dofs_pool)
-            parsed.dof_count = py_len(dofs_raw)
-            for j in range(py_len(dofs_raw)):
-                case_input.recorder_dofs_pool.append(Int(dofs_raw[j]))
+            parsed.dof_count = _json_expect_array_len(doc, recorder_dofs, "recorder dofs")
+            for j in range(parsed.dof_count):
+                case_input.recorder_dofs_pool.append(
+                    _json_int_value(doc, doc.array_item(recorder_dofs, j), "recorder dofs")
+                )
         elif parsed.type_tag == RecorderTypeTag.Drift:
-            parsed.output = String(rec.get("output", "drift"))
+            parsed.output = _json_get_string(doc, rec, "output", "drift")
             if (
-                not rec.__contains__("i_node")
-                or not rec.__contains__("j_node")
-                or not rec.__contains__("dof")
-                or not rec.__contains__("perp_dirn")
+                not _json_has_key(doc, rec, "i_node")
+                or not _json_has_key(doc, rec, "j_node")
+                or not _json_has_key(doc, rec, "dof")
+                or not _json_has_key(doc, rec, "perp_dirn")
             ):
                 abort("drift recorder requires i_node, j_node, dof, perp_dirn")
-            parsed.i_node = Int(rec["i_node"])
-            parsed.j_node = Int(rec["j_node"])
-            parsed.drift_dof = Int(rec["dof"])
-            parsed.perp_dirn = Int(rec["perp_dirn"])
-        elif parsed.type_tag == RecorderTypeTag.EnvelopeElementForce:
-            parsed.output = String(rec.get("output", "envelope_element_force"))
-            if not rec.__contains__("elements"):
-                abort("envelope_element_force recorder requires elements")
-            var elements_raw = rec["elements"]
-            parsed.element_offset = len(case_input.recorder_elements_pool)
-            parsed.element_count = py_len(elements_raw)
-            for j in range(py_len(elements_raw)):
-                case_input.recorder_elements_pool.append(Int(elements_raw[j]))
-        elif parsed.type_tag == RecorderTypeTag.EnvelopeElementLocalForce:
-            parsed.output = String(rec.get("output", "envelope_element_local_force"))
-            if not rec.__contains__("elements"):
-                abort("envelope_element_local_force recorder requires elements")
-            var elements_raw = rec["elements"]
-            parsed.element_offset = len(case_input.recorder_elements_pool)
-            parsed.element_count = py_len(elements_raw)
-            for j in range(py_len(elements_raw)):
-                case_input.recorder_elements_pool.append(Int(elements_raw[j]))
+            parsed.i_node = _json_get_int(doc, rec, "i_node", 0)
+            parsed.j_node = _json_get_int(doc, rec, "j_node", 0)
+            parsed.drift_dof = _json_get_int(doc, rec, "dof", 0)
+            parsed.perp_dirn = _json_get_int(doc, rec, "perp_dirn", 0)
         elif (
             parsed.type_tag == RecorderTypeTag.SectionForce
             or parsed.type_tag == RecorderTypeTag.SectionDeformation
         ):
             if parsed.type_tag == RecorderTypeTag.SectionForce:
-                parsed.output = String(rec.get("output", "section_force"))
+                parsed.output = _json_get_string(doc, rec, "output", "section_force")
             else:
-                parsed.output = String(rec.get("output", "section_deformation"))
-            if not rec.__contains__("elements"):
+                parsed.output = _json_get_string(
+                    doc, rec, "output", "section_deformation"
+                )
+            var recorder_elements = _json_key(doc, rec, "elements")
+            if not _json_has_value(doc, recorder_elements):
                 abort("section recorder requires elements")
-            var elements_raw = rec["elements"]
             parsed.element_offset = len(case_input.recorder_elements_pool)
-            parsed.element_count = py_len(elements_raw)
-            for j in range(py_len(elements_raw)):
-                case_input.recorder_elements_pool.append(Int(elements_raw[j]))
-
-            var sections_raw = rec.get("sections", None)
-            if sections_raw is None:
-                if not rec.__contains__("section"):
+            parsed.element_count = _json_expect_array_len(
+                doc, recorder_elements, "section recorder elements"
+            )
+            for j in range(parsed.element_count):
+                case_input.recorder_elements_pool.append(
+                    _json_int_value(doc, doc.array_item(recorder_elements, j), "section recorder elements")
+                )
+            var sections_node = _json_key(doc, rec, "sections")
+            if not _json_has_value(doc, sections_node):
+                sections_node = _json_key(doc, rec, "section")
+                if not _json_has_value(doc, sections_node):
                     abort("section recorder requires section or sections")
-                var builtins = Python.import_module("builtins")
-                sections_raw = builtins.list()
-                sections_raw.append(rec["section"])
-            parsed.section_offset = len(case_input.recorder_sections_pool)
-            parsed.section_count = py_len(sections_raw)
-            if parsed.section_count < 1:
-                abort("section recorder requires non-empty sections")
-            for j in range(py_len(sections_raw)):
-                case_input.recorder_sections_pool.append(Int(sections_raw[j]))
+                parsed.section_offset = len(case_input.recorder_sections_pool)
+                parsed.section_count = 1
+                case_input.recorder_sections_pool.append(
+                    _json_int_value(doc, sections_node, "section recorder section")
+                )
+            else:
+                parsed.section_offset = len(case_input.recorder_sections_pool)
+                parsed.section_count = _json_expect_array_len(
+                    doc, sections_node, "section recorder sections"
+                )
+                if parsed.section_count < 1:
+                    abort("section recorder requires non-empty sections")
+                for j in range(parsed.section_count):
+                    case_input.recorder_sections_pool.append(
+                        _json_int_value(doc, doc.array_item(sections_node, j), "section recorder sections")
+                    )
         else:
-            parsed.output = String(rec.get("output", "modal"))
-            if not rec.__contains__("nodes") or not rec.__contains__("dofs"):
+            parsed.output = _json_get_string(doc, rec, "output", "modal")
+            var recorder_nodes = _json_key(doc, rec, "nodes")
+            var recorder_dofs = _json_key(doc, rec, "dofs")
+            if not _json_has_value(doc, recorder_nodes) or not _json_has_value(doc, recorder_dofs):
                 abort("modal_eigen recorder requires nodes and dofs")
-            var nodes_raw = rec["nodes"]
             parsed.node_offset = len(case_input.recorder_nodes_pool)
-            parsed.node_count = py_len(nodes_raw)
-            for j in range(py_len(nodes_raw)):
-                case_input.recorder_nodes_pool.append(Int(nodes_raw[j]))
-            var dofs_raw = rec["dofs"]
+            parsed.node_count = _json_expect_array_len(doc, recorder_nodes, "modal recorder nodes")
+            for j in range(parsed.node_count):
+                case_input.recorder_nodes_pool.append(
+                    _json_int_value(doc, doc.array_item(recorder_nodes, j), "modal recorder nodes")
+                )
             parsed.dof_offset = len(case_input.recorder_dofs_pool)
-            parsed.dof_count = py_len(dofs_raw)
-            for j in range(py_len(dofs_raw)):
-                case_input.recorder_dofs_pool.append(Int(dofs_raw[j]))
-            var modes_raw = rec.get("modes", [])
+            parsed.dof_count = _json_expect_array_len(doc, recorder_dofs, "modal recorder dofs")
+            for j in range(parsed.dof_count):
+                case_input.recorder_dofs_pool.append(
+                    _json_int_value(doc, doc.array_item(recorder_dofs, j), "modal recorder dofs")
+                )
+            var modes_raw = _json_key(doc, rec, "modes")
             parsed.mode_offset = len(case_input.recorder_modes_pool)
-            parsed.mode_count = py_len(modes_raw)
-            for j in range(py_len(modes_raw)):
-                case_input.recorder_modes_pool.append(Int(modes_raw[j]))
+            parsed.mode_count = _json_expect_array_len(doc, modes_raw, "modal recorder modes")
+            for j in range(parsed.mode_count):
+                case_input.recorder_modes_pool.append(
+                    _json_int_value(doc, doc.array_item(modes_raw, j), "modal recorder modes")
+                )
         case_input.recorders.append(parsed^)
     return case_input^

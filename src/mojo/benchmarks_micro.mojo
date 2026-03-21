@@ -3,7 +3,7 @@ from materials import UniMaterialState
 from os import abort
 from python import Python
 from solver.run_case.loader import RunCaseState, load_case_state_from_input
-from solver.run_case.input_types import parse_case_input
+from solver.run_case.input_types import parse_case_input_native_from_source
 from solver.simd_contiguous import FLOAT64_SIMD_WIDTH
 from sections import (
     FiberSection2dDef,
@@ -17,7 +17,7 @@ from sections.fiber2d import (
     _fiber_section2d_apply_concrete02_range,
     _fiber_section2d_apply_steel02_range,
 )
-from strut_io import load_json
+from strut_io import case_source_from_path, load_json_native
 from sys.arg import argv
 
 
@@ -510,7 +510,9 @@ fn _run_section_benchmarks(
 
 fn main() raises:
     var args = _parse_args()
-    var input = parse_case_input(load_json(args.input_path))
+    var source_info = case_source_from_path(args.input_path)
+    var doc = load_json_native(args.input_path)
+    var input = parse_case_input_native_from_source(doc, source_info)
     var state = load_case_state_from_input(input)
     print(
         "section_id,section_index,section_name,fiber_count,elastic_count,"

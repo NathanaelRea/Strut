@@ -3,7 +3,6 @@ import argparse
 import json
 import os
 import math
-import pickle
 import shutil
 import subprocess
 import tempfile
@@ -238,24 +237,25 @@ def main():
 
     normalized_input = None
     tmp_path = None
-    input_pickle = None
+    input_cache_json = None
     if args.input_tcl:
         input_tcl = Path(args.input_tcl).resolve()
         case_data = __import__("tcl_to_strut").convert_tcl_to_solver_input(
             input_tcl, repo_root, args.compute_only
         )
         tmp = tempfile.NamedTemporaryFile(
-            mode="wb",
-            suffix=".pkl",
+            mode="w",
+            suffix=".json",
             prefix="strut_case_direct_tcl_",
             delete=False,
+            encoding="utf-8",
         )
         try:
-            pickle.dump(case_data, tmp)
+            tmp.write(json.dumps(case_data))
             tmp.flush()
         finally:
             tmp.close()
-        input_pickle = Path(tmp.name)
+        input_cache_json = Path(tmp.name)
     else:
         input_path = Path(args.input).resolve()
         case_data = json.loads(input_path.read_text(encoding="utf-8"))
@@ -281,8 +281,8 @@ def main():
 
     try:
         cmd = [str(solver_path)]
-        if input_pickle is not None:
-            cmd += ["--input-pickle", str(input_pickle)]
+        if input_cache_json is not None:
+            cmd += ["--input", str(input_cache_json)]
         else:
             cmd += ["--input", str(normalized_input)]
         if args.compute_only:
@@ -292,8 +292,8 @@ def main():
     finally:
         if tmp_path is not None:
             tmp_path.unlink(missing_ok=True)
-        if input_pickle is not None:
-            input_pickle.unlink(missing_ok=True)
+        if input_cache_json is not None:
+            input_cache_json.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

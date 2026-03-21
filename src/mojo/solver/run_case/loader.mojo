@@ -7,7 +7,6 @@ from elements import (
 )
 from math import sqrt
 from os import abort
-from python import Python, PythonObject
 
 from materials import (
     UniMaterialDef,
@@ -31,7 +30,6 @@ from solver.run_case.input_types import (
     SolverAttemptInput,
     StageInput,
     beam_integration_tag,
-    parse_case_input,
 )
 from solver.time_series import TimeSeriesInput, find_time_series_input
 from sections import (
@@ -1986,13 +1984,15 @@ fn load_case_state_from_input(input: CaseInput) raises -> RunCaseState:
             constraints_handler_tag != ConstraintHandlerTag.Transformation
             and constraints_handler_tag != ConstraintHandlerTag.Lagrange
         ):
-            abort("mp_constraints require analysis.constraints=Transformation or Lagrange")
+            abort(
+                "[load-fail] mp_constraints require analysis.constraints=Transformation or Lagrange"
+            )
         has_transformation_mpc = True
     for i in range(len(input.mp_constraints)):
         var mpc = input.mp_constraints[i]
         var mpc_type = mpc.type
         if mpc_type != "equalDOF":
-            abort("unsupported mp constraint type: " + mpc_type)
+            abort("[load-fail] unsupported mp constraint type: " + mpc_type)
         var retained_node = mpc.retained_node
         var constrained_node = mpc.constrained_node
         if retained_node >= len(id_to_index) or id_to_index[retained_node] < 0:
@@ -2337,7 +2337,3 @@ fn load_case_state_from_input(input: CaseInput) raises -> RunCaseState:
     state.recorders = input.recorders.copy()
 
     return state^
-
-
-fn load_case_state(data: PythonObject) raises -> RunCaseState:
-    return load_case_state_from_input(parse_case_input(data))

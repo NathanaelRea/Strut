@@ -1,1 +1,1 @@
-from solver.run_case.main import run_case
+from solver.run_case.main import run_case_from_native_source

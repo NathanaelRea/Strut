@@ -55,7 +55,7 @@ from solver.run_case.input_types import (
     NodalLoadInput,
     NodeInput,
     StageInput,
-    parse_case_input,
+    parse_case_input_native_from_source,
 )
 from solver.run_case.helpers import (
     _drift_value,
@@ -69,12 +69,15 @@ from solver.run_case.helpers import (
     _section_response_for_recorder,
     _update_envelope,
 )
+from strut_io import CaseSourceInfo
+from json_native import JsonDocument
 from solver.run_case.load_state import (
     append_scaled_element_loads,
     build_active_element_load_state,
     build_active_nodal_load,
 )
 from solver.run_case.loader import load_case_state_from_input
+from solver.run_case.precheck import precheck_case_input_native
 from solver.time_series import TimeSeriesInput, eval_time_series_input, find_time_series_input
 from tag_types import (
     AnalysisTypeTag,
@@ -2194,7 +2197,18 @@ def run_case_input(
         _write_speedscope(profile_path, frames, events, total_us)
 
 
-def run_case(
-    data: PythonObject, output_path: String, profile_path: String, case_load_us: Int
+def run_case_from_native_source(
+    doc: JsonDocument,
+    source_info: CaseSourceInfo,
+    output_path: String,
+    profile_path: String,
+    case_load_us: Int,
+    include_recorders: Bool,
 ):
-    run_case_input(parse_case_input(data), output_path, profile_path, case_load_us)
+    precheck_case_input_native(doc, include_recorders)
+    run_case_input(
+        parse_case_input_native_from_source(doc, source_info, include_recorders),
+        output_path,
+        profile_path,
+        case_load_us,
+    )

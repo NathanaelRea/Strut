@@ -1,44 +1,20 @@
 from os import abort
 from python import Python, PythonObject
 
-from solver.run_case import run_case
-from strut_io import load_json, load_pickle, parse_args, py_len
-
-
-fn _strip_recorders_if_needed(mut data: PythonObject, compute_only: Bool) raises:
-    if not compute_only:
-        return
-    var builtins = Python.import_module("builtins")
-    data["recorders"] = builtins.list()
-
-
-fn _load_case_data(
-    input_path: String,
-    input_pickle_path: String,
-    compute_only: Bool,
-) raises -> PythonObject:
-    var sources = 0
-    if input_path != "":
-        sources += 1
-    if input_pickle_path != "":
-        sources += 1
-    if sources > 1:
-        abort("use only one of --input or --input-pickle")
-    if input_pickle_path != "":
-        var data = load_pickle(input_pickle_path)
-        _strip_recorders_if_needed(data, compute_only)
-        return data
-    if input_path == "":
-        abort("missing --input or --input-pickle")
-    var data = load_json(input_path)
-    _strip_recorders_if_needed(data, compute_only)
-    return data
+from solver.run_case import run_case_from_native_source
+from strut_io import (
+    load_case_document,
+    load_json,
+    parse_args,
+    py_len,
+)
 
 
 def main():
     var (
         input_path,
-        input_pickle_path,
+        input_bin_path,
+        write_input_bin_path,
         output_path,
         batch_path,
         profile_path,
@@ -52,21 +28,24 @@ def main():
         for i in range(py_len(cases)):
             var entry = cases[i]
             var entry_input = String(entry.get("input", ""))
-            var entry_input_pickle = String(entry.get("input_pickle", ""))
+            var entry_input_bin = String(entry.get("input_bin", ""))
             var entry_output = String(entry.get("output", ""))
             var entry_profile = String(entry.get("profile", ""))
-            if (entry_input == "" and entry_input_pickle == "") or entry_output == "":
+            if (entry_input == "" and entry_input_bin == "") or entry_output == "":
                 abort("batch entry missing input/output")
             var t_case_start = Int(time.perf_counter_ns())
             var t_load_start = Int(time.perf_counter_ns())
-            var data = _load_case_data(
-                entry_input,
-                entry_input_pickle,
-                compute_only,
-            )
+            var loaded = load_case_document(entry_input, entry_input_bin, "")
             var t_load_end = Int(time.perf_counter_ns())
             var case_load_us = (t_load_end - t_load_start) // 1000
-            run_case(data, entry_output, entry_profile, case_load_us)
+            run_case_from_native_source(
+                loaded.doc,
+                loaded.source_info,
+                entry_output,
+                entry_profile,
+                case_load_us,
+                not compute_only,
+            )
             var t_case_end = Int(time.perf_counter_ns())
             var elapsed_us = (t_case_end - t_case_start) // 1000
             var out_dir = pathlib.Path(entry_output)
@@ -76,19 +55,28 @@ def main():
             file_path.write_text(PythonObject(line))
         return
 
-    if (
-        output_path == ""
-        or (input_path == "" and input_pickle_path == "")
-    ):
+    if output_path == "":
+        if write_input_bin_path != "":
+            _ = load_case_document(input_path, input_bin_path, write_input_bin_path)
+            return
         abort(
             "usage: strut.mojo -- "
-            "(--input <case.json> | --input-pickle <case.pkl>) "
-            "--output <dir> [--batch <manifest.json>] [--profile <speedscope.json>] [--compute-only]"
+            "(--input <case.json> | --input-bin <case.bin>) "
+            "--output <dir> [--batch <manifest.json>] [--profile <speedscope.json>] [--compute-only] "
+            "[--write-input-bin <case.bin>]"
         )
-
     var time = Python.import_module("time")
     var t_load_start = Int(time.perf_counter_ns())
-    var data = _load_case_data(input_path, input_pickle_path, compute_only)
+    var loaded = load_case_document(
+        input_path, input_bin_path, write_input_bin_path
+    )
     var t_load_end = Int(time.perf_counter_ns())
     var case_load_us = (t_load_end - t_load_start) // 1000
-    run_case(data, output_path, profile_path, case_load_us)
+    run_case_from_native_source(
+        loaded.doc,
+        loaded.source_info,
+        output_path,
+        profile_path,
+        case_load_us,
+        not compute_only,
+    )

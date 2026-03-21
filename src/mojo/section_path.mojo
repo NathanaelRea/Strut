@@ -1,15 +1,16 @@
 from collections import List
 from os import abort
-from python import Python, PythonObject
+from pathlib import Path
 from sys.arg import argv
 
+from json_native import JsonDocument, JsonValueTag
 from materials import UniMaterialDef, UniMaterialState
 from sections import (
     FiberCell,
     FiberSection2dDef,
     FiberSection3dDef,
-    append_fiber_section2d_from_json,
-    append_fiber_section3d_from_json,
+    append_fiber_section2d_from_input,
+    append_fiber_section3d_from_input,
     fiber_section2d_commit,
     fiber_section2d_init_states,
     fiber_section2d_set_trial,
@@ -17,7 +18,13 @@ from sections import (
     fiber_section3d_init_states,
     fiber_section3d_set_trial,
 )
-from strut_io import py_len
+from solver.run_case.input_types import (
+    FiberLayerInput,
+    FiberPatchInput,
+    MaterialInput,
+    SectionInput,
+)
+from strut_io import load_json_native
 from tag_types import UniMaterialTypeTag
 
 
@@ -30,26 +37,138 @@ fn arg_value(
     return ""
 
 
-fn load_json(path: String) raises -> PythonObject:
-    var json = Python.import_module("json")
-    var pathlib = Python.import_module("pathlib")
-    var path_obj = pathlib.Path(path)
-    var text = path_obj.read_text()
-    return json.loads(text)
+fn _json_key(doc: JsonDocument, object_index: Int, key: StringSlice) raises -> Int:
+    if object_index < 0:
+        return -1
+    if doc.node_tag(object_index) != JsonValueTag.Object:
+        return -1
+    return doc.object_find(object_index, key)
 
 
-def make_uniaxial_def(material: PythonObject) -> UniMaterialDef:
-    var mat_type = String(material["type"])
-    var params = material["params"]
+fn _json_has_value(doc: JsonDocument, node_index: Int) -> Bool:
+    return node_index >= 0 and doc.node_tag(node_index) != JsonValueTag.Null
+
+
+fn _json_require_key(
+    doc: JsonDocument, object_index: Int, key: StringSlice
+) raises -> Int:
+    var node_index = _json_key(doc, object_index, key)
+    if node_index < 0:
+        abort("missing required key: " + String(key))
+    return node_index
+
+
+fn _json_expect_array_len(doc: JsonDocument, array_index: Int, field: String) -> Int:
+    if doc.node_tag(array_index) != JsonValueTag.Array:
+        abort(field + " must be an array")
+    return doc.node_len(array_index)
+
+
+fn _json_number_value(
+    doc: JsonDocument, node_index: Int, field: String
+) -> Float64:
+    if doc.node_tag(node_index) != JsonValueTag.Number:
+        abort(field + " must be a number")
+    return doc.node_number(node_index)
+
+
+fn _json_int_value(doc: JsonDocument, node_index: Int, field: String) -> Int:
+    return Int(_json_number_value(doc, node_index, field))
+
+
+fn _json_string_value(doc: JsonDocument, node_index: Int, field: String) -> String:
+    if doc.node_tag(node_index) != JsonValueTag.String:
+        abort(field + " must be a string")
+    return doc.node_text(node_index)
+
+
+fn _json_get_int(
+    doc: JsonDocument, object_index: Int, key: StringSlice, default: Int
+) raises -> Int:
+    var node_index = _json_key(doc, object_index, key)
+    if node_index < 0:
+        return default
+    return _json_int_value(doc, node_index, String(key))
+
+
+fn _json_get_float(
+    doc: JsonDocument, object_index: Int, key: StringSlice, default: Float64
+) raises -> Float64:
+    var node_index = _json_key(doc, object_index, key)
+    if node_index < 0:
+        return default
+    return _json_number_value(doc, node_index, String(key))
+
+
+fn _json_get_string(
+    doc: JsonDocument, object_index: Int, key: StringSlice, default: String
+) raises -> String:
+    var node_index = _json_key(doc, object_index, key)
+    if node_index < 0:
+        return default
+    return _json_string_value(doc, node_index, String(key))
+
+
+fn _parse_material_input(doc: JsonDocument, material_index: Int) raises -> MaterialInput:
+    var parsed = MaterialInput()
+    var params_index = _json_key(doc, material_index, "params")
+    parsed.id = _json_get_int(doc, material_index, "id", -1)
+    parsed.type = _json_get_string(doc, material_index, "type", "")
+    parsed.E = _json_get_float(doc, params_index, "E", 0.0)
+    parsed.Fy = _json_get_float(doc, params_index, "Fy", 0.0)
+    parsed.E0 = _json_get_float(doc, params_index, "E0", 0.0)
+    parsed.b = _json_get_float(doc, params_index, "b", 0.0)
+    parsed.fpc = _json_get_float(doc, params_index, "fpc", 0.0)
+    parsed.epsc0 = _json_get_float(doc, params_index, "epsc0", 0.0)
+    parsed.fpcu = _json_get_float(doc, params_index, "fpcu", 0.0)
+    parsed.epscu = _json_get_float(doc, params_index, "epscu", 0.0)
+    parsed.has_r0 = _json_key(doc, params_index, "R0") >= 0
+    parsed.has_cr1 = _json_key(doc, params_index, "cR1") >= 0
+    parsed.has_cr2 = _json_key(doc, params_index, "cR2") >= 0
+    if parsed.has_r0:
+        parsed.R0 = _json_get_float(doc, params_index, "R0", 0.0)
+    if parsed.has_cr1:
+        parsed.cR1 = _json_get_float(doc, params_index, "cR1", 0.0)
+    if parsed.has_cr2:
+        parsed.cR2 = _json_get_float(doc, params_index, "cR2", 0.0)
+    parsed.has_a1 = _json_key(doc, params_index, "a1") >= 0
+    parsed.has_a2 = _json_key(doc, params_index, "a2") >= 0
+    parsed.has_a3 = _json_key(doc, params_index, "a3") >= 0
+    parsed.has_a4 = _json_key(doc, params_index, "a4") >= 0
+    if parsed.has_a1:
+        parsed.a1 = _json_get_float(doc, params_index, "a1", 0.0)
+    if parsed.has_a2:
+        parsed.a2 = _json_get_float(doc, params_index, "a2", 0.0)
+    if parsed.has_a3:
+        parsed.a3 = _json_get_float(doc, params_index, "a3", 0.0)
+    if parsed.has_a4:
+        parsed.a4 = _json_get_float(doc, params_index, "a4", 0.0)
+    parsed.has_siginit = _json_key(doc, params_index, "sigInit") >= 0
+    if parsed.has_siginit:
+        parsed.sigInit = _json_get_float(doc, params_index, "sigInit", 0.0)
+    parsed.has_rat = _json_key(doc, params_index, "rat") >= 0
+    parsed.has_ft = _json_key(doc, params_index, "ft") >= 0
+    parsed.has_ets = _json_key(doc, params_index, "Ets") >= 0
+    if parsed.has_rat:
+        parsed.rat = _json_get_float(doc, params_index, "rat", 0.0)
+    if parsed.has_ft:
+        parsed.ft = _json_get_float(doc, params_index, "ft", 0.0)
+    if parsed.has_ets:
+        parsed.Ets = _json_get_float(doc, params_index, "Ets", 0.0)
+    return parsed^
+
+
+fn make_uniaxial_def(material: MaterialInput) -> UniMaterialDef:
+    var mat_type = material.type
     if mat_type == "Elastic":
-        var E = Float64(params["E"])
+        var E = material.E
         if E <= 0.0:
             abort("Elastic material E must be > 0")
         return UniMaterialDef(UniMaterialTypeTag.Elastic, E, 0.0, 0.0, 0.0)
     if mat_type == "Steel01":
-        var Fy = Float64(params["Fy"])
-        var E0 = Float64(params["E0"])
-        var b = Float64(params["b"])
+        var Fy = material.Fy
+        var E0 = material.E0
+        var b = material.b
         if Fy <= 0.0:
             abort("Steel01 Fy must be > 0")
         if E0 <= 0.0:
@@ -58,10 +177,10 @@ def make_uniaxial_def(material: PythonObject) -> UniMaterialDef:
             abort("Steel01 b must be in [0, 1)")
         return UniMaterialDef(UniMaterialTypeTag.Steel01, Fy, E0, b, 0.0)
     if mat_type == "Concrete01":
-        var fpc = Float64(params["fpc"])
-        var epsc0 = Float64(params["epsc0"])
-        var fpcu = Float64(params["fpcu"])
-        var epscu = Float64(params["epscu"])
+        var fpc = material.fpc
+        var epsc0 = material.epsc0
+        var fpcu = material.fpcu
+        var epscu = material.epscu
         if fpc > 0.0:
             fpc = -fpc
         if epsc0 > 0.0:
@@ -72,9 +191,9 @@ def make_uniaxial_def(material: PythonObject) -> UniMaterialDef:
             epscu = -epscu
         return UniMaterialDef(UniMaterialTypeTag.Concrete01, fpc, epsc0, fpcu, epscu)
     if mat_type == "Steel02":
-        var Fy = Float64(params["Fy"])
-        var E0 = Float64(params["E0"])
-        var b = Float64(params["b"])
+        var Fy = material.Fy
+        var E0 = material.E0
+        var b = material.b
         if Fy <= 0.0:
             abort("Steel02 Fy must be > 0")
         if E0 <= 0.0:
@@ -90,17 +209,17 @@ def make_uniaxial_def(material: PythonObject) -> UniMaterialDef:
         var a3 = 0.0
         var a4 = 1.0
         var sig_init = 0.0
-        if params.__contains__("R0"):
-            R0 = Float64(params["R0"])
-            cR1 = Float64(params["cR1"])
-            cR2 = Float64(params["cR2"])
-        if params.__contains__("a1"):
-            a1 = Float64(params["a1"])
-            a2 = Float64(params["a2"])
-            a3 = Float64(params["a3"])
-            a4 = Float64(params["a4"])
-        if params.__contains__("sigInit"):
-            sig_init = Float64(params["sigInit"])
+        if material.has_r0:
+            R0 = material.R0
+            cR1 = material.cR1
+            cR2 = material.cR2
+        if material.has_a1:
+            a1 = material.a1
+            a2 = material.a2
+            a3 = material.a3
+            a4 = material.a4
+        if material.has_siginit:
+            sig_init = material.sigInit
         return UniMaterialDef(
             UniMaterialTypeTag.Steel02,
             Fy,
@@ -116,10 +235,10 @@ def make_uniaxial_def(material: PythonObject) -> UniMaterialDef:
             sig_init,
         )
     if mat_type == "Concrete02":
-        var fpc = Float64(params["fpc"])
-        var epsc0 = Float64(params["epsc0"])
-        var fpcu = Float64(params["fpcu"])
-        var epscu = Float64(params["epscu"])
+        var fpc = material.fpc
+        var epsc0 = material.epsc0
+        var fpcu = material.fpcu
+        var epscu = material.epscu
         if fpc > 0.0:
             fpc = -fpc
         if epsc0 > 0.0:
@@ -133,10 +252,10 @@ def make_uniaxial_def(material: PythonObject) -> UniMaterialDef:
         if ft < 0.0:
             ft = -ft
         var Ets = 0.1 * fpc / epsc0
-        if params.__contains__("rat"):
-            rat = Float64(params["rat"])
-            ft = Float64(params["ft"])
-            Ets = Float64(params["Ets"])
+        if material.has_rat:
+            rat = material.rat
+            ft = material.ft
+            Ets = material.Ets
         return UniMaterialDef(
             UniMaterialTypeTag.Concrete02,
             fpc,
@@ -156,6 +275,63 @@ def make_uniaxial_def(material: PythonObject) -> UniMaterialDef:
     return UniMaterialDef()
 
 
+fn _parse_section_input(
+    doc: JsonDocument,
+    section_index: Int,
+    mut section: SectionInput,
+    mut patches: List[FiberPatchInput],
+    mut layers: List[FiberLayerInput],
+) raises:
+    section = SectionInput(
+        _json_get_int(doc, section_index, "id", -1),
+        _json_get_string(doc, section_index, "type", ""),
+    )
+    var params_index = _json_require_key(doc, section_index, "params")
+    patches = List[FiberPatchInput]()
+    layers = List[FiberLayerInput]()
+    var patches_index = _json_key(doc, params_index, "patches")
+    if _json_has_value(doc, patches_index):
+        section.fiber_patch_count = _json_expect_array_len(
+            doc, patches_index, "section patches"
+        )
+        for i in range(section.fiber_patch_count):
+            var patch_index = doc.array_item(patches_index, i)
+            var patch = FiberPatchInput()
+            patch.type = _json_get_string(doc, patch_index, "type", "")
+            if patch.type == "quad":
+                patch.type = "quadr"
+            patch.material = _json_get_int(doc, patch_index, "material", -1)
+            patch.num_subdiv_y = _json_get_int(doc, patch_index, "num_subdiv_y", 0)
+            patch.num_subdiv_z = _json_get_int(doc, patch_index, "num_subdiv_z", 0)
+            patch.y_i = _json_get_float(doc, patch_index, "y_i", 0.0)
+            patch.z_i = _json_get_float(doc, patch_index, "z_i", 0.0)
+            patch.y_j = _json_get_float(doc, patch_index, "y_j", 0.0)
+            patch.z_j = _json_get_float(doc, patch_index, "z_j", 0.0)
+            patch.y_k = _json_get_float(doc, patch_index, "y_k", 0.0)
+            patch.z_k = _json_get_float(doc, patch_index, "z_k", 0.0)
+            patch.y_l = _json_get_float(doc, patch_index, "y_l", 0.0)
+            patch.z_l = _json_get_float(doc, patch_index, "z_l", 0.0)
+            patches.append(patch)
+    var layers_index = _json_key(doc, params_index, "layers")
+    if _json_has_value(doc, layers_index):
+        section.fiber_layer_count = _json_expect_array_len(
+            doc, layers_index, "section layers"
+        )
+        for i in range(section.fiber_layer_count):
+            var layer_index = doc.array_item(layers_index, i)
+            var layer = FiberLayerInput()
+            layer.type = _json_get_string(doc, layer_index, "type", "")
+            layer.material = _json_get_int(doc, layer_index, "material", -1)
+            layer.num_bars = _json_get_int(doc, layer_index, "num_bars", 0)
+            layer.bar_area = _json_get_float(doc, layer_index, "bar_area", 0.0)
+            layer.y_start = _json_get_float(doc, layer_index, "y_start", 0.0)
+            layer.z_start = _json_get_float(doc, layer_index, "z_start", 0.0)
+            layer.y_end = _json_get_float(doc, layer_index, "y_end", 0.0)
+            layer.z_end = _json_get_float(doc, layer_index, "z_end", 0.0)
+            layers.append(layer)
+    _ = section
+
+
 def run_section_path():
     var args = argv()
     var input_path = arg_value(args, "--input")
@@ -163,39 +339,54 @@ def run_section_path():
     if input_path == "" or output_path == "":
         abort("usage: section_path.strut --input <json> --output <csv>")
 
-    var data = load_json(input_path)
-    var materials = data["materials"]
-    var section = data["section"]
-    var deformation_path = data["deformation_path"]
+    var doc = load_json_native(input_path)
+    var root = doc.root_index
+    var materials_index = _json_require_key(doc, root, "materials")
+    var section_index = _json_require_key(doc, root, "section")
+    var deformation_path = _json_require_key(doc, root, "deformation_path")
 
-    var materials_by_id: List[PythonObject] = []
-    materials_by_id.resize(0, None)
-    for i in range(py_len(materials)):
-        var mat = materials[i]
-        var mid = Int(mat["id"])
-        if mid >= len(materials_by_id):
-            materials_by_id.resize(mid + 1, None)
-        materials_by_id[mid] = mat
+    var materials_by_id: List[MaterialInput] = []
+    for i in range(_json_expect_array_len(doc, materials_index, "materials")):
+        var material = _parse_material_input(doc, doc.array_item(materials_index, i))
+        if material.id < 0:
+            abort("section_path materials require id")
+        if material.id >= len(materials_by_id):
+            materials_by_id.resize(material.id + 1, MaterialInput())
+        materials_by_id[material.id] = material
 
     var uniaxial_defs: List[UniMaterialDef] = []
     var uniaxial_def_by_id: List[Int] = []
     uniaxial_def_by_id.resize(len(materials_by_id), -1)
-    for i in range(py_len(materials)):
-        var mat = materials[i]
-        var mid = Int(mat["id"])
-        if mid >= len(uniaxial_def_by_id):
-            uniaxial_def_by_id.resize(mid + 1, -1)
-        var mat_def = make_uniaxial_def(mat)
-        uniaxial_def_by_id[mid] = len(uniaxial_defs)
-        uniaxial_defs.append(mat_def)
+    for i in range(len(materials_by_id)):
+        var material = materials_by_id[i]
+        if material.id < 0:
+            continue
+        uniaxial_def_by_id[i] = len(uniaxial_defs)
+        uniaxial_defs.append(make_uniaxial_def(material))
 
-    var sec_type = String(section["type"])
+    var section = SectionInput(-1, "")
+    var fiber_patches: List[FiberPatchInput] = []
+    var fiber_layers: List[FiberLayerInput] = []
+    _parse_section_input(
+        doc,
+        section_index,
+        section,
+        fiber_patches,
+        fiber_layers,
+    )
+
     var out = String("")
-    if sec_type == "FiberSection2d":
+    if section.type == "FiberSection2d":
         var defs: List[FiberSection2dDef] = []
         var fibers: List[FiberCell] = []
-        append_fiber_section2d_from_json(
-            section, uniaxial_def_by_id, uniaxial_defs, defs, fibers
+        append_fiber_section2d_from_input(
+            section,
+            fiber_patches,
+            fiber_layers,
+            uniaxial_def_by_id,
+            uniaxial_defs,
+            defs,
+            fibers,
         )
         if len(defs) != 1:
             abort("section_path expects exactly one FiberSection2d")
@@ -215,10 +406,10 @@ def run_section_path():
         )
 
         out = String("eps0,kappa,N,Mz,k11,k12,k22\n")
-        for i in range(py_len(deformation_path)):
-            var step = deformation_path[i]
-            var eps0 = Float64(step["eps0"])
-            var kappa = Float64(step["kappa"])
+        for i in range(_json_expect_array_len(doc, deformation_path, "deformation_path")):
+            var step = doc.array_item(deformation_path, i)
+            var eps0 = _json_get_float(doc, step, "eps0", 0.0)
+            var kappa = _json_get_float(doc, step, "kappa", 0.0)
             var resp = fiber_section2d_set_trial(
                 0,
                 defs,
@@ -252,11 +443,17 @@ def run_section_path():
                 section_uniaxial_counts,
                 uniaxial_states,
             )
-    elif sec_type == "FiberSection3d":
+    elif section.type == "FiberSection3d":
         var defs3d: List[FiberSection3dDef] = []
         var fibers3d: List[FiberCell] = []
-        append_fiber_section3d_from_json(
-            section, uniaxial_def_by_id, uniaxial_defs, defs3d, fibers3d
+        append_fiber_section3d_from_input(
+            section,
+            fiber_patches,
+            fiber_layers,
+            uniaxial_def_by_id,
+            uniaxial_defs,
+            defs3d,
+            fibers3d,
         )
         if len(defs3d) != 1:
             abort("section_path expects exactly one FiberSection3d")
@@ -276,12 +473,25 @@ def run_section_path():
         )
 
         out = String("eps0,ky,kz,N,My,Mz,k11,k12,k13,k22,k23,k33\n")
-        for i in range(py_len(deformation_path)):
-            var step = deformation_path[i]
-            var eps0 = Float64(step["eps0"])
-            var ky = Float64(step.get("kappa_y", step.get("ky", 0.0)))
-            var kz = Float64(
-                step.get("kappa_z", step.get("kz", step.get("kappa", 0.0)))
+        for i in range(_json_expect_array_len(doc, deformation_path, "deformation_path")):
+            var step = doc.array_item(deformation_path, i)
+            var eps0 = _json_get_float(doc, step, "eps0", 0.0)
+            var ky = _json_get_float(
+                doc,
+                step,
+                "kappa_y",
+                _json_get_float(doc, step, "ky", 0.0),
+            )
+            var kz = _json_get_float(
+                doc,
+                step,
+                "kappa_z",
+                _json_get_float(
+                    doc,
+                    step,
+                    "kz",
+                    _json_get_float(doc, step, "kappa", 0.0),
+                ),
             )
             var resp = fiber_section3d_set_trial(
                 0,
@@ -329,8 +539,7 @@ def run_section_path():
     else:
         abort("section_path requires FiberSection2d or FiberSection3d")
 
-    var pathlib = Python.import_module("pathlib")
-    pathlib.Path(output_path).write_text(out)
+    Path(output_path).write_text(out)
 
 
 fn main():

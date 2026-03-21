@@ -1,6 +1,5 @@
 import importlib.util
 import json
-import pickle
 import subprocess
 import sys
 from pathlib import Path
@@ -396,15 +395,15 @@ def test_strut_slower_than_opensees_lines_uses_batch_metrics_by_default():
     ]
 
 
-def test_write_solver_input_pickle_round_trips(tmp_path: Path):
+def test_write_solver_input_json_round_trips(tmp_path: Path):
     payload = {"model": {"ndm": 2, "ndf": 3}, "recorders": []}
-    out_path = tmp_path / "solver.pkl"
+    out_path = tmp_path / "solver.json"
 
-    result = run_benchmarks._write_solver_input_pickle(payload, out_path)
+    result = run_benchmarks._write_solver_input_json(payload, out_path)
 
     assert result == out_path
     assert out_path.exists()
-    assert pickle.loads(out_path.read_bytes()) == payload
+    assert json.loads(out_path.read_text(encoding="utf-8")) == payload
 
 
 def test_default_strut_solver_path_switches_with_profile_flag(tmp_path: Path):
@@ -1403,6 +1402,45 @@ def test_summarize_benchmark_failures_includes_runtime_context():
         '  Node Mismatch: ["node 1 mismatch at step 4", "dof 1: ref=1.000000e+00 got=2.000000e+00 abs=1.000e+00 rel=1.000e+00"]'
         in summary
     )
+
+
+def test_format_subprocess_failure_prefers_abort_marker_over_stack_tail():
+    exc = subprocess.CalledProcessError(
+        4,
+        ["build/strut/strut", "--input", "case.json"],
+        stderr="\n".join(
+            [
+                "ABORT: [precheck-fail] unsupported mp constraint type: rigidDiaphragm",
+                "#0 stack frame",
+                "strut.mojo:0:0",
+            ]
+        ),
+    )
+
+    message = run_benchmarks._format_subprocess_failure("strut compute-only pass aborted", exc)
+
+    assert (
+        "stderr=ABORT: [precheck-fail] unsupported mp constraint type: rigidDiaphragm"
+        in message
+    )
+
+
+def test_format_subprocess_failure_prefers_load_fail_marker():
+    exc = subprocess.CalledProcessError(
+        4,
+        ["build/strut/strut", "--input", "case.json"],
+        stderr="\n".join(
+            [
+                "note: setup info",
+                "[load-fail] unsupported mp constraint type: rigidDiaphragm",
+                "tail line",
+            ]
+        ),
+    )
+
+    message = run_benchmarks._format_subprocess_failure("strut compute-only pass aborted", exc)
+
+    assert "stderr=[load-fail] unsupported mp constraint type: rigidDiaphragm" in message
 
 
 def test_read_runtime_failures_collects_case_error_files(tmp_path: Path):

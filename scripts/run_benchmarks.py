@@ -10,7 +10,6 @@ import subprocess
 import time
 import math
 import sys
-import pickle
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -420,6 +419,17 @@ def _write_case_error(output_dir: Path, message: str) -> None:
     (output_dir / "case_error.txt").write_text(f"{message}\n", encoding="utf-8")
 
 
+def _select_failure_line(text: str) -> str:
+    lines = [line.strip() for line in str(text).splitlines() if line.strip()]
+    if not lines:
+        return ""
+    for marker in ("[precheck-fail]", "[load-fail]", "ABORT:"):
+        for line in lines:
+            if marker in line:
+                return line
+    return lines[-1]
+
+
 def _format_subprocess_failure(
     label: str, exc: subprocess.CalledProcessError
 ) -> str:
@@ -429,12 +439,12 @@ def _format_subprocess_failure(
         parts.append("cmd=" + " ".join(str(part) for part in cmd))
     elif cmd:
         parts.append(f"cmd={cmd}")
-    stderr = str(exc.stderr or "").strip()
-    stdout = str(exc.output or "").strip()
-    if stderr:
-        parts.append(f"stderr={stderr.splitlines()[-1]}")
-    if stdout:
-        parts.append(f"stdout={stdout.splitlines()[-1]}")
+    stderr_line = _select_failure_line(exc.stderr or "")
+    stdout_line = _select_failure_line(exc.output or "")
+    if stderr_line:
+        parts.append(f"stderr={stderr_line}")
+    if stdout_line:
+        parts.append(f"stdout={stdout_line}")
     return "; ".join(parts)
 
 
@@ -926,10 +936,9 @@ def _validate_generated_tcl_matches_original(
     _write_parser_check(case_root)
 
 
-def _write_solver_input_pickle(case_data: dict, output_path: Path) -> Path:
+def _write_solver_input_json(case_data: dict, output_path: Path) -> Path:
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    with output_path.open("wb") as handle:
-        pickle.dump(case_data, handle)
+    output_path.write_text(json.dumps(case_data, indent=2) + "\n", encoding="utf-8")
     return output_path
 
 
@@ -2816,10 +2825,10 @@ def main() -> None:
         elif case.tcl_path is not None:
             case_entry["json"] = str(_direct_case_root(case) / "generated" / "case.json")
         elif run_strut:
-            case_entry["input_pickle"] = str(
-                _write_solver_input_pickle(
+            case_entry["json"] = str(
+                _write_solver_input_json(
                     case_data,
-                    results_root / ".tmp" / "strut_inputs" / f"{case_name}.pkl",
+                    results_root / ".tmp" / "strut_inputs" / f"{case_name}.json",
                 )
             )
         size_override = case.benchmark_size or _case_size_override(case_data)
@@ -3271,10 +3280,7 @@ def main() -> None:
             if strut_solver is None:
                 raise SystemExit("Mojo solver not initialized.")
             cmd = [str(strut_solver)]
-            if "input_pickle" in case_entry:
-                cmd += ["--input-pickle", str(case_entry["input_pickle"])]
-            else:
-                cmd += ["--input", str(case_entry["json"])]
+            cmd += ["--input", str(case_entry["json"])]
             cmd += ["--compute-only", "--output", str(target_dir)]
             if args.profile and last_run and profile_root is not None:
                 profile_path = profile_root / f"{case_name}.speedscope.json"

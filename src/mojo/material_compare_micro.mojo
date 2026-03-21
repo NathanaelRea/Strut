@@ -16,8 +16,8 @@ from sections.fiber2d import (
     _fiber_section2d_runtime_apply_steel01,
     _fiber_section2d_runtime_apply_steel02,
 )
-from solver.run_case.input_types import MaterialInput, parse_case_input
-from strut_io import load_json
+from solver.run_case.input_types import MaterialInput, parse_case_input_native_from_source
+from strut_io import case_source_from_path, load_json_native
 from sys.arg import argv
 from tag_types import UniMaterialTypeTag
 
@@ -1117,7 +1117,9 @@ fn _run_default_pair_for_material(
 
 fn main() raises:
     var args = _parse_args()
-    var input = parse_case_input(load_json(args.input_path))
+    var source_info = case_source_from_path(args.input_path)
+    var doc = load_json_native(args.input_path)
+    var input = parse_case_input_native_from_source(doc, source_info)
     var left_impl_id = _impl_id(args.left_impl)
     var right_impl_id = _impl_id(args.right_impl)
     if (args.left_impl == "") != (args.right_impl == ""):
