@@ -4,7 +4,11 @@ from os import abort
 
 from elements.beam_loads import beam3d_basic_fixed_end_and_reactions
 from elements.beam_integration import beam_integration_rule
-from elements.utils import _cross, _dot, _normalize, _zero_matrix
+from elements.utils import (
+    _beam3d_local_axes_from_vecxz,
+    _normalize,
+    _zero_matrix,
+)
 from linalg import matmul, transpose
 from materials import UniMaterialDef, UniMaterialState
 from solver.run_case.input_types import ElementLoadInput
@@ -24,6 +28,21 @@ fn _beam3d_rotation(
     y2: Float64,
     z2: Float64,
 ) -> List[List[Float64]]:
+    return _beam3d_rotation(x1, y1, z1, x2, y2, z2, False, 0.0, 0.0, 0.0)
+
+
+fn _beam3d_rotation(
+    x1: Float64,
+    y1: Float64,
+    z1: Float64,
+    x2: Float64,
+    y2: Float64,
+    z2: Float64,
+    has_vecxz: Bool,
+    vecxz_x: Float64,
+    vecxz_y: Float64,
+    vecxz_z: Float64,
+) -> List[List[Float64]]:
     var dx = x2 - x1
     var dy = y2 - y1
     var dz = z2 - z1
@@ -36,30 +55,21 @@ fn _beam3d_rotation(
     var lz: Float64
     (lx, ly, lz) = _normalize(dx, dy, dz)
 
-    var vx = 1.0
-    var vy = 0.0
-    var vz = 0.0
-    if abs(_dot(lx, ly, lz, vx, vy, vz)) >= 0.9:
-        vx = 0.0
-        vy = 1.0
-        vz = 0.0
-        if abs(_dot(lx, ly, lz, vx, vy, vz)) >= 0.9:
-            vx = 0.0
-            vy = 0.0
-            vz = 1.0
-
     var yx: Float64
     var yy: Float64
     var yz: Float64
-    # Match OpenSees Linear/PDelta/Corotational vecxz orientation:
-    # local y = vecxz x local x, local z = local x x local y.
-    (yx, yy, yz) = _cross(vx, vy, vz, lx, ly, lz)
-    (yx, yy, yz) = _normalize(yx, yy, yz)
-
     var zx: Float64
     var zy: Float64
     var zz: Float64
-    (zx, zy, zz) = _cross(lx, ly, lz, yx, yy, yz)
+    (yx, yy, yz, zx, zy, zz) = _beam3d_local_axes_from_vecxz(
+        lx,
+        ly,
+        lz,
+        has_vecxz,
+        vecxz_x,
+        vecxz_y,
+        vecxz_z,
+    )
 
     return [
         [lx, ly, lz],
@@ -171,6 +181,36 @@ fn _element_rotation(
     u_elem_global: List[Float64],
     geom_transf: String,
 ) -> List[List[Float64]]:
+    return _element_rotation(
+        x1,
+        y1,
+        z1,
+        x2,
+        y2,
+        z2,
+        u_elem_global,
+        geom_transf,
+        False,
+        0.0,
+        0.0,
+        0.0,
+    )
+
+
+fn _element_rotation(
+    x1: Float64,
+    y1: Float64,
+    z1: Float64,
+    x2: Float64,
+    y2: Float64,
+    z2: Float64,
+    u_elem_global: List[Float64],
+    geom_transf: String,
+    has_vecxz: Bool,
+    vecxz_x: Float64,
+    vecxz_y: Float64,
+    vecxz_z: Float64,
+) -> List[List[Float64]]:
     var dx0 = x2 - x1
     var dy0 = y2 - y1
     var dz0 = z2 - z1
@@ -187,9 +227,15 @@ fn _element_rotation(
                 x2 + u_elem_global[6],
                 y2 + u_elem_global[7],
                 z2 + u_elem_global[8],
+                has_vecxz,
+                vecxz_x,
+                vecxz_y,
+                vecxz_z,
             )
         )
-    return _beam3d_transform_matrix(_beam3d_rotation(x1, y1, z1, x2, y2, z2))
+    return _beam3d_transform_matrix(
+        _beam3d_rotation(x1, y1, z1, x2, y2, z2, has_vecxz, vecxz_x, vecxz_y, vecxz_z)
+    )
 
 
 fn beam_column3d_fiber_global_tangent_and_internal(
@@ -201,6 +247,62 @@ fn beam_column3d_fiber_global_tangent_and_internal(
     z2: Float64,
     u_elem_global: List[Float64],
     geom_transf: String,
+    sec_def: FiberSection3dDef,
+    fibers: List[FiberCell],
+    uniaxial_defs: List[UniMaterialDef],
+    mut uniaxial_states: List[UniMaterialState],
+    elem_state_ids: List[Int],
+    elem_state_offset: Int,
+    elem_state_count: Int,
+    integration: String,
+    num_int_pts: Int,
+    G: Float64,
+    J: Float64,
+    mut k_global_out: List[List[Float64]],
+    mut f_global_out: List[Float64],
+):
+    beam_column3d_fiber_global_tangent_and_internal(
+        x1,
+        y1,
+        z1,
+        x2,
+        y2,
+        z2,
+        u_elem_global,
+        geom_transf,
+        False,
+        0.0,
+        0.0,
+        0.0,
+        sec_def,
+        fibers,
+        uniaxial_defs,
+        uniaxial_states,
+        elem_state_ids,
+        elem_state_offset,
+        elem_state_count,
+        integration,
+        num_int_pts,
+        G,
+        J,
+        k_global_out,
+        f_global_out,
+    )
+
+
+fn beam_column3d_fiber_global_tangent_and_internal(
+    x1: Float64,
+    y1: Float64,
+    z1: Float64,
+    x2: Float64,
+    y2: Float64,
+    z2: Float64,
+    u_elem_global: List[Float64],
+    geom_transf: String,
+    has_vecxz: Bool,
+    vecxz_x: Float64,
+    vecxz_y: Float64,
+    vecxz_z: Float64,
     sec_def: FiberSection3dDef,
     fibers: List[FiberCell],
     uniaxial_defs: List[UniMaterialDef],
@@ -228,6 +330,10 @@ fn beam_column3d_fiber_global_tangent_and_internal(
         z2,
         u_elem_global,
         geom_transf,
+        has_vecxz,
+        vecxz_x,
+        vecxz_y,
+        vecxz_z,
         empty_element_loads,
         empty_elem_load_offsets,
         empty_elem_load_pool,
@@ -258,6 +364,10 @@ fn beam_column3d_fiber_global_tangent_and_internal(
     z2: Float64,
     u_elem_global: List[Float64],
     geom_transf: String,
+    has_vecxz: Bool,
+    vecxz_x: Float64,
+    vecxz_y: Float64,
+    vecxz_z: Float64,
     element_loads: List[ElementLoadInput],
     elem_load_offsets: List[Int],
     elem_load_pool: List[Int],
@@ -296,6 +406,10 @@ fn beam_column3d_fiber_global_tangent_and_internal(
         z2,
         u_elem_global,
         geom_transf,
+        has_vecxz,
+        vecxz_x,
+        vecxz_y,
+        vecxz_z,
     )
     var u_local = _beam3d_transform_u_global_to_local(T, u_elem_global)
 

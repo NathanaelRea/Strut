@@ -90,6 +90,7 @@ struct SectionInput(Movable, ImplicitlyCopyable):
     var J: Float64
     var nu: Float64
     var h: Float64
+    var rho: Float64
     var axial_material: Int
     var flexural_material: Int
     var moment_y_material: Int
@@ -101,6 +102,8 @@ struct SectionInput(Movable, ImplicitlyCopyable):
     var fiber_patch_count: Int
     var fiber_layer_offset: Int
     var fiber_layer_count: Int
+    var shell_layer_offset: Int
+    var shell_layer_count: Int
 
     fn __init__(out self):
         self.id = -1
@@ -114,6 +117,7 @@ struct SectionInput(Movable, ImplicitlyCopyable):
         self.J = 0.0
         self.nu = 0.0
         self.h = 0.0
+        self.rho = 0.0
         self.axial_material = -1
         self.flexural_material = -1
         self.moment_y_material = -1
@@ -125,6 +129,8 @@ struct SectionInput(Movable, ImplicitlyCopyable):
         self.fiber_patch_count = 0
         self.fiber_layer_offset = 0
         self.fiber_layer_count = 0
+        self.shell_layer_offset = 0
+        self.shell_layer_count = 0
 
     fn __init__(out self, id: Int, type: String):
         self.id = id
@@ -138,6 +144,7 @@ struct SectionInput(Movable, ImplicitlyCopyable):
         self.J = 0.0
         self.nu = 0.0
         self.h = 0.0
+        self.rho = 0.0
         self.axial_material = -1
         self.flexural_material = -1
         self.moment_y_material = -1
@@ -149,6 +156,8 @@ struct SectionInput(Movable, ImplicitlyCopyable):
         self.fiber_patch_count = 0
         self.fiber_layer_offset = 0
         self.fiber_layer_count = 0
+        self.shell_layer_offset = 0
+        self.shell_layer_count = 0
 
 
 struct FiberPatchInput(Movable, ImplicitlyCopyable):
@@ -201,6 +210,15 @@ struct FiberLayerInput(Movable, ImplicitlyCopyable):
         self.z_end = 0.0
 
 
+struct ShellLayerInput(Movable, ImplicitlyCopyable):
+    var material: Int
+    var thickness: Float64
+
+    fn __init__(out self):
+        self.material = -1
+        self.thickness = 0.0
+
+
 struct MaterialInput(Movable, ImplicitlyCopyable):
     var id: Int
     var type: String
@@ -226,6 +244,12 @@ struct MaterialInput(Movable, ImplicitlyCopyable):
     var Ets: Float64
     var nu: Float64
     var rho: Float64
+    var base_material: Int
+    var angle: Float64
+    var gmod: Float64
+    var nstatevs: Int
+    var props_offset: Int
+    var props_count: Int
 
     var has_r0: Bool
     var has_cr1: Bool
@@ -263,6 +287,12 @@ struct MaterialInput(Movable, ImplicitlyCopyable):
         self.Ets = 0.0
         self.nu = 0.0
         self.rho = 0.0
+        self.base_material = -1
+        self.angle = 0.0
+        self.gmod = 0.0
+        self.nstatevs = 0
+        self.props_offset = 0
+        self.props_count = 0
         self.has_r0 = False
         self.has_cr1 = False
         self.has_cr2 = False
@@ -318,6 +348,10 @@ struct ElementInput(Movable, ImplicitlyCopyable):
     var thickness: Float64
     var formulation: String
     var geom_transf: String
+    var has_geom_vecxz: Bool
+    var geom_vecxz_1: Float64
+    var geom_vecxz_2: Float64
+    var geom_vecxz_3: Float64
     var integration: String
     var num_int_pts: Int
     var rho: Float64
@@ -410,6 +444,10 @@ struct ElementInput(Movable, ImplicitlyCopyable):
         self.thickness = 0.0
         self.formulation = "PlaneStress"
         self.geom_transf = "Linear"
+        self.has_geom_vecxz = False
+        self.geom_vecxz_1 = 0.0
+        self.geom_vecxz_2 = 0.0
+        self.geom_vecxz_3 = 0.0
         self.integration = "Lobatto"
         self.num_int_pts = 3
         self.rho = 0.0
@@ -852,7 +890,9 @@ struct CaseInput(Movable):
     var sections: List[SectionInput]
     var fiber_patches: List[FiberPatchInput]
     var fiber_layers: List[FiberLayerInput]
+    var shell_layers: List[ShellLayerInput]
     var materials: List[MaterialInput]
+    var shell_material_props: List[Float64]
     var elements: List[ElementInput]
     var element_loads: List[ElementLoadInput]
     var loads: List[NodalLoadInput]
@@ -881,7 +921,9 @@ struct CaseInput(Movable):
         self.sections = []
         self.fiber_patches = []
         self.fiber_layers = []
+        self.shell_layers = []
         self.materials = []
+        self.shell_material_props = []
         self.elements = []
         self.element_loads = []
         self.loads = []
@@ -1709,6 +1751,8 @@ fn parse_case_input(data: PythonObject) raises -> CaseInput:
             parsed.nu = Float64(params["nu"])
         if params.__contains__("h"):
             parsed.h = Float64(params["h"])
+        if params.__contains__("rho"):
+            parsed.rho = Float64(params["rho"])
         if params.__contains__("axial_material"):
             parsed.axial_material = Int(params["axial_material"])
         if params.__contains__("flexural_material"):
@@ -1769,6 +1813,16 @@ fn parse_case_input(data: PythonObject) raises -> CaseInput:
                 layer_input.y_end = Float64(layer["y_end"])
                 layer_input.z_end = Float64(layer["z_end"])
                 case_input.fiber_layers.append(layer_input)
+        elif parsed.type == "LayeredShellSection":
+            var layers_raw = params.get("layers", [])
+            parsed.shell_layer_offset = len(case_input.shell_layers)
+            parsed.shell_layer_count = py_len(layers_raw)
+            for j in range(py_len(layers_raw)):
+                var layer = layers_raw[j]
+                var layer_input = ShellLayerInput()
+                layer_input.material = Int(layer["material"])
+                layer_input.thickness = Float64(layer["thickness"])
+                case_input.shell_layers.append(layer_input)
         case_input.sections.append(parsed)
 
     var materials_raw = data.get("materials", [])
@@ -1831,6 +1885,20 @@ fn parse_case_input(data: PythonObject) raises -> CaseInput:
             parsed.nu = Float64(params["nu"])
         if params.__contains__("rho"):
             parsed.rho = Float64(params["rho"])
+        if params.__contains__("material"):
+            parsed.base_material = Int(params["material"])
+        if params.__contains__("angle"):
+            parsed.angle = Float64(params["angle"])
+        if params.__contains__("gmod"):
+            parsed.gmod = Float64(params["gmod"])
+        if params.__contains__("nstatevs"):
+            parsed.nstatevs = Int(params["nstatevs"])
+        if params.__contains__("props"):
+            var props_raw = params["props"]
+            parsed.props_offset = len(case_input.shell_material_props)
+            parsed.props_count = py_len(props_raw)
+            for j in range(py_len(props_raw)):
+                case_input.shell_material_props.append(Float64(props_raw[j]))
         case_input.materials.append(parsed^)
 
     var elements_raw = data["elements"]
@@ -1918,6 +1986,15 @@ fn parse_case_input(data: PythonObject) raises -> CaseInput:
             parsed.thickness = Float64(elem["thickness"])
         parsed.formulation = String(elem.get("formulation", "PlaneStress"))
         parsed.geom_transf = String(elem.get("geomTransf", "Linear"))
+        if elem.__contains__("vecxz"):
+            var vecxz = elem["vecxz"]
+            if py_len(vecxz) > 0:
+                parsed.geom_vecxz_1 = Float64(vecxz[0])
+            if py_len(vecxz) > 1:
+                parsed.geom_vecxz_2 = Float64(vecxz[1])
+            if py_len(vecxz) > 2:
+                parsed.geom_vecxz_3 = Float64(vecxz[2])
+            parsed.has_geom_vecxz = True
         parsed.integration = String(elem.get("integration", "Lobatto"))
         parsed.num_int_pts = Int(elem.get("num_int_pts", 3))
         parsed.rho = Float64(elem.get("rho", 0.0))

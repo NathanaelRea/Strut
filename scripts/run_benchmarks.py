@@ -257,6 +257,10 @@ def _selected_engines(engine_arg: str) -> Tuple[str, ...]:
     return (engine_arg,)
 
 
+def _engines_require_direct_tcl_parser_check(engines: Iterable[str]) -> bool:
+    return any(engine in {"opensees", "openseesmp"} for engine in engines)
+
+
 def _resolve_engine_mode(
     engine_arg: Optional[str],
     mp_enabled: bool,
@@ -872,6 +876,7 @@ def _validate_generated_tcl_matches_original(
 
     original_reference_dir = case_root / "reference-original"
     generated_reference_dir = case_root / "reference"
+    generated_reference_tcl = _prepare_opensees_compat_entry(generated_tcl)
     parser_check_path = case_root / ".parser-check"
     needs_original = not _canonical_reference_ready(case_data, original_reference_dir)
     needs_generated = not _canonical_reference_ready(case_data, generated_reference_dir)
@@ -901,7 +906,7 @@ def _validate_generated_tcl_matches_original(
             [
                 str(repo_root / "scripts" / "run_opensees.sh"),
                 "--script",
-                str(generated_tcl),
+                str(generated_reference_tcl),
                 "--output",
                 str(generated_reference_dir),
             ],
@@ -1054,18 +1059,75 @@ def _prepare_opensees_compat_entry(entry_tcl: Path) -> Path:
     wrapper_path.write_text(
         "\n".join(
             [
+                "set __strut_ndm 0",
                 "set __strut_ndf 0",
+                "array set __strut_psumat_nu {}",
+                "proc __strut_install_section_compat {} {",
+                "    if {[llength [info commands section]] == 0 || [llength [info commands __strut_builtin_section]] > 0} {",
+                "        return",
+                "    }",
+                "    rename section __strut_builtin_section",
+                "    proc section {args} {",
+                "        global __strut_ndm",
+                '        if {$__strut_ndm == 3 && [llength $args] >= 3 && [lindex $args 0] eq "Fiber"} {',
+                "            set has_gj 0",
+                "            for {set idx 2} {$idx < [llength $args] - 1} {incr idx} {",
+                '                if {[lindex $args $idx] eq "-GJ"} {',
+                "                    set has_gj 1",
+                "                    break",
+                "                }",
+                "            }",
+                "            if {!$has_gj} {",
+                "                set args [linsert $args 2 -GJ 1.0e-12]",
+                "            }",
+                "        }",
+                "        return [uplevel 1 [linsert $args 0 __strut_builtin_section]]",
+                "    }",
+                "}",
+                "proc __strut_install_ndmaterial_compat {} {",
+                "    if {[llength [info commands nDMaterial]] == 0 || [llength [info commands __strut_builtin_nDMaterial]] > 0} {",
+                "        return",
+                "    }",
+                "    rename nDMaterial __strut_builtin_nDMaterial",
+                "    proc nDMaterial {args} {",
+                "        global __strut_psumat_nu",
+                '        if {[llength $args] >= 4 && [lindex $args 0] eq "PlaneStressUserMaterial"} {',
+                "            set __strut_psumat_nu([lindex $args 1]) [lindex $args end]",
+                "            return {}",
+                "        }",
+                '        if {[llength $args] == 4 && [lindex $args 0] eq "PlateFromPlaneStress"} {',
+                "            set tag [lindex $args 1]",
+                "            set baseTag [lindex $args 2]",
+                "            set gmod [lindex $args 3]",
+                "            if {[info exists __strut_psumat_nu($baseTag)]} {",
+                "                set nu $__strut_psumat_nu($baseTag)",
+                "                set E [expr {2.0 * $gmod * (1.0 + $nu)}]",
+                "                return [uplevel 1 [list __strut_builtin_nDMaterial ElasticIsotropic $tag $E $nu]]",
+                "            }",
+                "        }",
+                "        return [uplevel 1 [linsert $args 0 __strut_builtin_nDMaterial]]",
+                "    }",
+                "}",
                 'if {[llength [info commands model]] > 0 && [llength [info commands __strut_builtin_model]] == 0} {',
                 "    rename model __strut_builtin_model",
                 "    proc model {args} {",
-                "        global __strut_ndf",
+                "        global __strut_ndm __strut_ndf",
+                "        set idx [lsearch -exact $args -ndm]",
+                "        if {$idx >= 0 && ($idx + 1) < [llength $args]} {",
+                "            set __strut_ndm [lindex $args [expr {$idx + 1}]]",
+                "        }",
                 "        set idx [lsearch -exact $args -ndf]",
                 "        if {$idx >= 0 && ($idx + 1) < [llength $args]} {",
                 "            set __strut_ndf [lindex $args [expr {$idx + 1}]]",
                 "        }",
-                "        return [uplevel 1 [linsert $args 0 __strut_builtin_model]]",
+                "        set __strut_model_result [uplevel 1 [linsert $args 0 __strut_builtin_model]]",
+                "        __strut_install_section_compat",
+                "        __strut_install_ndmaterial_compat",
+                "        return $__strut_model_result",
                 "    }",
                 "}",
+                "__strut_install_section_compat",
+                "__strut_install_ndmaterial_compat",
                 'if {[llength [info commands mass]] > 0 && [llength [info commands __strut_builtin_mass]] == 0} {',
                 "    rename mass __strut_builtin_mass",
                 "    proc mass {args} {",
@@ -1212,7 +1274,12 @@ def _prepare_case_json_for_solver(case_json: Path, output_path: Path) -> Path:
 
 
 def _ensure_direct_tcl_case_artifacts(
-    case: CaseSpec, repo_root: Path, env, verbose: bool
+    case: CaseSpec,
+    repo_root: Path,
+    env,
+    verbose: bool,
+    *,
+    require_parser_check: bool = True,
 ) -> dict:
     if case.tcl_path is None:
         return _load_case_metadata(_case_json_path(case))
@@ -1220,10 +1287,12 @@ def _ensure_direct_tcl_case_artifacts(
     case_root = _direct_case_root(case)
     case_root.mkdir(parents=True, exist_ok=True)
     case_data = _load_direct_tcl_case_data(case, repo_root)
-    generated_case_json = _write_generated_direct_tcl_case(case_data, case_root)
+    _write_generated_direct_tcl_case(case_data, case_root)
+    if not require_parser_check:
+        return case_data
     try:
         generated_tcl = _emit_case_tcl(
-            generated_case_json,
+            case_root / "generated" / "case.json",
             case_root / "generated" / "model.tcl",
             repo_root,
             env,
@@ -2494,6 +2563,9 @@ def main() -> None:
     args.engine = _resolve_engine_mode(args.engine, args.mp)
     requested_batch_mode = not args.no_batch
     selected_engines = _selected_engines(args.engine)
+    require_direct_tcl_parser_check = _engines_require_direct_tcl_parser_check(
+        selected_engines
+    )
     run_opensees = "opensees" in selected_engines
     run_openseesmp = "openseesmp" in selected_engines
     run_strut = "strut" in selected_engines
@@ -2705,9 +2777,13 @@ def main() -> None:
     for case in case_specs:
         try:
             case_data = _ensure_direct_tcl_case_artifacts(
-                case, repo_root, env, verbose
+                case,
+                repo_root,
+                env,
+                verbose,
+                require_parser_check=require_direct_tcl_parser_check,
             )
-            if case.tcl_path is not None:
+            if case.tcl_path is not None and require_direct_tcl_parser_check:
                 _require_direct_tcl_parser_check(case)
             prepared_case_data[case.name] = case_data
         except (OSError, ValueError, subprocess.CalledProcessError, SystemExit) as exc:
@@ -2751,18 +2827,22 @@ def main() -> None:
             case_entry["size"] = size_override
 
         if case.tcl_path is not None:
+            if not require_direct_tcl_parser_check:
+                return case_entry
             direct_case_root = _direct_case_root(case)
             generated_tcl = direct_case_root / "generated" / "model.tcl"
             _require_direct_tcl_parser_check(case)
             if generated_tcl.exists():
-                tcl_out = results_root / "tcl" / f"{case_name}.tcl"
-                shutil.copy2(generated_tcl, tcl_out)
-                tcl_compute = tcl_out.parent / f"{tcl_out.stem}_compute.tcl"
-                tcl_lines = tcl_out.read_text().splitlines()
+                generated_copy = results_root / "tcl" / f"{case_name}.tcl"
+                shutil.copy2(generated_tcl, generated_copy)
+                generated_compute = (
+                    generated_copy.parent / f"{generated_copy.stem}_compute.tcl"
+                )
+                tcl_lines = generated_copy.read_text().splitlines()
                 compute_lines = [
                     line for line in tcl_lines if not line.lstrip().startswith("recorder ")
                 ]
-                tcl_compute.write_text(
+                generated_compute.write_text(
                     "\n".join(
                         _inject_opensees_timing(
                             compute_lines, "analysis_time_us.txt"
@@ -2771,6 +2851,8 @@ def main() -> None:
                     + "\n",
                     encoding="utf-8",
                 )
+                tcl_out = _prepare_opensees_compat_entry(generated_copy)
+                tcl_compute = _prepare_opensees_compat_entry(generated_compute)
                 case_entry["tcl"] = str(tcl_out)
                 case_entry["uses_eigen"] = _tcl_uses_eigen(tcl_compute)
             else:

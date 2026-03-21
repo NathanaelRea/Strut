@@ -74,6 +74,8 @@ OPEN_SEES_COMMAND_ALIASES = {
     "element": {
         "CorotTruss": "truss",
         "corotTruss": "truss",
+        "ShellMITC4": "shell",
+        "shellMITC4": "shell",
         "Truss": "truss",
         "truss": "truss",
         "nonlinearBeamColumn": "forceBeamColumn",
@@ -105,6 +107,12 @@ _SYSTEM_NAME_ALIASES = {
     "SparseGEN": "SuperLU",
     "SparseSPD": "SparseSYM",
     "Umfpack": "UmfPack",
+}
+
+_BEAM_INTEGRATION_MIN_POINTS = {
+    "Lobatto": 2,
+    "Legendre": 1,
+    "Radau": 1,
 }
 
 
@@ -287,8 +295,17 @@ class PendingPlainPattern:
 @dataclass
 class PendingFiberSection:
     id: int
+    section_type: str
+    torsion_gj: Optional[float] = None
     patches: list[dict[str, Any]] = field(default_factory=list)
     layers: list[dict[str, Any]] = field(default_factory=list)
+    fibers: list[dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class GeomTransformDef:
+    geom_type: str
+    vecxz: Optional[tuple[float, float, float]] = None
 
 
 @dataclass(frozen=True)
@@ -340,7 +357,7 @@ class TclStrutBuilder:
 
         self.model: Optional[dict[str, int]] = None
         self.nodes: dict[int, dict[str, Any]] = {}
-        self.geom_transforms: dict[int, str] = {}
+        self.geom_transforms: dict[int, GeomTransformDef] = {}
         self.materials: list[dict[str, Any]] = []
         self.materials_by_id: dict[int, dict[str, Any]] = {}
         self.material_ids_by_e: dict[float, int] = {}
@@ -417,6 +434,9 @@ class TclStrutBuilder:
         self.interp.createcommand("nDMaterial", self._wrap_command(self._cmd_nd_material))
         self.interp.createcommand("equalDOF", self._wrap_command(self._cmd_equal_dof))
         self.interp.createcommand(
+            "rigidDiaphragm", self._wrap_command(self._cmd_rigid_diaphragm)
+        )
+        self.interp.createcommand(
             "uniaxialMaterial", self._wrap_command(self._cmd_uniaxial_material)
         )
         self.interp.createcommand("geomTransf", self._wrap_command(self._cmd_geom_transf))
@@ -451,6 +471,7 @@ class TclStrutBuilder:
         self.interp.createcommand("section", self._wrap_command(self._cmd_section))
         self.interp.createcommand("patch", self._wrap_command(self._cmd_patch))
         self.interp.createcommand("layer", self._wrap_command(self._cmd_layer))
+        self.interp.createcommand("fiber", self._wrap_command(self._cmd_fiber))
         self.interp.createcommand("remove", self._wrap_command(self._cmd_remove))
         self.interp.createcommand("reactions", self._wrap_command(self._cmd_noop))
         self.interp.createcommand("prp", self._wrap_command(self._cmd_noop))
@@ -471,8 +492,10 @@ class TclStrutBuilder:
     def _wrap_command(self, fn):
         def wrapped(*args: str):
             cleaned_args = args
-            if "#" in args:
-                cleaned_args = args[: args.index("#")]
+            for idx, token in enumerate(args):
+                if token.startswith("#"):
+                    cleaned_args = args[:idx]
+                    break
             try:
                 return fn(*cleaned_args)
             except TclToStrutError as exc:
@@ -669,6 +692,7 @@ class TclStrutBuilder:
             "equalDOF",
             "exit",
             "file",
+            "fiber",
             "fix",
             "fixX",
             "fixY",
@@ -702,6 +726,7 @@ class TclStrutBuilder:
             "record",
             "recorder",
             "reactions",
+            "rigidDiaphragm",
             "remove",
             "block2D",
             "section",
@@ -1110,6 +1135,123 @@ class TclStrutBuilder:
         )
         self._register_material(e_value)
         return section_id
+
+    def _register_section_3d(
+        self,
+        area: float,
+        e_value: float,
+        g_value: float,
+        j_value: float,
+        iy_value: float,
+        iz_value: float,
+    ) -> int:
+        key = (area, e_value, g_value, j_value, iy_value, iz_value)
+        if key in self.section_ids_by_props:
+            return self.section_ids_by_props[key]
+        section_id = len(self.sections) + 1
+        self.section_ids_by_props[key] = section_id
+        self._upsert_section(
+            {
+                "id": section_id,
+                "type": "ElasticSection3d",
+                "params": {
+                    "E": e_value,
+                    "A": area,
+                    "Iy": iy_value,
+                    "Iz": iz_value,
+                    "G": g_value,
+                    "J": j_value,
+                },
+            }
+        )
+        self._register_material(e_value)
+        return section_id
+
+    def _validate_beam_integration(
+        self, element_type: str, integration: str, num_int_pts: int, args: tuple[str, ...]
+    ) -> None:
+        min_points = _BEAM_INTEGRATION_MIN_POINTS.get(integration)
+        if min_points is None:
+            raise self._error(
+                f"{element_type} supports integration Lobatto, Legendre, or Radau",
+                "element",
+                args,
+            )
+        if num_int_pts < min_points:
+            raise self._error(
+                f"{element_type} {integration} integration requires num_int_pts >= {min_points}",
+                "element",
+                args,
+            )
+
+    def _parse_beam_options(
+        self, options: tuple[str, ...], *, command_args: tuple[str, ...]
+    ) -> dict[str, Any]:
+        parsed: dict[str, Any] = {}
+        idx = 0
+        while idx < len(options):
+            token = options[idx]
+            if "rho" not in parsed and token and not token.startswith("-"):
+                parsed["rho"] = float(token)
+                idx += 1
+                continue
+            if token == "-mass":
+                if idx + 1 >= len(options):
+                    raise self._error(
+                        "beam element -mass expects a numeric mass density",
+                        "element",
+                        command_args,
+                    )
+                parsed["rho"] = float(options[idx + 1])
+                idx += 2
+                continue
+            if token in {"-cMass", "cMass"}:
+                parsed["cMass"] = True
+                idx += 1
+                continue
+            if token in {"-lMass", "lMass"}:
+                parsed["cMass"] = False
+                idx += 1
+                continue
+            if token == "-iter":
+                if idx + 2 >= len(options):
+                    raise self._error(
+                        "beam element -iter expects `max_iters tol`",
+                        "element",
+                        command_args,
+                    )
+                parsed["max_iters"] = int(options[idx + 1])
+                parsed["tol"] = float(options[idx + 2])
+                idx += 3
+                continue
+            raise self._error(
+                f"unsupported beam element option `{token}`",
+                "element",
+                command_args,
+            )
+        return parsed
+
+    def _clone_section_with_torsion(
+        self, tag: int, base_section: dict[str, Any], torsion_rigidity: float
+    ) -> dict[str, Any]:
+        params = dict(base_section.get("params", {}))
+        if base_section["type"] == "FiberSection3d":
+            params["patches"] = [dict(patch) for patch in params.get("patches", [])]
+            params["layers"] = [dict(layer) for layer in params.get("layers", [])]
+            if "fibers" in params:
+                params["fibers"] = [dict(fiber) for fiber in params.get("fibers", [])]
+            params["G"] = torsion_rigidity
+            params["J"] = 1.0
+            return {"id": tag, "type": "FiberSection3d", "params": params}
+        if base_section["type"] == "ElasticSection3d":
+            params["G"] = torsion_rigidity
+            params["J"] = 1.0
+            return {"id": tag, "type": "ElasticSection3d", "params": params}
+        raise self._error(
+            f"3D Aggregator torsion wrapper requires FiberSection3d or ElasticSection3d, got `{base_section['type']}`",
+            "section",
+            (),
+        )
 
     def _cmd_unknown(self, *args: str) -> str:
         if not args:
@@ -1880,6 +2022,63 @@ class TclStrutBuilder:
                 params["rho"] = float(args[4])
             self._upsert_material({"id": tag, "type": "ElasticIsotropic", "params": params})
             return ""
+        if material_type == "PlaneStressUserMaterial":
+            if len(args) < 5:
+                raise self._error(
+                    "PlaneStressUserMaterial expects `tag nstatevs nprops prop1 ... propn`",
+                    "nDMaterial",
+                    args,
+                )
+            nstatevs = max(int(args[2]), 1)
+            nprops = max(int(args[3]), 1)
+            if len(args) != 4 + nprops:
+                raise self._error(
+                    "PlaneStressUserMaterial property count does not match nprops",
+                    "nDMaterial",
+                    args,
+                )
+            self._upsert_material(
+                {
+                    "id": tag,
+                    "type": "PlaneStressUserMaterial",
+                    "params": {
+                        "nstatevs": nstatevs,
+                        "nprops": nprops,
+                        "props": [float(value) for value in args[4:]],
+                    },
+                }
+            )
+            return ""
+        if material_type in {"PlateFromPlaneStress", "PlateFromPlaneStressMaterial"}:
+            if len(args) != 4:
+                raise self._error(
+                    "PlateFromPlaneStress expects `tag matTag gmod`",
+                    "nDMaterial",
+                    args,
+                )
+            self._upsert_material(
+                {
+                    "id": tag,
+                    "type": "PlateFromPlaneStress",
+                    "params": {"material": int(args[2]), "gmod": float(args[3])},
+                }
+            )
+            return ""
+        if material_type in {"PlateRebar", "PlateRebarMaterial"}:
+            if len(args) != 4:
+                raise self._error(
+                    "PlateRebar expects `tag matTag angle`",
+                    "nDMaterial",
+                    args,
+                )
+            self._upsert_material(
+                {
+                    "id": tag,
+                    "type": "PlateRebar",
+                    "params": {"material": int(args[2]), "angle": float(args[3])},
+                }
+            )
+            return ""
         raise self._error(
             f"unsupported nDMaterial `{material_type}`",
             "nDMaterial",
@@ -1898,6 +2097,126 @@ class TclStrutBuilder:
             }
         )
         return ""
+
+    def _cmd_rigid_diaphragm(self, *args: str) -> str:
+        if len(args) < 3:
+            raise self._error(
+                "rigidDiaphragm expects perpDirn retained constrained...",
+                "rigidDiaphragm",
+                args,
+            )
+        model = self._require_model("rigidDiaphragm", args)
+        perp_dirn = int(args[0])
+        retained_node = int(args[1])
+        constrained_nodes = [int(value) for value in args[2:]]
+        if retained_node not in self.nodes:
+            raise self._error("rigidDiaphragm retained_node not found", "rigidDiaphragm", args)
+        if retained_node in constrained_nodes:
+            raise self._error(
+                "rigidDiaphragm retained_node cannot also be constrained",
+                "rigidDiaphragm",
+                args,
+            )
+        retained = self.nodes[retained_node]
+        retained_coords = (
+            float(retained.get("x", 0.0)),
+            float(retained.get("y", 0.0)),
+            float(retained.get("z", 0.0)),
+        )
+        if model["ndm"] == 3 and model["ndf"] == 6:
+            for constrained_node in constrained_nodes:
+                if constrained_node not in self.nodes:
+                    raise self._error(
+                        f"rigidDiaphragm constrained node {constrained_node} not found",
+                        "rigidDiaphragm",
+                        args,
+                    )
+                constrained = self.nodes[constrained_node]
+                dx = float(constrained.get("x", 0.0)) - retained_coords[0]
+                dy = float(constrained.get("y", 0.0)) - retained_coords[1]
+                dz = float(constrained.get("z", 0.0)) - retained_coords[2]
+                if perp_dirn == 3:
+                    constrained_dofs = [1, 2, 6]
+                    retained_dofs = [1, 2, 6]
+                    matrix = [[1.0, 0.0, -dy], [0.0, 1.0, dx], [0.0, 0.0, 1.0]]
+                elif perp_dirn == 2:
+                    constrained_dofs = [1, 3, 5]
+                    retained_dofs = [1, 3, 5]
+                    matrix = [[1.0, 0.0, dz], [0.0, 1.0, -dx], [0.0, 0.0, 1.0]]
+                elif perp_dirn == 1:
+                    constrained_dofs = [2, 3, 4]
+                    retained_dofs = [2, 3, 4]
+                    matrix = [[1.0, 0.0, -dz], [0.0, 1.0, dy], [0.0, 0.0, 1.0]]
+                else:
+                    raise self._error(
+                        "rigidDiaphragm perpDirn must be 1, 2, or 3",
+                        "rigidDiaphragm",
+                        args,
+                    )
+                self.mp_constraints.append(
+                    {
+                        "type": "rigidDiaphragm",
+                        "retained_node": retained_node,
+                        "constrained_node": constrained_node,
+                        "perp_dirn": perp_dirn,
+                        "constrained_dofs": constrained_dofs,
+                        "retained_dofs": retained_dofs,
+                        "matrix": matrix,
+                        "dx": dx,
+                        "dy": dy,
+                        "dz": dz,
+                    }
+                )
+            return ""
+        if model["ndm"] == 2 and model["ndf"] == 3:
+            for constrained_node in constrained_nodes:
+                if constrained_node not in self.nodes:
+                    raise self._error(
+                        f"rigidDiaphragm constrained node {constrained_node} not found",
+                        "rigidDiaphragm",
+                        args,
+                    )
+                constrained = self.nodes[constrained_node]
+                dx = float(constrained.get("x", 0.0)) - retained_coords[0]
+                dy = float(constrained.get("y", 0.0)) - retained_coords[1]
+                if perp_dirn == 3:
+                    constrained_dofs = [1, 2, 3]
+                    retained_dofs = [1, 2, 3]
+                    matrix = [[1.0, 0.0, -dy], [0.0, 1.0, dx], [0.0, 0.0, 1.0]]
+                elif perp_dirn == 1:
+                    constrained_dofs = [1]
+                    retained_dofs = [1]
+                    matrix = [[1.0]]
+                elif perp_dirn == 2:
+                    constrained_dofs = [2]
+                    retained_dofs = [2]
+                    matrix = [[1.0]]
+                else:
+                    raise self._error(
+                        "rigidDiaphragm perpDirn must be 1, 2, or 3",
+                        "rigidDiaphragm",
+                        args,
+                    )
+                self.mp_constraints.append(
+                    {
+                        "type": "rigidDiaphragm",
+                        "retained_node": retained_node,
+                        "constrained_node": constrained_node,
+                        "perp_dirn": perp_dirn,
+                        "constrained_dofs": constrained_dofs,
+                        "retained_dofs": retained_dofs,
+                        "matrix": matrix,
+                        "dx": dx,
+                        "dy": dy,
+                        "dz": 0.0,
+                    }
+                )
+            return ""
+        raise self._error(
+            "rigidDiaphragm requires a 3D/6DOF or 2D/3DOF model",
+            "rigidDiaphragm",
+            args,
+        )
 
     def _cmd_uniaxial_material(self, *args: str) -> str:
         if len(args) < 2:
@@ -1968,7 +2287,13 @@ class TclStrutBuilder:
         geom_type = args[0]
         if geom_type not in {"Linear", "PDelta", "Corotational"}:
             raise self._error(f"unsupported geomTransf `{geom_type}`", "geomTransf", args)
-        self.geom_transforms[int(args[1])] = geom_type
+        vecxz: Optional[tuple[float, float, float]] = None
+        if len(args) >= 5:
+            vecxz = (float(args[2]), float(args[3]), float(args[4]))
+        self.geom_transforms[int(args[1])] = GeomTransformDef(
+            geom_type=geom_type,
+            vecxz=vecxz,
+        )
         return ""
 
     def _cmd_section(self, *args: str) -> str:
@@ -1976,33 +2301,97 @@ class TclStrutBuilder:
             raise self._error("section type is required", "section", args)
         section_type = self._normalize_alias("section", args[0])
         if section_type == "Elastic":
-            self._upsert_section(
-                {
-                    "id": int(args[1]),
-                    "type": "ElasticSection2d",
-                    "params": {
-                        "E": float(args[2]),
-                        "A": float(args[3]),
-                        "I": float(args[4]),
-                    },
-                }
+            if len(args) == 5:
+                self._upsert_section(
+                    {
+                        "id": int(args[1]),
+                        "type": "ElasticSection2d",
+                        "params": {
+                            "E": float(args[2]),
+                            "A": float(args[3]),
+                            "I": float(args[4]),
+                        },
+                    }
+                )
+                return ""
+            if len(args) == 8:
+                self._upsert_section(
+                    {
+                        "id": int(args[1]),
+                        "type": "ElasticSection3d",
+                        "params": {
+                            "E": float(args[2]),
+                            "A": float(args[3]),
+                            "Iz": float(args[4]),
+                            "Iy": float(args[5]),
+                            "G": float(args[6]),
+                            "J": float(args[7]),
+                        },
+                    }
+                )
+                return ""
+            raise self._error(
+                "Elastic expects `tag E A I` or `tag E A Iz Iy G J`",
+                "section",
+                args,
             )
             return ""
         if section_type == "Fiber":
+            model = self._require_model("section", args)
+            if len(args) < 3:
+                raise self._error(
+                    "Fiber expects `section Fiber tag ?-GJ value? { ... }`",
+                    "section",
+                    args,
+                )
             tag = int(args[1])
-            self.current_section = PendingFiberSection(id=tag)
+            body_index = 2
+            torsion_gj: Optional[float] = None
+            while body_index < len(args) - 1:
+                option = args[body_index]
+                if option == "-GJ":
+                    if body_index + 1 >= len(args) - 1:
+                        raise self._error(
+                            "Fiber -GJ expects a numeric torsional rigidity before the body",
+                            "section",
+                            args,
+                        )
+                    torsion_gj = float(args[body_index + 1])
+                    body_index += 2
+                    continue
+                raise self._error(
+                    f"unsupported Fiber section option `{option}`",
+                    "section",
+                    args,
+                )
+
+            section_output_type = "FiberSection3d" if int(model["ndm"]) == 3 else "FiberSection2d"
+            self.current_section = PendingFiberSection(
+                id=tag,
+                section_type=section_output_type,
+                torsion_gj=torsion_gj,
+            )
             try:
-                self._eval_tcl(args[2], "section", args)
+                self._eval_tcl(args[body_index], "section", args)
             finally:
                 if self.current_section is not None:
+                    params: dict[str, Any] = {
+                        "patches": list(self.current_section.patches),
+                        "layers": list(self.current_section.layers),
+                    }
+                    if self.current_section.fibers:
+                        params["fibers"] = list(self.current_section.fibers)
+                    if self.current_section.section_type == "FiberSection3d":
+                        if self.current_section.torsion_gj is not None:
+                            # The runtime stores G and J separately but only uses the
+                            # product, so preserve the OpenSees `-GJ` value losslessly.
+                            params["G"] = float(self.current_section.torsion_gj)
+                            params["J"] = 1.0
                     self._upsert_section(
                         {
                             "id": tag,
-                            "type": "FiberSection2d",
-                            "params": {
-                                "patches": list(self.current_section.patches),
-                                "layers": list(self.current_section.layers),
-                            },
+                            "type": self.current_section.section_type,
+                            "params": params,
                         }
                     )
                 self.current_section = None
@@ -2068,6 +2457,29 @@ class TclStrutBuilder:
                     )
                 params[response_key] = material_id
                 idx += 2
+            base_section_id = int(params["base_section"])
+            if base_section_id >= 0:
+                base_section = self.sections_by_id.get(base_section_id)
+                if base_section is not None and base_section["type"] in {
+                    "FiberSection3d",
+                    "ElasticSection3d",
+                }:
+                    unsupported = [
+                        response_name
+                        for response_name, response_key in response_key_by_name.items()
+                        if response_name != "T" and int(params[response_key]) >= 0
+                    ]
+                    if unsupported or int(params["torsion_material"]) < 0:
+                        raise self._error(
+                            "3D Aggregator currently supports only `T -section baseTag` torsion wrappers",
+                            "section",
+                            args,
+                        )
+                    torsion_rigidity = self._material_modulus(int(params["torsion_material"]))
+                    self._upsert_section(
+                        self._clone_section_with_torsion(tag, base_section, torsion_rigidity)
+                    )
+                    return ""
             self._upsert_section({"id": tag, "type": "AggregatorSection2d", "params": params})
             return ""
         if section_type == "ElasticMembranePlateSection":
@@ -2087,6 +2499,48 @@ class TclStrutBuilder:
                 params["Ep_mod"] = float(args[6])
             self._upsert_section(
                 {"id": int(args[1]), "type": "ElasticMembranePlateSection", "params": params}
+            )
+            return ""
+        if section_type == "LayeredShell":
+            if len(args) < 5:
+                raise self._error(
+                    "LayeredShell expects `tag nLayers matTag1 h1 ...` or `tag nLayers matTag h`",
+                    "section",
+                    args,
+                )
+            tag = int(args[1])
+            n_layers = int(args[2])
+            if n_layers < 3:
+                raise self._error(
+                    "LayeredShell requires at least 3 layers",
+                    "section",
+                    args,
+                )
+            layer_args = args[3:]
+            layers: list[dict[str, Any]] = []
+            if len(layer_args) == 2:
+                material_id = int(layer_args[0])
+                layer_thickness = float(layer_args[1]) / float(n_layers)
+                layers = [
+                    {"material": material_id, "thickness": layer_thickness}
+                    for _ in range(n_layers)
+                ]
+            else:
+                if len(layer_args) != 2 * n_layers:
+                    raise self._error(
+                        "LayeredShell layer pair count does not match nLayers",
+                        "section",
+                        args,
+                    )
+                for idx in range(0, len(layer_args), 2):
+                    layers.append(
+                        {
+                            "material": int(layer_args[idx]),
+                            "thickness": float(layer_args[idx + 1]),
+                        }
+                    )
+            self._upsert_section(
+                {"id": tag, "type": "LayeredShellSection", "params": {"layers": layers}}
             )
             return ""
         raise self._error(
@@ -2148,6 +2602,21 @@ class TclStrutBuilder:
                 "z_start": float(args[5]),
                 "y_end": float(args[6]),
                 "z_end": float(args[7]),
+            }
+        )
+        return ""
+
+    def _cmd_fiber(self, *args: str) -> str:
+        if self.current_section is None:
+            raise self._error("fiber is only supported inside a Fiber section", "fiber", args)
+        if len(args) != 4:
+            raise self._error("fiber expects `y z A matTag`", "fiber", args)
+        self.current_section.fibers.append(
+            {
+                "y": float(args[0]),
+                "z": float(args[1]),
+                "area": float(args[2]),
+                "material": int(args[3]),
             }
         )
         return ""
@@ -2356,9 +2825,48 @@ class TclStrutBuilder:
             raise self._error("element type is required", "element", args)
         element_type = self._normalize_alias("element", args[0])
         if element_type == "elasticBeamColumn":
+            model = self._require_model("element", args)
             elem_id = int(args[1])
             node_i = int(args[2])
             node_j = int(args[3])
+            if int(model["ndm"]) == 3:
+                if len(args) >= 11:
+                    area = float(args[4])
+                    e_value = float(args[5])
+                    g_value = float(args[6])
+                    j_value = float(args[7])
+                    iy_value = float(args[8])
+                    iz_value = float(args[9])
+                    transf_tag = int(args[10])
+                    section_id = self._register_section_3d(
+                        area, e_value, g_value, j_value, iy_value, iz_value
+                    )
+                    options = self._parse_beam_options(args[11:], command_args=args)
+                elif len(args) >= 6:
+                    section_id = int(args[4])
+                    transf_tag = int(args[5])
+                    options = self._parse_beam_options(args[6:], command_args=args)
+                else:
+                    raise self._error(
+                        "3D elasticBeamColumn expects `id iNode jNode A E G J Iy Iz transfTag` or `id iNode jNode secTag transfTag`",
+                        "element",
+                        args,
+                    )
+                geom = self.geom_transforms.get(transf_tag)
+                if geom is None:
+                    raise self._error(f"geomTransf tag {transf_tag} not defined", "element", args)
+                element = {
+                    "id": elem_id,
+                    "type": "elasticBeamColumn3d",
+                    "nodes": [node_i, node_j],
+                    "section": section_id,
+                    "geomTransf": geom.geom_type,
+                }
+                if geom.vecxz is not None:
+                    element["vecxz"] = list(geom.vecxz)
+                element.update(options)
+                self.elements.append(element)
+                return ""
             area = float(args[4])
             e_value = float(args[5])
             inertia = float(args[6])
@@ -2367,32 +2875,56 @@ class TclStrutBuilder:
             if geom is None:
                 raise self._error(f"geomTransf tag {transf_tag} not defined", "element", args)
             section_id = self._register_section(area, e_value, inertia)
-            self.elements.append(
-                {
-                    "id": elem_id,
-                    "type": "elasticBeamColumn2d",
-                    "nodes": [node_i, node_j],
-                    "section": section_id,
-                    "geomTransf": geom,
-                }
-            )
+            element = {
+                "id": elem_id,
+                "type": "elasticBeamColumn2d",
+                "nodes": [node_i, node_j],
+                "section": section_id,
+                "geomTransf": geom.geom_type,
+            }
+            element.update(self._parse_beam_options(args[8:], command_args=args))
+            self.elements.append(element)
             return ""
-        if element_type == "forceBeamColumn":
-            transf_tag = int(args[6])
+        if element_type in {"forceBeamColumn", "dispBeamColumn"}:
+            model = self._require_model("element", args)
+            output_type = element_type
+            if len(args) < 7:
+                raise self._error(
+                    f"{element_type} expects `id iNode jNode numIntPts secTag transfTag` or `id iNode jNode transfTag integration secTag numIntPts`",
+                    "element",
+                    args,
+                )
+            integration = "Lobatto"
+            if args[5] in _BEAM_INTEGRATION_MIN_POINTS:
+                transf_tag = int(args[4])
+                integration = args[5]
+                section_id = int(args[6])
+                num_int_pts = int(args[7])
+                options = self._parse_beam_options(args[8:], command_args=args)
+            else:
+                num_int_pts = int(args[4])
+                section_id = int(args[5])
+                transf_tag = int(args[6])
+                options = self._parse_beam_options(args[7:], command_args=args)
+            self._validate_beam_integration(output_type, integration, num_int_pts, args)
             geom = self.geom_transforms.get(transf_tag)
             if geom is None:
                 raise self._error(f"geomTransf tag {transf_tag} not defined", "element", args)
-            self.elements.append(
-                {
-                    "id": int(args[1]),
-                    "type": "forceBeamColumn2d",
-                    "nodes": [int(args[2]), int(args[3])],
-                    "section": int(args[5]),
-                    "geomTransf": geom,
-                    "integration": "Lobatto",
-                    "num_int_pts": int(args[4]),
-                }
-            )
+            ndim = int(model["ndm"])
+            output_type = f"{output_type}{ndim}d"
+            element = {
+                "id": int(args[1]),
+                "type": output_type,
+                "nodes": [int(args[2]), int(args[3])],
+                "section": section_id,
+                "geomTransf": geom.geom_type,
+                "integration": integration,
+                "num_int_pts": num_int_pts,
+            }
+            if ndim == 3 and geom.vecxz is not None:
+                element["vecxz"] = list(geom.vecxz)
+            element.update(options)
+            self.elements.append(element)
             return ""
         if element_type == "truss":
             if len(args) == 6:
@@ -2435,6 +2967,28 @@ class TclStrutBuilder:
                     "type": "zeroLengthSection",
                     "nodes": [int(args[2]), int(args[3])],
                     "section": int(args[4]),
+                }
+            )
+            return ""
+        if element_type == "shell":
+            model = self._require_model("element", args)
+            if int(model["ndm"]) != 3 or int(model["ndf"]) != 6:
+                raise self._error("shell requires ndm=3 and ndf=6", "element", args)
+            if len(args) != 7:
+                raise self._error(
+                    "shell expects `id node1 node2 node3 node4 sectionTag`",
+                    "element",
+                    args,
+                )
+            section_id = int(args[6])
+            if section_id not in self.sections_by_id:
+                raise self._error(f"section {section_id} not found", "element", args)
+            self.elements.append(
+                {
+                    "id": int(args[1]),
+                    "type": "shell",
+                    "nodes": [int(args[2]), int(args[3]), int(args[4]), int(args[5])],
+                    "section": section_id,
                 }
             )
             return ""

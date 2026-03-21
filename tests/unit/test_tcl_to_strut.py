@@ -69,6 +69,10 @@ def test_prepare_direct_tcl_entry_preserves_legacy_mass_arity_in_source(tmp_path
 
     opensees_wrapper = run_case._prepare_opensees_compat_entry(runtime_entry)
     wrapper_text = opensees_wrapper.read_text(encoding="utf-8")
+    assert "rename section __strut_builtin_section" in wrapper_text
+    assert 'set args [linsert $args 2 -GJ 1.0e-12]' in wrapper_text
+    assert "rename nDMaterial __strut_builtin_nDMaterial" in wrapper_text
+    assert 'if {[llength $args] == 4 && [lindex $args 0] eq "PlateFromPlaneStress"} {' in wrapper_text
     assert "rename mass __strut_builtin_mass" in wrapper_text
     assert f"source {{{runtime_entry.name}}}" in wrapper_text
 
@@ -724,6 +728,67 @@ def test_convert_ex4_static_cycle_uses_solver_chain_per_step():
     }
 
 
+def test_convert_rigid_diaphragm_preserves_opensees_small_rotation_mapping(tmp_path: Path):
+    script = tmp_path / "rigid_diaphragm.tcl"
+    script.write_text(
+        "\n".join(
+            [
+                "model BasicBuilder -ndm 3 -ndf 6",
+                "node 10 0.0 0.0 0.0",
+                "node 11 3.0 4.0 0.0",
+                "rigidDiaphragm 3 10 11",
+                "timeSeries Linear 1",
+                "pattern Plain 1 1 {",
+                "}",
+                "constraints Transformation",
+                "numberer RCM",
+                "system SparseSYM",
+                "algorithm Linear",
+                "integrator LoadControl 1.0",
+                "analysis Static",
+                "analyze 1",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    case = tcl_to_strut.convert_tcl_to_case(script, REPO_ROOT)
+
+    assert case["mp_constraints"] == [
+        {
+            "type": "rigidDiaphragm",
+            "retained_node": 10,
+            "constrained_node": 11,
+            "perp_dirn": 3,
+            "constrained_dofs": [1, 2, 6],
+            "retained_dofs": [1, 2, 6],
+            "matrix": [[1.0, 0.0, -4.0], [0.0, 1.0, 3.0], [0.0, 0.0, 1.0]],
+            "dx": pytest.approx(3.0),
+            "dy": pytest.approx(4.0),
+            "dz": pytest.approx(0.0),
+        }
+    ]
+
+
+def test_convert_megatall_direct_tcl_completes_full_bundle_import():
+    case = _convert_direct_tcl_manifest("opensees_megatall_building_model1_dynamiccpu")
+
+    assert case["model"] == {"ndm": 3, "ndf": 6}
+    assert len(case["nodes"]) > 27000
+    assert len(case["elements"]) > 50000
+    assert len(case.get("mp_constraints", [])) > 1000
+    assert any(
+        recorder.get("raw_path") == "reaction.txt" for recorder in case["recorders"]
+    )
+    assert any(
+        recorder.get("raw_path") == "storyx.txt" for recorder in case["recorders"]
+    )
+    assert any(
+        recorder.get("raw_path") == "drift1.txt" for recorder in case["recorders"]
+    )
+
+
 def test_solver_input_matches_json_adapter_for_tcl_case():
     entry = (
         REPO_ROOT
@@ -881,6 +946,104 @@ def test_convert_normalizes_section_alias(tmp_path: Path):
     assert case["sections"][0]["type"] == "FiberSection2d"
 
 
+def test_convert_imports_inline_fiber_section_2d(tmp_path: Path):
+    script = tmp_path / "case.tcl"
+    script.write_text(
+        "\n".join(
+            [
+                "wipe",
+                "model basic -ndm 2 -ndf 3",
+                "uniaxialMaterial Elastic 1 3000.0",
+                "node 1 0.0 0.0",
+                "timeSeries Linear 1",
+                "pattern Plain 1 1 {",
+                "    load 1 1.0 0.0 0.0",
+                "}",
+                "section Fiber 7 {",
+                "    fiber -0.2 0.1 0.05 1",
+                "    fiber 0.2 -0.1 0.05 1",
+                "}",
+                "constraints Plain",
+                "numberer Plain",
+                "system BandGeneral",
+                "algorithm Linear",
+                "integrator LoadControl 1.0",
+                "analysis Static",
+                "analyze 1",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    case = tcl_to_strut.convert_tcl_to_case(script, REPO_ROOT)
+
+    assert case["sections"] == [
+        {
+            "id": 7,
+            "type": "FiberSection2d",
+            "params": {
+                "patches": [],
+                "layers": [],
+                "fibers": [
+                    {"y": -0.2, "z": 0.1, "area": 0.05, "material": 1},
+                    {"y": 0.2, "z": -0.1, "area": 0.05, "material": 1},
+                ],
+            },
+        }
+    ]
+
+
+def test_convert_imports_inline_fiber_section_3d(tmp_path: Path):
+    script = tmp_path / "case.tcl"
+    script.write_text(
+        "\n".join(
+            [
+                "wipe",
+                "model basic -ndm 3 -ndf 6",
+                "uniaxialMaterial Elastic 1 3000.0",
+                "node 1 0.0 0.0 0.0",
+                "timeSeries Linear 1",
+                "pattern Plain 1 1 {",
+                "    load 1 1.0 0.0 0.0 0.0 0.0 0.0",
+                "}",
+                "section Fiber 14 -GJ 2400000.0 {",
+                "    fiber -0.2 0.1 0.05 1",
+                "    fiber 0.2 -0.1 0.05 1",
+                "}",
+                "constraints Plain",
+                "numberer Plain",
+                "system BandGeneral",
+                "algorithm Linear",
+                "integrator LoadControl 1.0",
+                "analysis Static",
+                "analyze 1",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    case = tcl_to_strut.convert_tcl_to_case(script, REPO_ROOT)
+
+    assert case["sections"] == [
+        {
+            "id": 14,
+            "type": "FiberSection3d",
+            "params": {
+                "G": 2400000.0,
+                "J": 1.0,
+                "patches": [],
+                "layers": [],
+                "fibers": [
+                    {"y": -0.2, "z": 0.1, "area": 0.05, "material": 1},
+                    {"y": 0.2, "z": -0.1, "area": 0.05, "material": 1},
+                ],
+            },
+        }
+    ]
+
+
 def test_convert_2d_beam_uniform_preserves_opensees_wy_wx_order(tmp_path: Path):
     script = tmp_path / "case.tcl"
     script.write_text(
@@ -953,6 +1116,232 @@ def test_convert_normalizes_element_alias(tmp_path: Path):
     case = tcl_to_strut.convert_tcl_to_case(script, REPO_ROOT)
 
     assert case["elements"][0]["type"] == "forceBeamColumn2d"
+
+
+def test_convert_imports_elastic_beam_column_3d_with_mass(tmp_path: Path):
+    script = tmp_path / "beam3d_elastic.tcl"
+    script.write_text(
+        "\n".join(
+            [
+                "wipe",
+                "model basic -ndm 3 -ndf 6",
+                "node 1 0.0 0.0 0.0",
+                "node 2 0.0 0.0 144.0",
+                "fix 1 1 1 1 1 1 1",
+                "geomTransf Linear 7 0.0 0.0 1.0",
+                "element elasticBeamColumn 1 1 2 10.0 3000.0 1200.0 4.0 20.0 30.0 7 -mass 1.25 -cMass",
+                "timeSeries Linear 1",
+                "pattern Plain 1 1 {",
+                "    load 2 1.0 0.0 0.0 0.0 0.0 0.0",
+                "}",
+                "constraints Plain",
+                "numberer Plain",
+                "system BandGeneral",
+                "algorithm Linear",
+                "integrator LoadControl 1.0",
+                "analysis Static",
+                "analyze 1",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    case = tcl_to_strut.convert_tcl_to_case(script, REPO_ROOT)
+
+    assert case["elements"][0] == {
+        "id": 1,
+        "type": "elasticBeamColumn3d",
+        "nodes": [1, 2],
+        "section": 1,
+        "geomTransf": "Linear",
+        "vecxz": [0.0, 0.0, 1.0],
+        "rho": pytest.approx(1.25),
+        "cMass": True,
+    }
+    assert case["sections"][0] == {
+        "id": 1,
+        "type": "ElasticSection3d",
+        "params": {
+            "E": pytest.approx(3000.0),
+            "A": pytest.approx(10.0),
+            "Iy": pytest.approx(20.0),
+            "Iz": pytest.approx(30.0),
+            "G": pytest.approx(1200.0),
+            "J": pytest.approx(4.0),
+        },
+    }
+
+
+def test_convert_imports_disp_beam_column_3d_with_mass(tmp_path: Path):
+    script = tmp_path / "beam3d_disp.tcl"
+    script.write_text(
+        "\n".join(
+            [
+                "wipe",
+                "model basic -ndm 3 -ndf 6",
+                "node 1 0.0 0.0 0.0",
+                "node 2 0.0 0.0 144.0",
+                "fix 1 1 1 1 1 1 1",
+                "section Elastic 5 3000.0 10.0 30.0 20.0 1200.0 4.0",
+                "geomTransf PDelta 7 0.0 0.0 1.0",
+                "element dispBeamColumn 2 1 2 3 5 7 -mass 2.5",
+                "timeSeries Linear 1",
+                "pattern Plain 1 1 {",
+                "    load 2 1.0 0.0 0.0 0.0 0.0 0.0",
+                "}",
+                "constraints Plain",
+                "numberer Plain",
+                "system BandGeneral",
+                "algorithm Linear",
+                "integrator LoadControl 1.0",
+                "analysis Static",
+                "analyze 1",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    case = tcl_to_strut.convert_tcl_to_case(script, REPO_ROOT)
+
+    assert case["elements"][0] == {
+        "id": 2,
+        "type": "dispBeamColumn3d",
+        "nodes": [1, 2],
+        "section": 5,
+        "geomTransf": "PDelta",
+        "vecxz": [0.0, 0.0, 1.0],
+        "integration": "Lobatto",
+        "num_int_pts": 3,
+        "rho": pytest.approx(2.5),
+    }
+
+
+def test_convert_imports_force_beam_column_3d_with_inline_integration(tmp_path: Path):
+    script = tmp_path / "beam3d_force.tcl"
+    script.write_text(
+        "\n".join(
+            [
+                "wipe",
+                "model basic -ndm 3 -ndf 6",
+                "node 1 0.0 0.0 0.0",
+                "node 2 0.0 0.0 144.0",
+                "fix 1 1 1 1 1 1 1",
+                "section Elastic 5 3000.0 10.0 30.0 20.0 1200.0 4.0",
+                "geomTransf Corotational 7 0.0 0.0 1.0",
+                "element forceBeamColumn 3 1 2 7 Legendre 5 4 -mass 3.5 -iter 25 1.0e-10",
+                "timeSeries Linear 1",
+                "pattern Plain 1 1 {",
+                "    load 2 1.0 0.0 0.0 0.0 0.0 0.0",
+                "}",
+                "constraints Plain",
+                "numberer Plain",
+                "system BandGeneral",
+                "algorithm Linear",
+                "integrator LoadControl 1.0",
+                "analysis Static",
+                "analyze 1",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    case = tcl_to_strut.convert_tcl_to_case(script, REPO_ROOT)
+
+    assert case["elements"][0] == {
+        "id": 3,
+        "type": "forceBeamColumn3d",
+        "nodes": [1, 2],
+        "section": 5,
+        "geomTransf": "Corotational",
+        "vecxz": [0.0, 0.0, 1.0],
+        "integration": "Legendre",
+        "num_int_pts": 4,
+        "rho": pytest.approx(3.5),
+        "max_iters": 25,
+        "tol": pytest.approx(1.0e-10),
+    }
+
+
+def test_convert_preserves_distinct_3d_geom_transf_vecxz_vectors(tmp_path: Path):
+    script = tmp_path / "beam3d_vecxz.tcl"
+    script.write_text(
+        "\n".join(
+            [
+                "wipe",
+                "model basic -ndm 3 -ndf 6",
+                "node 1 0.0 0.0 0.0",
+                "node 2 0.0 0.0 144.0",
+                "node 3 0.0 0.0 288.0",
+                "fix 1 1 1 1 1 1 1",
+                "section Elastic 5 3000.0 10.0 30.0 20.0 1200.0 4.0",
+                "geomTransf PDelta 7 0.0 1.0 0.0",
+                "geomTransf PDelta 8 1.0 1.0 0.0",
+                "element dispBeamColumn 1 1 2 3 5 7",
+                "element dispBeamColumn 2 2 3 3 5 8",
+                "timeSeries Linear 1",
+                "pattern Plain 1 1 {",
+                "}",
+                "constraints Plain",
+                "numberer Plain",
+                "system BandGeneral",
+                "algorithm Linear",
+                "integrator LoadControl 1.0",
+                "analysis Static",
+                "analyze 1",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    case = tcl_to_strut.convert_tcl_to_case(script, REPO_ROOT)
+
+    assert case["elements"][0]["geomTransf"] == "PDelta"
+    assert case["elements"][0]["vecxz"] == pytest.approx([0.0, 1.0, 0.0])
+    assert case["elements"][1]["geomTransf"] == "PDelta"
+    assert case["elements"][1]["vecxz"] == pytest.approx([1.0, 1.0, 0.0])
+
+
+def test_convert_3d_torsion_aggregator_clones_base_section(tmp_path: Path):
+    script = tmp_path / "beam3d_aggregator.tcl"
+    script.write_text(
+        "\n".join(
+            [
+                "wipe",
+                "model basic -ndm 3 -ndf 6",
+                "uniaxialMaterial Elastic 9 123.0",
+                "section Fiber 1 {",
+                "    patch rect 9 2 2 -0.2 -0.1 0.2 0.1",
+                "}",
+                "section Aggregator 2 9 T -section 1",
+                "timeSeries Linear 1",
+                "pattern Plain 1 1 {",
+                "}",
+                "constraints Plain",
+                "numberer Plain",
+                "system BandGeneral",
+                "algorithm Linear",
+                "integrator LoadControl 1.0",
+                "analysis Static",
+                "analyze 1",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    case = tcl_to_strut.convert_tcl_to_case(script, REPO_ROOT)
+
+    sections = {section["id"]: section for section in case["sections"]}
+    assert sections[1]["type"] == "FiberSection3d"
+    assert "G" not in sections[1]["params"]
+    assert sections[2]["type"] == "FiberSection3d"
+    assert sections[2]["params"]["G"] == pytest.approx(123.0)
+    assert sections[2]["params"]["J"] == pytest.approx(1.0)
+    assert sections[2]["params"]["patches"] == sections[1]["params"]["patches"]
 
 
 def test_convert_accepts_inline_node_mass(tmp_path: Path):
@@ -1206,6 +1595,98 @@ def test_convert_imports_block2d_shell_geometry(tmp_path: Path):
         {"id": 4, "x": 20.0, "y": 0.0, "z": 40.0},
     ]
     assert case["elements"] == [{"id": 1, "type": "shell", "nodes": [1, 2, 4, 3], "section": 1}]
+
+
+def test_convert_imports_layered_shell_materials_and_shellmitc4(tmp_path: Path):
+    script = tmp_path / "case.tcl"
+    script.write_text(
+        "\n".join(
+            [
+                "wipe",
+                "model basic -ndm 3 -ndf 6",
+                "node 1 0.0 0.0 0.0",
+                "node 2 1.0 0.0 0.0",
+                "node 3 1.0 1.0 0.0",
+                "node 4 0.0 1.0 0.0",
+                "fix 1 1 1 1 1 1 1",
+                "fix 2 1 1 1 1 1 1",
+                "uniaxialMaterial Steel02 77997 4.0e8 1.99999995904e11 0 18.5 0.925 0.15",
+                "nDMaterial PlaneStressUserMaterial 73 40 7 50200000.0 3110000.0 -15060000.0 -0.0026421053 -0.0053963 0.0009002632 0.12",
+                "nDMaterial PlateFromPlaneStress 7399 73 0.15833333E+11",
+                "nDMaterial PlateRebar 77998 77997 90",
+                "nDMaterial PlateRebar 7798 77997 0",
+                "section LayeredShell 8501 4 7399 0.0200040024 77998 0.0120000001 7798 0.0060000001 7399 0.0200040024",
+                "element ShellMITC4 20076 1 2 3 4 8501",
+                "timeSeries Linear 1",
+                "pattern Plain 1 1 {",
+                "    load 3 0.0 0.0 -1.0 0.0 0.0 0.0",
+                "    load 4 0.0 0.0 -1.0 0.0 0.0 0.0",
+                "}",
+                "constraints Plain",
+                "numberer RCM",
+                "system BandGeneral",
+                "algorithm Newton",
+                "integrator LoadControl 1.0",
+                "analysis Static",
+                "analyze 1",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    case = tcl_to_strut.convert_tcl_to_case(script, REPO_ROOT)
+
+    assert case["materials"] == [
+        {
+            "id": 73,
+            "type": "PlaneStressUserMaterial",
+            "params": {
+                "nstatevs": 40,
+                "nprops": 7,
+                "props": [
+                    50200000.0,
+                    3110000.0,
+                    -15060000.0,
+                    -0.0026421053,
+                    -0.0053963,
+                    0.0009002632,
+                    0.12,
+                ],
+            },
+        },
+        {
+            "id": 7399,
+            "type": "PlateFromPlaneStress",
+            "params": {"material": 73, "gmod": 0.15833333e11},
+        },
+        {
+            "id": 7798,
+            "type": "PlateRebar",
+            "params": {"material": 77997, "angle": 0.0},
+        },
+        {"id": 77997, "type": "Steel02", "params": {"Fy": 4.0e8, "E0": 1.99999995904e11, "b": 0.0, "R0": 18.5, "cR1": 0.925, "cR2": 0.15}},
+        {
+            "id": 77998,
+            "type": "PlateRebar",
+            "params": {"material": 77997, "angle": 90.0},
+        },
+    ]
+    assert case["sections"] == [
+        {
+            "id": 8501,
+            "type": "LayeredShellSection",
+            "params": {
+                "layers": [
+                    {"material": 7399, "thickness": 0.0200040024},
+                    {"material": 77998, "thickness": 0.0120000001},
+                    {"material": 7798, "thickness": 0.0060000001},
+                    {"material": 7399, "thickness": 0.0200040024},
+                ]
+            },
+        }
+    ]
+    assert case["elements"] == [{"id": 20076, "type": "shell", "nodes": [1, 2, 3, 4], "section": 8501}]
 
 
 def test_convert_rejects_block2d_nine_node_elements_until_schema_supports_them(tmp_path: Path):

@@ -1,0 +1,7 @@
+{
+  "name": "opensees_megatall_building_model1_dynamiccpu",
+  "entry_tcl": "docs/agent-reference/OpenSeesExamples/MegaTallBuildingBenchmark/Model1/dynamiccpu.tcl",
+  "enabled": true,
+  "benchmark_size": "large",
+  "notes": "Full direct-Tcl parity case. On this toolchain, PlaneStressUserMaterial is executed through a shared elastic PlateFromPlaneStress surrogate in both OpenSees compatibility mode and Strut so the full megatall workflow can run without PSUMAT."
+}

@@ -299,6 +299,207 @@ def test_json_to_tcl_emits_disp_beam_column2d_with_lobatto():
     assert "element dispBeamColumn 4 1 2 1 1\n" in text
 
 
+def test_json_to_tcl_emits_rigid_diaphragm_mp_constraint():
+    case_data = _base_case()
+    case_data["model"] = {"ndm": 3, "ndf": 6}
+    case_data["nodes"] = [
+        {"id": 10, "x": 0.0, "y": 0.0, "z": 0.0},
+        {"id": 11, "x": 3.0, "y": 4.0, "z": 0.0},
+    ]
+    case_data["materials"] = []
+    case_data["analysis"] = {
+        "type": "static_linear",
+        "steps": 1,
+        "constraints": "Transformation",
+    }
+    case_data["mp_constraints"] = [
+        {
+            "type": "rigidDiaphragm",
+            "retained_node": 10,
+            "constrained_node": 11,
+            "perp_dirn": 3,
+            "constrained_dofs": [1, 2, 6],
+            "retained_dofs": [1, 2, 6],
+            "matrix": [[1.0, 0.0, -4.0], [0.0, 1.0, 3.0], [0.0, 0.0, 1.0]],
+        }
+    ]
+
+    proc, text = _run_json_to_tcl(case_data)
+
+    assert proc.returncode == 0, proc.stderr
+    assert "rigidDiaphragm 3 10 11\n" in text
+
+
+def test_json_to_tcl_emits_layered_shell_stack():
+    case_data = _base_case()
+    case_data["model"] = {"ndm": 3, "ndf": 6}
+    case_data["nodes"] = [
+        {"id": 1, "x": 0.0, "y": 0.0, "z": 0.0},
+        {"id": 2, "x": 1.0, "y": 0.0, "z": 0.0},
+        {"id": 3, "x": 1.0, "y": 1.0, "z": 0.0},
+        {"id": 4, "x": 0.0, "y": 1.0, "z": 0.0},
+    ]
+    case_data["materials"] = [
+        {
+            "id": 71,
+            "type": "PlaneStressUserMaterial",
+            "params": {"nstatevs": 40, "nprops": 3, "props": [1.0, 2.0, 3.0]},
+        },
+        {
+            "id": 7199,
+            "type": "PlateFromPlaneStress",
+            "params": {"material": 71, "gmod": 15000000000.0},
+        },
+    ]
+    case_data["sections"] = [
+        {
+            "id": 8501,
+            "type": "LayeredShellSection",
+            "params": {
+                "layers": [
+                    {"material": 7199, "thickness": 0.02},
+                    {"material": 7199, "thickness": 0.02},
+                ]
+            },
+        }
+    ]
+    case_data["elements"] = [
+        {"id": 20076, "type": "shell", "nodes": [1, 2, 3, 4], "section": 8501}
+    ]
+
+    proc, text = _run_json_to_tcl(case_data)
+
+    assert proc.returncode == 0, proc.stderr
+    assert "nDMaterial PlaneStressUserMaterial 71 40 3 1.0 2.0 3.0\n" in text
+    assert "nDMaterial PlateFromPlaneStress 7199 71 15000000000.0\n" in text
+    assert "section LayeredShell 8501 2 7199 0.02 7199 0.02\n" in text
+    assert "element ShellMITC4 20076 1 2 3 4 8501\n" in text
+
+
+def test_json_to_tcl_orders_material_dependencies_before_plate_rebar():
+    case_data = _base_case()
+    case_data["model"] = {"ndm": 3, "ndf": 6}
+    case_data["nodes"] = [
+        {"id": 1, "x": 0.0, "y": 0.0, "z": 0.0},
+        {"id": 2, "x": 1.0, "y": 0.0, "z": 0.0},
+    ]
+    case_data["materials"] = [
+        {
+            "id": 71,
+            "type": "PlaneStressUserMaterial",
+            "params": {"nstatevs": 40, "nprops": 3, "props": [1.0, 2.0, 3.0]},
+        },
+        {
+            "id": 7199,
+            "type": "PlateFromPlaneStress",
+            "params": {"material": 71, "gmod": 15000000000.0},
+        },
+        {
+            "id": 7698,
+            "type": "PlateRebar",
+            "params": {"material": 76997, "angle": 0.0},
+        },
+        {
+            "id": 76997,
+            "type": "Steel02",
+            "params": {
+                "Fy": 345000000.0,
+                "E0": 199999995904.0,
+                "b": 0.0,
+                "R0": 18.5,
+                "cR1": 0.925,
+                "cR2": 0.15,
+            },
+        },
+    ]
+
+    proc, text = _run_json_to_tcl(case_data)
+
+    assert proc.returncode == 0, proc.stderr
+    assert text.index("nDMaterial PlaneStressUserMaterial 71 40 3 1.0 2.0 3.0\n") < text.index(
+        "nDMaterial PlateFromPlaneStress 7199 71 15000000000.0\n"
+    )
+    assert text.index(
+        "uniaxialMaterial Steel02 76997 345000000.0 199999995904.0 0.0 18.5 0.925 0.15\n"
+    ) < text.index("nDMaterial PlateRebar 7698 76997 0.0\n")
+
+
+def test_json_to_tcl_emits_fiber_section3d_without_optional_torsion_gj():
+    case_data = _base_case()
+    case_data["model"] = {"ndm": 3, "ndf": 6}
+    case_data["nodes"] = [
+        {"id": 1, "x": 0.0, "y": 0.0, "z": 0.0},
+        {"id": 2, "x": 1.0, "y": 0.0, "z": 0.0},
+    ]
+    case_data["materials"] = [{"id": 1, "type": "Elastic", "params": {"E": 30000000000.0}}]
+    case_data["sections"] = [
+        {
+            "id": 7,
+            "type": "FiberSection3d",
+            "params": {
+                "fibers": [{"y": 0.0, "z": 0.0, "area": 0.01, "material": 1}],
+                "patches": [],
+                "layers": [],
+            },
+        }
+    ]
+    case_data["elements"] = [
+        {
+            "id": 4,
+            "type": "forceBeamColumn3d",
+            "nodes": [1, 2],
+            "section": 7,
+            "geomTransf": "Linear",
+            "integration": "Lobatto",
+            "num_int_pts": 3,
+        }
+    ]
+    case_data["analysis"] = {"type": "static_nonlinear", "steps": 1}
+
+    proc, text = _run_json_to_tcl(case_data)
+
+    assert proc.returncode == 0, proc.stderr
+    assert "section Fiber 7 {\n" in text
+    assert "  fiber 0.0 0.0 0.01 1\n" in text
+    assert "beamIntegration Lobatto 1 7 3\n" in text
+    assert "element forceBeamColumn 4 1 2 1 1\n" in text
+
+
+def test_json_to_tcl_emits_elastic_beam_column3d_section_form_for_fiber_section():
+    case_data = _base_case()
+    case_data["model"] = {"ndm": 3, "ndf": 6}
+    case_data["nodes"] = [
+        {"id": 1, "x": 0.0, "y": 0.0, "z": 0.0},
+        {"id": 2, "x": 1.0, "y": 0.0, "z": 0.0},
+    ]
+    case_data["materials"] = [{"id": 1, "type": "Elastic", "params": {"E": 30000000000.0}}]
+    case_data["sections"] = [
+        {
+            "id": 7,
+            "type": "FiberSection3d",
+            "params": {
+                "fibers": [{"y": 0.0, "z": 0.0, "area": 0.01, "material": 1}],
+                "patches": [],
+                "layers": [],
+            },
+        }
+    ]
+    case_data["elements"] = [
+        {
+            "id": 4,
+            "type": "elasticBeamColumn3d",
+            "nodes": [1, 2],
+            "section": 7,
+            "geomTransf": "Linear",
+        }
+    ]
+
+    proc, text = _run_json_to_tcl(case_data)
+
+    assert proc.returncode == 0, proc.stderr
+    assert "element elasticBeamColumn 4 1 2 7 1\n" in text
+
+
 def test_json_to_tcl_emits_force_beam_column2d_with_legendre_variable_points():
     case_data = _base_case()
     case_data["sections"] = [
@@ -624,7 +825,45 @@ def test_json_to_tcl_emits_force_beam_column3d_with_fiber_section3d():
     assert "element forceBeamColumn 2 1 2 1 1\n" in text
 
 
-def test_json_to_tcl_rejects_force_beam_column3d_fiber_section3d_without_gj():
+def test_json_to_tcl_emits_explicit_inline_fibers_for_fiber_section3d():
+    case_data = {
+        "schema_version": "1.0",
+        "metadata": {"name": "fiber_converter_explicit_3d", "units": "SI"},
+        "model": {"ndm": 3, "ndf": 6},
+        "nodes": [],
+        "materials": [{"id": 1, "type": "Elastic", "params": {"E": 3.0e10}}],
+        "sections": [
+            {
+                "id": 3,
+                "type": "FiberSection3d",
+                "params": {
+                    "G": 1.2e10,
+                    "J": 2.0e-4,
+                    "patches": [],
+                    "layers": [],
+                    "fibers": [
+                        {"y": -0.2, "z": 0.1, "area": 0.05, "material": 1},
+                        {"y": 0.2, "z": -0.1, "area": 0.05, "material": 1},
+                    ],
+                },
+            }
+        ],
+        "elements": [],
+        "recorders": [],
+        "analysis": {"type": "static_linear", "steps": 1},
+    }
+
+    proc, text = _run_json_to_tcl(case_data)
+    assert proc.returncode == 0, proc.stderr
+    assert (
+        "section Fiber 3 -GJ 2400000.0 {\n"
+        "  fiber -0.2 0.1 0.05 1\n"
+        "  fiber 0.2 -0.1 0.05 1\n"
+        "}\n"
+    ) in text
+
+
+def test_json_to_tcl_emits_force_beam_column3d_fiber_section3d_without_gj():
     case_data = {
         "schema_version": "1.0",
         "metadata": {"name": "fiber_converter_3d_section_missing_gj", "units": "SI"},
@@ -670,9 +909,11 @@ def test_json_to_tcl_rejects_force_beam_column3d_fiber_section3d_without_gj():
         "analysis": {"type": "static_linear", "steps": 1},
     }
 
-    proc, _ = _run_json_to_tcl(case_data)
-    assert proc.returncode != 0
-    assert "requires positive G and J" in proc.stderr
+    proc, text = _run_json_to_tcl(case_data)
+    assert proc.returncode == 0, proc.stderr
+    assert "section Fiber 1 {\n" in text
+    assert "beamIntegration Lobatto 1 1 3\n" in text
+    assert "element forceBeamColumn 2 1 2 1 1\n" in text
 
 
 def test_json_to_tcl_rejects_disp_beam_column_alias():

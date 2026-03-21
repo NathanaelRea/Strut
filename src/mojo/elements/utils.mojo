@@ -74,6 +74,71 @@ fn _normalize(x: Float64, y: Float64, z: Float64) -> (Float64, Float64, Float64)
     return (x / n, y / n, z / n)
 
 
+fn _beam3d_default_vecxz(
+    lx: Float64,
+    ly: Float64,
+    lz: Float64,
+) -> (Float64, Float64, Float64):
+    var vx = 1.0
+    var vy = 0.0
+    var vz = 0.0
+    if abs(_dot(lx, ly, lz, vx, vy, vz)) >= 0.9:
+        vx = 0.0
+        vy = 1.0
+        vz = 0.0
+        if abs(_dot(lx, ly, lz, vx, vy, vz)) >= 0.9:
+            vx = 0.0
+            vy = 0.0
+            vz = 1.0
+    return (vx, vy, vz)
+
+
+fn _beam3d_local_axes_from_vecxz(
+    lx: Float64,
+    ly: Float64,
+    lz: Float64,
+    has_vecxz: Bool,
+    vecxz_x: Float64,
+    vecxz_y: Float64,
+    vecxz_z: Float64,
+) -> (
+    Float64,
+    Float64,
+    Float64,
+    Float64,
+    Float64,
+    Float64,
+):
+    var vx: Float64
+    var vy: Float64
+    var vz: Float64
+    if has_vecxz:
+        vx = vecxz_x
+        vy = vecxz_y
+        vz = vecxz_z
+    else:
+        (vx, vy, vz) = _beam3d_default_vecxz(lx, ly, lz)
+
+    # Match OpenSees Linear/PDelta/Corotational vecxz orientation:
+    # local y = vecxz x local x, local z = local x x local y.
+    var yx: Float64
+    var yy: Float64
+    var yz: Float64
+    (yx, yy, yz) = _cross(vx, vy, vz, lx, ly, lz)
+    var ynorm = sqrt(yx * yx + yy * yy + yz * yz)
+    if ynorm == 0.0:
+        abort("invalid beam3d vecxz orientation")
+    yx /= ynorm
+    yy /= ynorm
+    yz /= ynorm
+
+    var zx: Float64
+    var zy: Float64
+    var zz: Float64
+    (zx, zy, zz) = _cross(lx, ly, lz, yx, yy, yz)
+    return (yx, yy, yz, zx, zy, zz)
+
+
 fn _beam2d_transform_u_global_to_local(
     c: Float64, s: Float64, u_global: List[Float64], mut u_local_out: List[Float64]
 ):

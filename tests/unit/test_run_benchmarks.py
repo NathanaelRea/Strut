@@ -231,6 +231,24 @@ def test_resolve_engine_mode_prefers_explicit_engine_over_mp_and_env():
     )
 
 
+def test_engines_require_direct_tcl_parser_check_for_reference_engines():
+    assert (
+        run_benchmarks._engines_require_direct_tcl_parser_check(("opensees",))
+        is True
+    )
+    assert (
+        run_benchmarks._engines_require_direct_tcl_parser_check(("openseesmp",))
+        is True
+    )
+    assert (
+        run_benchmarks._engines_require_direct_tcl_parser_check(("strut",)) is False
+    )
+    assert (
+        run_benchmarks._engines_require_direct_tcl_parser_check(("opensees", "strut"))
+        is True
+    )
+
+
 def test_build_argument_parser_treats_bare_cases_as_interactive():
     parser = run_benchmarks.build_argument_parser()
 
@@ -565,6 +583,10 @@ def test_prepare_direct_tcl_wrappers_use_manifest_source_files_order(
     compat_text = compat_wrapper.read_text(encoding="utf-8")
     compute_entry_text = compute_entry.read_text(encoding="utf-8")
     instrumented_text = instrumented_fiber.read_text(encoding="utf-8")
+    assert "rename section __strut_builtin_section" in compat_text
+    assert 'set args [linsert $args 2 -GJ 1.0e-12]' in compat_text
+    assert "rename nDMaterial __strut_builtin_nDMaterial" in compat_text
+    assert 'if {[llength $args] == 4 && [lindex $args 0] eq "PlateFromPlaneStress"} {' in compat_text
     assert "rename mass __strut_builtin_mass" in compat_text
     assert f"source {{{entry_wrapper.name}}}" in compat_text
     assert f"source {{{compat_wrapper.name}}}" in timed_text
@@ -660,6 +682,53 @@ def test_ensure_direct_tcl_case_artifacts_parses_wrapped_entry_tcl(
         "source {Ex3.Canti2D.build.InelasticFiberSection.tcl}",
         "source {Ex3.Canti2D.analyze.Dynamic.EQ.Uniform.tcl}",
     ]
+
+
+def test_ensure_direct_tcl_case_artifacts_skips_parser_check_when_not_required(
+    monkeypatch, tmp_path: Path
+):
+    repo_root = tmp_path / "repo"
+    case_root = repo_root / "tests" / "validation" / "direct_case"
+    manifest = case_root / "direct_tcl_case.json"
+    entry_tcl = tmp_path / "examples" / "case.tcl"
+    entry_tcl.parent.mkdir(parents=True, exist_ok=True)
+    entry_tcl.write_text("puts ok\n", encoding="utf-8")
+    _write_direct_tcl_case(manifest, entry_tcl=entry_tcl)
+    case = run_benchmarks._direct_tcl_case_spec(manifest)
+
+    calls = []
+    monkeypatch.setitem(
+        sys.modules,
+        "tcl_to_strut",
+        SimpleNamespace(
+            convert_tcl_to_solver_input=lambda entry, repo_root, compute_only=False: {
+                "schema_version": "1.0",
+                "metadata": {"name": "generated", "units": "unknown"},
+                "model": {"ndm": 2, "ndf": 3},
+                "nodes": [],
+                "elements": [],
+                "recorders": [],
+            }
+        ),
+    )
+
+    def fake_run(cmd, env=None, verbose=False, capture_on_error=False):
+        calls.append(cmd)
+
+    monkeypatch.setattr(run_benchmarks, "run", fake_run)
+
+    case_data = run_benchmarks._ensure_direct_tcl_case_artifacts(
+        case,
+        repo_root=repo_root,
+        env={},
+        verbose=False,
+        require_parser_check=False,
+    )
+
+    assert case_data["metadata"]["name"] == "generated"
+    assert (case_root / "generated" / "case.json").exists()
+    assert not (case_root / ".parser-check").exists()
+    assert calls == []
 
 
 def test_ensure_direct_tcl_case_artifacts_creates_canonical_reference(

@@ -41,6 +41,9 @@ from sections import (
     append_fiber_section2d_from_input,
     append_fiber_section3d_from_input,
     fiber_section2d_runtime_alloc_instances,
+    LayeredShellSectionDef,
+    append_layered_shell_section_from_input,
+    layered_shell_runtime_alloc_instances,
 )
 from strut_io import py_len
 from tag_types import (
@@ -86,6 +89,10 @@ struct RunCaseState(Movable):
     var fiber_section3d_defs: List[FiberSection3dDef]
     var fiber_section3d_cells: List[FiberCell]
     var fiber_section3d_index_by_id: List[Int]
+    var layered_shell_section_defs: List[LayeredShellSectionDef]
+    var layered_shell_section_index_by_id: List[Int]
+    var layered_shell_section_uniaxial_offsets: List[Int]
+    var layered_shell_section_uniaxial_counts: List[Int]
 
     var typed_elements: List[ElementInput]
     var elem_count: Int
@@ -105,6 +112,7 @@ struct RunCaseState(Movable):
     var elem_type_tags: List[Int]
     var elem_geom_tags: List[Int]
     var elem_section_ids: List[Int]
+    var shell_elem_instance_offsets: List[Int]
     var elem_integration_tags: List[Int]
     var elem_num_int_pts: List[Int]
     var elem_dof_counts: List[Int]
@@ -194,6 +202,10 @@ struct RunCaseState(Movable):
         self.fiber_section3d_defs = []
         self.fiber_section3d_cells = []
         self.fiber_section3d_index_by_id = []
+        self.layered_shell_section_defs = []
+        self.layered_shell_section_index_by_id = []
+        self.layered_shell_section_uniaxial_offsets = []
+        self.layered_shell_section_uniaxial_counts = []
         self.typed_elements = []
         self.elem_count = 0
         self.elem_id_to_index = []
@@ -212,6 +224,7 @@ struct RunCaseState(Movable):
         self.elem_type_tags = []
         self.elem_geom_tags = []
         self.elem_section_ids = []
+        self.shell_elem_instance_offsets = []
         self.elem_integration_tags = []
         self.elem_num_int_pts = []
         self.elem_dof_counts = []
@@ -889,6 +902,11 @@ fn load_case_state_from_input(input: CaseInput) raises -> RunCaseState:
     var fiber_section3d_cells: List[FiberCell] = []
     var fiber_section3d_index_by_id: List[Int] = []
     fiber_section3d_index_by_id.resize(len(typed_sections_by_id), -1)
+    var layered_shell_section_defs: List[LayeredShellSectionDef] = []
+    var layered_shell_section_index_by_id: List[Int] = []
+    var layered_shell_section_uniaxial_offsets: List[Int] = []
+    var layered_shell_section_uniaxial_counts: List[Int] = []
+    layered_shell_section_index_by_id.resize(len(typed_sections_by_id), -1)
     for i in range(len(input.sections)):
         var sec = input.sections[i]
         var sec_type = sec.type
@@ -919,6 +937,18 @@ fn load_case_state_from_input(input: CaseInput) raises -> RunCaseState:
                 fiber_section3d_cells,
             )
             fiber_section3d_index_by_id[sid] = len(fiber_section3d_defs) - 1
+        elif sec_type == "LayeredShellSection":
+            if sid >= len(layered_shell_section_index_by_id):
+                layered_shell_section_index_by_id.resize(sid + 1, -1)
+            append_layered_shell_section_from_input(
+                layered_shell_section_defs,
+                sec,
+                input.shell_layers,
+                typed_materials_by_id,
+                uniaxial_def_by_id,
+                input.shell_material_props,
+            )
+            layered_shell_section_index_by_id[sid] = len(layered_shell_section_defs) - 1
 
     var elem_count = len(input.elements)
     var typed_elements = input.elements.copy()
@@ -1254,8 +1284,8 @@ fn load_case_state_from_input(input: CaseInput) raises -> RunCaseState:
             var sec = typed_sections_by_id[elem.section]
             if sec.id < 0:
                 abort("section not found")
-            if sec.type != "ElasticMembranePlateSection":
-                abort("shell requires ElasticMembranePlateSection")
+            if sec.type != "ElasticMembranePlateSection" and sec.type != "LayeredShellSection":
+                abort("shell requires ElasticMembranePlateSection or LayeredShellSection")
             elem.dof_count = 24
             for d in range(6):
                 _set_elem_dof(elem, d, node_dof_index(elem.node_index_1, d + 1, ndf))
@@ -1350,6 +1380,7 @@ fn load_case_state_from_input(input: CaseInput) raises -> RunCaseState:
     var elem_type_tags: List[Int] = []
     var elem_geom_tags: List[Int] = []
     var elem_section_ids: List[Int] = []
+    var shell_elem_instance_offsets: List[Int] = []
     var elem_integration_tags: List[Int] = []
     var elem_num_int_pts: List[Int] = []
     var elem_primary_material_ids: List[Int] = []
@@ -1367,6 +1398,7 @@ fn load_case_state_from_input(input: CaseInput) raises -> RunCaseState:
     elem_type_tags.resize(elem_count, ElementTypeTag.Unknown)
     elem_geom_tags.resize(elem_count, GeomTransfTag.Unknown)
     elem_section_ids.resize(elem_count, -1)
+    shell_elem_instance_offsets.resize(elem_count, -1)
     elem_integration_tags.resize(elem_count, BeamIntegrationTag.Unknown)
     elem_num_int_pts.resize(elem_count, 0)
     elem_primary_material_ids.resize(elem_count, -1)
@@ -1645,6 +1677,36 @@ fn load_case_state_from_input(input: CaseInput) raises -> RunCaseState:
             elem_uniaxial_offsets[e] = len(elem_uniaxial_state_ids)
             elem_uniaxial_counts[e] = 0
 
+    var layered_shell_instance_counts: List[Int] = []
+    layered_shell_instance_counts.resize(len(layered_shell_section_defs), 0)
+    for e in range(elem_count):
+        var elem = typed_elements[e]
+        if elem.type_tag != ElementTypeTag.Shell:
+            continue
+        var sec_id = elem.section
+        if sec_id < 0 or sec_id >= len(typed_sections_by_id):
+            abort("shell section not found")
+        var sec = typed_sections_by_id[sec_id]
+        if sec.type != "LayeredShellSection":
+            continue
+        if sec_id >= len(layered_shell_section_index_by_id):
+            abort("LayeredShellSection index mapping missing")
+        var sec_index = layered_shell_section_index_by_id[sec_id]
+        if sec_index < 0 or sec_index >= len(layered_shell_section_defs):
+            abort("LayeredShellSection definition not found")
+        shell_elem_instance_offsets[e] = layered_shell_instance_counts[sec_index]
+        layered_shell_instance_counts[sec_index] += 4
+    if layered_shell_runtime_alloc_instances(
+        layered_shell_section_defs,
+        layered_shell_instance_counts,
+        uniaxial_defs,
+        uniaxial_states,
+        uniaxial_state_defs,
+        layered_shell_section_uniaxial_offsets,
+        layered_shell_section_uniaxial_counts,
+    ):
+        used_nonelastic_uniaxial = True
+
     var total_dofs = node_count * ndf
     var F_total: List[Float64] = []
     F_total.resize(total_dofs, 0.0)
@@ -1742,6 +1804,49 @@ fn load_case_state_from_input(input: CaseInput) raises -> RunCaseState:
         M_total[node_dof_index(elem.node_index_3, 2, ndf)] += lumped
         M_total[node_dof_index(elem.node_index_4, 1, ndf)] += lumped
         M_total[node_dof_index(elem.node_index_4, 2, ndf)] += lumped
+
+    for e in range(elem_count):
+        var elem = typed_elements[e]
+        if elem.type_tag != ElementTypeTag.Shell:
+            continue
+        if elem.section < 0 or elem.section >= len(typed_sections_by_id):
+            abort("shell section not found")
+        var sec = typed_sections_by_id[elem.section]
+        var rho_area = 0.0
+        if sec.type == "ElasticMembranePlateSection":
+            rho_area = sec.rho * sec.h
+        elif sec.type == "LayeredShellSection":
+            if elem.section >= len(layered_shell_section_index_by_id):
+                abort("LayeredShellSection index mapping missing")
+            var sec_index = layered_shell_section_index_by_id[elem.section]
+            if sec_index < 0 or sec_index >= len(layered_shell_section_defs):
+                abort("LayeredShellSection definition not found")
+            rho_area = layered_shell_section_defs[sec_index].rho_area
+        if rho_area == 0.0:
+            continue
+
+        var n1 = input.nodes[elem.node_index_1]
+        var n2 = input.nodes[elem.node_index_2]
+        var n3 = input.nodes[elem.node_index_3]
+        var n4 = input.nodes[elem.node_index_4]
+        var ax = (n2.x - n1.x) + (n3.x - n4.x)
+        var ay = (n2.y - n1.y) + (n3.y - n4.y)
+        var az = (n2.z - n1.z) + (n3.z - n4.z)
+        var bx = (n4.x - n1.x) + (n3.x - n2.x)
+        var by = (n4.y - n1.y) + (n3.y - n2.y)
+        var bz = (n4.z - n1.z) + (n3.z - n2.z)
+        var cross_x = ay * bz - az * by
+        var cross_y = az * bx - ax * bz
+        var cross_z = ax * by - ay * bx
+        var area = 0.25 * sqrt(cross_x * cross_x + cross_y * cross_y + cross_z * cross_z)
+        if area <= 0.0:
+            abort("shell area must be > 0")
+        var lumped = rho_area * area / 4.0
+        for dof in range(3):
+            M_total[node_dof_index(elem.node_index_1, dof + 1, ndf)] += lumped
+            M_total[node_dof_index(elem.node_index_2, dof + 1, ndf)] += lumped
+            M_total[node_dof_index(elem.node_index_3, dof + 1, ndf)] += lumped
+            M_total[node_dof_index(elem.node_index_4, dof + 1, ndf)] += lumped
 
     var constrained: List[Bool] = []
     constrained.resize(total_dofs, False)
@@ -2140,6 +2245,14 @@ fn load_case_state_from_input(input: CaseInput) raises -> RunCaseState:
     state.fiber_section3d_defs = fiber_section3d_defs^
     state.fiber_section3d_cells = fiber_section3d_cells^
     state.fiber_section3d_index_by_id = fiber_section3d_index_by_id^
+    state.layered_shell_section_defs = layered_shell_section_defs^
+    state.layered_shell_section_index_by_id = layered_shell_section_index_by_id^
+    state.layered_shell_section_uniaxial_offsets = (
+        layered_shell_section_uniaxial_offsets^
+    )
+    state.layered_shell_section_uniaxial_counts = (
+        layered_shell_section_uniaxial_counts^
+    )
     state.typed_elements = typed_elements^
     state.elem_count = elem_count
     state.elem_id_to_index = elem_id_to_index^
@@ -2158,6 +2271,7 @@ fn load_case_state_from_input(input: CaseInput) raises -> RunCaseState:
     state.elem_type_tags = elem_type_tags^
     state.elem_geom_tags = elem_geom_tags^
     state.elem_section_ids = elem_section_ids^
+    state.shell_elem_instance_offsets = shell_elem_instance_offsets^
     state.elem_integration_tags = elem_integration_tags^
     state.elem_num_int_pts = elem_num_int_pts^
     state.elem_dof_counts = elem_dof_counts^

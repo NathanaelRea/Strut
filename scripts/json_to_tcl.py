@@ -295,6 +295,40 @@ def _load_path_time_series_values(ts, case_dir: Path, case_data: dict):
     return [float(tok.replace("D", "E").replace("d", "e")) for tok in tokens]
 
 
+def _material_dependency_ids(material):
+    mat_type = material.get("type")
+    params = material.get("params", {})
+    if mat_type in {"PlateFromPlaneStress", "PlateRebar"}:
+        dep_id = params.get("material")
+        if isinstance(dep_id, int):
+            return [dep_id]
+    return []
+
+
+def _ordered_materials(materials):
+    ordered = []
+    visiting = set()
+    visited = set()
+
+    def visit(material_id):
+        if material_id in visited:
+            return
+        if material_id in visiting:
+            raise ValueError(f"cyclic material dependency involving {material_id}")
+        visiting.add(material_id)
+        material = materials[material_id]
+        for dep_id in _material_dependency_ids(material):
+            if dep_id in materials:
+                visit(dep_id)
+        visiting.remove(material_id)
+        visited.add(material_id)
+        ordered.append(material)
+
+    for material_id in sorted(materials):
+        visit(material_id)
+    return ordered
+
+
 def _emit_time_series(f, ts, case_dir: Path, case_data: dict):
     ts_type = ts.get("type")
     tag = ts.get("tag")
@@ -447,6 +481,7 @@ _NONLINEAR_ALGORITHMS = (
     "Newton",
     "ModifiedNewton",
     "ModifiedNewtonInitial",
+    "KrylovNewton",
     "Broyden",
     "NewtonLineSearch",
 )
@@ -469,9 +504,14 @@ def _validate_static_nonlinear_test_type(test_type, label):
 
 
 def _validate_transient_nonlinear_test_type(test_type, label):
-    if test_type not in ("NormUnbalance", "NormDispIncr", "EnergyIncr"):
+    if test_type not in (
+        "NormUnbalance",
+        "NormDispIncr",
+        "EnergyIncr",
+        "RelativeNormDispIncr",
+    ):
         raise ValueError(
-            f"{label} test_type must be NormUnbalance, NormDispIncr, or EnergyIncr"
+            f"{label} test_type must be NormUnbalance, NormDispIncr, EnergyIncr, or RelativeNormDispIncr"
         )
 
 
@@ -834,23 +874,30 @@ def main():
         mp_constraints = data.get("mp_constraints", [])
         for mpc in mp_constraints:
             mpc_type = mpc.get("type")
-            if mpc_type != "equalDOF":
-                raise ValueError(f"unsupported mp constraint type: {mpc_type}")
             retained = mpc.get("retained_node")
             constrained_node = mpc.get("constrained_node")
-            dofs = mpc.get("dofs", [])
             if retained not in node_by_id:
-                raise ValueError(f"equalDOF retained_node {retained} not found")
+                raise ValueError(f"{mpc_type} retained_node {retained} not found")
             if constrained_node not in node_by_id:
-                raise ValueError(f"equalDOF constrained_node {constrained_node} not found")
-            if not isinstance(dofs, list) or not dofs:
-                raise ValueError("equalDOF requires non-empty dofs list")
-            dof_vals = []
-            for dof in dofs:
-                if not isinstance(dof, int) or dof < 1 or dof > ndf:
-                    raise ValueError(f"equalDOF dof {dof} out of range 1..{ndf}")
-                dof_vals.append(str(dof))
-            f.write(f"equalDOF {retained} {constrained_node} {' '.join(dof_vals)}\n")
+                raise ValueError(f"{mpc_type} constrained_node {constrained_node} not found")
+            if mpc_type == "equalDOF":
+                dofs = mpc.get("dofs", [])
+                if not isinstance(dofs, list) or not dofs:
+                    raise ValueError("equalDOF requires non-empty dofs list")
+                dof_vals = []
+                for dof in dofs:
+                    if not isinstance(dof, int) or dof < 1 or dof > ndf:
+                        raise ValueError(f"equalDOF dof {dof} out of range 1..{ndf}")
+                    dof_vals.append(str(dof))
+                f.write(f"equalDOF {retained} {constrained_node} {' '.join(dof_vals)}\n")
+                continue
+            if mpc_type == "rigidDiaphragm":
+                perp_dirn = mpc.get("perp_dirn")
+                if not isinstance(perp_dirn, int) or perp_dirn < 1 or perp_dirn > 3:
+                    raise ValueError("rigidDiaphragm requires perp_dirn in 1..3")
+                f.write(f"rigidDiaphragm {perp_dirn} {retained} {constrained_node}\n")
+                continue
+            raise ValueError(f"unsupported mp constraint type: {mpc_type}")
 
         # Nodal masses (lumped)
         masses = data.get("masses", [])
@@ -870,7 +917,7 @@ def main():
                 f.write(f"mass {node_id} {' '.join(str(v) for v in vec)}\n")
 
         # Materials (Elastic/Steel01/Steel02/Concrete01/Concrete02 uniaxial or ElasticIsotropic)
-        for mat in materials.values():
+        for mat in _ordered_materials(materials):
             params = mat["params"]
             if mat["type"] == "Elastic":
                 E = params["E"]
@@ -953,6 +1000,24 @@ def main():
                 nu = params["nu"]
                 rho = params.get("rho", 0.0)
                 f.write(f"nDMaterial ElasticIsotropic {mat['id']} {E} {nu} {rho}\n")
+            elif mat["type"] == "PlaneStressUserMaterial":
+                nstatevs = params["nstatevs"]
+                nprops = params["nprops"]
+                props = params.get("props", [])
+                if len(props) != nprops:
+                    raise ValueError("PlaneStressUserMaterial props length must match nprops")
+                prop_text = " ".join(str(value) for value in props)
+                f.write(
+                    f"nDMaterial PlaneStressUserMaterial {mat['id']} {nstatevs} {nprops} {prop_text}\n"
+                )
+            elif mat["type"] == "PlateFromPlaneStress":
+                material = params["material"]
+                gmod = params["gmod"]
+                f.write(f"nDMaterial PlateFromPlaneStress {mat['id']} {material} {gmod}\n")
+            elif mat["type"] == "PlateRebar":
+                material = params["material"]
+                angle = params["angle"]
+                f.write(f"nDMaterial PlateRebar {mat['id']} {material} {angle}\n")
             else:
                 raise ValueError(f"unsupported material type: {mat['type']}")
 
@@ -980,6 +1045,15 @@ def main():
                 f.write(
                     f"section ElasticMembranePlateSection {sec['id']} {E} {nu} {h} {rho}\n"
                 )
+            elif sec["type"] == "LayeredShellSection":
+                layers = params.get("layers", [])
+                if len(layers) < 1:
+                    raise ValueError("LayeredShellSection requires at least one layer")
+                tokens = [f"section LayeredShell {sec['id']} {len(layers)}"]
+                for layer in layers:
+                    tokens.append(str(layer["material"]))
+                    tokens.append(str(layer["thickness"]))
+                f.write(" ".join(tokens) + "\n")
             elif sec["type"] == "AggregatorSection2d":
                 response_order = (
                     ("axial_material", "P"),
@@ -1015,14 +1089,16 @@ def main():
                 sec_type = sec["type"]
                 patches = params.get("patches", [])
                 layers = params.get("layers", [])
-                if not patches and not layers:
-                    raise ValueError(f"{sec_type} requires at least one patch or layer")
+                fibers = params.get("fibers", [])
+                if not patches and not layers and not fibers:
+                    raise ValueError(f"{sec_type} requires at least one patch, layer, or fiber")
                 if sec_type == "FiberSection3d":
                     G = params.get("G", 0.0)
                     J = params.get("J", 0.0)
-                    if G <= 0.0 or J <= 0.0:
-                        raise ValueError("FiberSection3d requires positive G and J")
-                    f.write(f"section Fiber {sec['id']} -GJ {G * J} {{\n")
+                    if G > 0.0 and J > 0.0:
+                        f.write(f"section Fiber {sec['id']} -GJ {G * J} {{\n")
+                    else:
+                        f.write(f"section Fiber {sec['id']} {{\n")
                 else:
                     f.write(f"section Fiber {sec['id']} {{\n")
                 for patch in patches:
@@ -1100,6 +1176,18 @@ def main():
                         f"{mat} {num_bars} {bar_area} "
                         f"{y_start} {z_start} {y_end} {z_end}\n"
                     )
+                for fiber in fibers:
+                    mat = fiber["material"]
+                    if mat not in materials:
+                        raise ValueError(f"{sec_type} fiber material {mat} not found")
+                    if materials[mat]["type"] == "ElasticIsotropic":
+                        raise ValueError(
+                            f"{sec_type} fiber requires uniaxial material (not ElasticIsotropic)"
+                        )
+                    area = fiber["area"]
+                    if area <= 0:
+                        raise ValueError(f"{sec_type} fiber area must be > 0")
+                    f.write(f"  fiber {fiber['y']} {fiber['z']} {area} {mat}\n")
                 f.write("}\n")
             else:
                 raise ValueError(f"unsupported section type: {sec['type']}")
@@ -1154,11 +1242,6 @@ def main():
             if is_3d:
                 if sec["type"] not in ("ElasticSection3d", "FiberSection3d"):
                     raise ValueError(f"{elem_type} requires ElasticSection3d or FiberSection3d")
-                if sec["type"] == "FiberSection3d":
-                    if sec["params"].get("G", 0.0) <= 0.0 or sec["params"].get("J", 0.0) <= 0.0:
-                        raise ValueError(
-                            f"{elem_type} with FiberSection3d requires positive G and J"
-                        )
             elif sec["type"] not in (
                 "FiberSection2d",
                 "ElasticSection2d",
@@ -1230,11 +1313,6 @@ def main():
                 if is_3d:
                     if sec["type"] not in ("ElasticSection3d", "FiberSection3d"):
                         raise ValueError(f"{elem_type} requires ElasticSection3d or FiberSection3d")
-                    if sec["type"] == "FiberSection3d":
-                        if sec["params"].get("G", 0.0) <= 0.0 or sec["params"].get("J", 0.0) <= 0.0:
-                            raise ValueError(
-                                f"{elem_type} with FiberSection3d requires positive G and J"
-                            )
                 elif sec["type"] not in (
                     "FiberSection2d",
                     "ElasticSection2d",
@@ -1263,21 +1341,25 @@ def main():
                 )
             elif elem["type"] == "elasticBeamColumn3d":
                 sec = sections[elem["section"]]
-                if sec["type"] != "ElasticSection3d":
-                    raise ValueError("elasticBeamColumn3d requires ElasticSection3d")
-                params = sec["params"]
-                A = params["A"]
-                E = params["E"]
-                G = params["G"]
-                J = params["J"]
-                Iy = params["Iy"]
-                Iz = params["Iz"]
                 n1, n2 = elem["nodes"]
                 vecxz = _choose_vecxz(node_by_id[n1], node_by_id[n2])
                 transf_tag = transf_tags[(elem.get("geomTransf", "Linear"), vecxz)]
-                f.write(
-                    f"element elasticBeamColumn {elem['id']} {n1} {n2} {A} {E} {G} {J} {Iy} {Iz} {transf_tag}\n"
-                )
+                if sec["type"] == "ElasticSection3d":
+                    params = sec["params"]
+                    A = params["A"]
+                    E = params["E"]
+                    G = params["G"]
+                    J = params["J"]
+                    Iy = params["Iy"]
+                    Iz = params["Iz"]
+                    f.write(
+                        "element elasticBeamColumn "
+                        f"{elem['id']} {n1} {n2} {A} {E} {G} {J} {Iy} {Iz} {transf_tag}\n"
+                    )
+                else:
+                    f.write(
+                        f"element elasticBeamColumn {elem['id']} {n1} {n2} {elem['section']} {transf_tag}\n"
+                    )
             elif elem["type"] == "truss":
                 n1, n2 = elem["nodes"]
                 area = elem["area"]
@@ -1340,7 +1422,7 @@ def main():
             elif elem["type"] == "shell":
                 n1, n2, n3, n4 = elem["nodes"]
                 sec_id = elem["section"]
-                f.write(f"element shell {elem['id']} {n1} {n2} {n3} {n4} {sec_id}\n")
+                f.write(f"element ShellMITC4 {elem['id']} {n1} {n2} {n3} {n4} {sec_id}\n")
             else:
                 raise ValueError(f"unsupported element type: {elem['type']}")
 

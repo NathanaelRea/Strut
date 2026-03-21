@@ -41,3 +41,9 @@ from sections.fiber3d import (
     fiber_section3d_set_trial,
     fiber_section3d_set_trial_from_offset,
 )
+from sections.shell_layered import (
+    LayeredShellSectionDef,
+    append_layered_shell_section_from_input,
+    layered_shell_runtime_alloc_instances,
+    layered_shell_set_trial_from_offset,
+)

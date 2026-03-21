@@ -5,8 +5,7 @@ from os import abort
 from elements.beam_loads import beam3d_basic_fixed_end_and_reactions, beam3d_section_load_response
 from elements.beam_integration import BeamIntegrationCache, beam_integration_cache_ensure
 from elements.utils import (
-    _cross,
-    _dot,
+    _beam3d_local_axes_from_vecxz,
     _ensure_zero_matrix,
     _ensure_zero_vector,
     _normalize,
@@ -167,6 +166,22 @@ fn _beam3d_rotation_into(
     z2: Float64,
     mut R: List[List[Float64]],
 ):
+    _beam3d_rotation_into(x1, y1, z1, x2, y2, z2, False, 0.0, 0.0, 0.0, R)
+
+
+fn _beam3d_rotation_into(
+    x1: Float64,
+    y1: Float64,
+    z1: Float64,
+    x2: Float64,
+    y2: Float64,
+    z2: Float64,
+    has_vecxz: Bool,
+    vecxz_x: Float64,
+    vecxz_y: Float64,
+    vecxz_z: Float64,
+    mut R: List[List[Float64]],
+):
     var dx = x2 - x1
     var dy = y2 - y1
     var dz = z2 - z1
@@ -179,30 +194,21 @@ fn _beam3d_rotation_into(
     var lz: Float64
     (lx, ly, lz) = _normalize(dx, dy, dz)
 
-    var vx = 1.0
-    var vy = 0.0
-    var vz = 0.0
-    if abs(_dot(lx, ly, lz, vx, vy, vz)) >= 0.9:
-        vx = 0.0
-        vy = 1.0
-        vz = 0.0
-        if abs(_dot(lx, ly, lz, vx, vy, vz)) >= 0.9:
-            vx = 0.0
-            vy = 0.0
-            vz = 1.0
-
     var yx: Float64
     var yy: Float64
     var yz: Float64
-    # Match OpenSees Linear/PDelta/Corotational vecxz orientation:
-    # local y = vecxz x local x, local z = local x x local y.
-    (yx, yy, yz) = _cross(vx, vy, vz, lx, ly, lz)
-    (yx, yy, yz) = _normalize(yx, yy, yz)
-
     var zx: Float64
     var zy: Float64
     var zz: Float64
-    (zx, zy, zz) = _cross(lx, ly, lz, yx, yy, yz)
+    (yx, yy, yz, zx, zy, zz) = _beam3d_local_axes_from_vecxz(
+        lx,
+        ly,
+        lz,
+        has_vecxz,
+        vecxz_x,
+        vecxz_y,
+        vecxz_z,
+    )
     _ensure_zero_matrix(R, 3, 3)
     R[0][0] = lx
     R[0][1] = ly
@@ -224,6 +230,22 @@ fn _beam3d_rotation_into_static(
     z2: Float64,
     mut R: Beam3dMat3,
 ):
+    _beam3d_rotation_into_static(x1, y1, z1, x2, y2, z2, False, 0.0, 0.0, 0.0, R)
+
+
+fn _beam3d_rotation_into_static(
+    x1: Float64,
+    y1: Float64,
+    z1: Float64,
+    x2: Float64,
+    y2: Float64,
+    z2: Float64,
+    has_vecxz: Bool,
+    vecxz_x: Float64,
+    vecxz_y: Float64,
+    vecxz_z: Float64,
+    mut R: Beam3dMat3,
+):
     var dx = x2 - x1
     var dy = y2 - y1
     var dz = z2 - z1
@@ -236,28 +258,21 @@ fn _beam3d_rotation_into_static(
     var lz: Float64
     (lx, ly, lz) = _normalize(dx, dy, dz)
 
-    var vx = 1.0
-    var vy = 0.0
-    var vz = 0.0
-    if abs(_dot(lx, ly, lz, vx, vy, vz)) >= 0.9:
-        vx = 0.0
-        vy = 1.0
-        vz = 0.0
-        if abs(_dot(lx, ly, lz, vx, vy, vz)) >= 0.9:
-            vx = 0.0
-            vy = 0.0
-            vz = 1.0
-
     var yx: Float64
     var yy: Float64
     var yz: Float64
-    (yx, yy, yz) = _cross(vx, vy, vz, lx, ly, lz)
-    (yx, yy, yz) = _normalize(yx, yy, yz)
-
     var zx: Float64
     var zy: Float64
     var zz: Float64
-    (zx, zy, zz) = _cross(lx, ly, lz, yx, yy, yz)
+    (yx, yy, yz, zx, zy, zz) = _beam3d_local_axes_from_vecxz(
+        lx,
+        ly,
+        lz,
+        has_vecxz,
+        vecxz_x,
+        vecxz_y,
+        vecxz_z,
+    )
     R[_mat3_index(0, 0)] = lx
     R[_mat3_index(0, 1)] = ly
     R[_mat3_index(0, 2)] = lz
@@ -277,8 +292,35 @@ fn _beam3d_rotation(
     y2: Float64,
     z2: Float64,
 ) -> List[List[Float64]]:
+    return _beam3d_rotation(x1, y1, z1, x2, y2, z2, False, 0.0, 0.0, 0.0)
+
+
+fn _beam3d_rotation(
+    x1: Float64,
+    y1: Float64,
+    z1: Float64,
+    x2: Float64,
+    y2: Float64,
+    z2: Float64,
+    has_vecxz: Bool,
+    vecxz_x: Float64,
+    vecxz_y: Float64,
+    vecxz_z: Float64,
+) -> List[List[Float64]]:
     var R: List[List[Float64]] = []
-    _beam3d_rotation_into(x1, y1, z1, x2, y2, z2, R)
+    _beam3d_rotation_into(
+        x1,
+        y1,
+        z1,
+        x2,
+        y2,
+        z2,
+        has_vecxz,
+        vecxz_x,
+        vecxz_y,
+        vecxz_z,
+        R,
+    )
     return R^
 
 
@@ -448,6 +490,38 @@ fn _element_rotation_into(
     geom_transf: String,
     mut R: List[List[Float64]],
 ):
+    _element_rotation_into(
+        x1,
+        y1,
+        z1,
+        x2,
+        y2,
+        z2,
+        u_elem_global,
+        geom_transf,
+        False,
+        0.0,
+        0.0,
+        0.0,
+        R,
+    )
+
+
+fn _element_rotation_into(
+    x1: Float64,
+    y1: Float64,
+    z1: Float64,
+    x2: Float64,
+    y2: Float64,
+    z2: Float64,
+    u_elem_global: List[Float64],
+    geom_transf: String,
+    has_vecxz: Bool,
+    vecxz_x: Float64,
+    vecxz_y: Float64,
+    vecxz_z: Float64,
+    mut R: List[List[Float64]],
+):
     var dx0 = x2 - x1
     var dy0 = y2 - y1
     var dz0 = z2 - z1
@@ -463,10 +537,14 @@ fn _element_rotation_into(
             x2 + u_elem_global[6],
             y2 + u_elem_global[7],
             z2 + u_elem_global[8],
+            has_vecxz,
+            vecxz_x,
+            vecxz_y,
+            vecxz_z,
             R,
         )
         return
-    _beam3d_rotation_into(x1, y1, z1, x2, y2, z2, R)
+    _beam3d_rotation_into(x1, y1, z1, x2, y2, z2, has_vecxz, vecxz_x, vecxz_y, vecxz_z, R)
 
 
 fn _element_rotation_into_static(
@@ -478,6 +556,38 @@ fn _element_rotation_into_static(
     z2: Float64,
     u_elem_global: List[Float64],
     geom_transf: String,
+    mut R: Beam3dMat3,
+):
+    _element_rotation_into_static(
+        x1,
+        y1,
+        z1,
+        x2,
+        y2,
+        z2,
+        u_elem_global,
+        geom_transf,
+        False,
+        0.0,
+        0.0,
+        0.0,
+        R,
+    )
+
+
+fn _element_rotation_into_static(
+    x1: Float64,
+    y1: Float64,
+    z1: Float64,
+    x2: Float64,
+    y2: Float64,
+    z2: Float64,
+    u_elem_global: List[Float64],
+    geom_transf: String,
+    has_vecxz: Bool,
+    vecxz_x: Float64,
+    vecxz_y: Float64,
+    vecxz_z: Float64,
     mut R: Beam3dMat3,
 ):
     var dx0 = x2 - x1
@@ -495,10 +605,16 @@ fn _element_rotation_into_static(
             x2 + u_elem_global[6],
             y2 + u_elem_global[7],
             z2 + u_elem_global[8],
+            has_vecxz,
+            vecxz_x,
+            vecxz_y,
+            vecxz_z,
             R,
         )
         return
-    _beam3d_rotation_into_static(x1, y1, z1, x2, y2, z2, R)
+    _beam3d_rotation_into_static(
+        x1, y1, z1, x2, y2, z2, has_vecxz, vecxz_x, vecxz_y, vecxz_z, R
+    )
 
 
 fn _element_rotation(
@@ -511,8 +627,52 @@ fn _element_rotation(
     u_elem_global: List[Float64],
     geom_transf: String,
 ) -> List[List[Float64]]:
+    return _element_rotation(
+        x1,
+        y1,
+        z1,
+        x2,
+        y2,
+        z2,
+        u_elem_global,
+        geom_transf,
+        False,
+        0.0,
+        0.0,
+        0.0,
+    )
+
+
+fn _element_rotation(
+    x1: Float64,
+    y1: Float64,
+    z1: Float64,
+    x2: Float64,
+    y2: Float64,
+    z2: Float64,
+    u_elem_global: List[Float64],
+    geom_transf: String,
+    has_vecxz: Bool,
+    vecxz_x: Float64,
+    vecxz_y: Float64,
+    vecxz_z: Float64,
+) -> List[List[Float64]]:
     var R: List[List[Float64]] = []
-    _element_rotation_into(x1, y1, z1, x2, y2, z2, u_elem_global, geom_transf, R)
+    _element_rotation_into(
+        x1,
+        y1,
+        z1,
+        x2,
+        y2,
+        z2,
+        u_elem_global,
+        geom_transf,
+        has_vecxz,
+        vecxz_x,
+        vecxz_y,
+        vecxz_z,
+        R,
+    )
     return R^
 
 
@@ -742,6 +902,25 @@ fn _ensure_force_beam_column3d_geometry_cache(
     z2: Float64,
     mut scratch: ForceBeamColumn3dScratch,
 ):
+    _ensure_force_beam_column3d_geometry_cache(
+        elem_index, x1, y1, z1, x2, y2, z2, False, 0.0, 0.0, 0.0, scratch
+    )
+
+
+fn _ensure_force_beam_column3d_geometry_cache(
+    elem_index: Int,
+    x1: Float64,
+    y1: Float64,
+    z1: Float64,
+    x2: Float64,
+    y2: Float64,
+    z2: Float64,
+    has_vecxz: Bool,
+    vecxz_x: Float64,
+    vecxz_y: Float64,
+    vecxz_z: Float64,
+    mut scratch: ForceBeamColumn3dScratch,
+):
     if elem_index < 0:
         return
     _ensure_force_beam_column3d_cache_slot(scratch, elem_index)
@@ -764,7 +943,9 @@ fn _ensure_force_beam_column3d_geometry_cache(
     scratch.basic_coeff_cache[elem_index] = basic_coeff
 
     var rotation = scratch.rotation_cache[elem_index]
-    _beam3d_rotation_into_static(x1, y1, z1, x2, y2, z2, scratch.R)
+    _beam3d_rotation_into_static(
+        x1, y1, z1, x2, y2, z2, has_vecxz, vecxz_x, vecxz_y, vecxz_z, scratch.R
+    )
     for i in range(3):
         for j in range(3):
             rotation[_mat3_index(i, j)] = scratch.R[_mat3_index(i, j)]
@@ -1475,6 +1656,54 @@ fn force_beam_column3d_global_tangent_and_internal(
     mut k_global_out: List[List[Float64]],
     mut f_global_out: List[Float64],
 ):
+    force_beam_column3d_global_tangent_and_internal(
+        x1,
+        y1,
+        z1,
+        x2,
+        y2,
+        z2,
+        u_elem_global,
+        geom_transf,
+        False,
+        0.0,
+        0.0,
+        0.0,
+        E,
+        A,
+        Iy,
+        Iz,
+        G,
+        J,
+        scratch,
+        k_global_out,
+        f_global_out,
+    )
+
+
+fn force_beam_column3d_global_tangent_and_internal(
+    x1: Float64,
+    y1: Float64,
+    z1: Float64,
+    x2: Float64,
+    y2: Float64,
+    z2: Float64,
+    u_elem_global: List[Float64],
+    geom_transf: String,
+    has_vecxz: Bool,
+    vecxz_x: Float64,
+    vecxz_y: Float64,
+    vecxz_z: Float64,
+    E: Float64,
+    A: Float64,
+    Iy: Float64,
+    Iz: Float64,
+    G: Float64,
+    J: Float64,
+    mut scratch: ForceBeamColumn3dScratch,
+    mut k_global_out: List[List[Float64]],
+    mut f_global_out: List[Float64],
+):
     var empty_element_loads: List[ElementLoadInput] = []
     var empty_elem_load_offsets: List[Int] = []
     var empty_elem_load_pool: List[Int] = []
@@ -1488,6 +1717,10 @@ fn force_beam_column3d_global_tangent_and_internal(
         z2,
         u_elem_global,
         geom_transf,
+        has_vecxz,
+        vecxz_x,
+        vecxz_y,
+        vecxz_z,
         empty_element_loads,
         empty_elem_load_offsets,
         empty_elem_load_pool,
@@ -1522,6 +1755,52 @@ fn force_beam_column3d_global_tangent_and_internal(
     mut k_global_out: List[List[Float64]],
     mut f_global_out: List[Float64],
 ):
+    force_beam_column3d_global_tangent_and_internal(
+        x1,
+        y1,
+        z1,
+        x2,
+        y2,
+        z2,
+        u_elem_global,
+        geom_transf,
+        False,
+        0.0,
+        0.0,
+        0.0,
+        E,
+        A,
+        Iy,
+        Iz,
+        G,
+        J,
+        k_global_out,
+        f_global_out,
+    )
+
+
+fn force_beam_column3d_global_tangent_and_internal(
+    x1: Float64,
+    y1: Float64,
+    z1: Float64,
+    x2: Float64,
+    y2: Float64,
+    z2: Float64,
+    u_elem_global: List[Float64],
+    geom_transf: String,
+    has_vecxz: Bool,
+    vecxz_x: Float64,
+    vecxz_y: Float64,
+    vecxz_z: Float64,
+    E: Float64,
+    A: Float64,
+    Iy: Float64,
+    Iz: Float64,
+    G: Float64,
+    J: Float64,
+    mut k_global_out: List[List[Float64]],
+    mut f_global_out: List[Float64],
+):
     var scratch = ForceBeamColumn3dScratch()
     force_beam_column3d_global_tangent_and_internal(
         x1,
@@ -1532,6 +1811,10 @@ fn force_beam_column3d_global_tangent_and_internal(
         z2,
         u_elem_global,
         geom_transf,
+        has_vecxz,
+        vecxz_x,
+        vecxz_y,
+        vecxz_z,
         E,
         A,
         Iy,
@@ -1567,6 +1850,62 @@ fn force_beam_column3d_global_tangent_and_internal(
     mut k_global_out: List[List[Float64]],
     mut f_global_out: List[Float64],
 ):
+    force_beam_column3d_global_tangent_and_internal(
+        elem_index,
+        x1,
+        y1,
+        z1,
+        x2,
+        y2,
+        z2,
+        u_elem_global,
+        geom_transf,
+        False,
+        0.0,
+        0.0,
+        0.0,
+        element_loads,
+        elem_load_offsets,
+        elem_load_pool,
+        load_scale,
+        E,
+        A,
+        Iy,
+        Iz,
+        G,
+        J,
+        k_global_out,
+        f_global_out,
+    )
+
+
+fn force_beam_column3d_global_tangent_and_internal(
+    elem_index: Int,
+    x1: Float64,
+    y1: Float64,
+    z1: Float64,
+    x2: Float64,
+    y2: Float64,
+    z2: Float64,
+    u_elem_global: List[Float64],
+    geom_transf: String,
+    has_vecxz: Bool,
+    vecxz_x: Float64,
+    vecxz_y: Float64,
+    vecxz_z: Float64,
+    element_loads: List[ElementLoadInput],
+    elem_load_offsets: List[Int],
+    elem_load_pool: List[Int],
+    load_scale: Float64,
+    E: Float64,
+    A: Float64,
+    Iy: Float64,
+    Iz: Float64,
+    G: Float64,
+    J: Float64,
+    mut k_global_out: List[List[Float64]],
+    mut f_global_out: List[Float64],
+):
     var scratch = ForceBeamColumn3dScratch()
     force_beam_column3d_global_tangent_and_internal(
         elem_index,
@@ -1578,6 +1917,10 @@ fn force_beam_column3d_global_tangent_and_internal(
         z2,
         u_elem_global,
         geom_transf,
+        has_vecxz,
+        vecxz_x,
+        vecxz_y,
+        vecxz_z,
         element_loads,
         elem_load_offsets,
         elem_load_pool,
@@ -1604,6 +1947,10 @@ fn force_beam_column3d_global_tangent_and_internal(
     z2: Float64,
     u_elem_global: List[Float64],
     geom_transf: String,
+    has_vecxz: Bool,
+    vecxz_x: Float64,
+    vecxz_y: Float64,
+    vecxz_z: Float64,
     element_loads: List[ElementLoadInput],
     elem_load_offsets: List[Int],
     elem_load_pool: List[Int],
@@ -1619,7 +1966,7 @@ fn force_beam_column3d_global_tangent_and_internal(
     mut f_global_out: List[Float64],
 ):
     _ensure_force_beam_column3d_geometry_cache(
-        elem_index, x1, y1, z1, x2, y2, z2, scratch
+        elem_index, x1, y1, z1, x2, y2, z2, has_vecxz, vecxz_x, vecxz_y, vecxz_z, scratch
     )
     var dx = x2 - x1
     var dy = y2 - y1
@@ -1632,13 +1979,37 @@ fn force_beam_column3d_global_tangent_and_internal(
 
     if geom_transf == "Corotational":
         _element_rotation_into_static(
-            x1, y1, z1, x2, y2, z2, u_elem_global, geom_transf, scratch.R
+            x1,
+            y1,
+            z1,
+            x2,
+            y2,
+            z2,
+            u_elem_global,
+            geom_transf,
+            has_vecxz,
+            vecxz_x,
+            vecxz_y,
+            vecxz_z,
+            scratch.R,
         )
     elif elem_index >= 0 and elem_index < len(scratch.rotation_cache):
         scratch.R = scratch.rotation_cache[elem_index]
     else:
         _element_rotation_into_static(
-            x1, y1, z1, x2, y2, z2, u_elem_global, geom_transf, scratch.R
+            x1,
+            y1,
+            z1,
+            x2,
+            y2,
+            z2,
+            u_elem_global,
+            geom_transf,
+            has_vecxz,
+            vecxz_x,
+            vecxz_y,
+            vecxz_z,
+            scratch.R,
         )
     _beam3d_transform_u_global_to_local_static(scratch.R, u_elem_global, scratch.u_local)
     var fixed_end = beam3d_basic_fixed_end_and_reactions(
@@ -1806,6 +2177,70 @@ fn force_beam_column3d_fiber_global_tangent_and_internal(
     mut k_global_out: List[List[Float64]],
     mut f_global_out: List[Float64],
 ):
+    force_beam_column3d_fiber_global_tangent_and_internal(
+        x1,
+        y1,
+        z1,
+        x2,
+        y2,
+        z2,
+        u_elem_global,
+        geom_transf,
+        False,
+        0.0,
+        0.0,
+        0.0,
+        sec_def,
+        fibers,
+        uniaxial_defs,
+        uniaxial_states,
+        elem_state_ids,
+        elem_state_offset,
+        elem_state_count,
+        integration,
+        num_int_pts,
+        G,
+        J,
+        force_basic_q_state,
+        force_basic_q_offset,
+        force_basic_q_count,
+        scratch,
+        k_global_out,
+        f_global_out,
+    )
+
+
+fn force_beam_column3d_fiber_global_tangent_and_internal(
+    x1: Float64,
+    y1: Float64,
+    z1: Float64,
+    x2: Float64,
+    y2: Float64,
+    z2: Float64,
+    u_elem_global: List[Float64],
+    geom_transf: String,
+    has_vecxz: Bool,
+    vecxz_x: Float64,
+    vecxz_y: Float64,
+    vecxz_z: Float64,
+    sec_def: FiberSection3dDef,
+    fibers: List[FiberCell],
+    uniaxial_defs: List[UniMaterialDef],
+    mut uniaxial_states: List[UniMaterialState],
+    elem_state_ids: List[Int],
+    elem_state_offset: Int,
+    elem_state_count: Int,
+    integration: String,
+    num_int_pts: Int,
+    G: Float64,
+    J: Float64,
+    mut force_basic_q_state: List[Float64],
+    force_basic_q_offset: Int,
+    force_basic_q_count: Int,
+    mut scratch: ForceBeamColumn3dScratch,
+    mut k_global_out: List[List[Float64]],
+    mut f_global_out: List[Float64],
+):
     var empty_element_loads: List[ElementLoadInput] = []
     var empty_elem_load_offsets: List[Int] = []
     var empty_elem_load_pool: List[Int] = []
@@ -1819,6 +2254,10 @@ fn force_beam_column3d_fiber_global_tangent_and_internal(
         z2,
         u_elem_global,
         geom_transf,
+        has_vecxz,
+        vecxz_x,
+        vecxz_y,
+        vecxz_z,
         empty_element_loads,
         empty_elem_load_offsets,
         empty_elem_load_pool,
@@ -1869,6 +2308,68 @@ fn force_beam_column3d_fiber_global_tangent_and_internal(
     mut k_global_out: List[List[Float64]],
     mut f_global_out: List[Float64],
 ):
+    force_beam_column3d_fiber_global_tangent_and_internal(
+        x1,
+        y1,
+        z1,
+        x2,
+        y2,
+        z2,
+        u_elem_global,
+        geom_transf,
+        False,
+        0.0,
+        0.0,
+        0.0,
+        sec_def,
+        fibers,
+        uniaxial_defs,
+        uniaxial_states,
+        elem_state_ids,
+        elem_state_offset,
+        elem_state_count,
+        integration,
+        num_int_pts,
+        G,
+        J,
+        force_basic_q_state,
+        force_basic_q_offset,
+        force_basic_q_count,
+        k_global_out,
+        f_global_out,
+    )
+
+
+fn force_beam_column3d_fiber_global_tangent_and_internal(
+    x1: Float64,
+    y1: Float64,
+    z1: Float64,
+    x2: Float64,
+    y2: Float64,
+    z2: Float64,
+    u_elem_global: List[Float64],
+    geom_transf: String,
+    has_vecxz: Bool,
+    vecxz_x: Float64,
+    vecxz_y: Float64,
+    vecxz_z: Float64,
+    sec_def: FiberSection3dDef,
+    fibers: List[FiberCell],
+    uniaxial_defs: List[UniMaterialDef],
+    mut uniaxial_states: List[UniMaterialState],
+    elem_state_ids: List[Int],
+    elem_state_offset: Int,
+    elem_state_count: Int,
+    integration: String,
+    num_int_pts: Int,
+    G: Float64,
+    J: Float64,
+    mut force_basic_q_state: List[Float64],
+    force_basic_q_offset: Int,
+    force_basic_q_count: Int,
+    mut k_global_out: List[List[Float64]],
+    mut f_global_out: List[Float64],
+):
     var scratch = ForceBeamColumn3dScratch()
     force_beam_column3d_fiber_global_tangent_and_internal(
         x1,
@@ -1879,6 +2380,10 @@ fn force_beam_column3d_fiber_global_tangent_and_internal(
         z2,
         u_elem_global,
         geom_transf,
+        has_vecxz,
+        vecxz_x,
+        vecxz_y,
+        vecxz_z,
         sec_def,
         fibers,
         uniaxial_defs,
@@ -1930,6 +2435,78 @@ fn force_beam_column3d_fiber_global_tangent_and_internal(
     mut k_global_out: List[List[Float64]],
     mut f_global_out: List[Float64],
 ):
+    force_beam_column3d_fiber_global_tangent_and_internal(
+        elem_index,
+        x1,
+        y1,
+        z1,
+        x2,
+        y2,
+        z2,
+        u_elem_global,
+        geom_transf,
+        False,
+        0.0,
+        0.0,
+        0.0,
+        element_loads,
+        elem_load_offsets,
+        elem_load_pool,
+        load_scale,
+        sec_def,
+        fibers,
+        uniaxial_defs,
+        uniaxial_states,
+        elem_state_ids,
+        elem_state_offset,
+        elem_state_count,
+        integration,
+        num_int_pts,
+        G,
+        J,
+        force_basic_q_state,
+        force_basic_q_offset,
+        force_basic_q_count,
+        k_global_out,
+        f_global_out,
+    )
+
+
+fn force_beam_column3d_fiber_global_tangent_and_internal(
+    elem_index: Int,
+    x1: Float64,
+    y1: Float64,
+    z1: Float64,
+    x2: Float64,
+    y2: Float64,
+    z2: Float64,
+    u_elem_global: List[Float64],
+    geom_transf: String,
+    has_vecxz: Bool,
+    vecxz_x: Float64,
+    vecxz_y: Float64,
+    vecxz_z: Float64,
+    element_loads: List[ElementLoadInput],
+    elem_load_offsets: List[Int],
+    elem_load_pool: List[Int],
+    load_scale: Float64,
+    sec_def: FiberSection3dDef,
+    fibers: List[FiberCell],
+    uniaxial_defs: List[UniMaterialDef],
+    mut uniaxial_states: List[UniMaterialState],
+    elem_state_ids: List[Int],
+    elem_state_offset: Int,
+    elem_state_count: Int,
+    integration: String,
+    num_int_pts: Int,
+    G: Float64,
+    J: Float64,
+    mut force_basic_q_state: List[Float64],
+    force_basic_q_offset: Int,
+    force_basic_q_count: Int,
+    mut k_global_out: List[List[Float64]],
+    mut f_global_out: List[Float64],
+):
     var scratch = ForceBeamColumn3dScratch()
     force_beam_column3d_fiber_global_tangent_and_internal(
         elem_index,
@@ -1941,6 +2518,10 @@ fn force_beam_column3d_fiber_global_tangent_and_internal(
         z2,
         u_elem_global,
         geom_transf,
+        has_vecxz,
+        vecxz_x,
+        vecxz_y,
+        vecxz_z,
         element_loads,
         elem_load_offsets,
         elem_load_pool,
@@ -1975,6 +2556,10 @@ fn force_beam_column3d_fiber_global_tangent_and_internal(
     z2: Float64,
     u_elem_global: List[Float64],
     geom_transf: String,
+    has_vecxz: Bool,
+    vecxz_x: Float64,
+    vecxz_y: Float64,
+    vecxz_z: Float64,
     element_loads: List[ElementLoadInput],
     elem_load_offsets: List[Int],
     elem_load_pool: List[Int],
@@ -2011,7 +2596,7 @@ fn force_beam_column3d_fiber_global_tangent_and_internal(
         abort("forceBeamColumn3d basic force state out of range")
 
     _ensure_force_beam_column3d_geometry_cache(
-        elem_index, x1, y1, z1, x2, y2, z2, scratch
+        elem_index, x1, y1, z1, x2, y2, z2, has_vecxz, vecxz_x, vecxz_y, vecxz_z, scratch
     )
     _ensure_force_beam_column3d_load_cache(
         elem_index,
@@ -2034,13 +2619,37 @@ fn force_beam_column3d_fiber_global_tangent_and_internal(
 
     if geom_transf == "Corotational":
         _element_rotation_into_static(
-            x1, y1, z1, x2, y2, z2, u_elem_global, geom_transf, scratch.R
+            x1,
+            y1,
+            z1,
+            x2,
+            y2,
+            z2,
+            u_elem_global,
+            geom_transf,
+            has_vecxz,
+            vecxz_x,
+            vecxz_y,
+            vecxz_z,
+            scratch.R,
         )
     elif elem_index >= 0 and elem_index < len(scratch.rotation_cache):
         scratch.R = scratch.rotation_cache[elem_index]
     else:
         _element_rotation_into_static(
-            x1, y1, z1, x2, y2, z2, u_elem_global, geom_transf, scratch.R
+            x1,
+            y1,
+            z1,
+            x2,
+            y2,
+            z2,
+            u_elem_global,
+            geom_transf,
+            has_vecxz,
+            vecxz_x,
+            vecxz_y,
+            vecxz_z,
+            scratch.R,
         )
     _beam3d_transform_u_global_to_local_static(scratch.R, u_elem_global, scratch.u_local)
 
@@ -2407,6 +3016,68 @@ fn force_beam_column3d_fiber_section_response(
     section_no: Int,
     want_deformation: Bool,
 ) -> List[Float64]:
+    return force_beam_column3d_fiber_section_response(
+        x1,
+        y1,
+        z1,
+        x2,
+        y2,
+        z2,
+        u_elem_global,
+        geom_transf,
+        False,
+        0.0,
+        0.0,
+        0.0,
+        sec_def,
+        fibers,
+        uniaxial_defs,
+        uniaxial_states,
+        elem_state_ids,
+        elem_state_offset,
+        elem_state_count,
+        integration,
+        num_int_pts,
+        G,
+        J,
+        force_basic_q_state,
+        force_basic_q_offset,
+        force_basic_q_count,
+        section_no,
+        want_deformation,
+    )
+
+
+fn force_beam_column3d_fiber_section_response(
+    x1: Float64,
+    y1: Float64,
+    z1: Float64,
+    x2: Float64,
+    y2: Float64,
+    z2: Float64,
+    u_elem_global: List[Float64],
+    geom_transf: String,
+    has_vecxz: Bool,
+    vecxz_x: Float64,
+    vecxz_y: Float64,
+    vecxz_z: Float64,
+    sec_def: FiberSection3dDef,
+    fibers: List[FiberCell],
+    uniaxial_defs: List[UniMaterialDef],
+    mut uniaxial_states: List[UniMaterialState],
+    elem_state_ids: List[Int],
+    elem_state_offset: Int,
+    elem_state_count: Int,
+    integration: String,
+    num_int_pts: Int,
+    G: Float64,
+    J: Float64,
+    mut force_basic_q_state: List[Float64],
+    force_basic_q_offset: Int,
+    force_basic_q_count: Int,
+    section_no: Int,
+    want_deformation: Bool,
+) -> List[Float64]:
     if section_no < 1 or section_no > num_int_pts:
         abort("forceBeamColumn3d section index out of range")
     var k_dummy: List[List[Float64]] = []
@@ -2420,6 +3091,10 @@ fn force_beam_column3d_fiber_section_response(
         z2,
         u_elem_global,
         geom_transf,
+        has_vecxz,
+        vecxz_x,
+        vecxz_y,
+        vecxz_z,
         sec_def,
         fibers,
         uniaxial_defs,
@@ -2449,7 +3124,20 @@ fn force_beam_column3d_fiber_section_response(
     var kz_offset = ky_offset + num_int_pts
     var u_local: List[Float64] = []
     _beam3d_transform_u_global_to_local(
-        _element_rotation(x1, y1, z1, x2, y2, z2, u_elem_global, geom_transf),
+        _element_rotation(
+            x1,
+            y1,
+            z1,
+            x2,
+            y2,
+            z2,
+            u_elem_global,
+            geom_transf,
+            has_vecxz,
+            vecxz_x,
+            vecxz_y,
+            vecxz_z,
+        ),
         u_elem_global,
         u_local,
     )

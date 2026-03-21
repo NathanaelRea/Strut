@@ -105,6 +105,33 @@ def _section_rows(case_data):
     return sec_force_rows, sec_defo_rows
 
 
+def _normalize3(values):
+    norm = math.sqrt(sum(value * value for value in values))
+    return tuple(value / norm for value in values)
+
+
+def _cross3(a, b):
+    return (
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    )
+
+
+def _vertical_beam_expected_tip_disp_x(vecxz):
+    load = (50000.0, 0.0, 0.0)
+    local_x = (0.0, 0.0, 1.0)
+    local_y = _normalize3(_cross3(vecxz, local_x))
+    local_z = _cross3(local_x, local_y)
+    fy = sum(load[i] * local_y[i] for i in range(3))
+    fz = sum(load[i] * local_z[i] for i in range(3))
+    flex_y = (3.0**3) / (3.0 * 3.0e10 * 1.0666666666666669e-3)
+    flex_z = (3.0**3) / (3.0 * 3.0e10 * 2.666666666666667e-4)
+    disp_local_y = fy * flex_y
+    disp_local_z = fz * flex_z
+    return disp_local_y * local_y[0] + disp_local_z * local_z[0]
+
+
 @pytest.mark.parametrize(
     "element_type",
     ["forceBeamColumn3d", "dispBeamColumn3d"],
@@ -326,6 +353,40 @@ def test_beam_column3d_section_recorders_include_torsion_and_twist(element_type:
     assert len(sec_defo_rows) == 1
     assert sec_force_rows[0] == pytest.approx([0.0, 0.0, 0.0, 1200.0], abs=1e-9)
     assert sec_defo_rows[0] == pytest.approx([0.0, 0.0, 0.0, 7.5e-05], abs=1e-12)
+
+
+@pytest.mark.parametrize("element_type", ["forceBeamColumn3d", "dispBeamColumn3d"])
+@pytest.mark.parametrize("vecxz", [(0.0, 1.0, 0.0), (1.0, 1.0, 0.0)])
+def test_beam_column3d_vecxz_controls_linear_tip_stiffness(element_type: str, vecxz):
+    case_data = _base_case(element_type)
+    case_data["sections"] = [
+        {
+            "id": 1,
+            "type": "ElasticSection3d",
+            "params": {
+                "E": 3.0e10,
+                "A": 0.08,
+                "Iy": 2.666666666666667e-4,
+                "Iz": 1.0666666666666669e-3,
+                "G": 1.2e10,
+                "J": 2.0e-4,
+            },
+        }
+    ]
+    case_data["elements"][0]["geomTransf"] = "Linear"
+    case_data["elements"][0]["vecxz"] = list(vecxz)
+    case_data["loads"] = [{"node": 2, "dof": 1, "value": 50000.0}]
+    case_data["recorders"] = [
+        {"type": "node_displacement", "nodes": [2], "dofs": [1], "output": "disp"},
+    ]
+
+    expected_disp = _vertical_beam_expected_tip_disp_x(vecxz)
+    with tempfile.TemporaryDirectory() as tmp:
+        out_dir = Path(tmp)
+        _run_strut_case(case_data, out_dir)
+        disp_rows = _read_rows(out_dir / "disp_node2.out")
+
+    assert disp_rows == [[pytest.approx(expected_disp, abs=1e-12)]]
 
 
 def test_force_beam_column3d_fiber_section3d_requires_positive_gj():

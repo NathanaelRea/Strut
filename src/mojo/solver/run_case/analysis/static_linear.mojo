@@ -46,7 +46,7 @@ from solver.run_case.load_state import (
     build_active_nodal_load,
 )
 from solver.time_series import TimeSeriesInput, eval_time_series_input
-from sections import FiberCell, FiberSection2dDef, FiberSection3dDef
+from sections import FiberCell, FiberSection2dDef, FiberSection3dDef, LayeredShellSectionDef
 from tag_types import AnalysisSystemTag, ElementTypeTag
 
 fn run_static_linear(
@@ -104,6 +104,11 @@ fn run_static_linear(
     fiber_section3d_defs: List[FiberSection3dDef],
     fiber_section3d_cells: List[FiberCell],
     fiber_section3d_index_by_id: List[Int],
+    mut layered_shell_section_defs: List[LayeredShellSectionDef],
+    layered_shell_section_index_by_id: List[Int],
+    layered_shell_section_uniaxial_offsets: List[Int],
+    layered_shell_section_uniaxial_counts: List[Int],
+    shell_elem_instance_offsets: List[Int],
     analysis: AnalysisInput,
     free_index: List[Int],
     free: List[Int],
@@ -317,6 +322,11 @@ fn run_static_linear(
             fiber_section3d_defs,
             fiber_section3d_cells,
             fiber_section3d_index_by_id,
+        layered_shell_section_defs,
+        layered_shell_section_index_by_id,
+        layered_shell_section_uniaxial_offsets,
+        layered_shell_section_uniaxial_counts,
+        shell_elem_instance_offsets,
             force_beam_column2d_scratch,
             force_beam_column3d_scratch,
             asm_dof_map6,
@@ -390,6 +400,11 @@ fn run_static_linear(
             fiber_section3d_defs,
             fiber_section3d_cells,
             fiber_section3d_index_by_id,
+        layered_shell_section_defs,
+        layered_shell_section_index_by_id,
+        layered_shell_section_uniaxial_offsets,
+        layered_shell_section_uniaxial_counts,
+        shell_elem_instance_offsets,
             force_beam_column2d_scratch,
             force_beam_column3d_scratch,
             asm_dof_map6,

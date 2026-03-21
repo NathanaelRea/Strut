@@ -60,5 +60,5 @@ from elements.link import (
     zero_length_global_stiffness,
 )
 from elements.quad4 import quad4_plane_stress_stiffness
-from elements.shell4 import shell4_mindlin_stiffness
+from elements.shell4 import shell4_layered_stiffness_and_residual, shell4_mindlin_stiffness
 from elements.truss import truss3d_global_stiffness, truss_global_stiffness

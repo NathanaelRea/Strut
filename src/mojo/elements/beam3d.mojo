@@ -2,7 +2,11 @@ from collections import List
 from math import sqrt
 from os import abort
 
-from elements.utils import _cross, _dot, _normalize, _zero_matrix
+from elements.utils import (
+    _beam3d_local_axes_from_vecxz,
+    _normalize,
+    _zero_matrix,
+)
 from linalg import matmul, transpose
 
 
@@ -96,6 +100,21 @@ fn _beam3d_rotation(
     y2: Float64,
     z2: Float64,
 ) -> List[List[Float64]]:
+    return _beam3d_rotation(x1, y1, z1, x2, y2, z2, False, 0.0, 0.0, 0.0)
+
+
+fn _beam3d_rotation(
+    x1: Float64,
+    y1: Float64,
+    z1: Float64,
+    x2: Float64,
+    y2: Float64,
+    z2: Float64,
+    has_vecxz: Bool,
+    vecxz_x: Float64,
+    vecxz_y: Float64,
+    vecxz_z: Float64,
+) -> List[List[Float64]]:
     var dx = x2 - x1
     var dy = y2 - y1
     var dz = z2 - z1
@@ -108,24 +127,21 @@ fn _beam3d_rotation(
     var lz: Float64
     (lx, ly, lz) = _normalize(dx, dy, dz)
 
-    var rx = 0.0
-    var ry = 0.0
-    var rz = 1.0
-    if abs(_dot(lx, ly, lz, rx, ry, rz)) > 0.9:
-        rx = 0.0
-        ry = 1.0
-        rz = 0.0
-
     var yx: Float64
     var yy: Float64
     var yz: Float64
-    (yx, yy, yz) = _cross(rx, ry, rz, lx, ly, lz)
-    (yx, yy, yz) = _normalize(yx, yy, yz)
-
     var zx: Float64
     var zy: Float64
     var zz: Float64
-    (zx, zy, zz) = _cross(lx, ly, lz, yx, yy, yz)
+    (yx, yy, yz, zx, zy, zz) = _beam3d_local_axes_from_vecxz(
+        lx,
+        ly,
+        lz,
+        has_vecxz,
+        vecxz_x,
+        vecxz_y,
+        vecxz_z,
+    )
 
     return [
         [lx, ly, lz],
@@ -186,6 +202,29 @@ fn beam3d_global_stiffness(
     y2: Float64,
     z2: Float64,
 ) -> List[List[Float64]]:
+    return beam3d_global_stiffness(
+        E, A, Iy, Iz, G, J, x1, y1, z1, x2, y2, z2, False, 0.0, 0.0, 0.0
+    )
+
+
+fn beam3d_global_stiffness(
+    E: Float64,
+    A: Float64,
+    Iy: Float64,
+    Iz: Float64,
+    G: Float64,
+    J: Float64,
+    x1: Float64,
+    y1: Float64,
+    z1: Float64,
+    x2: Float64,
+    y2: Float64,
+    z2: Float64,
+    has_vecxz: Bool,
+    vecxz_x: Float64,
+    vecxz_y: Float64,
+    vecxz_z: Float64,
+) -> List[List[Float64]]:
     var dx = x2 - x1
     var dy = y2 - y1
     var dz = z2 - z1
@@ -194,7 +233,7 @@ fn beam3d_global_stiffness(
         abort("zero-length element")
 
     var k_local = beam3d_local_stiffness(E, A, Iy, Iz, G, J, L)
-    var R = _beam3d_rotation(x1, y1, z1, x2, y2, z2)
+    var R = _beam3d_rotation(x1, y1, z1, x2, y2, z2, has_vecxz, vecxz_x, vecxz_y, vecxz_z)
 
     var T = _beam3d_transform_matrix(R)
     return matmul(transpose(T), matmul(k_local, T))
@@ -215,6 +254,46 @@ fn beam3d_pdelta_global_stiffness(
     z2: Float64,
     u_elem_global: List[Float64],
 ) -> List[List[Float64]]:
+    return beam3d_pdelta_global_stiffness(
+        E,
+        A,
+        Iy,
+        Iz,
+        G,
+        J,
+        x1,
+        y1,
+        z1,
+        x2,
+        y2,
+        z2,
+        u_elem_global,
+        False,
+        0.0,
+        0.0,
+        0.0,
+    )
+
+
+fn beam3d_pdelta_global_stiffness(
+    E: Float64,
+    A: Float64,
+    Iy: Float64,
+    Iz: Float64,
+    G: Float64,
+    J: Float64,
+    x1: Float64,
+    y1: Float64,
+    z1: Float64,
+    x2: Float64,
+    y2: Float64,
+    z2: Float64,
+    u_elem_global: List[Float64],
+    has_vecxz: Bool,
+    vecxz_x: Float64,
+    vecxz_y: Float64,
+    vecxz_z: Float64,
+) -> List[List[Float64]]:
     var dx = x2 - x1
     var dy = y2 - y1
     var dz = z2 - z1
@@ -222,7 +301,7 @@ fn beam3d_pdelta_global_stiffness(
     if L == 0.0:
         abort("zero-length element")
 
-    var R = _beam3d_rotation(x1, y1, z1, x2, y2, z2)
+    var R = _beam3d_rotation(x1, y1, z1, x2, y2, z2, has_vecxz, vecxz_x, vecxz_y, vecxz_z)
     var T = _beam3d_transform_matrix(R)
     var u_local = _beam3d_transform_u_global_to_local(T, u_elem_global)
 
@@ -251,6 +330,50 @@ fn beam3d_corotational_global_tangent_and_internal(
     mut k_global_out: List[List[Float64]],
     mut f_global_out: List[Float64],
 ):
+    beam3d_corotational_global_tangent_and_internal(
+        E,
+        A,
+        Iy,
+        Iz,
+        G,
+        J,
+        x1,
+        y1,
+        z1,
+        x2,
+        y2,
+        z2,
+        u_elem_global,
+        False,
+        0.0,
+        0.0,
+        0.0,
+        k_global_out,
+        f_global_out,
+    )
+
+
+fn beam3d_corotational_global_tangent_and_internal(
+    E: Float64,
+    A: Float64,
+    Iy: Float64,
+    Iz: Float64,
+    G: Float64,
+    J: Float64,
+    x1: Float64,
+    y1: Float64,
+    z1: Float64,
+    x2: Float64,
+    y2: Float64,
+    z2: Float64,
+    u_elem_global: List[Float64],
+    has_vecxz: Bool,
+    vecxz_x: Float64,
+    vecxz_y: Float64,
+    vecxz_z: Float64,
+    mut k_global_out: List[List[Float64]],
+    mut f_global_out: List[Float64],
+):
     var dx0 = x2 - x1
     var dy0 = y2 - y1
     var dz0 = z2 - z1
@@ -271,7 +394,18 @@ fn beam3d_corotational_global_tangent_and_internal(
     if L_def == 0.0:
         abort("zero-length element")
 
-    var R_def = _beam3d_rotation(x1_def, y1_def, z1_def, x2_def, y2_def, z2_def)
+    var R_def = _beam3d_rotation(
+        x1_def,
+        y1_def,
+        z1_def,
+        x2_def,
+        y2_def,
+        z2_def,
+        has_vecxz,
+        vecxz_x,
+        vecxz_y,
+        vecxz_z,
+    )
     var T_def = _beam3d_transform_matrix(R_def)
     var u_local = _beam3d_transform_u_global_to_local(T_def, u_elem_global)
     var du = u_local[6] - u_local[0]
@@ -308,6 +442,52 @@ fn beam3d_global_tangent_and_internal(
     mut k_global_out: List[List[Float64]],
     mut f_global_out: List[Float64],
 ):
+    beam3d_global_tangent_and_internal(
+        geom_transf,
+        E,
+        A,
+        Iy,
+        Iz,
+        G,
+        J,
+        x1,
+        y1,
+        z1,
+        x2,
+        y2,
+        z2,
+        u_elem_global,
+        False,
+        0.0,
+        0.0,
+        0.0,
+        k_global_out,
+        f_global_out,
+    )
+
+
+fn beam3d_global_tangent_and_internal(
+    geom_transf: String,
+    E: Float64,
+    A: Float64,
+    Iy: Float64,
+    Iz: Float64,
+    G: Float64,
+    J: Float64,
+    x1: Float64,
+    y1: Float64,
+    z1: Float64,
+    x2: Float64,
+    y2: Float64,
+    z2: Float64,
+    u_elem_global: List[Float64],
+    has_vecxz: Bool,
+    vecxz_x: Float64,
+    vecxz_y: Float64,
+    vecxz_z: Float64,
+    mut k_global_out: List[List[Float64]],
+    mut f_global_out: List[Float64],
+):
     if geom_transf == "Linear":
         var k_global = beam3d_global_stiffness(
             E,
@@ -322,6 +502,10 @@ fn beam3d_global_tangent_and_internal(
             x2,
             y2,
             z2,
+            has_vecxz,
+            vecxz_x,
+            vecxz_y,
+            vecxz_z,
         )
         f_global_out.resize(12, 0.0)
         for a in range(12):
@@ -347,6 +531,10 @@ fn beam3d_global_tangent_and_internal(
             y2,
             z2,
             u_elem_global,
+            has_vecxz,
+            vecxz_x,
+            vecxz_y,
+            vecxz_z,
         )
         f_global_out.resize(12, 0.0)
         for a in range(12):
@@ -372,6 +560,10 @@ fn beam3d_global_tangent_and_internal(
             y2,
             z2,
             u_elem_global,
+            has_vecxz,
+            vecxz_x,
+            vecxz_y,
+            vecxz_z,
             k_global_out,
             f_global_out,
         )
