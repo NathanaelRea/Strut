@@ -7,6 +7,7 @@ Strut is a Mojo-based adaptation of OpenSees for high-performance finite element
 - Use `uv` for Python dependency management and commands, for mojo use `uv run mojo`
 - Always build the Mojo solver after Mojo changes and treat compiler warnings as required fixes (zero-warning target). Apply Mojo compiler recommendations, prefer allocation-light implementations, and structure for performance.
 - Builds usually take 5 seconds, however 60+ seconds is possible if modifying files with large fan-out like `input_types`. Never start multiple builds or test runs that share the same solver artifacts/cache at the same time. Serialize them and wait for each one to finish before starting the next to avoid deadlocks and misleading results.
+- Implementation plans live in the repository's `plans/` directory. When a user references a plan by name, check `plans/` first.
 
 Important: Never stub functionality, always fully implement if any feature is missing. If you are unsure about how to implement, ask questions or make a plan.
 

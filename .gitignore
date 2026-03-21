@@ -36,5 +36,6 @@ tests/validation/**/phase_times_us.json
 tests/validation/**/.parser-check
 
 # Temporary files
+plans/
 ignore/
 .build/
