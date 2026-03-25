@@ -185,7 +185,7 @@ fn run_modal_eigen(
     recorder_dofs_pool: List[Int],
     recorder_modes_pool: List[Int],
     mut static_output_files: List[String],
-    mut static_output_buffers: List[List[String]],
+    mut static_output_buffers: List[String],
 ) raises:
     var K = assemble_global_stiffness_typed(
         typed_nodes,

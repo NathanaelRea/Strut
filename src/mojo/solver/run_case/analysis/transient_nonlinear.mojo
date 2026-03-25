@@ -76,6 +76,12 @@ from solver.run_case.load_state import (
     build_active_element_load_state,
     build_active_nodal_load,
 )
+from solver.run_case.nonlinear_krylov import (
+    copy_krylov_vector,
+    default_krylov_max_dim,
+    krylov_apply_acceleration,
+    krylov_push_iteration_state,
+)
 from solver.time_series import TimeSeriesInput, eval_time_series_input, find_time_series_input
 
 from solver.run_case.helpers import (
@@ -96,6 +102,7 @@ from solver.run_case.helpers import (
     _output_buffer_index,
     _section_response_for_recorder,
     _sync_force_beam_column2d_committed_basic_states,
+    _write_run_progress,
     _update_envelope,
 )
 from tag_types import (
@@ -259,6 +266,7 @@ fn _transient_residual(
     P_ext_f: List[Float64],
     M_ff: List[List[Float64]],
     C_ff: List[List[Float64]],
+    has_effective_damping: Bool,
     mut uniaxial_states: List[UniMaterialState],
     uniaxial_defs: List[UniMaterialDef],
     uniaxial_state_defs: List[Int],
@@ -401,7 +409,9 @@ fn _transient_residual(
         u_f, u_n, v_n, a_n, a0, a2, a3, gamma, dt, a_trial, v_trial
     )
     for i in range(free_count):
-        var damping_force = dot_float64_contiguous(C_ff[i], v_trial, free_count)
+        var damping_force = 0.0
+        if has_effective_damping:
+            damping_force = dot_float64_contiguous(C_ff[i], v_trial, free_count)
         var inertia_force = dot_float64_contiguous(M_ff[i], a_trial, free_count)
         R_f[i] = (
             P_ext_f[i]
@@ -649,6 +659,7 @@ fn _transient_nonlinear_algorithm_mode(
     if (
         algorithm_tag == AnalysisAlgorithmTag.Broyden
         or algorithm_tag == AnalysisAlgorithmTag.NewtonLineSearch
+        or algorithm_tag == AnalysisAlgorithmTag.KrylovNewton
     ):
         # These algorithms still use Newton tangents, but add their own
         # per-iteration correction logic below.
@@ -677,6 +688,7 @@ fn _append_transient_solver_attempt(
     algorithm_tag: Int,
     broyden_count: Int,
     line_search_eta: Float64,
+    krylov_max_dim: Int,
     test_type: String,
     test_type_tag: Int,
     max_iters: Int,
@@ -689,6 +701,7 @@ fn _append_transient_solver_attempt(
     mut retry_tols: List[Float64],
     mut retry_broyden_counts: List[Int],
     mut retry_line_search_etas: List[Float64],
+    mut retry_krylov_max_dims: List[Int],
 ):
     if len(algorithm) == 0:
         return
@@ -705,6 +718,7 @@ fn _append_transient_solver_attempt(
     retry_tols.append(tol)
     retry_broyden_counts.append(broyden_count)
     retry_line_search_etas.append(line_search_eta)
+    retry_krylov_max_dims.append(krylov_max_dim)
 
 
 fn _append_transient_solver_attempt_from_input(
@@ -717,12 +731,14 @@ fn _append_transient_solver_attempt_from_input(
     mut retry_tols: List[Float64],
     mut retry_broyden_counts: List[Int],
     mut retry_line_search_etas: List[Float64],
+    mut retry_krylov_max_dims: List[Int],
 ):
     _append_transient_solver_attempt(
         attempt.algorithm,
         attempt.algorithm_tag,
         attempt.broyden_count,
         attempt.line_search_eta,
+        attempt.krylov_max_dim,
         attempt.test_type,
         attempt.test_type_tag,
         attempt.max_iters,
@@ -735,6 +751,7 @@ fn _append_transient_solver_attempt_from_input(
         retry_tols,
         retry_broyden_counts,
         retry_line_search_etas,
+        retry_krylov_max_dims,
     )
 
 
@@ -748,6 +765,7 @@ fn _collect_transient_solver_chain(
     mut retry_tols: List[Float64],
     mut retry_broyden_counts: List[Int],
     mut retry_line_search_etas: List[Float64],
+    mut retry_krylov_max_dims: List[Int],
 ):
     for i in range(analysis.solver_chain_count):
         _append_transient_solver_attempt_from_input(
@@ -760,6 +778,7 @@ fn _collect_transient_solver_chain(
             retry_tols,
             retry_broyden_counts,
             retry_line_search_etas,
+            retry_krylov_max_dims,
         )
     if len(retry_algorithm_modes) == 0:
         _append_transient_solver_attempt(
@@ -767,6 +786,7 @@ fn _collect_transient_solver_chain(
             analysis.algorithm_tag,
             0,
             1.0,
+            0,
             analysis.test_type,
             analysis.test_type_tag,
             analysis.max_iters,
@@ -779,6 +799,7 @@ fn _collect_transient_solver_chain(
             retry_tols,
             retry_broyden_counts,
             retry_line_search_etas,
+            retry_krylov_max_dims,
         )
     if analysis.has_solver_chain_override or len(retry_algorithm_modes) != 1:
         return
@@ -789,6 +810,7 @@ fn _collect_transient_solver_chain(
         AnalysisAlgorithmTag.Newton,
         0,
         1.0,
+        0,
         analysis.test_type,
         analysis.test_type_tag,
         retry_max_iters[0],
@@ -801,6 +823,7 @@ fn _collect_transient_solver_chain(
         retry_tols,
         retry_broyden_counts,
         retry_line_search_etas,
+        retry_krylov_max_dims,
     )
 
 
@@ -888,7 +911,10 @@ fn run_transient_nonlinear(
     layered_shell_section_uniaxial_counts: List[Int],
     shell_elem_instance_offsets: List[Int],
     mut transient_output_files: List[String],
-    mut transient_output_buffers: List[List[String]],
+    mut transient_output_buffers: List[String],
+    progress_path: String,
+    progress_stage_number: Int,
+    progress_stage_count: Int,
     has_transformation_mpc: Bool,
     mpc_slave_dof: List[Bool],
     mpc_row_offsets: List[Int],
@@ -915,6 +941,15 @@ fn run_transient_nonlinear(
     mut runtime_metrics: RuntimeProfileMetrics,
 ) raises:
     var time = Python.import_module("time")
+    _write_run_progress(
+        progress_path,
+        "running_stage",
+        "transient_nonlinear",
+        progress_stage_number,
+        progress_stage_count,
+        0,
+        steps,
+    )
     var asm_dof_map6: List[Int] = []
     var asm_dof_map12: List[Int] = []
     var asm_u_elem6: List[Float64] = []
@@ -947,6 +982,7 @@ fn run_transient_nonlinear(
     var retry_tols: List[Float64] = []
     var retry_broyden_counts: List[Int] = []
     var retry_line_search_etas: List[Float64] = []
+    var retry_krylov_max_dims: List[Int] = []
     _collect_transient_solver_chain(
         analysis,
         analysis_solver_chain_pool,
@@ -957,6 +993,7 @@ fn run_transient_nonlinear(
         retry_tols,
         retry_broyden_counts,
         retry_line_search_etas,
+        retry_krylov_max_dims,
     )
     if len(retry_algorithm_modes) == 0:
         abort("transient_nonlinear solver_chain must contain at least one attempt")
@@ -968,6 +1005,7 @@ fn run_transient_nonlinear(
     var tol = retry_tols[0]
     var primary_broyden_count = retry_broyden_counts[0]
     var primary_line_search_eta = retry_line_search_etas[0]
+    var primary_krylov_max_dim = default_krylov_max_dim(retry_krylov_max_dims[0])
 
     var integrator_tag = analysis.integrator_tag
     if integrator_tag == IntegratorTypeTag.Unknown:
@@ -992,13 +1030,15 @@ fn run_transient_nonlinear(
         mpc_dof_pool,
         mpc_coeff_pool,
     )
-    var M_rayleigh_ff = _build_reduced_diagonal_matrix_by_mpc(
-        M_rayleigh_total,
-        free_index,
-        mpc_row_offsets,
-        mpc_dof_pool,
-        mpc_coeff_pool,
-    )
+    var M_rayleigh_ff: List[List[Float64]] = []
+    if rayleigh_alpha_m != 0.0:
+        M_rayleigh_ff = _build_reduced_diagonal_matrix_by_mpc(
+            M_rayleigh_total,
+            free_index,
+            mpc_row_offsets,
+            mpc_dof_pool,
+            mpc_coeff_pool,
+        )
     for i in range(free_count):
         for j in range(free_count):
             if M_ff[i][j] != 0.0:
@@ -1020,6 +1060,28 @@ fn run_transient_nonlinear(
     )
     var has_zero_length_damp_mats = _has_zero_length_damp_mats(typed_elements)
     var has_zero_length_dampers = _has_zero_length_dampers(typed_elements)
+    var has_effective_damping = (
+        rayleigh_alpha_m != 0.0
+        or rayleigh_beta_k != 0.0
+        or rayleigh_beta_k_init != 0.0
+        or rayleigh_beta_k_comm != 0.0
+        or has_zero_length_damp_mats
+    )
+    var need_current_damp_tangent = (
+        need_link_rayleigh_filter and rayleigh_beta_k != 0.0
+    )
+    var need_initial_tangent = rayleigh_beta_k_init != 0.0
+    for i in range(retry_attempt_count):
+        if retry_algorithm_modes[i] == NonlinearAlgorithmMode.ModifiedNewtonInitial:
+            need_initial_tangent = True
+            break
+    var need_initial_damp_tangent = (
+        need_link_rayleigh_filter
+        and (rayleigh_beta_k_init != 0.0 or need_initial_tangent)
+    )
+    var need_comm_damp_tangent = (
+        need_link_rayleigh_filter and rayleigh_beta_k_comm != 0.0
+    )
     var backend = LinearSolverBackend()
     initialize_structure(backend, analysis, free_count)
     initialize_symbolic_from_element_dof_map(backend, elem_dof_offsets, elem_dof_pool, free_index)
@@ -1056,33 +1118,41 @@ fn run_transient_nonlinear(
         var row_kff: List[Float64] = []
         row_kff.resize(free_count, 0.0)
         K_ff.append(row_kff^)
-        var row_kdamp: List[Float64] = []
-        row_kdamp.resize(free_count, 0.0)
-        K_damp_ff.append(row_kdamp^)
-        var row_kinit: List[Float64] = []
-        row_kinit.resize(free_count, 0.0)
-        K_init_ff.append(row_kinit^)
-        var row_kinit_damp: List[Float64] = []
-        row_kinit_damp.resize(free_count, 0.0)
-        K_init_damp_ff.append(row_kinit_damp^)
-        var row_kcomm: List[Float64] = []
-        row_kcomm.resize(free_count, 0.0)
-        K_comm_ff.append(row_kcomm^)
-        var row_kcomm_damp: List[Float64] = []
-        row_kcomm_damp.resize(free_count, 0.0)
-        K_comm_damp_ff.append(row_kcomm_damp^)
-        var row_kcurrent_damp: List[Float64] = []
-        row_kcurrent_damp.resize(free_count, 0.0)
-        K_current_damp_ff.append(row_kcurrent_damp^)
-        var row_c: List[Float64] = []
-        row_c.resize(free_count, 0.0)
-        C_ff.append(row_c^)
-        var row_zero_length_damp: List[Float64] = []
-        row_zero_length_damp.resize(free_count, 0.0)
-        C_zero_length_damp_ff.append(row_zero_length_damp^)
-        var row_zero_length_damp_k: List[Float64] = []
-        row_zero_length_damp_k.resize(free_count, 0.0)
-        K_zero_length_damp_ff.append(row_zero_length_damp_k^)
+        if need_current_damp_tangent:
+            var row_kdamp: List[Float64] = []
+            row_kdamp.resize(free_count, 0.0)
+            K_damp_ff.append(row_kdamp^)
+            var row_kcurrent_damp: List[Float64] = []
+            row_kcurrent_damp.resize(free_count, 0.0)
+            K_current_damp_ff.append(row_kcurrent_damp^)
+        if need_initial_tangent:
+            var row_kinit: List[Float64] = []
+            row_kinit.resize(free_count, 0.0)
+            K_init_ff.append(row_kinit^)
+        if need_initial_damp_tangent:
+            var row_kinit_damp: List[Float64] = []
+            row_kinit_damp.resize(free_count, 0.0)
+            K_init_damp_ff.append(row_kinit_damp^)
+        if need_comm_tangent:
+            var row_kcomm: List[Float64] = []
+            row_kcomm.resize(free_count, 0.0)
+            K_comm_ff.append(row_kcomm^)
+        if need_comm_damp_tangent:
+            var row_kcomm_damp: List[Float64] = []
+            row_kcomm_damp.resize(free_count, 0.0)
+            K_comm_damp_ff.append(row_kcomm_damp^)
+        if has_effective_damping:
+            var row_c: List[Float64] = []
+            row_c.resize(free_count, 0.0)
+            C_ff.append(row_c^)
+        if has_zero_length_damp_mats:
+            var row_zero_length_damp: List[Float64] = []
+            row_zero_length_damp.resize(free_count, 0.0)
+            C_zero_length_damp_ff.append(row_zero_length_damp^)
+        if has_zero_length_dampers:
+            var row_zero_length_damp_k: List[Float64] = []
+            row_zero_length_damp_k.resize(free_count, 0.0)
+            K_zero_length_damp_ff.append(row_zero_length_damp_k^)
     var F_zero_length_damp_f: List[Float64] = []
     F_zero_length_damp_f.resize(free_count, 0.0)
 
@@ -1256,10 +1326,14 @@ fn run_transient_nonlinear(
                 frame_constraints,
                 constraints_end_us,
             )
-    for i in range(free_count):
-        for j in range(free_count):
-            K_init_ff[i][j] = K[free[i]][free[j]]
-            K_comm_ff[i][j] = K_init_ff[i][j]
+    if need_initial_tangent or need_comm_tangent:
+        for i in range(free_count):
+            for j in range(free_count):
+                var k_value = K[free[i]][free[j]]
+                if need_initial_tangent:
+                    K_init_ff[i][j] = k_value
+                if need_comm_tangent:
+                    K_comm_ff[i][j] = k_value
     if need_link_rayleigh_filter:
         assemble_link_stiffness_typed(
             typed_nodes,
@@ -1344,19 +1418,27 @@ fn run_transient_nonlinear(
             K_link_rayleigh = _collapse_matrix_by_mpc(
                 K_link_rayleigh, mpc_row_offsets, mpc_dof_pool, mpc_coeff_pool
             )
-        for i in range(free_count):
-            for j in range(free_count):
-                K_init_damp_ff[i][j] = (
-                    K_init_ff[i][j]
-                    - K_link_all[free[i]][free[j]]
-                    + K_link_rayleigh[free[i]][free[j]]
-                )
-                K_comm_damp_ff[i][j] = K_init_damp_ff[i][j]
+        if need_initial_damp_tangent or need_comm_damp_tangent:
+            for i in range(free_count):
+                for j in range(free_count):
+                    var damp_value = (
+                        K[free[i]][free[j]]
+                        - K_link_all[free[i]][free[j]]
+                        + K_link_rayleigh[free[i]][free[j]]
+                    )
+                    if need_initial_damp_tangent:
+                        K_init_damp_ff[i][j] = damp_value
+                    if need_comm_damp_tangent:
+                        K_comm_damp_ff[i][j] = damp_value
     else:
-        for i in range(free_count):
-            for j in range(free_count):
-                K_init_damp_ff[i][j] = K_init_ff[i][j]
-                K_comm_damp_ff[i][j] = K_init_ff[i][j]
+        if need_initial_damp_tangent or need_comm_damp_tangent:
+            for i in range(free_count):
+                for j in range(free_count):
+                    var damp_value = K[free[i]][free[j]]
+                    if need_initial_damp_tangent:
+                        K_init_damp_ff[i][j] = damp_value
+                    if need_comm_damp_tangent:
+                        K_comm_damp_ff[i][j] = damp_value
     if do_profile:
         var t_revert_start = Int(time.perf_counter_ns())
         var revert_start_us = (t_revert_start - t0) // 1000
@@ -1614,6 +1696,15 @@ fn run_transient_nonlinear(
             )
 
     for step in range(steps):
+        _write_run_progress(
+            progress_path,
+            "running_step",
+            "transient_nonlinear",
+            progress_stage_number,
+            progress_stage_count,
+            step + 1,
+            steps,
+        )
         if do_profile:
             var t_step_start = Int(time.perf_counter_ns())
             var step_start_us = (t_step_start - t0) // 1000
@@ -1830,6 +1921,7 @@ fn run_transient_nonlinear(
         var attempt_max_iters = max_iters
         var attempt_tol = tol
         var attempt_broyden_count = primary_broyden_count
+        var attempt_krylov_max_dim = primary_krylov_max_dim
         for attempt in range(retry_attempt_count):
             if attempt > 0:
                 copy_float64_contiguous(u_f, u_step_base_f, free_count)
@@ -1844,6 +1936,9 @@ fn run_transient_nonlinear(
                 attempt_max_iters = retry_max_iters[attempt]
                 attempt_tol = retry_tols[attempt]
                 attempt_broyden_count = retry_broyden_counts[attempt]
+                attempt_krylov_max_dim = default_krylov_max_dim(
+                    retry_krylov_max_dims[attempt]
+                )
                 reaction_internal_current = False
 
             var tangent_initialized = False
@@ -1854,6 +1949,13 @@ fn run_transient_nonlinear(
             var broyden_history_z: List[List[Float64]] = []
             var broyden_prev_residual: List[Float64] = []
             var has_broyden_prev_residual = False
+            var krylov_history_v: List[List[Float64]] = []
+            var krylov_history_av: List[List[Float64]] = []
+            var krylov_normal_matrix_flat: List[Float64] = []
+            var krylov_normal_rhs: List[Float64] = []
+            var krylov_coeffs: List[Float64] = []
+            var krylov_factor_work: List[Float64] = []
+            var krylov_rhs_work: List[Float64] = []
             for _ in range(attempt_max_iters):
                 var iter_closed = False
                 if runtime_metrics.enabled:
@@ -1963,6 +2065,9 @@ fn run_transient_nonlinear(
                 var broyden_refresh_interval = _default_broyden_count(
                     attempt_broyden_count
                 )
+                var krylov_max_dim = attempt_krylov_max_dim
+                if krylov_max_dim > free_count:
+                    krylov_max_dim = free_count
                 var need_tangent_matrix: Bool
                 if attempt_algorithm_mode == NonlinearAlgorithmMode.Newton:
                     if attempt_algorithm_tag == AnalysisAlgorithmTag.Broyden:
@@ -1971,12 +2076,20 @@ fn run_transient_nonlinear(
                             or broyden_refresh_interval <= 1
                             or len(broyden_history_s) >= broyden_refresh_interval
                         )
+                    elif attempt_algorithm_tag == AnalysisAlgorithmTag.KrylovNewton:
+                        need_tangent_matrix = (
+                            not tangent_initialized
+                            or len(krylov_history_v) > krylov_max_dim
+                        )
                     else:
                         need_tangent_matrix = True
                 elif attempt_algorithm_mode == NonlinearAlgorithmMode.ModifiedNewton:
                     need_tangent_matrix = not tangent_initialized
                 else:
                     need_tangent_matrix = not tangent_initialized
+                if need_tangent_matrix and attempt_algorithm_tag == AnalysisAlgorithmTag.KrylovNewton:
+                    krylov_history_v = []
+                    krylov_history_av = []
                 if has_transformation_mpc:
                     if do_profile:
                         var t_constraints_start = Int(time.perf_counter_ns())
@@ -2093,22 +2206,21 @@ fn run_transient_nonlinear(
                             mpc_dof_pool,
                             mpc_coeff_pool,
                         )
-                    for i in range(free_count):
-                        for j in range(free_count):
-                            K_current_damp_ff[i][j] = (
-                                K[free[i]][free[j]]
-                                - K_link_all[free[i]][free[j]]
-                                + K_link_rayleigh[free[i]][free[j]]
-                            )
+                    if need_current_damp_tangent:
+                        for i in range(free_count):
+                            for j in range(free_count):
+                                K_current_damp_ff[i][j] = (
+                                    K[free[i]][free[j]]
+                                    - K_link_all[free[i]][free[j]]
+                                    + K_link_rayleigh[free[i]][free[j]]
+                                )
                 if attempt_algorithm_mode == NonlinearAlgorithmMode.Newton:
                     if need_tangent_matrix:
                         for i in range(free_count):
                             for j in range(free_count):
                                 K_ff[i][j] = K[free[i]][free[j]]
-                                if need_link_rayleigh_filter:
+                                if need_current_damp_tangent:
                                     K_damp_ff[i][j] = K_current_damp_ff[i][j]
-                                else:
-                                    K_damp_ff[i][j] = K_ff[i][j]
                         tangent_initialized = True
                         k_eff_factored = False
                 elif attempt_algorithm_mode == NonlinearAlgorithmMode.ModifiedNewton:
@@ -2116,18 +2228,21 @@ fn run_transient_nonlinear(
                         for i in range(free_count):
                             for j in range(free_count):
                                 K_ff[i][j] = K[free[i]][free[j]]
-                                if need_link_rayleigh_filter:
+                                if need_current_damp_tangent:
                                     K_damp_ff[i][j] = K_current_damp_ff[i][j]
-                                else:
-                                    K_damp_ff[i][j] = K_ff[i][j]
                         tangent_initialized = True
                         k_eff_factored = False
                 else:
                     if not tangent_initialized:
+                        if not need_initial_tangent:
+                            abort(
+                                "transient_nonlinear initial tangent storage was not allocated"
+                            )
                         for i in range(free_count):
                             for j in range(free_count):
                                 K_ff[i][j] = K_init_ff[i][j]
-                                K_damp_ff[i][j] = K_init_damp_ff[i][j]
+                                if need_current_damp_tangent:
+                                    K_damp_ff[i][j] = K_init_damp_ff[i][j]
                         tangent_initialized = True
                         k_eff_factored = False
 
@@ -2179,28 +2294,40 @@ fn run_transient_nonlinear(
                 else:
                     for i in range(free_count):
                         F_zero_length_damp_f[i] = 0.0
-                        for j in range(free_count):
-                            K_zero_length_damp_ff[i][j] = 0.0
+                    if has_zero_length_dampers:
+                        for i in range(free_count):
+                            for j in range(free_count):
+                                K_zero_length_damp_ff[i][j] = 0.0
 
-                if need_tangent_matrix or not damping_initialized:
+                if has_effective_damping and (need_tangent_matrix or not damping_initialized):
                     for i in range(free_count):
                         for j in range(free_count):
                             C_ff[i][j] = 0.0
-                    for i in range(free_count):
-                        for j in range(free_count):
-                            C_ff[i][j] = rayleigh_alpha_m * M_rayleigh_ff[i][j]
+                    if rayleigh_alpha_m != 0.0:
+                        for i in range(free_count):
+                            for j in range(free_count):
+                                C_ff[i][j] = rayleigh_alpha_m * M_rayleigh_ff[i][j]
                     if rayleigh_beta_k != 0.0:
                         for i in range(free_count):
                             for j in range(free_count):
-                                C_ff[i][j] += rayleigh_beta_k * K_damp_ff[i][j]
+                                if need_current_damp_tangent:
+                                    C_ff[i][j] += rayleigh_beta_k * K_damp_ff[i][j]
+                                else:
+                                    C_ff[i][j] += rayleigh_beta_k * K_ff[i][j]
                     if rayleigh_beta_k_init != 0.0:
                         for i in range(free_count):
                             for j in range(free_count):
-                                C_ff[i][j] += rayleigh_beta_k_init * K_init_damp_ff[i][j]
+                                if need_initial_damp_tangent:
+                                    C_ff[i][j] += rayleigh_beta_k_init * K_init_damp_ff[i][j]
+                                else:
+                                    C_ff[i][j] += rayleigh_beta_k_init * K_init_ff[i][j]
                     if rayleigh_beta_k_comm != 0.0:
                         for i in range(free_count):
                             for j in range(free_count):
-                                C_ff[i][j] += rayleigh_beta_k_comm * K_comm_damp_ff[i][j]
+                                if need_comm_damp_tangent:
+                                    C_ff[i][j] += rayleigh_beta_k_comm * K_comm_damp_ff[i][j]
+                                else:
+                                    C_ff[i][j] += rayleigh_beta_k_comm * K_comm_ff[i][j]
                     if has_zero_length_damp_mats:
                         for i in range(free_count):
                             for j in range(free_count):
@@ -2212,7 +2339,11 @@ fn run_transient_nonlinear(
                 )
 
                 for i in range(free_count):
-                    var damping_force = dot_float64_contiguous(C_ff[i], v_trial, free_count)
+                    var damping_force = 0.0
+                    if has_effective_damping:
+                        damping_force = dot_float64_contiguous(
+                            C_ff[i], v_trial, free_count
+                        )
                     var inertia_force = dot_float64_contiguous(
                         M_ff[i], a_trial, free_count
                     )
@@ -2246,6 +2377,7 @@ fn run_transient_nonlinear(
                 var direct_newton_solve = (
                     attempt_algorithm_mode == NonlinearAlgorithmMode.Newton
                     and attempt_algorithm_tag != AnalysisAlgorithmTag.Broyden
+                    and attempt_algorithm_tag != AnalysisAlgorithmTag.KrylovNewton
                 )
                 if direct_newton_solve:
                     if do_profile:
@@ -2268,7 +2400,8 @@ fn run_transient_nonlinear(
                     load_reduced_matrix(backend, K_ff)
                     if has_zero_length_dampers:
                         add_reduced_matrix(backend, K_zero_length_damp_ff)
-                    add_reduced_matrix(backend, C_ff, a1)
+                    if has_effective_damping:
+                        add_reduced_matrix(backend, C_ff, a1)
                     add_reduced_matrix(backend, M_ff, a0)
                     factorize_loaded(backend, runtime_metrics)
                     k_eff_initialized = True
@@ -2303,7 +2436,8 @@ fn run_transient_nonlinear(
                         load_reduced_matrix(backend, K_ff)
                         if has_zero_length_dampers:
                             add_reduced_matrix(backend, K_zero_length_damp_ff)
-                        add_reduced_matrix(backend, C_ff, a1)
+                        if has_effective_damping:
+                            add_reduced_matrix(backend, C_ff, a1)
                         add_reduced_matrix(backend, M_ff, a0)
                         factorize_loaded(backend, runtime_metrics)
                         k_eff_initialized = True
@@ -2352,6 +2486,20 @@ fn run_transient_nonlinear(
 
                 var max_diff = 0.0
                 var max_u = 0.0
+                var krylov_base_direction: List[Float64] = []
+                if attempt_algorithm_tag == AnalysisAlgorithmTag.KrylovNewton:
+                    krylov_base_direction = copy_krylov_vector(du_f, free_count)
+                    _ = krylov_apply_acceleration(
+                        du_f,
+                        krylov_history_v,
+                        krylov_history_av,
+                        free_count,
+                        krylov_normal_matrix_flat,
+                        krylov_normal_rhs,
+                        krylov_coeffs,
+                        krylov_factor_work,
+                        krylov_rhs_work,
+                    )
                 if attempt_algorithm_tag == AnalysisAlgorithmTag.Broyden:
                     if need_tangent_matrix:
                         broyden_history_s = []
@@ -2475,6 +2623,7 @@ fn run_transient_nonlinear(
                             P_ext_f,
                             M_ff,
                             C_ff,
+                            has_effective_damping,
                             uniaxial_states,
                             uniaxial_defs,
                             uniaxial_state_defs,
@@ -2587,6 +2736,7 @@ fn run_transient_nonlinear(
                                 P_ext_f,
                                 M_ff,
                                 C_ff,
+                                has_effective_damping,
                                 uniaxial_states,
                                 uniaxial_defs,
                                 uniaxial_state_defs,
@@ -2635,6 +2785,14 @@ fn run_transient_nonlinear(
                     broyden_history_s.append(_copy_vector(du_f, free_count))
                     broyden_prev_residual = _copy_vector(R_f, free_count)
                     has_broyden_prev_residual = True
+                elif attempt_algorithm_tag == AnalysisAlgorithmTag.KrylovNewton:
+                    krylov_push_iteration_state(
+                        krylov_base_direction,
+                        du_f,
+                        free_count,
+                        krylov_history_v,
+                        krylov_history_av,
+                    )
                 reaction_internal_current = False
 
                 if attempt_test_mode == 1:
@@ -2809,9 +2967,10 @@ fn run_transient_nonlinear(
                         constraints_end_us,
                     )
             reaction_internal_current = True
-            for i in range(free_count):
-                for j in range(free_count):
-                    K_comm_ff[i][j] = K[free[i]][free[j]]
+            if need_comm_tangent:
+                for i in range(free_count):
+                    for j in range(free_count):
+                        K_comm_ff[i][j] = K[free[i]][free[j]]
             if need_link_rayleigh_filter:
                 assemble_link_stiffness_typed(
                     typed_nodes,
@@ -2896,17 +3055,19 @@ fn run_transient_nonlinear(
                     K_link_rayleigh = _collapse_matrix_by_mpc(
                         K_link_rayleigh, mpc_row_offsets, mpc_dof_pool, mpc_coeff_pool
                     )
-                for i in range(free_count):
-                    for j in range(free_count):
-                        K_comm_damp_ff[i][j] = (
-                            K_comm_ff[i][j]
-                            - K_link_all[free[i]][free[j]]
-                            + K_link_rayleigh[free[i]][free[j]]
-                        )
+                if need_comm_damp_tangent:
+                    for i in range(free_count):
+                        for j in range(free_count):
+                            K_comm_damp_ff[i][j] = (
+                                K_comm_ff[i][j]
+                                - K_link_all[free[i]][free[j]]
+                                + K_link_rayleigh[free[i]][free[j]]
+                            )
             else:
-                for i in range(free_count):
-                    for j in range(free_count):
-                        K_comm_damp_ff[i][j] = K_comm_ff[i][j]
+                if need_comm_damp_tangent:
+                    for i in range(free_count):
+                        for j in range(free_count):
+                            K_comm_damp_ff[i][j] = K_comm_ff[i][j]
         if do_profile:
             var t_commit_start = Int(time.perf_counter_ns())
             var commit_start_us = (t_commit_start - t0) // 1000
@@ -3465,4 +3626,13 @@ fn run_transient_nonlinear(
         transient_output_files,
         transient_output_buffers,
         output_file_index,
+    )
+    _write_run_progress(
+        progress_path,
+        "stage_complete",
+        "transient_nonlinear",
+        progress_stage_number,
+        progress_stage_count,
+        steps,
+        steps,
     )

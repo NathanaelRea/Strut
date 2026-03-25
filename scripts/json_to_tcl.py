@@ -474,6 +474,11 @@ def _algorithm_cmd(algorithm_name, cfg):
     if algorithm_name == "NewtonLineSearch":
         eta = float(cfg.get("line_search_eta", algorithm_options.get("alpha", 0.8)))
         return f"NewtonLineSearch {eta}"
+    if algorithm_name == "KrylovNewton":
+        max_dim = cfg.get("krylov_max_dim", algorithm_options.get("maxDim"))
+        if max_dim is None:
+            return "KrylovNewton"
+        return f"KrylovNewton -maxDim {int(max_dim)}"
     return algorithm_name
 
 

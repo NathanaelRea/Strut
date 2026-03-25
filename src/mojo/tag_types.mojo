@@ -96,6 +96,7 @@ struct AnalysisAlgorithmTag:
     alias ModifiedNewtonInitial = 3
     alias Broyden = 4
     alias NewtonLineSearch = 5
+    alias KrylovNewton = 6
 
 
 struct NonlinearTestTypeTag:

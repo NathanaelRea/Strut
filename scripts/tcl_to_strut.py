@@ -364,6 +364,7 @@ class TclStrutBuilder:
         self.sections: list[dict[str, Any]] = []
         self.sections_by_id: dict[int, dict[str, Any]] = {}
         self.section_ids_by_props: dict[tuple[float, float, float], int] = {}
+        self.generated_section_ids: set[int] = set()
         self.elements: list[dict[str, Any]] = []
         self.masses: list[dict[str, Any]] = []
         self.time_series: list[dict[str, Any]] = []
@@ -792,8 +793,37 @@ class TclStrutBuilder:
         self.materials_by_id[int(entry["id"])] = entry
         self._sync_materials()
 
-    def _upsert_section(self, entry: dict[str, Any]) -> None:
-        self.sections_by_id[int(entry["id"])] = entry
+    def _next_free_section_id(self) -> int:
+        section_id = 1
+        if self.sections_by_id:
+            section_id = max(self.sections_by_id) + 1
+        while section_id in self.sections_by_id:
+            section_id += 1
+        return section_id
+
+    def _reassign_generated_section_id(self, section_id: int) -> None:
+        new_id = self._next_free_section_id()
+        entry = dict(self.sections_by_id.pop(section_id))
+        entry["id"] = new_id
+        self.sections_by_id[new_id] = entry
+        self.generated_section_ids.remove(section_id)
+        self.generated_section_ids.add(new_id)
+        for key, value in list(self.section_ids_by_props.items()):
+            if value == section_id:
+                self.section_ids_by_props[key] = new_id
+        for element in self.elements:
+            if int(element.get("section", -1)) == section_id:
+                element["section"] = new_id
+
+    def _upsert_section(self, entry: dict[str, Any], *, generated: bool = False) -> None:
+        section_id = int(entry["id"])
+        if not generated and section_id in self.generated_section_ids:
+            self._reassign_generated_section_id(section_id)
+        self.sections_by_id[section_id] = entry
+        if generated:
+            self.generated_section_ids.add(section_id)
+        else:
+            self.generated_section_ids.discard(section_id)
         self._sync_sections()
 
     def _register_time_series_entry(self, entry: dict[str, Any]) -> int:
@@ -1124,14 +1154,15 @@ class TclStrutBuilder:
         key = (area, e_value, inertia)
         if key in self.section_ids_by_props:
             return self.section_ids_by_props[key]
-        section_id = len(self.sections) + 1
+        section_id = self._next_free_section_id()
         self.section_ids_by_props[key] = section_id
         self._upsert_section(
             {
                 "id": section_id,
                 "type": "ElasticSection2d",
                 "params": {"E": e_value, "A": area, "I": inertia},
-            }
+            },
+            generated=True,
         )
         self._register_material(e_value)
         return section_id
@@ -1148,7 +1179,7 @@ class TclStrutBuilder:
         key = (area, e_value, g_value, j_value, iy_value, iz_value)
         if key in self.section_ids_by_props:
             return self.section_ids_by_props[key]
-        section_id = len(self.sections) + 1
+        section_id = self._next_free_section_id()
         self.section_ids_by_props[key] = section_id
         self._upsert_section(
             {
@@ -1162,7 +1193,8 @@ class TclStrutBuilder:
                     "G": g_value,
                     "J": j_value,
                 },
-            }
+            },
+            generated=True,
         )
         self._register_material(e_value)
         return section_id
@@ -1425,6 +1457,16 @@ class TclStrutBuilder:
                 )
             except (ValueError, tkinter.TclError):
                 pass
+        if algorithm_args[0] == "KrylovNewton":
+            for i, token in enumerate(algorithm_args[1:], start=1):
+                if token == "-maxDim" and i + 1 < len(algorithm_args):
+                    try:
+                        settings["fallback_krylov_max_dim"] = int(
+                            self._resolve_numeric_token(algorithm_args[i + 1])
+                        )
+                    except (ValueError, tkinter.TclError):
+                        pass
+                    break
         return settings
 
     def _subst_variables_only(self, script: str) -> str:
@@ -1865,6 +1907,7 @@ class TclStrutBuilder:
         self.sections.clear()
         self.sections_by_id.clear()
         self.section_ids_by_props.clear()
+        self.generated_section_ids.clear()
         self.elements.clear()
         self.masses.clear()
         self.time_series.clear()
@@ -3602,6 +3645,14 @@ class TclStrutBuilder:
                     options["alpha"] = float(args[1])
                 except (ValueError, IndexError):
                     pass
+            if args[0] == "KrylovNewton":
+                for i, token in enumerate(args[1:], start=1):
+                    if token == "-maxDim" and i + 1 < len(args):
+                        try:
+                            options["maxDim"] = int(float(args[i + 1]))
+                        except ValueError:
+                            pass
+                        break
             self.algorithm_options = options
         return ""
 
@@ -3701,6 +3752,10 @@ class TclStrutBuilder:
         elif "fallback_line_search_eta" in attempt:
             retry_attempt["algorithm_options"] = {
                 "alpha": attempt["fallback_line_search_eta"]
+            }
+        elif "fallback_krylov_max_dim" in attempt:
+            retry_attempt["algorithm_options"] = {
+                "maxDim": attempt["fallback_krylov_max_dim"]
             }
         return retry_attempt
 

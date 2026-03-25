@@ -1173,6 +1173,53 @@ def test_convert_imports_elastic_beam_column_3d_with_mass(tmp_path: Path):
     }
 
 
+def test_convert_reassigns_generated_elastic_beam_section_id_on_explicit_collision(
+    tmp_path: Path,
+):
+    script = tmp_path / "beam3d_section_collision.tcl"
+    script.write_text(
+        "\n".join(
+            [
+                "wipe",
+                "model basic -ndm 3 -ndf 6",
+                "uniaxialMaterial Elastic 1 3000.0",
+                "node 1 0.0 0.0 0.0",
+                "node 2 0.0 0.0 144.0",
+                "geomTransf Linear 1 0.0 0.0 1.0",
+                "element elasticBeamColumn 10 1 2 10.0 3000.0 1200.0 4.0 20.0 30.0 1",
+                "section Fiber 1 -GJ 2400000.0 {",
+                "    fiber -0.2 0.1 0.05 1",
+                "    fiber 0.2 -0.1 0.05 1",
+                "}",
+                "timeSeries Linear 1",
+                "pattern Plain 1 1 {",
+                "    load 2 1.0 0.0 0.0 0.0 0.0 0.0",
+                "}",
+                "constraints Plain",
+                "numberer Plain",
+                "system BandGeneral",
+                "algorithm Linear",
+                "integrator LoadControl 1.0",
+                "analysis Static",
+                "analyze 1",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    case = tcl_to_strut.convert_tcl_to_case(script, REPO_ROOT)
+
+    sections_by_id = {section["id"]: section for section in case["sections"]}
+    assert sections_by_id[1]["type"] == "FiberSection3d"
+    elastic_sections = [
+        section for section in case["sections"] if section["type"] == "ElasticSection3d"
+    ]
+    assert len(elastic_sections) == 1
+    assert elastic_sections[0]["id"] != 1
+    assert case["elements"][0]["section"] == elastic_sections[0]["id"]
+
+
 def test_convert_imports_disp_beam_column_3d_with_mass(tmp_path: Path):
     script = tmp_path / "beam3d_disp.tcl"
     script.write_text(
@@ -1974,6 +2021,42 @@ def test_convert_preserves_algorithm_integrator_test_and_system_options(tmp_path
     assert second["integrator"]["max_du"] == pytest.approx(0.1)
     assert second["integrator"]["extra_args"] == ["extraDC"]
     assert second["numberer"] == "Plain"
+
+
+def test_convert_preserves_krylov_newton_max_dim_option(tmp_path: Path):
+    script = tmp_path / "case.tcl"
+    script.write_text(
+        "\n".join(
+            [
+                "wipe",
+                "model basic -ndm 2 -ndf 3",
+                "node 1 0.0 0.0",
+                "node 2 0.0 144.0",
+                "fix 1 1 1 1",
+                "geomTransf Linear 1",
+                "element elasticBeamColumn 1 1 2 3600 3225 1080000 1",
+                "timeSeries Linear 1",
+                "pattern Plain 1 1 {",
+                "    load 2 0.0 -2000.0 0.0",
+                "}",
+                "constraints Plain",
+                "numberer Plain",
+                "system FullGeneral",
+                "test NormDispIncr 1.0e-10 10",
+                "algorithm KrylovNewton -maxDim 5",
+                "integrator LoadControl 0.1",
+                "analysis Static",
+                "analyze 1",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    case = tcl_to_strut.convert_tcl_to_case(script, REPO_ROOT)
+    analysis = case["analysis"]["stages"][0]["analysis"]
+    assert analysis["algorithm"] == "KrylovNewton"
+    assert analysis["algorithm_options"]["maxDim"] == 5
+    assert analysis["algorithm_options"]["raw_args"] == ["-maxDim", "5"]
 
 
 def test_convert_maps_corot_truss_section_syntax_and_preserves_print_commands(

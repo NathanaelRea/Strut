@@ -100,6 +100,8 @@ struct SectionInput(Movable, ImplicitlyCopyable):
     var fiber_patch_count: Int
     var fiber_layer_offset: Int
     var fiber_layer_count: Int
+    var fiber_offset: Int
+    var fiber_count: Int
     var shell_layer_offset: Int
     var shell_layer_count: Int
 
@@ -127,6 +129,8 @@ struct SectionInput(Movable, ImplicitlyCopyable):
         self.fiber_patch_count = 0
         self.fiber_layer_offset = 0
         self.fiber_layer_count = 0
+        self.fiber_offset = 0
+        self.fiber_count = 0
         self.shell_layer_offset = 0
         self.shell_layer_count = 0
 
@@ -154,6 +158,8 @@ struct SectionInput(Movable, ImplicitlyCopyable):
         self.fiber_patch_count = 0
         self.fiber_layer_offset = 0
         self.fiber_layer_count = 0
+        self.fiber_offset = 0
+        self.fiber_count = 0
         self.shell_layer_offset = 0
         self.shell_layer_count = 0
 
@@ -206,6 +212,19 @@ struct FiberLayerInput(Movable, ImplicitlyCopyable):
         self.z_start = 0.0
         self.y_end = 0.0
         self.z_end = 0.0
+
+
+struct FiberInput(Movable, ImplicitlyCopyable):
+    var y: Float64
+    var z: Float64
+    var area: Float64
+    var material: Int
+
+    fn __init__(out self):
+        self.y = 0.0
+        self.z = 0.0
+        self.area = 0.0
+        self.material = -1
 
 
 struct ShellLayerInput(Movable, ImplicitlyCopyable):
@@ -688,6 +707,7 @@ struct SolverAttemptInput(Movable, ImplicitlyCopyable):
     var algorithm_tag: Int
     var broyden_count: Int
     var line_search_eta: Float64
+    var krylov_max_dim: Int
     var test_type: String
     var test_type_tag: Int
     var max_iters: Int
@@ -698,6 +718,7 @@ struct SolverAttemptInput(Movable, ImplicitlyCopyable):
         self.algorithm_tag = AnalysisAlgorithmTag.Unknown
         self.broyden_count = 0
         self.line_search_eta = 1.0
+        self.krylov_max_dim = 0
         self.test_type = "NormUnbalance"
         self.test_type_tag = NonlinearTestTypeTag.NormUnbalance
         self.max_iters = 20
@@ -959,6 +980,7 @@ struct CaseInput(Movable):
     var sections: List[SectionInput]
     var fiber_patches: List[FiberPatchInput]
     var fiber_layers: List[FiberLayerInput]
+    var fibers: List[FiberInput]
     var shell_layers: List[ShellLayerInput]
     var materials: List[MaterialInput]
     var shell_material_props: List[Float64]
@@ -990,6 +1012,7 @@ struct CaseInput(Movable):
         self.sections = []
         self.fiber_patches = []
         self.fiber_layers = []
+        self.fibers = []
         self.shell_layers = []
         self.materials = []
         self.shell_material_props = []
@@ -1014,6 +1037,7 @@ struct CaseInput(Movable):
         self.recorder_modes_pool = []
         self.recorder_sections_pool = []
         self.recorders = []
+
 
 
 fn element_type_tag(type_name: String) -> Int:
@@ -1353,6 +1377,8 @@ fn analysis_algorithm_tag(algorithm_name: String) -> Int:
         return AnalysisAlgorithmTag.Broyden
     if algorithm_name == "NewtonLineSearch":
         return AnalysisAlgorithmTag.NewtonLineSearch
+    if algorithm_name == "KrylovNewton":
+        return AnalysisAlgorithmTag.KrylovNewton
     return AnalysisAlgorithmTag.Unknown
 
 
@@ -1995,6 +2021,12 @@ fn parse_analysis_input_from_native(
                 "line_search_eta",
                 _json_get_float(doc, attempt_algorithm_options_index, "alpha", 1.0),
             )
+            attempt.krylov_max_dim = _json_get_int(
+                doc,
+                attempt_index,
+                "krylov_max_dim",
+                _json_get_int(doc, attempt_algorithm_options_index, "maxDim", 0),
+            )
             attempt.test_type = _json_get_string(
                 doc, attempt_index, "test_type", analysis.test_type
             )
@@ -2017,6 +2049,9 @@ fn parse_analysis_input_from_native(
     )
     primary_attempt.line_search_eta = _json_get_float(
         doc, primary_algorithm_options_index, "alpha", 1.0
+    )
+    primary_attempt.krylov_max_dim = _json_get_int(
+        doc, primary_algorithm_options_index, "maxDim", 0
     )
     primary_attempt.test_type = analysis.test_type
     primary_attempt.test_type_tag = analysis.test_type_tag
@@ -2407,6 +2442,22 @@ fn parse_case_input_native_from_source(
                     layer_input.y_end = _json_get_float(doc, layer, "y_end", 0.0)
                     layer_input.z_end = _json_get_float(doc, layer, "z_end", 0.0)
                     case_input.fiber_layers.append(layer_input)
+                var fibers_raw = _json_key(doc, params, "fibers")
+                if _json_has_value(doc, fibers_raw):
+                    parsed.fiber_offset = len(case_input.fibers)
+                    parsed.fiber_count = _json_expect_array_len(
+                        doc, fibers_raw, "section fibers"
+                    )
+                    for j in range(parsed.fiber_count):
+                        var fiber = doc.array_item(fibers_raw, j)
+                        var fiber_input = FiberInput()
+                        fiber_input.y = _json_get_float(doc, fiber, "y", 0.0)
+                        fiber_input.z = _json_get_float(doc, fiber, "z", 0.0)
+                        fiber_input.area = _json_get_float(doc, fiber, "area", 0.0)
+                        fiber_input.material = _json_get_int(
+                            doc, fiber, "material", -1
+                        )
+                        case_input.fibers.append(fiber_input)
             elif parsed.type == "LayeredShellSection":
                 var layers_raw = _json_key(doc, params, "layers")
                 parsed.shell_layer_offset = len(case_input.shell_layers)

@@ -79,11 +79,18 @@ from solver.run_case.helpers import (
     _has_recorder_type,
     _section_response_for_recorder,
     _sync_force_beam_column2d_committed_basic_states,
+    _write_run_progress,
     _update_envelope,
 )
 from solver.run_case.load_state import (
     build_active_element_load_state,
     build_active_nodal_load,
+)
+from solver.run_case.nonlinear_krylov import (
+    copy_krylov_vector,
+    default_krylov_max_dim,
+    krylov_apply_acceleration,
+    krylov_push_iteration_state,
 )
 
 
@@ -97,6 +104,7 @@ fn _static_nonlinear_algorithm_mode(algorithm_tag: Int, algorithm: String, label
     if (
         algorithm_tag == AnalysisAlgorithmTag.Broyden
         or algorithm_tag == AnalysisAlgorithmTag.NewtonLineSearch
+        or algorithm_tag == AnalysisAlgorithmTag.KrylovNewton
     ):
         # These algorithms still use Newton tangents, but add their own
         # per-iteration correction logic below.
@@ -595,6 +603,7 @@ fn _append_static_retry_attempt(
     algorithm_tag: Int,
     broyden_count: Int,
     line_search_eta: Float64,
+    krylov_max_dim: Int,
     test_type: String,
     test_type_tag: Int,
     max_iters: Int,
@@ -607,6 +616,7 @@ fn _append_static_retry_attempt(
     mut retry_tols: List[Float64],
     mut retry_broyden_counts: List[Int],
     mut retry_line_search_etas: List[Float64],
+    mut retry_krylov_max_dims: List[Int],
 ):
     if len(algorithm) == 0:
         return
@@ -621,6 +631,7 @@ fn _append_static_retry_attempt(
     retry_tols.append(tol)
     retry_broyden_counts.append(broyden_count)
     retry_line_search_etas.append(line_search_eta)
+    retry_krylov_max_dims.append(krylov_max_dim)
 
 
 fn _append_static_retry_attempt_from_input(
@@ -633,12 +644,14 @@ fn _append_static_retry_attempt_from_input(
     mut retry_tols: List[Float64],
     mut retry_broyden_counts: List[Int],
     mut retry_line_search_etas: List[Float64],
+    mut retry_krylov_max_dims: List[Int],
 ):
     _append_static_retry_attempt(
         attempt.algorithm,
         attempt.algorithm_tag,
         attempt.broyden_count,
         attempt.line_search_eta,
+        attempt.krylov_max_dim,
         attempt.test_type,
         attempt.test_type_tag,
         attempt.max_iters,
@@ -651,6 +664,7 @@ fn _append_static_retry_attempt_from_input(
         retry_tols,
         retry_broyden_counts,
         retry_line_search_etas,
+        retry_krylov_max_dims,
     )
 
 
@@ -666,6 +680,7 @@ fn _collect_static_solver_chain(
     mut retry_tols: List[Float64],
     mut retry_broyden_counts: List[Int],
     mut retry_line_search_etas: List[Float64],
+    mut retry_krylov_max_dims: List[Int],
 ):
     for i in range(analysis.solver_chain_count):
         _append_static_retry_attempt_from_input(
@@ -678,6 +693,7 @@ fn _collect_static_solver_chain(
             retry_tols,
             retry_broyden_counts,
             retry_line_search_etas,
+            retry_krylov_max_dims,
         )
     if len(retry_algorithm_modes) == 0:
         _append_static_retry_attempt(
@@ -685,6 +701,7 @@ fn _collect_static_solver_chain(
             analysis.algorithm_tag,
             0,
             1.0,
+            0,
             analysis.test_type,
             analysis.test_type_tag,
             analysis.max_iters,
@@ -697,6 +714,7 @@ fn _collect_static_solver_chain(
             retry_tols,
             retry_broyden_counts,
             retry_line_search_etas,
+            retry_krylov_max_dims,
         )
     if analysis.has_solver_chain_override or len(retry_algorithm_modes) != 1:
         return
@@ -741,6 +759,7 @@ fn _collect_static_solver_chain(
         auto_algorithm_tag,
         0,
         1.0,
+        0,
         auto_test_type,
         auto_test_type_tag,
         auto_max_iters,
@@ -753,6 +772,7 @@ fn _collect_static_solver_chain(
         retry_tols,
         retry_broyden_counts,
         retry_line_search_etas,
+        retry_krylov_max_dims,
     )
 
 
@@ -856,7 +876,10 @@ fn run_static_nonlinear_load_control(
     recorder_sections_pool: List[Int],
     elem_id_to_index: List[Int],
     mut static_output_files: List[String],
-    mut static_output_buffers: List[List[String]],
+    mut static_output_buffers: List[String],
+    progress_path: String,
+    progress_stage_number: Int,
+    progress_stage_count: Int,
     do_profile: Bool,
     t0: Int,
     mut events: String,
@@ -879,6 +902,15 @@ fn run_static_nonlinear_load_control(
     mut runtime_metrics: RuntimeProfileMetrics,
 ) raises:
     var time = Python.import_module("time")
+    _write_run_progress(
+        progress_path,
+        "running_stage",
+        "static_nonlinear",
+        progress_stage_number,
+        progress_stage_count,
+        0,
+        steps,
+    )
     var asm_dof_map6: List[Int] = []
     var asm_dof_map12: List[Int] = []
     var asm_u_elem6: List[Float64] = []
@@ -896,6 +928,7 @@ fn run_static_nonlinear_load_control(
     var retry_tols: List[Float64] = []
     var retry_broyden_counts: List[Int] = []
     var retry_line_search_etas: List[Float64] = []
+    var retry_krylov_max_dims: List[Int] = []
     _collect_static_solver_chain(
         analysis,
         analysis_solver_chain_pool,
@@ -908,6 +941,7 @@ fn run_static_nonlinear_load_control(
         retry_tols,
         retry_broyden_counts,
         retry_line_search_etas,
+        retry_krylov_max_dims,
     )
     if len(retry_algorithm_modes) == 0:
         abort("static_nonlinear solver_chain must contain at least one attempt")
@@ -919,6 +953,12 @@ fn run_static_nonlinear_load_control(
     var tol = retry_tols[0]
     var primary_broyden_count = retry_broyden_counts[0]
     var primary_line_search_eta = retry_line_search_etas[0]
+    var primary_krylov_max_dim = default_krylov_max_dim(retry_krylov_max_dims[0])
+    var chain_has_modified_newton_initial = False
+    for i in range(retry_attempt_count):
+        if retry_algorithm_modes[i] == NonlinearAlgorithmMode.ModifiedNewtonInitial:
+            chain_has_modified_newton_initial = True
+            break
     var free_count = len(free)
     var F_const_free: List[Float64] = []
     F_const_free.resize(free_count, 0.0)
@@ -928,22 +968,12 @@ fn run_static_nonlinear_load_control(
         F_const_free[i] = F_const[free[i]]
         F_pattern_free[i] = F_pattern[free[i]]
 
-    var K: List[List[Float64]] = []
-    for _ in range(total_dofs):
-        var row: List[Float64] = []
-        row.resize(total_dofs, 0.0)
-        K.append(row^)
     var F_int: List[Float64] = []
     F_int.resize(total_dofs, 0.0)
 
     var integrator_tag = analysis.integrator_tag
     if integrator_tag == IntegratorTypeTag.Unknown:
         integrator_tag = IntegratorTypeTag.LoadControl
-    var chain_has_modified_newton_initial = False
-    for i in range(retry_attempt_count):
-        if retry_algorithm_modes[i] == NonlinearAlgorithmMode.ModifiedNewtonInitial:
-            chain_has_modified_newton_initial = True
-            break
     var use_banded_loadcontrol = (
         analysis.system_tag == AnalysisSystemTag.BandGeneral
         and not has_transformation_mpc
@@ -976,6 +1006,17 @@ fn run_static_nonlinear_load_control(
             or analysis.system_tag == AnalysisSystemTag.SparseSYM
         )
     )
+    var needs_dense_global_matrix = (
+        use_banded_loadcontrol
+        or not native_direct_backend_available
+        or chain_has_modified_newton_initial
+    )
+    var K: List[List[Float64]] = []
+    if needs_dense_global_matrix:
+        for _ in range(total_dofs):
+            var row: List[Float64] = []
+            row.resize(total_dofs, 0.0)
+            K.append(row^)
     var elem_free_pool_native: List[Int] = []
     if native_direct_backend_available:
         elem_free_pool_native.resize(len(elem_dof_pool), -1)
@@ -1161,7 +1202,16 @@ fn run_static_nonlinear_load_control(
         max_step_size = analysis.integrator_max_step
     var current_step_size = base_step_size
     var load_control_time = 0.0
-    for _ in range(steps):
+    for step in range(steps):
+        _write_run_progress(
+            progress_path,
+            "running_step",
+            "static_nonlinear",
+            progress_stage_number,
+            progress_stage_count,
+            step + 1,
+            steps,
+        )
         if do_profile:
             var t_step_start = Int(time.perf_counter_ns())
             var step_start_us = (t_step_start - t0) // 1000
@@ -1246,6 +1296,7 @@ fn run_static_nonlinear_load_control(
         var attempt_max_iters = max_iters
         var attempt_tol = tol
         var attempt_broyden_count = primary_broyden_count
+        var attempt_krylov_max_dim = primary_krylov_max_dim
         var step_converged_iters = 0
         for attempt in range(retry_attempt_count):
             if attempt > 0:
@@ -1261,6 +1312,9 @@ fn run_static_nonlinear_load_control(
                 attempt_max_iters = retry_max_iters[attempt]
                 attempt_tol = retry_tols[attempt]
                 attempt_broyden_count = retry_broyden_counts[attempt]
+                attempt_krylov_max_dim = default_krylov_max_dim(
+                    retry_krylov_max_dims[attempt]
+                )
 
             var tangent_initialized = False
             var tangent_factored = False
@@ -1268,6 +1322,13 @@ fn run_static_nonlinear_load_control(
             var broyden_history_z: List[List[Float64]] = []
             var broyden_prev_residual: List[Float64] = []
             var has_broyden_prev_residual = False
+            var krylov_history_v: List[List[Float64]] = []
+            var krylov_history_av: List[List[Float64]] = []
+            var krylov_normal_matrix_flat: List[Float64] = []
+            var krylov_normal_rhs: List[Float64] = []
+            var krylov_coeffs: List[Float64] = []
+            var krylov_factor_work: List[Float64] = []
+            var krylov_rhs_work: List[Float64] = []
             for iter_idx in range(attempt_max_iters):
                 if runtime_metrics.enabled:
                     runtime_metrics.global_nonlinear_iterations += 1
@@ -1284,6 +1345,9 @@ fn run_static_nonlinear_load_control(
                 var broyden_refresh_interval = _default_broyden_count(
                     attempt_broyden_count
                 )
+                var krylov_max_dim = attempt_krylov_max_dim
+                if krylov_max_dim > free_count:
+                    krylov_max_dim = free_count
                 var refresh_tangent: Bool
                 if attempt_algorithm_mode == NonlinearAlgorithmMode.Newton:
                     if attempt_algorithm_tag == AnalysisAlgorithmTag.Broyden:
@@ -1292,18 +1356,29 @@ fn run_static_nonlinear_load_control(
                             or broyden_refresh_interval <= 1
                             or len(broyden_history_s) >= broyden_refresh_interval
                         )
+                    elif attempt_algorithm_tag == AnalysisAlgorithmTag.KrylovNewton:
+                        refresh_tangent = (
+                            not tangent_initialized
+                            or len(krylov_history_v) > krylov_max_dim
+                        )
                     else:
                         refresh_tangent = True
                 elif attempt_algorithm_mode == NonlinearAlgorithmMode.ModifiedNewton:
                     refresh_tangent = not tangent_initialized
                 else:
                     refresh_tangent = not tangent_initialized
+                if refresh_tangent and attempt_algorithm_tag == AnalysisAlgorithmTag.KrylovNewton:
+                    krylov_history_v = []
+                    krylov_history_av = []
                 var use_native_direct_solve = (
                     native_direct_backend_available
                     and attempt_algorithm_mode != NonlinearAlgorithmMode.ModifiedNewtonInitial
                 )
                 var use_native_tangent_assembly = (
                     use_native_direct_solve and refresh_tangent
+                )
+                var use_native_internal_force_only = (
+                    use_native_direct_solve and not use_native_tangent_assembly
                 )
                 if do_profile:
                     var t_asm_start = Int(time.perf_counter_ns())
@@ -1389,6 +1464,67 @@ fn run_static_nonlinear_load_control(
                         frame_assemble_uniaxial,
                         frame_assemble_fiber,
                         runtime_metrics,
+                    )
+                elif use_native_internal_force_only:
+                    F_int = assemble_internal_forces_typed_soa(
+                        typed_nodes,
+                        typed_elements,
+                        node_x,
+                        node_y,
+                        node_z,
+                        elem_dof_offsets,
+                        elem_dof_pool,
+                        elem_node_offsets,
+                        elem_node_pool,
+                        elem_primary_material_ids,
+                        elem_type_tags,
+                        elem_geom_tags,
+                        elem_section_ids,
+                        elem_integration_tags,
+                        elem_num_int_pts,
+                        elem_area,
+                        elem_thickness,
+                        frame2d_elem_indices,
+                        frame3d_elem_indices,
+                        truss_elem_indices,
+                        zero_length_elem_indices,
+                        two_node_link_elem_indices,
+                        zero_length_section_elem_indices,
+                        quad_elem_indices,
+                        shell_elem_indices,
+                        active_element_load_state.element_loads,
+                        active_element_load_state.elem_load_offsets,
+                        active_element_load_state.elem_load_pool,
+                        1.0,
+                        typed_sections_by_id,
+                        typed_materials_by_id,
+                        id_to_index,
+                        node_count,
+                        ndf,
+                        ndm,
+                        u,
+                        uniaxial_defs,
+                        uniaxial_state_defs,
+                        uniaxial_states,
+                        elem_uniaxial_offsets,
+                        elem_uniaxial_counts,
+                        elem_uniaxial_state_ids,
+                        force_basic_offsets,
+                        force_basic_counts,
+                        force_basic_q,
+                        fiber_section_defs,
+                        fiber_section_cells,
+                        fiber_section_index_by_id,
+                        fiber_section3d_defs,
+                        fiber_section3d_cells,
+                        fiber_section3d_index_by_id,
+        layered_shell_section_defs,
+        layered_shell_section_index_by_id,
+        layered_shell_section_uniaxial_offsets,
+        layered_shell_section_uniaxial_counts,
+        shell_elem_instance_offsets,
+                        force_beam_column2d_scratch,
+                        force_beam_column3d_scratch,
                     )
                 else:
                     assemble_global_stiffness_and_internal_soa(
@@ -1591,6 +1727,7 @@ fn run_static_nonlinear_load_control(
                     var direct_newton_solve = (
                         attempt_algorithm_mode == NonlinearAlgorithmMode.Newton
                         and attempt_algorithm_tag != AnalysisAlgorithmTag.Broyden
+                        and attempt_algorithm_tag != AnalysisAlgorithmTag.KrylovNewton
                     )
                     var force_refactor = direct_newton_solve or not tangent_factored
                     if use_native_direct_solve:
@@ -1606,6 +1743,20 @@ fn run_static_nonlinear_load_control(
                         lu_rhs[i] = F_f[i]
                     solve(backend, lu_rhs, u_f_work)
                     u_f = u_f_work.copy()
+                var krylov_base_direction: List[Float64] = []
+                if attempt_algorithm_tag == AnalysisAlgorithmTag.KrylovNewton:
+                    krylov_base_direction = copy_krylov_vector(u_f, free_count)
+                    _ = krylov_apply_acceleration(
+                        u_f,
+                        krylov_history_v,
+                        krylov_history_av,
+                        free_count,
+                        krylov_normal_matrix_flat,
+                        krylov_normal_rhs,
+                        krylov_coeffs,
+                        krylov_factor_work,
+                        krylov_rhs_work,
+                    )
                 if attempt_algorithm_tag == AnalysisAlgorithmTag.Broyden:
                     if refresh_tangent:
                         broyden_history_s = []
@@ -1847,6 +1998,14 @@ fn run_static_nonlinear_load_control(
                     broyden_history_s.append(_copy_vector(u_f, free_count))
                     broyden_prev_residual = _copy_vector(F_f, free_count)
                     has_broyden_prev_residual = True
+                elif attempt_algorithm_tag == AnalysisAlgorithmTag.KrylovNewton:
+                    krylov_push_iteration_state(
+                        krylov_base_direction,
+                        u_f,
+                        free_count,
+                        krylov_history_v,
+                        krylov_history_av,
+                    )
                 var disp_incr_norm = sqrt(sum_sq_float64_contiguous(u_f, free_count))
                 var energy_incr = abs(dot_float64_contiguous(u_f, F_f, free_count))
                 var converged_iter = max_diff <= attempt_tol
@@ -2402,6 +2561,15 @@ fn run_static_nonlinear_load_control(
         static_output_files,
         static_output_buffers,
     )
+    _write_run_progress(
+        progress_path,
+        "stage_complete",
+        "static_nonlinear",
+        progress_stage_number,
+        progress_stage_count,
+        steps,
+        steps,
+    )
 
 fn run_static_nonlinear_displacement_control(
     analysis: AnalysisInput,
@@ -2476,7 +2644,10 @@ fn run_static_nonlinear_displacement_control(
     recorder_sections_pool: List[Int],
     elem_id_to_index: List[Int],
     mut static_output_files: List[String],
-    mut static_output_buffers: List[List[String]],
+    mut static_output_buffers: List[String],
+    progress_path: String,
+    progress_stage_number: Int,
+    progress_stage_count: Int,
     do_profile: Bool,
     t0: Int,
     mut events: String,
@@ -2498,6 +2669,15 @@ fn run_static_nonlinear_displacement_control(
     mut runtime_metrics: RuntimeProfileMetrics,
 ) raises -> Float64:
     var time = Python.import_module("time")
+    _write_run_progress(
+        progress_path,
+        "running_stage",
+        "static_nonlinear",
+        progress_stage_number,
+        progress_stage_count,
+        0,
+        steps,
+    )
     var asm_dof_map6: List[Int] = []
     var asm_dof_map12: List[Int] = []
     var asm_u_elem6: List[Float64] = []
@@ -2530,6 +2710,7 @@ fn run_static_nonlinear_displacement_control(
     var retry_tols: List[Float64] = []
     var retry_broyden_counts: List[Int] = []
     var retry_line_search_etas: List[Float64] = []
+    var retry_krylov_max_dims: List[Int] = []
     _collect_static_solver_chain(
         analysis,
         analysis_solver_chain_pool,
@@ -2542,6 +2723,7 @@ fn run_static_nonlinear_displacement_control(
         retry_tols,
         retry_broyden_counts,
         retry_line_search_etas,
+        retry_krylov_max_dims,
     )
     if len(retry_algorithm_modes) == 0:
         abort("static_nonlinear solver_chain must contain at least one attempt")
@@ -2553,6 +2735,12 @@ fn run_static_nonlinear_displacement_control(
     var tol = retry_tols[0]
     var primary_broyden_count = retry_broyden_counts[0]
     var primary_line_search_eta = retry_line_search_etas[0]
+    var primary_krylov_max_dim = default_krylov_max_dim(retry_krylov_max_dims[0])
+    var chain_has_modified_newton_initial = False
+    for i in range(retry_attempt_count):
+        if retry_algorithm_modes[i] == NonlinearAlgorithmMode.ModifiedNewtonInitial:
+            chain_has_modified_newton_initial = True
+            break
     var free_count = len(free)
     var F_const_free: List[Float64] = []
     F_const_free.resize(free_count, 0.0)
@@ -2562,11 +2750,6 @@ fn run_static_nonlinear_displacement_control(
         F_const_free[i] = F_const[free[i]]
         F_pattern_free[i] = F_pattern[free[i]]
 
-    var K: List[List[Float64]] = []
-    for _ in range(total_dofs):
-        var row: List[Float64] = []
-        row.resize(total_dofs, 0.0)
-        K.append(row^)
     var F_int: List[Float64] = []
     F_int.resize(total_dofs, 0.0)
 
@@ -2592,6 +2775,15 @@ fn run_static_nonlinear_displacement_control(
             or analysis.system_tag == AnalysisSystemTag.SparseSYM
         )
     )
+    var needs_dense_global_matrix = (
+        not native_direct_backend_available or chain_has_modified_newton_initial
+    )
+    var K: List[List[Float64]] = []
+    if needs_dense_global_matrix:
+        for _ in range(total_dofs):
+            var row: List[Float64] = []
+            row.resize(total_dofs, 0.0)
+            K.append(row^)
     var free_index_native: List[Int] = []
     free_index_native.resize(total_dofs, -1)
     var elem_free_pool_native: List[Int] = []
@@ -2648,11 +2840,6 @@ fn run_static_nonlinear_displacement_control(
     var du_last_iters = du_target_iters
     if analysis.step_retry_enabled:
         max_cutbacks = 0
-    var chain_has_modified_newton_initial = False
-    for i in range(retry_attempt_count):
-        if retry_algorithm_modes[i] == NonlinearAlgorithmMode.ModifiedNewtonInitial:
-            chain_has_modified_newton_initial = True
-            break
     var bulk_retry_attempt_count = retry_attempt_count
     if analysis.step_retry_continue_after_failure and retry_attempt_count > 1:
         bulk_retry_attempt_count = 1
@@ -2865,6 +3052,15 @@ fn run_static_nonlinear_displacement_control(
             )
 
     for step in range(steps):
+        _write_run_progress(
+            progress_path,
+            "running_step",
+            "static_nonlinear",
+            progress_stage_number,
+            progress_stage_count,
+            step + 1,
+            steps,
+        )
         if do_profile:
             var t_step_start = Int(time.perf_counter_ns())
             var step_start_us = (t_step_start - t0) // 1000
@@ -2930,6 +3126,7 @@ fn run_static_nonlinear_displacement_control(
                 var attempt_max_iters = max_iters
                 var attempt_tol = tol
                 var attempt_broyden_count = primary_broyden_count
+                var attempt_krylov_max_dim = primary_krylov_max_dim
                 var current_retry_attempt_count = retry_attempt_count
                 if not continuation_active:
                     current_retry_attempt_count = bulk_retry_attempt_count
@@ -2948,6 +3145,9 @@ fn run_static_nonlinear_displacement_control(
                         attempt_max_iters = retry_max_iters[attempt]
                         attempt_tol = retry_tols[attempt]
                         attempt_broyden_count = retry_broyden_counts[attempt]
+                        attempt_krylov_max_dim = default_krylov_max_dim(
+                            retry_krylov_max_dims[attempt]
+                        )
 
                     var tangent_initialized = False
                     var tangent_factored = False
@@ -2955,6 +3155,13 @@ fn run_static_nonlinear_displacement_control(
                     var broyden_history_z: List[List[Float64]] = []
                     var broyden_prev_residual: List[Float64] = []
                     var has_broyden_prev_residual = False
+                    var krylov_history_v: List[List[Float64]] = []
+                    var krylov_history_av: List[List[Float64]] = []
+                    var krylov_normal_matrix_flat: List[Float64] = []
+                    var krylov_normal_rhs: List[Float64] = []
+                    var krylov_coeffs: List[Float64] = []
+                    var krylov_factor_work: List[Float64] = []
+                    var krylov_rhs_work: List[Float64] = []
                     for iter_idx in range(attempt_max_iters):
                         if runtime_metrics.enabled:
                             runtime_metrics.global_nonlinear_iterations += 1
@@ -2971,6 +3178,9 @@ fn run_static_nonlinear_displacement_control(
                         var broyden_refresh_interval = _default_broyden_count(
                             attempt_broyden_count
                         )
+                        var krylov_max_dim = attempt_krylov_max_dim
+                        if krylov_max_dim > free_count + 1:
+                            krylov_max_dim = free_count + 1
                         var refresh_tangent: Bool
                         if attempt_algorithm_mode == NonlinearAlgorithmMode.Newton:
                             if attempt_algorithm_tag == AnalysisAlgorithmTag.Broyden:
@@ -2979,12 +3189,20 @@ fn run_static_nonlinear_displacement_control(
                                     or broyden_refresh_interval <= 1
                                     or len(broyden_history_s) >= broyden_refresh_interval
                                 )
+                            elif attempt_algorithm_tag == AnalysisAlgorithmTag.KrylovNewton:
+                                refresh_tangent = (
+                                    not tangent_initialized
+                                    or len(krylov_history_v) > krylov_max_dim
+                                )
                             else:
                                 refresh_tangent = True
                         elif attempt_algorithm_mode == NonlinearAlgorithmMode.ModifiedNewton:
                             refresh_tangent = not tangent_initialized
                         else:
                             refresh_tangent = not tangent_initialized
+                        if refresh_tangent and attempt_algorithm_tag == AnalysisAlgorithmTag.KrylovNewton:
+                            krylov_history_v = []
+                            krylov_history_av = []
                         var use_native_direct_solve = (
                             native_direct_backend_available
                         )
@@ -3397,6 +3615,8 @@ fn run_static_nonlinear_displacement_control(
                                     attempt_algorithm_mode == NonlinearAlgorithmMode.Newton
                                     and attempt_algorithm_tag
                                         != AnalysisAlgorithmTag.Broyden
+                                    and attempt_algorithm_tag
+                                        != AnalysisAlgorithmTag.KrylovNewton
                                 )
                                 var force_refactor = direct_newton_solve or not tangent_factored
                                 _ = refactor_loaded_if_needed(
@@ -3445,6 +3665,22 @@ fn run_static_nonlinear_displacement_control(
                             )
                         if not solved:
                             break
+                        var krylov_base_sol_aug: List[Float64] = []
+                        if attempt_algorithm_tag == AnalysisAlgorithmTag.KrylovNewton:
+                            krylov_base_sol_aug = copy_krylov_vector(
+                                sol_aug, free_count + 1
+                            )
+                            _ = krylov_apply_acceleration(
+                                sol_aug,
+                                krylov_history_v,
+                                krylov_history_av,
+                                free_count + 1,
+                                krylov_normal_matrix_flat,
+                                krylov_normal_rhs,
+                                krylov_coeffs,
+                                krylov_factor_work,
+                                krylov_rhs_work,
+                            )
                         if attempt_algorithm_tag == AnalysisAlgorithmTag.Broyden:
                             if refresh_tangent:
                                 broyden_history_s = []
@@ -3711,6 +3947,14 @@ fn run_static_nonlinear_displacement_control(
                                 rhs_aug, free_count + 1
                             )
                             has_broyden_prev_residual = True
+                        elif attempt_algorithm_tag == AnalysisAlgorithmTag.KrylovNewton:
+                            krylov_push_iteration_state(
+                                krylov_base_sol_aug,
+                                sol_aug,
+                                free_count + 1,
+                                krylov_history_v,
+                                krylov_history_av,
+                            )
                         var disp_incr_norm = sqrt(sum_sq_float64_contiguous(sol_aug, free_count))
                         var energy_incr = abs(dot_float64_contiguous(sol_aug, rhs_aug, free_count))
                         var converged_iter = max_diff <= attempt_tol
@@ -4395,5 +4639,14 @@ fn run_static_nonlinear_displacement_control(
         envelope_abs,
         static_output_files,
         static_output_buffers,
+    )
+    _write_run_progress(
+        progress_path,
+        "stage_complete",
+        "static_nonlinear",
+        progress_stage_number,
+        progress_stage_count,
+        steps,
+        steps,
     )
     return load_scale_derivative * load_factor

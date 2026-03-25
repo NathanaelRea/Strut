@@ -1,6 +1,7 @@
 from collections import Dict, List
 from math import atan2, sqrt
 from os import abort
+from python import Python, PythonObject
 
 from elements import (
     beam2d_basic_fixed_end_and_reactions,
@@ -114,6 +115,32 @@ fn _elem_dof(elem: ElementInput, idx: Int) -> Int:
     if idx == 22:
         return elem.dof_23
     return elem.dof_24
+
+
+fn _write_run_progress(
+    progress_path: String,
+    status: String,
+    analysis_type: String,
+    stage_number: Int,
+    stage_count: Int,
+    step_number: Int,
+    step_count: Int,
+) raises:
+    if len(progress_path) == 0:
+        return
+    var builtins = Python.import_module("builtins")
+    var file_obj = builtins.open(PythonObject(progress_path), "w")
+    var text = String()
+    text += "{\n"
+    text += '  "status": "' + status + '",\n'
+    text += '  "analysis_type": "' + analysis_type + '",\n'
+    text += '  "stage_number": ' + String(stage_number) + ",\n"
+    text += '  "stage_count": ' + String(stage_count) + ",\n"
+    text += '  "step_number": ' + String(step_number) + ",\n"
+    text += '  "step_count": ' + String(step_count) + "\n"
+    text += "}\n"
+    file_obj.write(PythonObject(text))
+    file_obj.close()
 
 
 fn _elem_dof_map(elem: ElementInput) -> List[Int]:
@@ -764,8 +791,8 @@ fn _truss_element_force_global(
     elem_uniaxial_counts: List[Int],
     elem_uniaxial_state_ids: List[Int],
 ) raises -> List[Float64]:
-    if ndf != 2 and ndf != 3:
-        abort("truss element_force requires ndf=2 or ndf=3")
+    if ndf != 2 and ndf != 3 and ndf != 6:
+        abort("truss element_force requires ndf=2, ndf=3, or ndf=6")
     var i1 = elem.node_index_1
     var i2 = elem.node_index_2
     var node1 = nodes[i1]
@@ -2497,23 +2524,21 @@ fn _section_response_for_recorder(
 
 fn _append_output(
     mut filenames: List[String],
-    mut buffers: List[List[String]],
+    mut buffers: List[String],
     filename: String,
     line: String,
 ):
     for i in range(len(filenames)):
         if filenames[i] == filename:
-            buffers[i].append(line)
+            buffers[i] += line
             return
     filenames.append(filename)
-    var lines: List[String] = []
-    lines.append(line)
-    buffers.append(lines^)
+    buffers.append(line)
 
 
 fn _output_buffer_index(
     mut filenames: List[String],
-    mut buffers: List[List[String]],
+    mut buffers: List[String],
     mut filename_to_index: Dict[String, Int],
     filename: String,
 ) -> Int:
@@ -2522,29 +2547,28 @@ fn _output_buffer_index(
         return existing_index.value()
     var index = len(filenames)
     filenames.append(filename)
-    var lines: List[String] = []
-    buffers.append(lines^)
+    buffers.append(String())
     filename_to_index[filename] = index
     return index
 
 
 fn _append_output(
     mut filenames: List[String],
-    mut buffers: List[List[String]],
+    mut buffers: List[String],
     mut filename_to_index: Dict[String, Int],
     filename: String,
     line: String,
 ):
     var index = _output_buffer_index(filenames, buffers, filename_to_index, filename)
-    buffers[index].append(line)
+    buffers[index] += line
 
 
 fn _append_output_at_index(
-    mut buffers: List[List[String]], file_index: Int, line: String
+    mut buffers: List[String], file_index: Int, line: String
 ) raises:
     if file_index < 0 or file_index >= len(buffers):
         abort("output buffer index out of range")
-    buffers[file_index].append(line)
+    buffers[file_index] += line
 
 
 fn _has_recorder_type(recorders: List[RecorderInput], wanted_tag: Int) -> Bool:
@@ -3168,7 +3192,7 @@ fn _flush_envelope_outputs(
     envelope_max: List[List[Float64]],
     envelope_abs: List[List[Float64]],
     mut output_files: List[String],
-    mut output_buffers: List[List[String]],
+    mut output_buffers: List[String],
 ):
     for i in range(len(envelope_files)):
         var line = String()
@@ -3184,7 +3208,7 @@ fn _flush_envelope_outputs(
     envelope_max: List[List[Float64]],
     envelope_abs: List[List[Float64]],
     mut output_files: List[String],
-    mut output_buffers: List[List[String]],
+    mut output_buffers: List[String],
     mut output_file_index: Dict[String, Int],
 ):
     for i in range(len(envelope_files)):

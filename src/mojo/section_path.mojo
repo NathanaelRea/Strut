@@ -19,6 +19,7 @@ from sections import (
     fiber_section3d_set_trial,
 )
 from solver.run_case.input_types import (
+    FiberInput,
     FiberLayerInput,
     FiberPatchInput,
     MaterialInput,
@@ -194,8 +195,8 @@ fn make_uniaxial_def(material: MaterialInput) -> UniMaterialDef:
         var Fy = material.Fy
         var E0 = material.E0
         var b = material.b
-        if Fy <= 0.0:
-            abort("Steel02 Fy must be > 0")
+        if Fy < 0.0:
+            abort("Steel02 Fy must be >= 0")
         if E0 <= 0.0:
             abort("Steel02 E0 must be > 0")
         if b < 0.0 or b >= 1.0:
@@ -281,6 +282,7 @@ fn _parse_section_input(
     mut section: SectionInput,
     mut patches: List[FiberPatchInput],
     mut layers: List[FiberLayerInput],
+    mut fibers: List[FiberInput],
 ) raises:
     section = SectionInput(
         _json_get_int(doc, section_index, "id", -1),
@@ -289,6 +291,7 @@ fn _parse_section_input(
     var params_index = _json_require_key(doc, section_index, "params")
     patches = List[FiberPatchInput]()
     layers = List[FiberLayerInput]()
+    fibers = List[FiberInput]()
     var patches_index = _json_key(doc, params_index, "patches")
     if _json_has_value(doc, patches_index):
         section.fiber_patch_count = _json_expect_array_len(
@@ -329,6 +332,17 @@ fn _parse_section_input(
             layer.y_end = _json_get_float(doc, layer_index, "y_end", 0.0)
             layer.z_end = _json_get_float(doc, layer_index, "z_end", 0.0)
             layers.append(layer)
+    var fibers_index = _json_key(doc, params_index, "fibers")
+    if _json_has_value(doc, fibers_index):
+        section.fiber_count = _json_expect_array_len(doc, fibers_index, "section fibers")
+        for i in range(section.fiber_count):
+            var fiber_index = doc.array_item(fibers_index, i)
+            var fiber = FiberInput()
+            fiber.y = _json_get_float(doc, fiber_index, "y", 0.0)
+            fiber.z = _json_get_float(doc, fiber_index, "z", 0.0)
+            fiber.area = _json_get_float(doc, fiber_index, "area", 0.0)
+            fiber.material = _json_get_int(doc, fiber_index, "material", -1)
+            fibers.append(fiber)
     _ = section
 
 
@@ -367,12 +381,14 @@ def run_section_path():
     var section = SectionInput(-1, "")
     var fiber_patches: List[FiberPatchInput] = []
     var fiber_layers: List[FiberLayerInput] = []
+    var section_fibers: List[FiberInput] = []
     _parse_section_input(
         doc,
         section_index,
         section,
         fiber_patches,
         fiber_layers,
+        section_fibers,
     )
 
     var out = String("")
@@ -383,6 +399,7 @@ def run_section_path():
             section,
             fiber_patches,
             fiber_layers,
+            section_fibers,
             uniaxial_def_by_id,
             uniaxial_defs,
             defs,
@@ -450,6 +467,7 @@ def run_section_path():
             section,
             fiber_patches,
             fiber_layers,
+            section_fibers,
             uniaxial_def_by_id,
             uniaxial_defs,
             defs3d,

@@ -315,6 +315,7 @@ def test_transient_nonlinear_newton_variants_match_on_elastic_truss():
     results = {}
     algorithm_options = {
         "Newton": {},
+        "KrylovNewton": {"algorithm_options": {"maxDim": 2}},
         "Broyden": {"broyden_count": 3},
         "NewtonLineSearch": {"line_search_eta": 0.8},
     }
@@ -331,7 +332,7 @@ def test_transient_nonlinear_newton_variants_match_on_elastic_truss():
                 "force": _read_rows(out_dir / "element_force_ele1.out"),
             }
 
-    for algorithm in ("Broyden", "NewtonLineSearch"):
+    for algorithm in ("KrylovNewton", "Broyden", "NewtonLineSearch"):
         for got_row, ref_row in zip(
             results[algorithm]["disp"], results["Newton"]["disp"], strict=True
         ):

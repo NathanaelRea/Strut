@@ -1,0 +1,509 @@
+{
+  "schema_version": "1.0",
+  "enabled": false,
+  "status": "generated_smoke",
+  "notes": "Deterministic extracted megatall smoke case derived from the generated native case. It keeps one real megatall frame member on the staged gravity/transient path, plus fixed shell, truss, and rigidDiaphragm probes. The extracted FiberSection3d frame member is converted to a stiffness-equivalent ElasticSection3d surrogate so the reduced smoke path remains mechanically stable while still exercising shells, staged analysis, UniformExcitation, and rigidDiaphragm loading.",
+  "metadata": {
+    "name": "strut_dynamiccpu_entry_smoke",
+    "units": "unknown",
+    "source_case": "tests/validation/opensees_megatall_building_model1_dynamiccpu/generated/case.json",
+    "free_dynamic_node": 5404,
+    "smoke_element_ids": [
+      743,
+      18754,
+      33085
+    ]
+  },
+  "model": {
+    "ndm": 3,
+    "ndf": 6
+  },
+  "nodes": [
+    {
+      "id": 1455,
+      "x": 1.5,
+      "y": 5.0,
+      "z": 6.0,
+      "constraints": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6
+      ]
+    },
+    {
+      "id": 2718,
+      "x": -1.5,
+      "y": 5.0,
+      "z": 6.0,
+      "constraints": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6
+      ]
+    },
+    {
+      "id": 3174,
+      "x": -5.0,
+      "y": -32.5,
+      "z": 113.5,
+      "constraints": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6
+      ]
+    },
+    {
+      "id": 5404,
+      "x": -5.0,
+      "y": -33.5,
+      "z": 113.5,
+      "constraints": [
+        1,
+        2,
+        4,
+        5,
+        6
+      ]
+    },
+    {
+      "id": 17483,
+      "x": -1.5,
+      "y": 5.0,
+      "z": 5.0,
+      "constraints": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6
+      ]
+    },
+    {
+      "id": 17484,
+      "x": 1.5,
+      "y": 5.0,
+      "z": 5.0,
+      "constraints": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6
+      ]
+    }
+  ],
+  "materials": [
+    {
+      "id": 176,
+      "type": "Steel02",
+      "params": {
+        "Fy": 345000000.0,
+        "E0": 200000000000.0,
+        "b": 0.0,
+        "R0": 18.5,
+        "cR1": 0.925,
+        "cR2": 0.15
+      }
+    },
+    {
+      "id": 179,
+      "type": "Steel02",
+      "params": {
+        "Fy": 400000000.0,
+        "E0": 200000000000.0,
+        "b": 0.0,
+        "R0": 18.5,
+        "cR1": 0.925,
+        "cR2": 0.15
+      }
+    },
+    {
+      "id": 7399,
+      "type": "ElasticIsotropic",
+      "params": {
+        "E": 35466665920.0,
+        "nu": 0.12,
+        "rho": 0.0
+      }
+    },
+    {
+      "id": 7798,
+      "type": "PlateRebar",
+      "params": {
+        "material": 77997,
+        "angle": 0.0
+      }
+    },
+    {
+      "id": 77997,
+      "type": "Steel02",
+      "params": {
+        "Fy": 400000000.0,
+        "E0": 199999995904.0,
+        "b": 0.0,
+        "R0": 18.5,
+        "cR1": 0.925,
+        "cR2": 0.15
+      }
+    },
+    {
+      "id": 77998,
+      "type": "PlateRebar",
+      "params": {
+        "material": 77997,
+        "angle": 90.0
+      }
+    }
+  ],
+  "sections": [
+    {
+      "id": 1280,
+      "type": "ElasticSection3d",
+      "params": {
+        "E": 1.0,
+        "A": 16350000000.0,
+        "Iy": 789502807.6171874,
+        "Iz": 68696250.0,
+        "G": 1.0,
+        "J": 1.0
+      }
+    },
+    {
+      "id": 15501,
+      "type": "LayeredShellSection",
+      "params": {
+        "layers": [
+          {
+            "material": 7399,
+            "thickness": 0.0199979991
+          },
+          {
+            "material": 77998,
+            "thickness": 0.0089999996
+          },
+          {
+            "material": 7798,
+            "thickness": 0.0067500002
+          },
+          {
+            "material": 7399,
+            "thickness": 0.0828540027
+          },
+          {
+            "material": 7399,
+            "thickness": 0.0828540027
+          },
+          {
+            "material": 7399,
+            "thickness": 0.0828540027
+          },
+          {
+            "material": 7399,
+            "thickness": 0.0828540027
+          },
+          {
+            "material": 7399,
+            "thickness": 0.0828540027
+          },
+          {
+            "material": 7399,
+            "thickness": 0.0828540027
+          },
+          {
+            "material": 7399,
+            "thickness": 0.0828540027
+          },
+          {
+            "material": 7399,
+            "thickness": 0.0828540027
+          },
+          {
+            "material": 7399,
+            "thickness": 0.0828540027
+          },
+          {
+            "material": 7399,
+            "thickness": 0.0828540027
+          },
+          {
+            "material": 7798,
+            "thickness": 0.0067500002
+          },
+          {
+            "material": 77998,
+            "thickness": 0.0089999996
+          },
+          {
+            "material": 7399,
+            "thickness": 0.0199979991
+          }
+        ]
+      }
+    }
+  ],
+  "elements": [
+    {
+      "id": 743,
+      "type": "elasticBeamColumn3d",
+      "nodes": [
+        5404,
+        3174
+      ],
+      "section": 1280,
+      "geomTransf": "PDelta",
+      "vecxz": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "rho": 1.0
+    },
+    {
+      "id": 18754,
+      "type": "shell",
+      "nodes": [
+        17483,
+        17484,
+        1455,
+        2718
+      ],
+      "section": 15501
+    },
+    {
+      "id": 33085,
+      "type": "truss",
+      "nodes": [
+        2718,
+        1455
+      ],
+      "area": 0.018,
+      "material": 179
+    }
+  ],
+  "masses": [
+    {
+      "node": 5404,
+      "dof": 3,
+      "value": 41021.2244987488
+    }
+  ],
+  "time_series": [
+    {
+      "type": "Linear",
+      "tag": 6,
+      "factor": 1.0
+    },
+    {
+      "type": "Path",
+      "tag": 69,
+      "factor": 2.2,
+      "dt": 0.01,
+      "values_path": "_direct_tcl_context/MegaTallBuildingBenchmark/Model1/GMX.txt"
+    }
+  ],
+  "analysis": {
+    "type": "staged",
+    "constraints": "Transformation",
+    "stages": [
+      {
+        "analysis": {
+          "type": "static_nonlinear",
+          "constraints": "Transformation",
+          "steps": 2,
+          "integrator": {
+            "type": "LoadControl",
+            "step": 0.5
+          },
+          "algorithm": "Newton",
+          "test_type": "NormDispIncr",
+          "tol": 0.05,
+          "max_iters": 10,
+          "test_print_flag": 1,
+          "system": "SuperLU",
+          "numberer": "RCM"
+        },
+        "pattern": {
+          "type": "Plain",
+          "tag": 6,
+          "time_series": 6
+        },
+        "loads": [
+          {
+            "node": 5404,
+            "dof": 3,
+            "value": -69996.984375
+          },
+          {
+            "node": 5404,
+            "dof": 3,
+            "value": -141696.578125
+          },
+          {
+            "node": 5404,
+            "dof": 3,
+            "value": -123126.9140625
+          },
+          {
+            "node": 5404,
+            "dof": 3,
+            "value": -67187.5234375
+          }
+        ],
+        "load_const": {
+          "time": 0.0
+        }
+      },
+      {
+        "analysis": {
+          "type": "transient_nonlinear",
+          "constraints": "Transformation",
+          "steps": 5,
+          "dt": 0.02,
+          "integrator": {
+            "type": "Newmark",
+            "gamma": 0.55,
+            "beta": 0.2765625
+          },
+          "system": "SuperLU",
+          "numberer": "RCM",
+          "algorithm": "NewtonLineSearch",
+          "algorithm_options": {
+            "raw_args": [
+              "0.75"
+            ],
+            "alpha": 0.75
+          },
+          "test_type": "NormDispIncr",
+          "tol": 0.05,
+          "max_iters": 10,
+          "test_print_flag": 2
+        },
+        "pattern": {
+          "type": "UniformExcitation",
+          "tag": 1001,
+          "direction": 3,
+          "accel": 69
+        },
+        "rayleigh": {
+          "alphaM": 0.06098304826236436,
+          "betaK": 0.0,
+          "betaKInit": 0.0,
+          "betaKComm": 0.013378700383248886
+        }
+      }
+    ]
+  },
+  "recorders": [
+    {
+      "type": "node_reaction",
+      "nodes": [
+        3174
+      ],
+      "dofs": [
+        3
+      ],
+      "output": "base_reaction",
+      "raw_path": "base_reaction.txt",
+      "include_time": true
+    },
+    {
+      "type": "node_displacement",
+      "nodes": [
+        5404
+      ],
+      "dofs": [
+        3
+      ],
+      "output": "tip_disp",
+      "raw_path": "tip_disp.txt",
+      "include_time": true
+    },
+    {
+      "type": "drift",
+      "i_node": 3174,
+      "j_node": 5404,
+      "dof": 3,
+      "perp_dirn": 2,
+      "output": "tip_drift",
+      "raw_path": "tip_drift.txt",
+      "include_time": false
+    }
+  ],
+  "source_example": "tests/validation/opensees_megatall_building_model1_dynamiccpu/generated/_direct_tcl_context/MegaTallBuildingBenchmark/Model1/__strut_dynamiccpu_entry.tcl",
+  "pattern": {
+    "type": "Plain",
+    "tag": 6,
+    "time_series": 6
+  },
+  "loads": [
+    {
+      "node": 5404,
+      "dof": 3,
+      "value": -69996.984375
+    },
+    {
+      "node": 5404,
+      "dof": 3,
+      "value": -141696.578125
+    },
+    {
+      "node": 5404,
+      "dof": 3,
+      "value": -123126.9140625
+    },
+    {
+      "node": 5404,
+      "dof": 3,
+      "value": -67187.5234375
+    }
+  ],
+  "mp_constraints": [
+    {
+      "type": "rigidDiaphragm",
+      "retained_node": 1455,
+      "constrained_node": 2718,
+      "perp_dirn": 3,
+      "constrained_dofs": [
+        1,
+        2,
+        6
+      ],
+      "retained_dofs": [
+        1,
+        2,
+        6
+      ],
+      "matrix": [
+        [
+          1.0,
+          0.0,
+          -0.0
+        ],
+        [
+          0.0,
+          1.0,
+          -3.0
+        ],
+        [
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "dx": -3.0,
+      "dy": 0.0,
+      "dz": 0.0
+    }
+  ]
+}

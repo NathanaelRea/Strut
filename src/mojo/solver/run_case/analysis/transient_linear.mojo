@@ -349,7 +349,7 @@ fn run_transient_linear(
     layered_shell_section_uniaxial_counts: List[Int],
     shell_elem_instance_offsets: List[Int],
     mut transient_output_files: List[String],
-    mut transient_output_buffers: List[List[String]],
+    mut transient_output_buffers: List[String],
     has_transformation_mpc: Bool,
     mpc_slave_dof: List[Bool],
     mpc_row_offsets: List[Int],

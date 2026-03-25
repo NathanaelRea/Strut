@@ -263,6 +263,52 @@ def test_beam_column3d_fiber_section3d_runtime_path_runs_with_section_recorders(
 
 
 @pytest.mark.parametrize("element_type", ["forceBeamColumn3d", "dispBeamColumn3d"])
+def test_beam_column3d_inline_fiber_section3d_runtime_path_runs(element_type: str):
+    case_data = _base_case(element_type)
+    case_data["materials"] = [{"id": 1, "type": "Elastic", "params": {"E": 3.0e10}}]
+    case_data["sections"] = [
+        {
+            "id": 1,
+            "type": "FiberSection3d",
+            "params": {
+                "G": 1.2e10,
+                "J": 2.0e-4,
+                "patches": [],
+                "layers": [],
+                "fibers": [
+                    {"y": -0.2, "z": -0.1, "area": 0.02, "material": 1},
+                    {"y": -0.2, "z": 0.1, "area": 0.02, "material": 1},
+                    {"y": 0.2, "z": -0.1, "area": 0.02, "material": 1},
+                    {"y": 0.2, "z": 0.1, "area": 0.02, "material": 1},
+                ],
+            },
+        }
+    ]
+    case_data["recorders"] = [
+        {"type": "element_force", "elements": [1], "output": "element_force"},
+        {
+            "type": "section_force",
+            "elements": [1],
+            "sections": [1],
+            "output": "sec_force",
+        },
+    ]
+
+    with tempfile.TemporaryDirectory() as tmp:
+        out_dir = Path(tmp)
+        _run_strut_case(case_data, out_dir)
+        force_rows = _read_rows(out_dir / "element_force_ele1.out")
+        sec_force_rows = _read_rows(out_dir / "sec_force_ele1_sec1.out")
+
+    assert len(force_rows) == 1
+    assert len(sec_force_rows) == 1
+    assert len(force_rows[0]) == 12
+    assert len(sec_force_rows[0]) == 4
+    assert all(math.isfinite(v) for row in force_rows for v in row)
+    assert all(math.isfinite(v) for row in sec_force_rows for v in row)
+
+
+@pytest.mark.parametrize("element_type", ["forceBeamColumn3d", "dispBeamColumn3d"])
 def test_beam_column3d_section_recorders_use_opensees_3d_order(element_type: str):
     case_data = _base_case(element_type)
     case_data["sections"] = [

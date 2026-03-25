@@ -19,6 +19,7 @@ from solver.reorder import build_node_adjacency_typed, min_degree_order, rcm_ord
 from solver.run_case.helpers import (
     _aggregator_section2d_expected_state_count,
     _collapse_vector_by_mpc,
+    _write_run_progress,
 )
 from solver.run_case.input_types import (
     AnalysisInput,
@@ -347,6 +348,46 @@ fn _set_elem_dof(mut elem: ElementInput, idx: Int, value: Int):
         elem.dof_23 = value
     else:
         elem.dof_24 = value
+
+
+fn _set_elem_material(mut elem: ElementInput, idx: Int, value: Int):
+    if idx == 0:
+        elem.material_1 = value
+    elif idx == 1:
+        elem.material_2 = value
+    elif idx == 2:
+        elem.material_3 = value
+    elif idx == 3:
+        elem.material_4 = value
+    elif idx == 4:
+        elem.material_5 = value
+    else:
+        elem.material_6 = value
+
+
+fn _set_elem_damp_material(mut elem: ElementInput, idx: Int, value: Int):
+    if idx == 0:
+        elem.damp_material_1 = value
+    elif idx == 1:
+        elem.damp_material_2 = value
+    elif idx == 2:
+        elem.damp_material_3 = value
+    elif idx == 3:
+        elem.damp_material_4 = value
+    elif idx == 4:
+        elem.damp_material_5 = value
+    else:
+        elem.damp_material_6 = value
+
+
+fn _remap_compact_index_or_abort(
+    raw_id: Int, raw_to_compact: List[Int], label: String
+) -> Int:
+    if raw_id < 0:
+        return -1
+    if raw_id >= len(raw_to_compact) or raw_to_compact[raw_id] < 0:
+        abort(label + " not found")
+    return raw_to_compact[raw_id]
 
 
 fn _set_elem_dir(mut elem: ElementInput, idx: Int, value: Int):
@@ -714,23 +755,44 @@ fn _elem_dir(elem: ElementInput, idx: Int) -> Int:
     return elem.dir_6
 
 
-fn load_case_state_from_input(input: CaseInput) raises -> RunCaseState:
+fn load_case_state_from_input(
+    var input: CaseInput, progress_path: String
+) raises -> RunCaseState:
     var state = RunCaseState()
-
     var ndm = input.model.ndm
     var ndf = input.model.ndf
+    ref typed_nodes = input.nodes
+    ref sections = input.sections
+    ref fiber_patches = input.fiber_patches
+    ref fiber_layers = input.fiber_layers
+    ref section_fibers = input.fibers
+    ref shell_layers = input.shell_layers
+    ref materials = input.materials
+    ref shell_material_props = input.shell_material_props
+    ref typed_elements = input.elements
+    ref element_loads = input.element_loads
+    ref nodal_loads = input.loads
+    ref masses = input.masses
+    var analysis_input = input.analysis
+    ref mp_constraints = input.mp_constraints
+    var pattern_input = input.pattern
+    var rayleigh_input = input.rayleigh
+    ref time_series = input.time_series
+    ref dampings = input.dampings
+    var load_step_count = 6
+
     var is_2d = ndm == 2 and (ndf == 2 or ndf == 3)
     var is_3d_truss = ndm == 3 and ndf == 3
     var is_3d_shell = ndm == 3 and ndf == 6
     if not is_2d and not is_3d_truss and not is_3d_shell:
         abort("only ndm=2 ndf=2/3 and ndm=3 ndf=3/6 supported")
 
-    var node_count = len(input.nodes)
+    var node_count = len(typed_nodes)
     var node_ids: List[Int] = []
     node_ids.resize(node_count, 0)
 
     for i in range(node_count):
-        var node = input.nodes[i]
+        var node = typed_nodes[i]
         if ndm == 3 and not node.has_z:
             abort("ndm=3 requires node z coordinate")
         node_ids[i] = node.id
@@ -743,24 +805,111 @@ fn load_case_state_from_input(input: CaseInput) raises -> RunCaseState:
             id_to_index.resize(nid + 1, -1)
         id_to_index[nid] = i
 
-    var typed_sections_by_id: List[SectionInput] = []
-    for i in range(len(input.sections)):
-        var sid = input.sections[i].id
-        if sid >= len(typed_sections_by_id):
-            typed_sections_by_id.resize(sid + 1, SectionInput())
-        typed_sections_by_id[sid] = input.sections[i]
+    var material_index_by_raw_id: List[Int] = []
+    material_index_by_raw_id.resize(10000, -1)
+    for i in range(len(materials)):
+        var raw_id = materials[i].id
+        if raw_id >= len(material_index_by_raw_id):
+            material_index_by_raw_id.resize(raw_id + 1, -1)
+        material_index_by_raw_id[raw_id] = i
+    for i in range(len(materials)):
+        var mat = materials[i]
+        if mat.base_material >= 0:
+            mat.base_material = _remap_compact_index_or_abort(
+                mat.base_material, material_index_by_raw_id, "base material"
+            )
+        mat.id = i
+        materials[i] = mat
+    for i in range(len(fiber_patches)):
+        var patch = fiber_patches[i]
+        patch.material = _remap_compact_index_or_abort(
+            patch.material, material_index_by_raw_id, "fiber patch material"
+        )
+        fiber_patches[i] = patch
+    for i in range(len(fiber_layers)):
+        var layer = fiber_layers[i]
+        layer.material = _remap_compact_index_or_abort(
+            layer.material, material_index_by_raw_id, "fiber layer material"
+        )
+        fiber_layers[i] = layer
+    for i in range(len(section_fibers)):
+        var fiber = section_fibers[i]
+        fiber.material = _remap_compact_index_or_abort(
+            fiber.material, material_index_by_raw_id, "fiber material"
+        )
+        section_fibers[i] = fiber
+    for i in range(len(shell_layers)):
+        var layer = shell_layers[i]
+        layer.material = _remap_compact_index_or_abort(
+            layer.material, material_index_by_raw_id, "shell layer material"
+        )
+        shell_layers[i] = layer
     var typed_materials_by_id: List[MaterialInput] = []
-    for i in range(len(input.materials)):
-        var mid = input.materials[i].id
-        if mid >= len(typed_materials_by_id):
-            typed_materials_by_id.resize(mid + 1, MaterialInput())
-        typed_materials_by_id[mid] = input.materials[i]
+    typed_materials_by_id.resize(len(materials), MaterialInput())
+    for i in range(len(materials)):
+        typed_materials_by_id[i] = materials[i]
+
+    var section_index_by_raw_id: List[Int] = []
+    section_index_by_raw_id.resize(10000, -1)
+    for i in range(len(sections)):
+        var raw_id = sections[i].id
+        if raw_id >= len(section_index_by_raw_id):
+            section_index_by_raw_id.resize(raw_id + 1, -1)
+        section_index_by_raw_id[raw_id] = i
+    for i in range(len(sections)):
+        var sec = sections[i]
+        if sec.axial_material >= 0:
+            sec.axial_material = _remap_compact_index_or_abort(
+                sec.axial_material, material_index_by_raw_id, "AggregatorSection2d axial material"
+            )
+        if sec.flexural_material >= 0:
+            sec.flexural_material = _remap_compact_index_or_abort(
+                sec.flexural_material,
+                material_index_by_raw_id,
+                "AggregatorSection2d flexural material",
+            )
+        if sec.moment_y_material >= 0:
+            sec.moment_y_material = _remap_compact_index_or_abort(
+                sec.moment_y_material,
+                material_index_by_raw_id,
+                "AggregatorSection2d moment material",
+            )
+        if sec.torsion_material >= 0:
+            sec.torsion_material = _remap_compact_index_or_abort(
+                sec.torsion_material,
+                material_index_by_raw_id,
+                "AggregatorSection2d torsion material",
+            )
+        if sec.shear_y_material >= 0:
+            sec.shear_y_material = _remap_compact_index_or_abort(
+                sec.shear_y_material,
+                material_index_by_raw_id,
+                "AggregatorSection2d shear-y material",
+            )
+        if sec.shear_z_material >= 0:
+            sec.shear_z_material = _remap_compact_index_or_abort(
+                sec.shear_z_material,
+                material_index_by_raw_id,
+                "AggregatorSection2d shear-z material",
+            )
+        if sec.base_section >= 0:
+            sec.base_section = _remap_compact_index_or_abort(
+                sec.base_section, section_index_by_raw_id, "base section"
+            )
+        sec.id = i
+        sections[i] = sec
+    var typed_sections_by_id: List[SectionInput] = []
+    typed_sections_by_id.resize(len(sections), SectionInput())
+    for i in range(len(sections)):
+        typed_sections_by_id[i] = sections[i]
+
+    _write_run_progress(progress_path, "loading", "case", 0, 0, 1, load_step_count)
 
     var uniaxial_defs: List[UniMaterialDef] = []
     var uniaxial_def_by_id: List[Int] = []
     uniaxial_def_by_id.resize(len(typed_materials_by_id), -1)
-    for i in range(len(input.materials)):
-        var mat = input.materials[i]
+    for i in range(len(materials)):
+        var mat = materials[i]
         var mid = mat.id
         if mid >= len(uniaxial_def_by_id):
             uniaxial_def_by_id.resize(mid + 1, -1)
@@ -815,8 +964,8 @@ fn load_case_state_from_input(input: CaseInput) raises -> RunCaseState:
             var Fy = mat.Fy
             var E0 = mat.E0
             var b = mat.b
-            if Fy <= 0.0:
-                abort("Steel02 Fy must be > 0")
+            if Fy < 0.0:
+                abort("Steel02 Fy must be >= 0")
             if E0 <= 0.0:
                 abort("Steel02 E0 must be > 0")
             if b < 0.0 or b >= 1.0:
@@ -949,10 +1098,17 @@ fn load_case_state_from_input(input: CaseInput) raises -> RunCaseState:
             )
             uniaxial_def_by_id[mid] = len(uniaxial_defs)
             uniaxial_defs.append(mat_def)
-        elif mat_type == "ElasticIsotropic":
+        elif (
+            mat_type == "ElasticIsotropic"
+            or mat_type == "PlaneStressUserMaterial"
+            or mat_type == "PlateFromPlaneStress"
+            or mat_type == "PlateRebar"
+        ):
             continue
         else:
             abort("unsupported material type: " + mat_type)
+
+    _write_run_progress(progress_path, "loading", "case", 0, 0, 2, load_step_count)
 
     var fiber_section_defs: List[FiberSection2dDef] = []
     var fiber_section_cells: List[FiberCell] = []
@@ -967,8 +1123,8 @@ fn load_case_state_from_input(input: CaseInput) raises -> RunCaseState:
     var layered_shell_section_uniaxial_offsets: List[Int] = []
     var layered_shell_section_uniaxial_counts: List[Int] = []
     layered_shell_section_index_by_id.resize(len(typed_sections_by_id), -1)
-    for i in range(len(input.sections)):
-        var sec = input.sections[i]
+    for i in range(len(sections)):
+        var sec = sections[i]
         var sec_type = sec.type
         var sid = sec.id
         if sec_type == "FiberSection2d":
@@ -976,8 +1132,9 @@ fn load_case_state_from_input(input: CaseInput) raises -> RunCaseState:
                 fiber_section_index_by_id.resize(sid + 1, -1)
             append_fiber_section2d_from_input(
                 sec,
-                input.fiber_patches,
-                input.fiber_layers,
+                fiber_patches,
+                fiber_layers,
+                section_fibers,
                 uniaxial_def_by_id,
                 uniaxial_defs,
                 fiber_section_defs,
@@ -989,8 +1146,9 @@ fn load_case_state_from_input(input: CaseInput) raises -> RunCaseState:
                 fiber_section3d_index_by_id.resize(sid + 1, -1)
             append_fiber_section3d_from_input(
                 sec,
-                input.fiber_patches,
-                input.fiber_layers,
+                fiber_patches,
+                fiber_layers,
+                section_fibers,
                 uniaxial_def_by_id,
                 uniaxial_defs,
                 fiber_section3d_defs,
@@ -1003,15 +1161,16 @@ fn load_case_state_from_input(input: CaseInput) raises -> RunCaseState:
             append_layered_shell_section_from_input(
                 layered_shell_section_defs,
                 sec,
-                input.shell_layers,
+                shell_layers,
                 typed_materials_by_id,
                 uniaxial_def_by_id,
-                input.shell_material_props,
+                shell_material_props,
             )
             layered_shell_section_index_by_id[sid] = len(layered_shell_section_defs) - 1
 
-    var elem_count = len(input.elements)
-    var typed_elements = input.elements.copy()
+    _write_run_progress(progress_path, "loading", "case", 0, 0, 3, load_step_count)
+
+    var elem_count = len(typed_elements)
     var elem_ids: List[Int] = []
     elem_ids.resize(elem_count, 0)
     var elem_id_to_index: List[Int] = []
@@ -1022,6 +1181,38 @@ fn load_case_state_from_input(input: CaseInput) raises -> RunCaseState:
         if eid >= len(elem_id_to_index):
             elem_id_to_index.resize(eid + 1, -1)
         elem_id_to_index[eid] = i
+
+    for i in range(elem_count):
+        var elem = typed_elements[i]
+        if elem.section >= 0:
+            elem.section = _remap_compact_index_or_abort(
+                elem.section, section_index_by_raw_id, "section"
+            )
+        if elem.material >= 0:
+            elem.material = _remap_compact_index_or_abort(
+                elem.material, material_index_by_raw_id, "material"
+            )
+        for m in range(elem.material_count):
+            _set_elem_material(
+                elem,
+                m,
+                _remap_compact_index_or_abort(
+                    _elem_material(elem, m),
+                    material_index_by_raw_id,
+                    "element material",
+                ),
+            )
+        for m in range(elem.damp_material_count):
+            _set_elem_damp_material(
+                elem,
+                m,
+                _remap_compact_index_or_abort(
+                    _elem_damp_material(elem, m),
+                    material_index_by_raw_id,
+                    "element damp material",
+                ),
+            )
+        typed_elements[i] = elem
 
     var has_force_beam_column2d = False
     for i in range(elem_count):
@@ -1211,8 +1402,8 @@ fn load_case_state_from_input(input: CaseInput) raises -> RunCaseState:
         elif elem.type_tag == ElementTypeTag.Truss:
             if elem.node_count != 2:
                 abort("truss requires 2 nodes")
-            if ndf != 2 and ndf != 3:
-                abort("truss requires ndf=2 or ndf=3")
+            if ndf != 2 and ndf != 3 and ndf != 6:
+                abort("truss requires ndf=2, ndf=3, or ndf=6")
             if elem.area <= 0.0:
                 abort("truss requires area > 0")
             if ndf == 2:
@@ -1384,7 +1575,7 @@ fn load_case_state_from_input(input: CaseInput) raises -> RunCaseState:
     node_constraint_offsets.resize(node_count + 1, 0)
     var total_node_constraints = 0
     for i in range(node_count):
-        var node = input.nodes[i]
+        var node = typed_nodes[i]
         node_x[i] = node.x
         node_y[i] = node.y
         node_z[i] = node.z
@@ -1395,7 +1586,7 @@ fn load_case_state_from_input(input: CaseInput) raises -> RunCaseState:
     var node_constraint_pool: List[Int] = []
     node_constraint_pool.resize(total_node_constraints, 0)
     for i in range(node_count):
-        var node = input.nodes[i]
+        var node = typed_nodes[i]
         var offset = node_constraint_offsets[i]
         for c in range(node.constraint_count):
             node_constraint_pool[offset + c] = _node_constraint(node, c)
@@ -1773,7 +1964,7 @@ fn load_case_state_from_input(input: CaseInput) raises -> RunCaseState:
     var elem_load_offsets: List[Int] = []
     var elem_load_pool: List[Int] = []
     _build_element_load_index(
-        input.element_loads,
+        element_loads,
         typed_elements,
         elem_id_to_index,
         ndm,
@@ -1782,8 +1973,8 @@ fn load_case_state_from_input(input: CaseInput) raises -> RunCaseState:
         elem_load_pool,
     )
 
-    for i in range(len(input.loads)):
-        var load = input.loads[i]
+    for i in range(len(nodal_loads)):
+        var load = nodal_loads[i]
         var node_id = load.node
         var dof = load.dof
         require_dof_in_range(dof, ndf, "load")
@@ -1794,8 +1985,8 @@ fn load_case_state_from_input(input: CaseInput) raises -> RunCaseState:
     M_total.resize(total_dofs, 0.0)
     var M_rayleigh_total: List[Float64] = []
     M_rayleigh_total.resize(total_dofs, 0.0)
-    for i in range(len(input.masses)):
-        var mass = input.masses[i]
+    for i in range(len(masses)):
+        var mass = masses[i]
         var node_id = mass.node
         var dof = mass.dof
         require_dof_in_range(dof, ndf, "mass")
@@ -1804,12 +1995,12 @@ fn load_case_state_from_input(input: CaseInput) raises -> RunCaseState:
         M_rayleigh_total[idx] += mass.value
     for e in range(elem_count):
         _accumulate_beam_element_lumped_mass(
-            typed_elements[e], typed_elements[e].rho, input.nodes, ndf, M_total
+            typed_elements[e], typed_elements[e].rho, typed_nodes, ndf, M_total
         )
         _accumulate_beam_element_lumped_mass(
             typed_elements[e],
             typed_elements[e].rho,
-            input.nodes,
+            typed_nodes,
             ndf,
             M_rayleigh_total,
         )
@@ -1836,10 +2027,10 @@ fn load_case_state_from_input(input: CaseInput) raises -> RunCaseState:
         if rho == 0.0:
             continue
 
-        var n1 = input.nodes[elem.node_index_1]
-        var n2 = input.nodes[elem.node_index_2]
-        var n3 = input.nodes[elem.node_index_3]
-        var n4 = input.nodes[elem.node_index_4]
+        var n1 = typed_nodes[elem.node_index_1]
+        var n2 = typed_nodes[elem.node_index_2]
+        var n3 = typed_nodes[elem.node_index_3]
+        var n4 = typed_nodes[elem.node_index_4]
         var twice_area = (
             n1.x * n2.y
             - n1.y * n2.x
@@ -1885,10 +2076,10 @@ fn load_case_state_from_input(input: CaseInput) raises -> RunCaseState:
         if rho_area == 0.0:
             continue
 
-        var n1 = input.nodes[elem.node_index_1]
-        var n2 = input.nodes[elem.node_index_2]
-        var n3 = input.nodes[elem.node_index_3]
-        var n4 = input.nodes[elem.node_index_4]
+        var n1 = typed_nodes[elem.node_index_1]
+        var n2 = typed_nodes[elem.node_index_2]
+        var n3 = typed_nodes[elem.node_index_3]
+        var n4 = typed_nodes[elem.node_index_4]
         var ax = (n2.x - n1.x) + (n3.x - n4.x)
         var ay = (n2.y - n1.y) + (n3.y - n4.y)
         var az = (n2.z - n1.z) + (n3.z - n4.z)
@@ -1911,7 +2102,7 @@ fn load_case_state_from_input(input: CaseInput) raises -> RunCaseState:
     var constrained: List[Bool] = []
     constrained.resize(total_dofs, False)
     for i in range(node_count):
-        var node = input.nodes[i]
+        var node = typed_nodes[i]
         for j in range(node.constraint_count):
             if j == 0:
                 var dof = node.constraint_1
@@ -1944,7 +2135,8 @@ fn load_case_state_from_input(input: CaseInput) raises -> RunCaseState:
                 var idx = node_dof_index(i, dof, ndf)
                 constrained[idx] = True
 
-    var analysis_input = input.analysis
+    _write_run_progress(progress_path, "loading", "case", 0, 0, 4, load_step_count)
+
     var analysis_type = analysis_input.type
     var analysis_type_tag = analysis_input.type_tag
     var constraints_handler = analysis_input.constraints
@@ -2058,7 +2250,7 @@ fn load_case_state_from_input(input: CaseInput) raises -> RunCaseState:
         mpc_row_dof_1[i] = i
 
     var has_transformation_mpc = False
-    if len(input.mp_constraints) > 0:
+    if len(mp_constraints) > 0:
         if (
             constraints_handler_tag != ConstraintHandlerTag.Transformation
             and constraints_handler_tag != ConstraintHandlerTag.Lagrange
@@ -2069,13 +2261,13 @@ fn load_case_state_from_input(input: CaseInput) raises -> RunCaseState:
         has_transformation_mpc = True
     var node_is_mpc_constrained: List[Bool] = []
     node_is_mpc_constrained.resize(len(id_to_index), False)
-    for i in range(len(input.mp_constraints)):
-        var mpc = input.mp_constraints[i]
+    for i in range(len(mp_constraints)):
+        var mpc = mp_constraints[i]
         var constrained_node = mpc.constrained_node
         if constrained_node >= 0 and constrained_node < len(node_is_mpc_constrained):
             node_is_mpc_constrained[constrained_node] = True
-    for i in range(len(input.mp_constraints)):
-        var mpc = input.mp_constraints[i]
+    for i in range(len(mp_constraints)):
+        var mpc = mp_constraints[i]
         var mpc_type = mpc.type
         if mpc_type != "equalDOF" and mpc_type != "rigidDiaphragm":
             abort("[load-fail] unsupported mp constraint type: " + mpc_type)
@@ -2266,17 +2458,12 @@ fn load_case_state_from_input(input: CaseInput) raises -> RunCaseState:
         for d in range(count):
             elem_free_pool[offset + d] = free_index[elem_dof_pool[offset + d]]
 
-    var time_series = input.time_series.copy()
-    var time_series_values = input.time_series_values.copy()
-    var time_series_times = input.time_series_times.copy()
-    var dampings = input.dampings.copy()
     for i in range(len(typed_elements)):
         var elem = typed_elements[i]
         if elem.type_tag == ElementTypeTag.ZeroLength and elem.damping_tag >= 0:
             if _find_damping_input(dampings, elem.damping_tag) < 0:
                 abort("zeroLength damping not found")
     var ts_index = -1
-    var pattern_input = input.pattern
     var pattern_type = "Plain"
     var pattern_type_tag = PatternTypeTag.Plain
     var uniform_excitation_direction = 0
@@ -2335,22 +2522,24 @@ fn load_case_state_from_input(input: CaseInput) raises -> RunCaseState:
             uniform_accel_ts_index = find_time_series_input(time_series, accel_tag)
             if uniform_accel_ts_index < 0:
                 abort("UniformExcitation accel time_series tag not found")
-            if len(input.loads) > 0 or len(input.element_loads) > 0:
+            if len(nodal_loads) > 0 or len(element_loads) > 0:
                 abort("UniformExcitation does not support nodal/element loads")
 
     var rayleigh_alpha_m = 0.0
     var rayleigh_beta_k = 0.0
     var rayleigh_beta_k_init = 0.0
     var rayleigh_beta_k_comm = 0.0
-    if input.rayleigh.has_rayleigh:
-        rayleigh_alpha_m = input.rayleigh.alpha_m
-        rayleigh_beta_k = input.rayleigh.beta_k
-        rayleigh_beta_k_init = input.rayleigh.beta_k_init
-        rayleigh_beta_k_comm = input.rayleigh.beta_k_comm
+    if rayleigh_input.has_rayleigh:
+        rayleigh_alpha_m = rayleigh_input.alpha_m
+        rayleigh_beta_k = rayleigh_input.beta_k
+        rayleigh_beta_k_init = rayleigh_input.beta_k_init
+        rayleigh_beta_k_comm = rayleigh_input.beta_k_comm
+
+    _write_run_progress(progress_path, "loading", "case", 0, 0, 5, load_step_count)
 
     state.ndm = ndm
     state.ndf = ndf
-    state.typed_nodes = input.nodes.copy()
+    swap(state.typed_nodes, input.nodes)
     state.node_count = node_count
     state.id_to_index = id_to_index^
     state.node_x = node_x^
@@ -2378,10 +2567,10 @@ fn load_case_state_from_input(input: CaseInput) raises -> RunCaseState:
     state.layered_shell_section_uniaxial_counts = (
         layered_shell_section_uniaxial_counts^
     )
-    state.typed_elements = typed_elements^
+    swap(state.typed_elements, input.elements)
     state.elem_count = elem_count
+    swap(state.element_loads, input.element_loads)
     state.elem_id_to_index = elem_id_to_index^
-    state.element_loads = input.element_loads.copy()
     state.elem_load_offsets = elem_load_offsets^
     state.elem_load_pool = elem_load_pool^
     state.elem_dof_offsets = elem_dof_offsets^
@@ -2440,15 +2629,16 @@ fn load_case_state_from_input(input: CaseInput) raises -> RunCaseState:
     state.active_index_by_dof = active_index_by_dof^
     state.M_total = M_total^
     state.M_rayleigh_total = M_rayleigh_total^
-    state.analysis_integrator_targets_pool = (
-        input.analysis_integrator_targets_pool.copy()
+    swap(
+        state.analysis_integrator_targets_pool,
+        input.analysis_integrator_targets_pool,
     )
-    state.analysis_solver_chain_pool = input.analysis_solver_chain_pool.copy()
-    state.time_series = time_series^
-    state.time_series_values = time_series_values^
-    state.time_series_times = time_series_times^
-    state.dampings = dampings^
-    state.stages = input.stages.copy()
+    swap(state.analysis_solver_chain_pool, input.analysis_solver_chain_pool)
+    swap(state.time_series, input.time_series)
+    swap(state.time_series_values, input.time_series_values)
+    swap(state.time_series_times, input.time_series_times)
+    swap(state.dampings, input.dampings)
+    swap(state.stages, input.stages)
     state.ts_index = ts_index
     state.pattern_type = pattern_type
     state.pattern_type_tag = pattern_type_tag
@@ -2458,11 +2648,12 @@ fn load_case_state_from_input(input: CaseInput) raises -> RunCaseState:
     state.rayleigh_beta_k = rayleigh_beta_k
     state.rayleigh_beta_k_init = rayleigh_beta_k_init
     state.rayleigh_beta_k_comm = rayleigh_beta_k_comm
-    state.recorder_nodes_pool = input.recorder_nodes_pool.copy()
-    state.recorder_elements_pool = input.recorder_elements_pool.copy()
-    state.recorder_dofs_pool = input.recorder_dofs_pool.copy()
-    state.recorder_modes_pool = input.recorder_modes_pool.copy()
-    state.recorder_sections_pool = input.recorder_sections_pool.copy()
-    state.recorders = input.recorders.copy()
+    swap(state.recorder_nodes_pool, input.recorder_nodes_pool)
+    swap(state.recorder_elements_pool, input.recorder_elements_pool)
+    swap(state.recorder_dofs_pool, input.recorder_dofs_pool)
+    swap(state.recorder_modes_pool, input.recorder_modes_pool)
+    swap(state.recorder_sections_pool, input.recorder_sections_pool)
+    swap(state.recorders, input.recorders)
+    _write_run_progress(progress_path, "loading", analysis_type, 0, 0, 6, load_step_count)
 
     return state^

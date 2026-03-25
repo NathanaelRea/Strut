@@ -68,6 +68,7 @@ from solver.run_case.helpers import (
     _format_values_line,
     _has_recorder_type,
     _section_response_for_recorder,
+    _write_run_progress,
     _update_envelope,
 )
 from strut_io import CaseSourceInfo
@@ -90,14 +91,13 @@ from tag_types import (
 
 
 fn _write_output_chunk_files(
-    out_dir: PythonObject, filenames: List[String], buffers: List[List[String]]
+    out_dir: PythonObject, filenames: List[String], buffers: List[String]
 ) raises:
     var builtins = Python.import_module("builtins")
     for i in range(len(filenames)):
         var file_path = out_dir.joinpath(filenames[i])
         var file_obj = builtins.open(file_path, "w")
-        for j in range(len(buffers[i])):
-            file_obj.write(PythonObject(buffers[i][j]))
+        file_obj.write(PythonObject(buffers[i]))
         file_obj.close()
 
 
@@ -158,9 +158,13 @@ fn _append_stage_time_series(
 
 
 def run_case_input(
-    input: CaseInput, output_path: String, profile_path: String, case_load_us: Int
+    var input: CaseInput, output_path: String, profile_path: String, case_load_us: Int
 ):
     var time = Python.import_module("time")
+    var pathlib = Python.import_module("pathlib")
+    var out_dir = pathlib.Path(output_path)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    var progress_path = output_path + "/run_progress.json"
     var t_start = Int(time.perf_counter_ns())
     var safe_case_load_us = case_load_us
     if safe_case_load_us < 0:
@@ -169,6 +173,7 @@ def run_case_input(
     var do_profile = _profile_enabled(profile_path)
     var runtime_metrics = RuntimeProfileMetrics()
     runtime_metrics.enabled = do_profile
+    _write_run_progress(progress_path, "loading", "case", 0, 0, 0, 0)
 
     var frame_total = PROFILE_FRAME_TOTAL
     var frame_assemble = PROFILE_FRAME_ASSEMBLE
@@ -238,16 +243,16 @@ def run_case_input(
             safe_case_load_us,
         )
 
-    var state = load_case_state_from_input(input)
+    var state = load_case_state_from_input(input^, progress_path)
 
     var ndm = state.ndm
     var ndf = state.ndf
-    var typed_nodes = state.typed_nodes.copy()
+    ref typed_nodes = state.typed_nodes
     var node_count = state.node_count
-    var typed_elements = state.typed_elements.copy()
+    ref typed_elements = state.typed_elements
     var total_dofs = state.total_dofs
-    var analysis = state.analysis
-    var analysis_type = state.analysis_type
+    ref analysis = state.analysis
+    ref analysis_type = state.analysis_type
     var analysis_type_tag = state.analysis_type_tag
     var steps = state.steps
     var modal_num_modes = state.modal_num_modes
@@ -255,12 +260,12 @@ def run_case_input(
     var supports_linear_transient_fast_path = (
         state.supports_linear_transient_fast_path
     )
-    var time_series = state.time_series.copy()
-    var time_series_values = state.time_series_values.copy()
-    var time_series_times = state.time_series_times.copy()
-    var dampings = state.dampings.copy()
+    ref time_series = state.time_series
+    ref time_series_values = state.time_series_values
+    ref time_series_times = state.time_series_times
+    ref dampings = state.dampings
     var ts_index = state.ts_index
-    var pattern_type = state.pattern_type
+    ref pattern_type = state.pattern_type
     var pattern_type_tag = state.pattern_type_tag
     var uniform_excitation_direction = state.uniform_excitation_direction
     var uniform_accel_ts_index = state.uniform_accel_ts_index
@@ -268,84 +273,80 @@ def run_case_input(
     var rayleigh_beta_k = state.rayleigh_beta_k
     var rayleigh_beta_k_init = state.rayleigh_beta_k_init
     var rayleigh_beta_k_comm = state.rayleigh_beta_k_comm
-    var recorder_nodes_pool = state.recorder_nodes_pool.copy()
-    var recorder_elements_pool = state.recorder_elements_pool.copy()
-    var recorder_dofs_pool = state.recorder_dofs_pool.copy()
-    var recorder_modes_pool = state.recorder_modes_pool.copy()
-    var recorder_sections_pool = state.recorder_sections_pool.copy()
-    var recorders = state.recorders.copy()
-    var stages = state.stages.copy()
+    ref recorder_nodes_pool = state.recorder_nodes_pool
+    ref recorder_elements_pool = state.recorder_elements_pool
+    ref recorder_dofs_pool = state.recorder_dofs_pool
+    ref recorder_modes_pool = state.recorder_modes_pool
+    ref recorder_sections_pool = state.recorder_sections_pool
+    ref recorders = state.recorders
+    ref stages = state.stages
 
-    var id_to_index = state.id_to_index.copy()
-    var typed_sections_by_id = state.typed_sections_by_id.copy()
-    var typed_materials_by_id = state.typed_materials_by_id.copy()
-    var uniaxial_defs = state.uniaxial_defs.copy()
-    var uniaxial_state_defs = state.uniaxial_state_defs.copy()
-    var uniaxial_states = state.uniaxial_states.copy()
-    var fiber_section_defs = state.fiber_section_defs.copy()
-    var fiber_section_cells = state.fiber_section_cells.copy()
-    var fiber_section_index_by_id = state.fiber_section_index_by_id.copy()
-    var fiber_section3d_defs = state.fiber_section3d_defs.copy()
-    var fiber_section3d_cells = state.fiber_section3d_cells.copy()
-    var fiber_section3d_index_by_id = state.fiber_section3d_index_by_id.copy()
-    var layered_shell_section_defs = state.layered_shell_section_defs.copy()
-    var layered_shell_section_index_by_id = (
-        state.layered_shell_section_index_by_id.copy()
+    ref id_to_index = state.id_to_index
+    ref typed_sections_by_id = state.typed_sections_by_id
+    ref typed_materials_by_id = state.typed_materials_by_id
+    ref uniaxial_defs = state.uniaxial_defs
+    ref uniaxial_state_defs = state.uniaxial_state_defs
+    ref uniaxial_states = state.uniaxial_states
+    ref fiber_section_defs = state.fiber_section_defs
+    ref fiber_section_cells = state.fiber_section_cells
+    ref fiber_section_index_by_id = state.fiber_section_index_by_id
+    ref fiber_section3d_defs = state.fiber_section3d_defs
+    ref fiber_section3d_cells = state.fiber_section3d_cells
+    ref fiber_section3d_index_by_id = state.fiber_section3d_index_by_id
+    ref layered_shell_section_defs = state.layered_shell_section_defs
+    ref layered_shell_section_index_by_id = state.layered_shell_section_index_by_id
+    ref layered_shell_section_uniaxial_offsets = (
+        state.layered_shell_section_uniaxial_offsets
     )
-    var layered_shell_section_uniaxial_offsets = (
-        state.layered_shell_section_uniaxial_offsets.copy()
+    ref layered_shell_section_uniaxial_counts = (
+        state.layered_shell_section_uniaxial_counts
     )
-    var layered_shell_section_uniaxial_counts = (
-        state.layered_shell_section_uniaxial_counts.copy()
-    )
-    var shell_elem_instance_offsets = state.shell_elem_instance_offsets.copy()
-    var elem_id_to_index = state.elem_id_to_index.copy()
-    var pattern_element_loads = state.element_loads.copy()
-    var node_x = state.node_x.copy()
-    var node_y = state.node_y.copy()
-    var node_z = state.node_z.copy()
-    var elem_dof_offsets = state.elem_dof_offsets.copy()
-    var elem_dof_pool = state.elem_dof_pool.copy()
-    var elem_free_offsets = state.elem_free_offsets.copy()
-    var elem_free_pool = state.elem_free_pool.copy()
-    var elem_node_offsets = state.elem_node_offsets.copy()
-    var elem_node_pool = state.elem_node_pool.copy()
-    var elem_primary_material_ids = state.elem_primary_material_ids.copy()
-    var elem_type_tags = state.elem_type_tags.copy()
-    var elem_geom_tags = state.elem_geom_tags.copy()
-    var elem_section_ids = state.elem_section_ids.copy()
-    var elem_integration_tags = state.elem_integration_tags.copy()
-    var elem_num_int_pts = state.elem_num_int_pts.copy()
-    var elem_area = state.elem_area.copy()
-    var elem_thickness = state.elem_thickness.copy()
-    var frame2d_elem_indices = state.frame2d_elem_indices.copy()
-    var frame3d_elem_indices = state.frame3d_elem_indices.copy()
-    var truss_elem_indices = state.truss_elem_indices.copy()
-    var zero_length_elem_indices = state.zero_length_elem_indices.copy()
-    var two_node_link_elem_indices = state.two_node_link_elem_indices.copy()
-    var zero_length_section_elem_indices = state.zero_length_section_elem_indices.copy()
-    var quad_elem_indices = state.quad_elem_indices.copy()
-    var shell_elem_indices = state.shell_elem_indices.copy()
-    var elem_uniaxial_offsets = state.elem_uniaxial_offsets.copy()
-    var elem_uniaxial_counts = state.elem_uniaxial_counts.copy()
-    var elem_uniaxial_state_ids = state.elem_uniaxial_state_ids.copy()
-    var force_basic_offsets = state.force_basic_offsets.copy()
-    var force_basic_counts = state.force_basic_counts.copy()
-    var force_basic_q = state.force_basic_q.copy()
-    var F_pattern = state.F_total.copy()
-    var constrained = state.constrained.copy()
-    var free = state.free.copy()
-    var free_index = state.free_index.copy()
-    var mpc_row_offsets = state.mpc_row_offsets.copy()
-    var mpc_dof_pool = state.mpc_dof_pool.copy()
-    var mpc_coeff_pool = state.mpc_coeff_pool.copy()
-    var mpc_slave_dof = state.mpc_slave_dof.copy()
-    var M_total = state.M_total.copy()
-    var M_rayleigh_total = state.M_rayleigh_total.copy()
-    var analysis_integrator_targets_pool = (
-        state.analysis_integrator_targets_pool.copy()
-    )
-    var analysis_solver_chain_pool = state.analysis_solver_chain_pool.copy()
+    ref shell_elem_instance_offsets = state.shell_elem_instance_offsets
+    ref elem_id_to_index = state.elem_id_to_index
+    ref pattern_element_loads = state.element_loads
+    ref node_x = state.node_x
+    ref node_y = state.node_y
+    ref node_z = state.node_z
+    ref elem_dof_offsets = state.elem_dof_offsets
+    ref elem_dof_pool = state.elem_dof_pool
+    ref elem_free_offsets = state.elem_free_offsets
+    ref elem_free_pool = state.elem_free_pool
+    ref elem_node_offsets = state.elem_node_offsets
+    ref elem_node_pool = state.elem_node_pool
+    ref elem_primary_material_ids = state.elem_primary_material_ids
+    ref elem_type_tags = state.elem_type_tags
+    ref elem_geom_tags = state.elem_geom_tags
+    ref elem_section_ids = state.elem_section_ids
+    ref elem_integration_tags = state.elem_integration_tags
+    ref elem_num_int_pts = state.elem_num_int_pts
+    ref elem_area = state.elem_area
+    ref elem_thickness = state.elem_thickness
+    ref frame2d_elem_indices = state.frame2d_elem_indices
+    ref frame3d_elem_indices = state.frame3d_elem_indices
+    ref truss_elem_indices = state.truss_elem_indices
+    ref zero_length_elem_indices = state.zero_length_elem_indices
+    ref two_node_link_elem_indices = state.two_node_link_elem_indices
+    ref zero_length_section_elem_indices = state.zero_length_section_elem_indices
+    ref quad_elem_indices = state.quad_elem_indices
+    ref shell_elem_indices = state.shell_elem_indices
+    ref elem_uniaxial_offsets = state.elem_uniaxial_offsets
+    ref elem_uniaxial_counts = state.elem_uniaxial_counts
+    ref elem_uniaxial_state_ids = state.elem_uniaxial_state_ids
+    ref force_basic_offsets = state.force_basic_offsets
+    ref force_basic_counts = state.force_basic_counts
+    ref force_basic_q = state.force_basic_q
+    ref F_pattern = state.F_total
+    ref constrained = state.constrained
+    ref free = state.free
+    ref free_index = state.free_index
+    ref mpc_row_offsets = state.mpc_row_offsets
+    ref mpc_dof_pool = state.mpc_dof_pool
+    ref mpc_coeff_pool = state.mpc_coeff_pool
+    ref mpc_slave_dof = state.mpc_slave_dof
+    ref M_total = state.M_total
+    ref M_rayleigh_total = state.M_rayleigh_total
+    ref analysis_integrator_targets_pool = state.analysis_integrator_targets_pool
+    ref analysis_solver_chain_pool = state.analysis_solver_chain_pool
     var F_const: List[Float64] = []
     F_const.resize(total_dofs, 0.0)
     var const_element_loads: List[ElementLoadInput] = []
@@ -353,9 +354,9 @@ def run_case_input(
     var u: List[Float64] = []
     u.resize(total_dofs, 0.0)
     var transient_output_files: List[String] = []
-    var transient_output_buffers: List[List[String]] = []
+    var transient_output_buffers: List[String] = []
     var static_output_files: List[String] = []
-    var static_output_buffers: List[List[String]] = []
+    var static_output_buffers: List[String] = []
 
     var t_solve_start = Int(time.perf_counter_ns())
     var model_build_dof_map_us = (t_solve_start - t_start) // 1000
@@ -539,6 +540,9 @@ def run_case_input(
                 elem_id_to_index,
                 static_output_files,
                 static_output_buffers,
+                progress_path,
+                1,
+                1,
                 do_profile,
                 t0,
                 events,
@@ -635,6 +639,9 @@ def run_case_input(
                 elem_id_to_index,
                 static_output_files,
                 static_output_buffers,
+                progress_path,
+                1,
+                1,
                 do_profile,
                 t0,
                 events,
@@ -854,6 +861,9 @@ def run_case_input(
         shell_elem_instance_offsets,
             transient_output_files,
             transient_output_buffers,
+            progress_path,
+            1,
+            1,
             has_transformation_mpc,
             mpc_slave_dof,
             mpc_row_offsets,
@@ -1010,6 +1020,15 @@ def run_case_input(
                 stage_rayleigh_beta_k = stage.rayleigh.beta_k
                 stage_rayleigh_beta_k_init = stage.rayleigh.beta_k_init
                 stage_rayleigh_beta_k_comm = stage.rayleigh.beta_k_comm
+            _write_run_progress(
+                progress_path,
+                "running_stage",
+                stage_type,
+                stage_idx + 1,
+                len(stages),
+                0,
+                stage_analysis.steps,
+            )
             var stage_final_pattern_scale = 0.0
             if stage_type_tag == AnalysisTypeTag.StaticLinear:
                 if stage_pattern_type_tag != PatternTypeTag.Plain:
@@ -1189,6 +1208,9 @@ def run_case_input(
                         elem_id_to_index,
                         transient_output_files,
                         transient_output_buffers,
+                        progress_path,
+                        stage_idx + 1,
+                        len(stages),
                         do_profile,
                         t0,
                         events,
@@ -1294,6 +1316,9 @@ def run_case_input(
                         elem_id_to_index,
                         transient_output_files,
                         transient_output_buffers,
+                        progress_path,
+                        stage_idx + 1,
+                        len(stages),
                         do_profile,
                         t0,
                         events,
@@ -1525,6 +1550,9 @@ def run_case_input(
         shell_elem_instance_offsets,
                     transient_output_files,
                     transient_output_buffers,
+                    progress_path,
+                    stage_idx + 1,
+                    len(stages),
                     has_transformation_mpc,
                     mpc_slave_dof,
                     mpc_row_offsets,
@@ -1687,9 +1715,7 @@ def run_case_input(
 
     var analysis_us = (t_solve_end - t_solve_start) // 1000
 
-    var pathlib = Python.import_module("pathlib")
-    var out_dir = pathlib.Path(output_path)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    _write_run_progress(progress_path, "writing_output", analysis_type, 0, 0, 0, 0)
     var analysis_path = out_dir.joinpath("analysis_time_us.txt")
     analysis_path.write_text(PythonObject(String(analysis_us) + "\n"))
     if (
@@ -2255,6 +2281,7 @@ def run_case_input(
     phase_json += "}\n"
     var phase_path = out_dir.joinpath("phase_times_us.json")
     phase_path.write_text(PythonObject(phase_json))
+    _write_run_progress(progress_path, "completed", analysis_type, 0, 0, 0, 0)
 
     if do_profile:
         _append_event(events, events_need_comma, "C", frame_output, total_us)

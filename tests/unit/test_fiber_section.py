@@ -154,6 +154,8 @@ def _discretize_fibers(section_params):
                 fibers.append(
                     (ys + (ye - ys) * t, zs + (ze - zs) * t, area, layer["material"])
                 )
+    for fiber in section_params.get("fibers", []):
+        fibers.append((fiber["y"], fiber["z"], fiber["area"], fiber["material"]))
     return fibers
 
 
@@ -508,6 +510,45 @@ def test_fiber_section3d_rect_patch_elastic_aggregation():
     assert math.isclose(got["k13"], expected["k13"], rel_tol=1e-8, abs_tol=1e-6)
     assert math.isclose(got["k22"], expected["k22"], rel_tol=1e-10, abs_tol=1e-10)
     assert math.isclose(got["k23"], expected["k23"], rel_tol=1e-8, abs_tol=1e-6)
+    assert math.isclose(got["k33"], expected["k33"], rel_tol=1e-10, abs_tol=1e-10)
+
+
+def test_fiber_section3d_inline_fibers_elastic_aggregation():
+    case_data = {
+        "materials": [
+            {"id": 1, "type": "Elastic", "params": {"E": 2.8e10}},
+            {"id": 2, "type": "Elastic", "params": {"E": 2.0e11}},
+        ],
+        "section": {
+            "id": 2,
+            "type": "FiberSection3d",
+            "params": {
+                "patches": [],
+                "layers": [],
+                "fibers": [
+                    {"y": -0.3, "z": -0.15, "area": 0.012, "material": 1},
+                    {"y": -0.1, "z": 0.12, "area": 0.01, "material": 1},
+                    {"y": 0.2, "z": -0.08, "area": 0.009, "material": 2},
+                    {"y": 0.35, "z": 0.18, "area": 0.011, "material": 2},
+                ],
+            },
+        },
+        "deformation_path": [{"eps0": 9.0e-5, "kappa_y": -6.5e-4, "kappa_z": 1.8e-3}],
+    }
+    rows = _run_section_path(case_data)
+    assert len(rows) == 1
+    got = rows[0]
+    expected = _expected_elastic_response_3d(
+        case_data, eps0=9.0e-5, ky=-6.5e-4, kz=1.8e-3
+    )
+    assert math.isclose(got["N"], expected["N"], rel_tol=1e-10, abs_tol=1e-10)
+    assert math.isclose(got["My"], expected["My"], rel_tol=1e-10, abs_tol=1e-10)
+    assert math.isclose(got["Mz"], expected["Mz"], rel_tol=1e-10, abs_tol=1e-10)
+    assert math.isclose(got["k11"], expected["k11"], rel_tol=1e-10, abs_tol=1e-10)
+    assert math.isclose(got["k12"], expected["k12"], rel_tol=1e-10, abs_tol=1e-10)
+    assert math.isclose(got["k13"], expected["k13"], rel_tol=1e-10, abs_tol=1e-10)
+    assert math.isclose(got["k22"], expected["k22"], rel_tol=1e-10, abs_tol=1e-10)
+    assert math.isclose(got["k23"], expected["k23"], rel_tol=1e-10, abs_tol=1e-10)
     assert math.isclose(got["k33"], expected["k33"], rel_tol=1e-10, abs_tol=1e-10)
 
 

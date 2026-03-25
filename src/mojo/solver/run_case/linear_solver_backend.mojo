@@ -1698,10 +1698,14 @@ fn initialize_structure(
     backend.umfpack_print_time = analysis.umfpack_print_time
     backend.umfpack_lvalue_fact = analysis.umfpack_lvalue_fact
     backend.sparse_sym_ordering = analysis.sparse_sym_ordering
-    _ensure_square_storage(backend.chol_matrix, free_count)
-    _ensure_dense_flat_storage(backend.dense_matrix_flat, free_count)
-    if len(backend.lu_pivots) != free_count:
-        backend.lu_pivots.resize(free_count, 0)
+    backend.chol_matrix.clear()
+    if backend.system_tag == AnalysisSystemTag.FullGeneral:
+        _ensure_dense_flat_storage(backend.dense_matrix_flat, free_count)
+        if len(backend.lu_pivots) != free_count:
+            backend.lu_pivots.resize(free_count, 0)
+    else:
+        backend.dense_matrix_flat.clear()
+        backend.lu_pivots.clear()
     _ensure_vector_storage(backend.solve_work, free_count)
 
     backend.sparse_symbolic_ready = False

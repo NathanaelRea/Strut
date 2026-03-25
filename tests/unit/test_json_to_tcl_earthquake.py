@@ -197,6 +197,16 @@ def test_json_to_tcl_emits_ordered_solver_chain_retry_algorithms():
     )
 
 
+def test_json_to_tcl_emits_krylov_newton_max_dim_option():
+    case = _base_uniform_case()
+    case["analysis"]["algorithm"] = "KrylovNewton"
+    case["analysis"]["algorithm_options"] = {"maxDim": 5}
+
+    text = _run_json_to_tcl(case)
+
+    assert "algorithm KrylovNewton -maxDim 5\n" in text
+
+
 def test_json_to_tcl_preserves_numberer_system_and_print_commands():
     case = _base_uniform_case()
     case["pattern"] = {"type": "Plain", "tag": 1, "time_series": 2}

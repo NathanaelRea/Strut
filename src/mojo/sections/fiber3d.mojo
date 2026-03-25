@@ -12,7 +12,12 @@ from materials import (
     uniaxial_revert_trial,
     uniaxial_set_trial_strain,
 )
-from solver.run_case.input_types import FiberLayerInput, FiberPatchInput, SectionInput
+from solver.run_case.input_types import (
+    FiberInput,
+    FiberLayerInput,
+    FiberPatchInput,
+    SectionInput,
+)
 from solver.simd_contiguous import FLOAT64_SIMD_WIDTH, load_float64_contiguous_simd
 from sections.fiber2d import FiberCell
 from strut_io import py_len
@@ -625,10 +630,32 @@ fn _append_straight_layer_cells_input(
         qz_sum += bar_area * y
 
 
+fn _append_direct_fibers_input(
+    section_fibers: List[FiberInput],
+    fiber_offset: Int,
+    fiber_count: Int,
+    uniaxial_def_by_id: List[Int],
+    mut fibers: List[FiberCell],
+    mut area_sum: Float64,
+    mut qy_sum: Float64,
+    mut qz_sum: Float64,
+):
+    for i in range(fiber_count):
+        var fiber = section_fibers[fiber_offset + i]
+        if fiber.area <= 0.0:
+            abort("FiberSection3d fiber area must be > 0")
+        var def_index = _resolve_uniaxial_def_index(fiber.material, uniaxial_def_by_id)
+        fibers.append(FiberCell(fiber.y, fiber.z, fiber.area, def_index))
+        area_sum += fiber.area
+        qy_sum += fiber.area * fiber.z
+        qz_sum += fiber.area * fiber.y
+
+
 fn append_fiber_section3d_from_input(
     sec: SectionInput,
     fiber_patches: List[FiberPatchInput],
     fiber_layers: List[FiberLayerInput],
+    section_fibers: List[FiberInput],
     uniaxial_def_by_id: List[Int],
     uniaxial_defs: List[UniMaterialDef],
     mut defs: List[FiberSection3dDef],
@@ -636,8 +663,8 @@ fn append_fiber_section3d_from_input(
 ):
     if sec.type != "FiberSection3d":
         abort("append_fiber_section3d_from_input requires FiberSection3d")
-    if sec.fiber_patch_count == 0 and sec.fiber_layer_count == 0:
-        abort("FiberSection3d requires at least one patch or layer")
+    if sec.fiber_patch_count == 0 and sec.fiber_layer_count == 0 and sec.fiber_count == 0:
+        abort("FiberSection3d requires at least one patch, layer, or fiber")
 
     var fiber_offset = len(fibers)
     var area_sum = 0.0
@@ -665,6 +692,17 @@ fn append_fiber_section3d_from_input(
             )
         else:
             abort("unsupported FiberSection3d layer type: " + layer.type)
+
+    _append_direct_fibers_input(
+        section_fibers,
+        sec.fiber_offset,
+        sec.fiber_count,
+        uniaxial_def_by_id,
+        fibers,
+        area_sum,
+        qy_sum,
+        qz_sum,
+    )
 
     var fiber_count = len(fibers) - fiber_offset
     if fiber_count <= 0:

@@ -8,6 +8,7 @@ _NONLINEAR_ALGORITHMS = {
     "Newton",
     "ModifiedNewton",
     "ModifiedNewtonInitial",
+    "KrylovNewton",
     "Broyden",
     "NewtonLineSearch",
 }

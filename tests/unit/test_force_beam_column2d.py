@@ -177,6 +177,7 @@ def test_force_beam_column2d_newton_variants_match_on_elastic_case():
     results = {}
     algorithm_options = {
         "Newton": {},
+        "KrylovNewton": {"algorithm_options": {"maxDim": 2}},
         "Broyden": {"broyden_count": 3},
         "NewtonLineSearch": {"line_search_eta": 0.8},
     }
@@ -193,7 +194,7 @@ def test_force_beam_column2d_newton_variants_match_on_elastic_case():
                 "disp": _read_rows(out_dir / "disp_node2.out"),
             }
 
-    for algorithm in ("Broyden", "NewtonLineSearch"):
+    for algorithm in ("KrylovNewton", "Broyden", "NewtonLineSearch"):
         for got_row, ref_row in zip(
             results[algorithm]["forces"], results["Newton"]["forces"], strict=True
         ):
@@ -318,6 +319,7 @@ def test_force_beam_column2d_displacement_control_broyden_matches_newton_on_elas
     results = {}
     algorithm_options = {
         "Newton": {},
+        "KrylovNewton": {"algorithm_options": {"maxDim": 2}},
         "Broyden": {"broyden_count": 3},
     }
     for algorithm, extra in algorithm_options.items():
@@ -333,14 +335,15 @@ def test_force_beam_column2d_displacement_control_broyden_matches_newton_on_elas
                 "disp": _read_rows(out_dir / "disp_node2.out"),
             }
 
-    for broyden_row, newton_row in zip(
-        results["Broyden"]["forces"], results["Newton"]["forces"], strict=True
-    ):
-        assert broyden_row == pytest.approx(newton_row, abs=1e-12, rel=1e-12)
-    for broyden_row, newton_row in zip(
-        results["Broyden"]["disp"], results["Newton"]["disp"], strict=True
-    ):
-        assert broyden_row == pytest.approx(newton_row, abs=1e-12, rel=1e-12)
+    for algorithm in ("KrylovNewton", "Broyden"):
+        for got_row, ref_row in zip(
+            results[algorithm]["forces"], results["Newton"]["forces"], strict=True
+        ):
+            assert got_row == pytest.approx(ref_row, abs=1e-12, rel=1e-12)
+        for got_row, ref_row in zip(
+            results[algorithm]["disp"], results["Newton"]["disp"], strict=True
+        ):
+            assert got_row == pytest.approx(ref_row, abs=1e-12, rel=1e-12)
 
 
 def test_force_beam_column2d_section_recorders_emit_force_and_deformation():
