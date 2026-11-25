@@ -1,9 +1,8 @@
 # OpenSees Reference Workspace
 
 Local staging area for ad hoc OpenSees Tcl examples that Strut compares
-against. The native Linux reference binary lives at
-`./.build/opensees-linux/OpenSees` by default and is invoked by
-`scripts/run_opensees.sh`.
+against. `scripts/run_opensees.sh` runs them with the locked reference binary
+installed by `uv run scripts/setup_opensees.py` (see the main README).
 
 ## Layout
 

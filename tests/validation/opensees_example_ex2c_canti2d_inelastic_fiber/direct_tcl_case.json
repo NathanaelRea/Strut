@@ -1,6 +1,6 @@
 {
   "name": "opensees_example_ex2c_canti2d_inelastic_fiber",
-  "entry_tcl": "docs/agent-reference/OpenSeesExamplesAdvanced/Ex2cCanti2DInelasticFiber/Ex2c.Canti2D.InelasticFiberSection.EQ.tcl",
+  "entry_tcl": "tests/fixtures/opensees/OpenSeesExamplesAdvanced/opensees_example_2c_nonlinear_cantilever_column_inelastic_uniaxial_materials_in_fiber_section/Ex2c.Canti2D.InelasticFiberSection.EQ.tcl",
   "enabled": true,
   "benchmark_size": "medium"
 }

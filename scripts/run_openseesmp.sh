@@ -37,8 +37,17 @@ detect_default_openseesmp_procs() {
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 examples_root="${repo_root}/benchmark/OpenSees/examples"
 validation_root="${repo_root}/tests/validation"
-openseesmp_bin="${OPENSEESMP_BIN:-${repo_root}/.build/opensees-linux/OpenSeesMP}"
-mpiexec_bin="${OPENSEESMP_MPIEXEC:-mpiexec}"
+# shellcheck source=scripts/opensees_env.sh
+source "${repo_root}/scripts/opensees_env.sh"
+openseesmp_bin="$(strut_resolve_opensees_binary OpenSeesMP "${OPENSEESMP_BIN:-}")"
+# OpenSeesMP must run under the MPI it was linked against: the locked install
+# ships its own mpiexec, so prefer it when that binary is the one selected.
+default_mpiexec="mpiexec"
+if locked_prefix="$(strut_opensees_ready_prefix)" \
+  && [[ "${openseesmp_bin}" == "${locked_prefix}/bin/OpenSeesMP" ]]; then
+  default_mpiexec="${locked_prefix}/bin/mpiexec"
+fi
+mpiexec_bin="${OPENSEESMP_MPIEXEC:-${default_mpiexec}}"
 mpiexec_extra_args="${OPENSEESMP_MPIEXEC_ARGS:-}"
 mpiexec_accelerator="${OPENSEESMP_MPI_ACCELERATOR:-null}"
 openseesmp_procs="${OPENSEESMP_PROCS:-$(detect_default_openseesmp_procs)}"
@@ -55,9 +64,11 @@ tests/validation/<example>/reference/.
 Provide one or more --script flags to target specific Tcl files. Follow each
 --script with --output to override the destination directory for that run.
 Set OPENSEES_WORKDIR to change the default output root, or OPENSEES_SCRIPT
-for a single-script run. Set OPENSEESMP_BIN to override the default binary
-path, OPENSEESMP_PROCS to override the MPI rank count, OPENSEESMP_MPIEXEC
-to override the MPI launcher, OPENSEESMP_MPIEXEC_ARGS for extra launcher
+for a single-script run. Set OPENSEESMP_BIN to override the binary
+(otherwise a local .build/opensees-linux/OpenSeesMP wins, then the shared
+locked install from scripts/setup_opensees.py), OPENSEESMP_PROCS to override
+the MPI rank count, OPENSEESMP_MPIEXEC to override the MPI launcher (default:
+the locked install's mpiexec when using its OpenSeesMP, else mpiexec), OPENSEESMP_MPIEXEC_ARGS for extra launcher
 flags, and OPENSEESMP_MPI_ACCELERATOR to override the default Open MPI
 accelerator selection.
 EOF
@@ -96,6 +107,7 @@ prepare_runtime() {
   openseesmp_bin="$(resolve_path "$openseesmp_bin")"
   if [[ ! -f "$openseesmp_bin" ]]; then
     echo "error: OpenSeesMP binary not found at '$openseesmp_bin'." >&2
+    strut_opensees_install_hint
     exit 1
   fi
   if [[ ! -x "$openseesmp_bin" ]]; then
@@ -155,6 +167,12 @@ run_script() {
   local mirrored_script_dir="${mirrored_parent}/${script_dir_name}"
   local run_start_stamp="${work_root}/run_start.stamp"
   cp -a "${script_parent}/." "${mirrored_parent}/"
+  # Some wiki examples were written on case-insensitive filesystems: they run
+  # `file mkdir data` and then record to `Data/...`. Provide `Data/` up front
+  # so those recorders can open their files on Linux.
+  if [[ ! -e "${mirrored_script_dir}/Data" ]]; then
+    mkdir -p "${mirrored_script_dir}/Data"
+  fi
   : >"$run_start_stamp"
 
   local run_script_name
