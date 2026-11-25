@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import io
 import re
 import shutil
@@ -22,9 +24,17 @@ BASIC_MANUAL_URL = f"{BASE_URL}/wiki/index.php?title=Basic_Examples_Manual"
 ADVANCED_MANUAL_URL = f"{BASE_URL}/wiki/index.php?title=Examples_Manual"
 REQUEST_INTERVAL_S = 1.0
 
-DOCS_DIR = Path("docs/agent-reference/OpenSeesDocs")
-BASIC_EXAMPLES_DIR = Path("docs/agent-reference/OpenSeesExamplesBasic")
-ADVANCED_EXAMPLES_DIR = Path("docs/agent-reference/OpenSeesExamplesAdvanced")
+DEFAULT_ROOT = Path("docs/agent-reference")
+DOCS_DIR = DEFAULT_ROOT / "OpenSeesDocs"
+BASIC_EXAMPLES_DIR = DEFAULT_ROOT / "OpenSeesExamplesBasic"
+ADVANCED_EXAMPLES_DIR = DEFAULT_ROOT / "OpenSeesExamplesAdvanced"
+PROVENANCE_FILENAME = "opensees-wiki-provenance.json"
+
+# Where each materialized file came from, keyed by resolved path:
+# {"url": <downloaded URL>, "url_sha256": <sha256 of the downloaded bytes>,
+#  "member": <zip member name or None>}.
+# scripts/setup_reference_data.py vendor-wiki reads the written copy.
+PROVENANCE: dict[Path, dict[str, str | None]] = {}
 
 USER_AGENT = "strut-opensees-docs/1.0"
 DIRECT_FILE_SUFFIXES = {
@@ -189,9 +199,13 @@ def save_html(slug: str, html: str) -> Path:
 
 
 def safe_extract_zip(
-    data: bytes, target_dir: Path, logger: Logger | None = None
+    data: bytes,
+    target_dir: Path,
+    logger: Logger | None = None,
+    source_url: str | None = None,
 ) -> int:
     extracted = 0
+    source_sha256 = hashlib.sha256(data).hexdigest()
     resolved_target_dir = target_dir.resolve()
     with zipfile.ZipFile(io.BytesIO(data)) as zip_file:
         for member in zip_file.infolist():
@@ -206,6 +220,11 @@ def safe_extract_zip(
             resolved.parent.mkdir(parents=True, exist_ok=True)
             with zip_file.open(member) as source, open(resolved, "wb") as output:
                 output.write(source.read())
+            PROVENANCE[resolved] = {
+                "url": source_url,
+                "url_sha256": source_sha256,
+                "member": member.filename,
+            }
             extracted += 1
             if logger is not None:
                 logger.detail(f"Extracted {resolved.relative_to(resolved_target_dir)}")
@@ -269,6 +288,8 @@ def copy_referenced_shared_files(
                 continue
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, target)
+            if source in PROVENANCE:
+                PROVENANCE[target_resolved] = dict(PROVENANCE[source])
             seen_targets.add(target_resolved)
             copied += 1
             if logger is not None:
@@ -421,7 +442,9 @@ def download_example(
                     f"{prefix}Downloading archive {zip_index}/{len(zip_links)} for {title}: {link}"
                 )
             data = download_file(link, logger=logger)
-            extracted_count += safe_extract_zip(data, zip_target_dir, logger=logger)
+            extracted_count += safe_extract_zip(
+                data, zip_target_dir, logger=logger, source_url=link
+            )
 
     if file_links:
         example_dir = spec.output_dir / slugify(title)
@@ -434,6 +457,11 @@ def download_example(
                 )
             data = download_file(link, logger=logger)
             (example_dir / filename).write_bytes(data)
+            PROVENANCE[(example_dir / filename).resolve()] = {
+                "url": link,
+                "url_sha256": hashlib.sha256(data).hexdigest(),
+                "member": None,
+            }
             extracted_count += 1
             if logger is not None:
                 logger.detail(f"Wrote {example_dir / filename}")
@@ -450,21 +478,45 @@ def download_example(
     )
 
 
-MANUAL_SPECS = {
-    "basic": ManualSpec(
-        name="basic",
-        manual_url=BASIC_MANUAL_URL,
-        output_dir=BASIC_EXAMPLES_DIR,
-        link_collector=collect_basic_example_links,
-    ),
-    "advanced": ManualSpec(
-        name="advanced",
-        manual_url=ADVANCED_MANUAL_URL,
-        output_dir=ADVANCED_EXAMPLES_DIR,
-        link_collector=collect_advanced_example_links,
-        extract_zips_to_root=True,
-    ),
-}
+def build_manual_specs() -> dict[str, ManualSpec]:
+    return {
+        "basic": ManualSpec(
+            name="basic",
+            manual_url=BASIC_MANUAL_URL,
+            output_dir=BASIC_EXAMPLES_DIR,
+            link_collector=collect_basic_example_links,
+        ),
+        "advanced": ManualSpec(
+            name="advanced",
+            manual_url=ADVANCED_MANUAL_URL,
+            output_dir=ADVANCED_EXAMPLES_DIR,
+            link_collector=collect_advanced_example_links,
+            extract_zips_to_root=True,
+        ),
+    }
+
+
+def configure_root(root: Path) -> None:
+    global DOCS_DIR, BASIC_EXAMPLES_DIR, ADVANCED_EXAMPLES_DIR
+    DOCS_DIR = root / "OpenSeesDocs"
+    BASIC_EXAMPLES_DIR = root / "OpenSeesExamplesBasic"
+    ADVANCED_EXAMPLES_DIR = root / "OpenSeesExamplesAdvanced"
+
+
+def write_provenance(root: Path) -> Path:
+    resolved_root = root.resolve()
+    entries = {}
+    for path, source in sorted(PROVENANCE.items()):
+        if not path.is_file():
+            continue
+        entries[path.relative_to(resolved_root).as_posix()] = {
+            **source,
+            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            "size": path.stat().st_size,
+        }
+    out = root / PROVENANCE_FILENAME
+    out.write_text(json.dumps(entries, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return out
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -474,6 +526,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         choices=("all", "basic", "advanced"),
         default="all",
         help="Which example manual to download.",
+    )
+    parser.add_argument(
+        "--root",
+        type=Path,
+        default=DEFAULT_ROOT,
+        help=f"Output root for docs and examples. Default: {DEFAULT_ROOT}",
     )
     parser.add_argument(
         "--verbose",
@@ -486,12 +544,14 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv or sys.argv[1:])
     logger = Logger(verbose=args.verbose)
+    configure_root(args.root)
     ensure_dirs()
 
+    manual_specs = build_manual_specs()
     selected_specs = (
-        list(MANUAL_SPECS.values())
+        list(manual_specs.values())
         if args.manual == "all"
-        else [MANUAL_SPECS[args.manual]]
+        else [manual_specs[args.manual]]
     )
     any_links = False
     for spec in selected_specs:
@@ -520,6 +580,7 @@ def main(argv: list[str] | None = None) -> int:
             )
     if not any_links:
         return 1
+    logger.info(f"Wrote provenance: {write_provenance(args.root)}")
     return 0
 
 

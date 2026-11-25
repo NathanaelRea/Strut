@@ -1034,7 +1034,7 @@ def test_absolutize_time_series_paths_resolves_from_repo_root_when_needed(
             {
                 "type": "Path",
                 "tag": 1,
-                "values_path": "docs/agent-reference/OpenSeesExamplesBasic/time_history_analysis_of_a_2d_elastic_cantilever_column/A10000.tcl",
+                "values_path": "tests/fixtures/opensees/OpenSeesExamplesBasic/time_history_analysis_of_a_2d_elastic_cantilever_column/A10000.tcl",
             }
         ]
     }
@@ -1044,7 +1044,7 @@ def test_absolutize_time_series_paths_resolves_from_repo_root_when_needed(
     resolved = Path(case_data["time_series"][0]["values_path"])
     expected = (
         REPO_ROOT
-        / "docs/agent-reference/OpenSeesExamplesBasic/time_history_analysis_of_a_2d_elastic_cantilever_column/A10000.tcl"
+        / "tests/fixtures/opensees/OpenSeesExamplesBasic/time_history_analysis_of_a_2d_elastic_cantilever_column/A10000.tcl"
     ).resolve()
     assert resolved.is_absolute()
     assert resolved == expected

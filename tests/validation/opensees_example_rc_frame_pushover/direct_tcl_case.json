@@ -1,5 +1,5 @@
 {
   "name": "opensees_example_rc_frame_pushover",
-  "entry_tcl": "docs/agent-reference/OpenSeesExamplesBasic/reinforced_concrete_frame_pushover_analysis/RCFramePushover.tcl",
+  "entry_tcl": "tests/fixtures/opensees/OpenSeesExamplesBasic/reinforced_concrete_frame_pushover_analysis/RCFramePushover.tcl",
   "enabled": false
 }

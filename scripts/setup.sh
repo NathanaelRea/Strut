@@ -1,11 +1,11 @@
-curl -L https://raw.githubusercontent.com/modular/modular/refs/heads/main/.cursor/rules/mojo.mdc -o docs/agent-reference/mojo.mdc
-curl -L https://docs.modular.com/llms-mojo.txt -o docs/agent-reference/llms-mojo.txt
-curl -L https://docs.modular.com/llms.txt -o docs/agent-reference/llms.txt
+#!/usr/bin/env bash
+# One-time machine setup for tests, benchmarks and agent reference material.
+# Everything is pinned and cached in ~/.cache/strut, shared by all worktrees;
+# re-running is a fast no-op.
+set -euo pipefail
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "${repo_root}"
 
-git clone https://github.com/OpenSees/OpenSees docs/agent-reference/OpenSees
-git clone https://github.com/modular/modular/ docs/agent-reference/modular
-
-rm -rf docs/agent-reference/OpenSees/.git
-rm -rf docs/agent-reference/modular/.git
-
-python3 setup-opensees-docs.py
+uv sync
+uv run python scripts/setup_reference_data.py
+uv run python scripts/setup_opensees.py

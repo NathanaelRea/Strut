@@ -6,7 +6,6 @@ Currently we beat the performance of OpenSees by about 2x in large examples that
 
 ## Warnings
 
-- I haven't put much work to generalize the environment, so there might be extra steps to build the OpenSees binary for the validation tests/benchmarks.
 - We test/validate against the full OpenSees example suite, up through "Advanced Example 6". However, there are some tests we skip because I have not done a thorough validation pass. Please don't use this for anything important, as it's currently a work in progress and the test coverage is limited.
 
 ## Quick Start
@@ -20,9 +19,34 @@ For building and running Strut
 For testing or benchmarking
 
 1. Fetch the dependencies `uv sync`
-2. Run the [setup script](./scripts/setup.sh) to clone reference repos, download modular docs, and download OpenSees example tcl files and ground motions.
-3. Build the native Linux OpenSees reference binary with [scripts/build_opensees_linux.sh](./scripts/build_opensees_linux.sh). The harness uses [`.build/opensees-linux/OpenSees`](./.build/opensees-linux/OpenSees) by default.
-4. Run unit tests `uv run run_tests.py` or benchmarks `uv run scripts/run_benchmarks.py`
+2. Run unit tests `uv run run_tests.py` or benchmarks `uv run scripts/run_benchmarks.py`
+
+`run_tests.py` installs the pinned test data and [OpenSees reference binaries](#opensees-reference-binaries) on first use. To set up everything up front, including the agent reference sources, run [`scripts/setup.sh`](./scripts/setup.sh).
+
+## Reference Data
+
+`uv run scripts/setup_reference_data.py` installs everything from [`tests/fixtures/opensees/reference-data.lock.json`](./tests/fixtures/opensees/reference-data.lock.json). Each item downloads once per machine into `~/.cache/strut/reference/` and is checked against its pinned sha256 or commit.
+
+- **Test fixtures:** the OpenSees example Tcl is committed under [`tests/fixtures/opensees/`](./tests/fixtures/opensees/README.md). Ground motions and the mega-tall model are pinned downloads copied in next to it. `--fixtures-only` installs just these.
+- **Agent reference:** `docs/agent-reference/OpenSees` (v3.7.1, matching the binary) and `docs/agent-reference/modular` (the tag matching the Mojo version) are links to shared shallow clones.
+
+## OpenSees Reference Binaries
+
+`uv run scripts/setup_opensees.py` installs `OpenSees`, `OpenSeesMP`, `OpenSeesSP` and a matching `mpiexec` on linux-64. It needs no sudo, compilers or system Tcl/MPI, and takes about 20 seconds.
+
+- **Pinned:** the binaries come from the conda-forge `opensees` package (currently 3.7.1; 3.8.0 rejects the inline `Series` syntax the wiki examples use, see `scripts/setup_opensees.py`). [`scripts/opensees/opensees-linux-64.lock`](./scripts/opensees/opensees-linux-64.lock) pins every package by URL and sha256. A pinned, checksum-verified micromamba installs it.
+- **Shared across worktrees:** the environment installs once per lockfile into `~/.cache/strut/opensees/<lock-hash>/`. Override the location with `STRUT_CACHE_DIR` or `XDG_CACHE_HOME`. Every checkout with the same lock reuses it. A branch that changes the lock gets its own prefix. Re-running the script when the install already exists is a no-op. Concurrent runs are serialized with a file lock.
+- **Lookup order** in `scripts/run_opensees.sh` and `scripts/run_openseesmp.sh`:
+  1. `OPENSEES_BIN` / `OPENSEESMP_BIN`
+  2. A local source build at `.build/opensees-linux/` (from [scripts/build_opensees_linux.sh](./scripts/build_opensees_linux.sh))
+  3. The shared locked install
+
+  When the locked `OpenSeesMP` is selected, the locked install's `mpiexec` is used.
+- **Other commands:**
+  - `setup_opensees.py path [--binary OpenSeesMP|--prefix]` prints the installed path.
+  - `verify` re-runs the smoke tests.
+  - `lock` re-resolves the spec in the script and rewrites the lockfile. To upgrade OpenSees, edit `CONDA_SPECS` and then run `lock`.
+- **Cleanup:** delete stale prefixes under `~/.cache/strut/opensees/` once no branch uses their lock.
 
 ## OpenSees Implementation Coverage
 

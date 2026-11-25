@@ -84,6 +84,11 @@ def build_argument_parser() -> argparse.ArgumentParser:
         help="Include disabled parity cases.",
     )
     parser.add_argument(
+        "--skip-setup",
+        action="store_true",
+        help="Skip installing the pinned test fixtures and OpenSees binaries.",
+    )
+    parser.add_argument(
         "--skip-build",
         action="store_true",
         help="Skip the zero-warning Mojo build step.",
@@ -172,6 +177,17 @@ def main() -> int:
     env = os.environ.copy()
     if args.verbose:
         env["STRUT_VERBOSE"] = "1"
+
+    if not args.skip_setup:
+        # Pinned test inputs and the OpenSees reference binary. Both live in a
+        # shared per-user cache and are instant no-ops once installed.
+        for script in ("setup_reference_data.py", "setup_opensees.py"):
+            run(
+                ["uv", "run", "python", str(repo_root / "scripts" / script), "install"]
+                + (["--fixtures-only"] if script == "setup_reference_data.py" else []),
+                env=env,
+                verbose=args.verbose,
+            )
 
     if not args.skip_build:
         run(

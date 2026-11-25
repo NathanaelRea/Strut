@@ -13,7 +13,8 @@ Important: Never stub functionality, always fully implement if any feature is mi
 
 ## Non-Standard Commands
 
-- Run unit tests: `uv run run_tests.py`
+- Run unit tests: `uv run run_tests.py` (installs pinned fixtures and the OpenSees binary on first use)
+- Set up a new worktree's reference sources (`docs/agent-reference/`): `uv run scripts/setup_reference_data.py`
 - Build/precompile Mojo solver: `uv run python scripts/build_mojo_solver.py`
 
 ## Reference

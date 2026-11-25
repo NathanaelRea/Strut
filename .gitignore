@@ -33,6 +33,7 @@ tests/validation/**/*.g3
 tests/validation/**/tmpDsteps.tcl
 
 tests/validation/**/phase_times_us.json
+tests/validation/**/run_progress.json
 tests/validation/**/.parser-check
 
 # Temporary files

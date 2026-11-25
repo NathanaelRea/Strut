@@ -127,7 +127,7 @@ def test_resolve_json_case_root_keeps_generated_case_json_in_canonical_case_dir(
 def test_convert_ex1a_builds_staged_case():
     entry = (
         REPO_ROOT
-        / "docs/agent-reference/OpenSeesExamplesBasic"
+        / "tests/fixtures/opensees/OpenSeesExamplesBasic"
         / "time_history_analysis_of_a_2d_elastic_cantilever_column"
         / "Ex1a.Canti2D.EQ.modif.tcl"
     )
@@ -180,7 +180,7 @@ def test_convert_ex1a_builds_staged_case():
 def test_convert_example31_preserves_initialize_profilespd_and_rcm():
     entry = (
         REPO_ROOT
-        / "docs/agent-reference/OpenSees/EXAMPLES/ExampleScripts"
+        / "tests/fixtures/opensees/OpenSeesSource/EXAMPLES/ExampleScripts"
         / "Example3.1.tcl"
     )
 
@@ -213,7 +213,7 @@ def test_convert_example31_preserves_initialize_profilespd_and_rcm():
 def test_convert_advanced_ex1a_eq_accepts_plural_element_deformations():
     entry = (
         REPO_ROOT
-        / "docs/agent-reference/OpenSeesExamplesAdvanced"
+        / "tests/fixtures/opensees/OpenSeesExamplesAdvanced"
         / "opensees_example_1a_2d_elastic_cantilever_column"
         / "Ex1a.Canti2D.EQ.tcl"
     )
@@ -230,7 +230,7 @@ def test_convert_advanced_ex1a_eq_accepts_plural_element_deformations():
 def test_convert_advanced_ex1b_eq_expands_grouped_drift_nodes():
     entry = (
         REPO_ROOT
-        / "docs/agent-reference/OpenSeesExamplesAdvanced"
+        / "tests/fixtures/opensees/OpenSeesExamplesAdvanced"
         / "opensees_example_1b_elastic_portal_frame"
         / "Ex1b.Portal2D.EQ.tcl"
     )
@@ -468,7 +468,7 @@ def test_convert_displacement_control_zero_increment_is_noop(tmp_path: Path):
 def test_convert_ex2a_eq_resolves_ground_motion_from_example_root_when_available():
     entry = (
         REPO_ROOT
-        / "docs/agent-reference/OpenSeesExamplesAdvanced"
+        / "tests/fixtures/opensees/OpenSeesExamplesAdvanced"
         / "opensees_example_2a_elastic_cantilever_column_with_variables"
         / "Ex2a.Canti2D.ElasticElement.EQ.tcl"
     )
@@ -478,7 +478,7 @@ def test_convert_ex2a_eq_resolves_ground_motion_from_example_root_when_available
     assert case["time_series"][1]["values_path"] == str(
         (
             REPO_ROOT
-            / "docs/agent-reference/OpenSeesExamplesAdvanced"
+            / "tests/fixtures/opensees/OpenSeesExamplesAdvanced"
             / "opensees_example_2a_elastic_cantilever_column_with_variables"
             / "BM68elc.acc"
         ).resolve()
@@ -501,7 +501,7 @@ def test_convert_reports_unknown_command_with_location(tmp_path: Path):
 def test_convert_typed_case_returns_dataclass_model():
     entry = (
         REPO_ROOT
-        / "docs/agent-reference/OpenSeesExamplesBasic"
+        / "tests/fixtures/opensees/OpenSeesExamplesBasic"
         / "time_history_analysis_of_a_2d_elastic_cantilever_column"
         / "Ex1a.Canti2D.EQ.modif.tcl"
     )
@@ -517,14 +517,10 @@ def test_convert_typed_case_returns_dataclass_model():
 
 
 def test_convert_ex5_disables_transient_force_beam_local_force_parity():
-    entry = (
-        REPO_ROOT
-        / "docs/agent-reference/OpenSeesExamplesAdvanced"
-        / "Ex5Fram2DEQUniform"
-        / "Ex5.Frame2D.complete.Dynamic.EQ.Uniform.tcl"
-    )
-
-    case = tcl_to_strut.convert_tcl_to_case(entry, REPO_ROOT)
+    # Originally read Ex5.Frame2D.complete.Dynamic.EQ.Uniform.tcl from the wiki's
+    # Ex5Fram2DEQ.zip, which no longer exists. This manifest sources the same
+    # build + EQ-uniform analysis scripts.
+    case = _convert_direct_tcl_manifest("opensees_example_ex5_frame2d_eq_uniform_rc_fiber")
 
     recorders = {}
     for recorder in case["recorders"]:
@@ -562,7 +558,7 @@ def test_convert_ex5_disables_transient_force_beam_local_force_parity():
 def test_convert_ex9_2d_aggregator_moment_curvature_wrapper(tmp_path: Path):
     example_dir = (
         REPO_ROOT
-        / "docs/agent-reference/OpenSeesExamplesAdvanced"
+        / "tests/fixtures/opensees/OpenSeesExamplesAdvanced"
         / "opensees_example_9_build_analyze_a_section_example"
     )
     entry = tmp_path / "Ex9.complete.Ex9AnalyzeMomentCurvature2D.tcl"
@@ -590,7 +586,7 @@ def test_convert_ex9_2d_aggregator_moment_curvature_wrapper(tmp_path: Path):
 def test_convert_rcframepushover_preserves_runtime_test_without_injected_fallback():
     entry = (
         REPO_ROOT
-        / "docs/agent-reference/OpenSeesExamplesBasic"
+        / "tests/fixtures/opensees/OpenSeesExamplesBasic"
         / "reinforced_concrete_frame_pushover_analysis"
         / "RCFramePushover.tcl"
     )
@@ -792,7 +788,7 @@ def test_convert_megatall_direct_tcl_completes_full_bundle_import():
 def test_solver_input_matches_json_adapter_for_tcl_case():
     entry = (
         REPO_ROOT
-        / "docs/agent-reference/OpenSeesExamplesBasic"
+        / "tests/fixtures/opensees/OpenSeesExamplesBasic"
         / "time_history_analysis_of_a_2d_elastic_cantilever_column"
         / "Ex1a.Canti2D.EQ.modif.tcl"
     )

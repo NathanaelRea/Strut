@@ -7,7 +7,9 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 examples_root="${repo_root}/benchmark/OpenSees/examples"
 validation_root="${repo_root}/tests/validation"
-opensees_bin="${OPENSEES_BIN:-${repo_root}/.build/opensees-linux/OpenSees}"
+# shellcheck source=scripts/opensees_env.sh
+source "${repo_root}/scripts/opensees_env.sh"
+opensees_bin="$(strut_resolve_opensees_binary OpenSees "${OPENSEES_BIN:-}")"
 
 usage() {
   cat <<'EOF'
@@ -21,7 +23,9 @@ files inside tests/validation/<example>/reference/.
 Provide one or more --script flags to target specific Tcl files. Follow each
 --script with --output to override the destination directory for that run.
 Set OPENSEES_WORKDIR to change the default output root, or OPENSEES_SCRIPT
-for a single-script run. Set OPENSEES_BIN to override the default binary path.
+for a single-script run. Set OPENSEES_BIN to override the binary. Otherwise a
+local .build/opensees-linux/OpenSees wins, then the shared locked install from
+scripts/setup_opensees.py.
 EOF
 }
 
@@ -58,6 +62,7 @@ prepare_runtime() {
   opensees_bin="$(resolve_path "$opensees_bin")"
   if [[ ! -f "$opensees_bin" ]]; then
     echo "error: OpenSees binary not found at '$opensees_bin'." >&2
+    strut_opensees_install_hint
     exit 1
   fi
   if [[ ! -x "$opensees_bin" ]]; then
@@ -99,6 +104,12 @@ run_script() {
   local mirrored_script_dir="${mirrored_parent}/${script_dir_name}"
   local run_start_stamp="${work_root}/run_start.stamp"
   cp -a "${script_parent}/." "${mirrored_parent}/"
+  # Some wiki examples were written on case-insensitive filesystems: they run
+  # `file mkdir data` and then record to `Data/...`. Provide `Data/` up front
+  # so those recorders can open their files on Linux.
+  if [[ ! -e "${mirrored_script_dir}/Data" ]]; then
+    mkdir -p "${mirrored_script_dir}/Data"
+  fi
   : >"$run_start_stamp"
 
   local run_script_name

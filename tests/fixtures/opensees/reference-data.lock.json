@@ -1,0 +1,155 @@
+{
+  "version": 1,
+  "sources": {
+    "047334694034ad1b04b811cb00683830fa3ed7404408a5b6279d2deb24c8dc0d": {
+      "kind": "zip",
+      "urls": [
+        "https://opensees.berkeley.edu/wiki/images/9/98/H-E12140.zip"
+      ]
+    },
+    "12bcbef50bd8a12543f198c90d8412131502cc726f97fd0b7760b023b826493b": {
+      "kind": "rar",
+      "urls": [
+        "http://opensees.berkeley.edu/OpenSees/examples/Model1.rar"
+      ]
+    },
+    "6a56422e7ef984e8b5afdcf79063ea341e4147d28eaf7c4e4ed6009329eeef6b": {
+      "kind": "zip",
+      "urls": [
+        "https://opensees.berkeley.edu/wiki/images/8/8e/H-E01140.zip"
+      ]
+    },
+    "8c48fb8f9efd2c5c29703e361a9f43af705375771cb5a26e897e381365c9f2d2": {
+      "kind": "zip",
+      "urls": [
+        "https://opensees.berkeley.edu/wiki/images/8/8f/H-E12140D.zip"
+      ]
+    },
+    "ccd1952912c095d755a56232468c9ffe575cce3659b9a2b79e7cdeab5011ace6": {
+      "kind": "zip",
+      "urls": [
+        "https://opensees.berkeley.edu/wiki/images/6/63/BM68elc.zip"
+      ]
+    },
+    "daaf55f17f95faa22d671a76bbf99accbf3fa662c3dc30b06f2457382e0611c3": {
+      "kind": "file",
+      "urls": [
+        "https://opensees.berkeley.edu/wiki/images/d/d3/A10000.tcl"
+      ]
+    }
+  },
+  "files": [
+    {
+      "path": "OpenSeesExamplesAdvanced/BM68elc.acc",
+      "sha256": "79383b35289570b2ca3bdcb7aff039d7526697be2d2a525fd6eab9f68defc7ee",
+      "size": 61600,
+      "source": "ccd1952912c095d755a56232468c9ffe575cce3659b9a2b79e7cdeab5011ace6",
+      "member": "BM68elc.acc"
+    },
+    {
+      "path": "OpenSeesExamplesAdvanced/GMfiles/H-E01140.at2",
+      "sha256": "6d3c36bd6ab763f829469b02b534babaaceb45027b9d1f6f137adcee8abed2db",
+      "size": 120482,
+      "source": "6a56422e7ef984e8b5afdcf79063ea341e4147d28eaf7c4e4ed6009329eeef6b",
+      "member": "H-E01140.AT2"
+    },
+    {
+      "path": "OpenSeesExamplesAdvanced/GMfiles/H-e12140.at2",
+      "sha256": "e1e260f8434d147553c9a088a04985dc9ee3bb0d4b2ad19e99529b401d00edd4",
+      "size": 120405,
+      "source": "047334694034ad1b04b811cb00683830fa3ed7404408a5b6279d2deb24c8dc0d",
+      "member": "H-E12140.AT2"
+    },
+    {
+      "path": "OpenSeesExamplesAdvanced/GMfiles/H-e12140.dt2",
+      "sha256": "113d04cfe175c091256a8f1ef5150f00c5e2279d9a423283a2514bd5f1033743",
+      "size": 120406,
+      "source": "8c48fb8f9efd2c5c29703e361a9f43af705375771cb5a26e897e381365c9f2d2",
+      "member": "H-E12140.DT2"
+    },
+    {
+      "path": "OpenSeesExamplesAdvanced/H-E01140.AT2",
+      "sha256": "6d3c36bd6ab763f829469b02b534babaaceb45027b9d1f6f137adcee8abed2db",
+      "size": 120482,
+      "source": "6a56422e7ef984e8b5afdcf79063ea341e4147d28eaf7c4e4ed6009329eeef6b",
+      "member": "H-E01140.AT2"
+    },
+    {
+      "path": "OpenSeesExamplesAdvanced/H-E12140.AT2",
+      "sha256": "e1e260f8434d147553c9a088a04985dc9ee3bb0d4b2ad19e99529b401d00edd4",
+      "size": 120405,
+      "source": "047334694034ad1b04b811cb00683830fa3ed7404408a5b6279d2deb24c8dc0d",
+      "member": "H-E12140.AT2"
+    },
+    {
+      "path": "OpenSeesExamplesAdvanced/H-E12140.DT2",
+      "sha256": "113d04cfe175c091256a8f1ef5150f00c5e2279d9a423283a2514bd5f1033743",
+      "size": 120406,
+      "source": "8c48fb8f9efd2c5c29703e361a9f43af705375771cb5a26e897e381365c9f2d2",
+      "member": "H-E12140.DT2"
+    },
+    {
+      "path": "OpenSeesExamplesAdvanced/opensees_example_2a_elastic_cantilever_column_with_variables/BM68elc.acc",
+      "sha256": "79383b35289570b2ca3bdcb7aff039d7526697be2d2a525fd6eab9f68defc7ee",
+      "size": 61600,
+      "source": "ccd1952912c095d755a56232468c9ffe575cce3659b9a2b79e7cdeab5011ace6",
+      "member": "BM68elc.acc"
+    },
+    {
+      "path": "OpenSeesExamplesAdvanced/opensees_example_2b_nonlinear_cantilever_column_uniaxial_inelastic_section/BM68elc.acc",
+      "sha256": "79383b35289570b2ca3bdcb7aff039d7526697be2d2a525fd6eab9f68defc7ee",
+      "size": 61600,
+      "source": "ccd1952912c095d755a56232468c9ffe575cce3659b9a2b79e7cdeab5011ace6",
+      "member": "BM68elc.acc"
+    },
+    {
+      "path": "OpenSeesExamplesAdvanced/opensees_example_2c_nonlinear_cantilever_column_inelastic_uniaxial_materials_in_fiber_section/BM68elc.acc",
+      "sha256": "79383b35289570b2ca3bdcb7aff039d7526697be2d2a525fd6eab9f68defc7ee",
+      "size": 61600,
+      "source": "ccd1952912c095d755a56232468c9ffe575cce3659b9a2b79e7cdeab5011ace6",
+      "member": "BM68elc.acc"
+    },
+    {
+      "path": "OpenSeesExamplesAdvanced/opensees_example_3_cantilever_column_with_units/BM68elc.acc",
+      "sha256": "79383b35289570b2ca3bdcb7aff039d7526697be2d2a525fd6eab9f68defc7ee",
+      "size": 61600,
+      "source": "ccd1952912c095d755a56232468c9ffe575cce3659b9a2b79e7cdeab5011ace6",
+      "member": "BM68elc.acc"
+    },
+    {
+      "path": "OpenSeesExamplesBasic/time_history_analysis_of_a_2d_elastic_cantilever_column/A10000.tcl",
+      "sha256": "daaf55f17f95faa22d671a76bbf99accbf3fa662c3dc30b06f2457382e0611c3",
+      "size": 123046,
+      "source": "daaf55f17f95faa22d671a76bbf99accbf3fa662c3dc30b06f2457382e0611c3",
+      "member": null
+    }
+  ],
+  "trees": [
+    {
+      "path": "OpenSeesExamples/MegaTallBuildingBenchmark",
+      "source": "12bcbef50bd8a12543f198c90d8412131502cc726f97fd0b7760b023b826493b",
+      "exclude": [
+        "Model1/CuSPSolver.dll"
+      ]
+    }
+  ],
+  "git": [
+    {
+      "name": "OpenSees",
+      "path": "OpenSees",
+      "url": "https://github.com/OpenSees/OpenSees.git",
+      "ref": "v3.7.1",
+      "commit": "fe578a5b51333e5489097f327f89d16de0797f56"
+    },
+    {
+      "name": "modular",
+      "path": "modular",
+      "url": "https://github.com/modular/modular.git",
+      "ref": "modular/v25.6.1",
+      "commit": "1efd022715c5e433e186c6a46062e5e74851c667",
+      "links": {
+        "mojo.mdc": ".cursor/rules/mojo.mdc"
+      }
+    }
+  ]
+}

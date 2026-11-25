@@ -1,6 +1,6 @@
 {
   "name": "opensees_example_ex2b_canti2d_inelasticsection_eq",
-  "entry_tcl": "docs/agent-reference/OpenSeesExamplesAdvanced/opensees_example_2b_nonlinear_cantilever_column_uniaxial_inelastic_section/Ex2b.Canti2D.InelasticSection.EQ.tcl",
+  "entry_tcl": "tests/fixtures/opensees/OpenSeesExamplesAdvanced/opensees_example_2b_nonlinear_cantilever_column_uniaxial_inelastic_section/Ex2b.Canti2D.InelasticSection.EQ.tcl",
   "parity_tolerance_by_recorder": {
     "node_displacement": { "atol": 2e-3, "rtol": 1e-5 }
   },

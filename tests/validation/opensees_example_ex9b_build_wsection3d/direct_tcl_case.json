@@ -1,5 +1,5 @@
 {
   "name": "opensees_example_ex9b_build_wsection3d",
-  "entry_tcl": "docs/agent-reference/OpenSeesExamplesAdvanced/opensees_example_9_build_analyze_a_section_example/Ex9b.build.WSection3D.tcl",
+  "entry_tcl": "tests/fixtures/opensees/OpenSeesExamplesAdvanced/opensees_example_9_build_analyze_a_section_example/Ex9b.build.WSection3D.tcl",
   "enabled": false
 }
