@@ -1,13 +1,12 @@
-"""Build the complete Model1 Tcl bundle from the geometry and property tables.
+"""Build the complete Model1 Tcl bundle from the geometry, transform and property rules.
 
 ``geometry.generate()`` supplies node coordinates, element connectivity, IDs,
-file order and diaphragm sets. ``properties.generate_all()`` supplies
-materials, sections, masses, loads and the entry script. This module joins
-them and supplies the one piece neither covers: ``geomTransf`` definitions and
-each beam's transformation tag, stored in ``transf.bin``.
+file order and diaphragm sets. ``transf.generate_transf()`` derives all 348
+``geomTransf PDelta`` definitions and all 30,166 per-beam transformation tags.
+``properties.generate_all()`` supplies materials, sections, masses, loads and
+the entry script.
 
     uv run python -m scripts.megatall_recon.bundle --out-dir .tmp/megatall-recon
-    uv run python -m scripts.megatall_recon.bundle --extract-transf  # needs fixture
 """
 
 from __future__ import annotations
@@ -15,58 +14,20 @@ from __future__ import annotations
 import argparse
 import fcntl
 import hashlib
-import json
-import lzma
 import shutil
 import tempfile
 from pathlib import Path
 
 from scripts.megatall_recon import geometry as geo
 from scripts.megatall_recon import properties as prop
+from scripts.megatall_recon import transf as tf
 
-TRANSF_PATH = Path(__file__).with_name("transf.bin")
 MEGACOL = ("opensees.tcl", "dispBeamColumn")
 HBEAM = ("Hbeam.tcl", "dispBeamColumn")
 SHELL = ("layershell.tcl", "ShellMITC4")
 EBC = ("truss.tcl", "elasticBeamColumn")
 TRUSS = ("truss.tcl", "truss")
 DIAPHRAGM_PERP_DIRN = 3
-
-
-def extract_transf(model_dir: Path = prop.DEFAULT_MODEL_DIR) -> bytes:
-    """Encode geomTransf definitions and per-beam tags from the real model.
-
-    Tags are stored in Tcl file order for each family, as indices into the
-    list of distinct orientation vectors, so the payload stays near 3 KB.
-    """
-    real = prop.load_real_geometry(model_dir)
-    vectors: list[list[float]] = []
-    vector_index: dict[tuple[float, float, float], int] = {}
-    defs = []
-    for tag, kind, vx, vy, vz in real.geom_transfs:
-        key = (vx, vy, vz)
-        if key not in vector_index:
-            vector_index[key] = len(vectors)
-            vectors.append(list(key))
-        defs.append([tag, kind, vector_index[key]])
-    payload = {
-        "vectors": vectors,
-        "defs": defs,
-        "megacol": [row[3] for row in real.megacol_elems],
-        "hbeam": [row[3] for row in real.hbeam_elems],
-        "ebc": [row[3] for row in real.ebc_elems],
-    }
-    raw = json.dumps(payload, separators=(",", ":")).encode()
-    return lzma.compress(raw, preset=9 | lzma.PRESET_EXTREME)
-
-
-def load_transf(path: Path = TRANSF_PATH) -> dict:
-    data = json.loads(lzma.decompress(path.read_bytes()))
-    vectors = data["vectors"]
-    data["geom_transfs"] = [
-        (tag, kind, *vectors[index]) for tag, kind, index in data["defs"]
-    ]
-    return data
 
 
 def to_property_geometry(g: geo.Geometry, transf: dict) -> prop.Geometry:
@@ -101,7 +62,8 @@ def to_property_geometry(g: geo.Geometry, transf: dict) -> prop.Geometry:
 
 
 def generated_geometry() -> prop.Geometry:
-    return to_property_geometry(geo.generate(), load_transf())
+    g = geo.generate()
+    return to_property_geometry(g, tf.generate_transf(g))
 
 
 def ground_motion_text() -> str:
@@ -152,8 +114,10 @@ def gpu_entry_script(cpu_script: str) -> str:
 
 def build_bundle(out_dir: Path) -> dict[str, int]:
     """Write every Model1 file into ``out_dir`` without reading the fixture."""
-    geom = generated_geometry()
-    gen = prop.generate_all(geom, prop.load_props())
+    g = geo.generate()
+    props = prop.load_props()
+    geom = to_property_geometry(g, tf.generate_transf(g, props))
+    gen = prop.generate_all(geom, props)
     files = prop.format_tcl_files(geom, gen)
     files["dynamicgpu.tcl"] = gpu_entry_script(files["dynamiccpu.tcl"])
     files["GMX.txt"] = ground_motion_text()
@@ -235,22 +199,7 @@ def main() -> None:
         action="store_true",
         help=f"Generate into the test fixture path ({FIXTURE_DIR.relative_to(REPO_ROOT)})",
     )
-    ap.add_argument(
-        "--model-dir",
-        type=Path,
-        default=prop.DEFAULT_MODEL_DIR,
-        help="A copy of the real Model1 (only for --extract-transf)",
-    )
-    ap.add_argument(
-        "--extract-transf",
-        action="store_true",
-        help="Regenerate transf.bin from a copy of the real model",
-    )
     args = ap.parse_args()
-    if args.extract_transf:
-        data = extract_transf(prop.require_real_model(args.model_dir))
-        TRANSF_PATH.write_bytes(data)
-        print(f"Wrote {TRANSF_PATH} ({len(data):,} bytes)")
     if args.out_dir is not None:
         for name, size in build_bundle(args.out_dir).items():
             print(f"Wrote {args.out_dir / name} ({size:,} bytes)")

@@ -571,9 +571,41 @@ def generate_hbeam(geom: Geometry, props: dict[str, Any]) -> dict[str, Any]:
         elastics[el_tag] = g_steel * j_val
         aggregators[agg_tag] = (el_tag, fsec)
 
-    _, x_max_z, y_max_z = _floor_bounds(geom.nodes)
+    sidxs = classify_hbeam_sections(
+        geom.nodes, [(n1, n2) for _, n1, n2, _ in geom.hbeam_elems], props
+    )
+    elems_out: list[tuple[int, int, int, int, int, int, float]] = []
+    node_fz: dict[int, float] = collections.defaultdict(float)
 
-    # Decode vertical, sloped-column, brace, and horizontal rules
+    for (eid, n1, n2, transf), sidx in zip(geom.hbeam_elems, sidxs, strict=True):
+        p1, p2 = geom.nodes[n1], geom.nodes[n2]
+        agg_tag = 10000 * sidx
+        mass_per_len = rho * patch_area[sidx]
+        elems_out.append((eid, n1, n2, n_ip, agg_tag, transf, mass_per_len))
+        length = math.dist(p1, p2)
+        half_w = -0.5 * mass_per_len * length * g
+        node_fz[n1] += half_w
+        node_fz[n2] += half_w
+
+    loads_out = [(n, node_fz[n]) for n in sorted(node_fz)]
+    return {
+        "fiber_secs": fiber_secs,
+        "elastics": elastics,
+        "aggregators": aggregators,
+        "elems": elems_out,
+        "loads": loads_out,
+    }
+
+
+def classify_hbeam_sections(
+    nodes: dict[int, tuple[float, float, float]],
+    hbeam_edges: list[tuple[int, int]],
+    props: dict[str, Any],
+) -> list[int]:
+    """Return the 1-based Hbeam section index (1..148) for each (n1, n2) edge."""
+    hp = props["hbeam"]
+    _, x_max_z, y_max_z = _floor_bounds(nodes)
+
     def decode_key_z_rules(
         raw: list[list[Any]],
     ) -> dict[tuple[float, float], list[tuple[float, float, int]]]:
@@ -597,12 +629,11 @@ def generate_hbeam(geom: Geometry, props: dict[str, Any]) -> dict[str, Any]:
             for j in range(1, len(row), 3)
         ]
 
-    # Floor index map for horizontal beams (aligned with sorted horizontal floor z's)
     h_zs = sorted(
         {
-            round(geom.nodes[n1][2], 2)
-            for _, n1, n2, _ in geom.hbeam_elems
-            if abs(geom.nodes[n2][2] - geom.nodes[n1][2]) < 1e-3
+            round(nodes[n1][2], 2)
+            for n1, n2 in hbeam_edges
+            if abs(nodes[n2][2] - nodes[n1][2]) < 1e-3
         }
     )
     z_to_fidx = {z: i for i, z in enumerate(h_zs)}
@@ -634,11 +665,9 @@ def generate_hbeam(geom: Geometry, props: dict[str, Any]) -> dict[str, Any]:
                 return sidx
         return min(segs, key=lambda s: abs(0.5 * (s[0] + s[1]) - mz))[2]
 
-    elems_out: list[tuple[int, int, int, int, int, int, float]] = []
-    node_fz: dict[int, float] = collections.defaultdict(float)
-
-    for eid, n1, n2, transf in geom.hbeam_elems:
-        p1, p2 = geom.nodes[n1], geom.nodes[n2]
+    sidxs: list[int] = []
+    for n1, n2 in hbeam_edges:
+        p1, p2 = nodes[n1], nodes[n2]
         dx = abs(p2[0] - p1[0])
         dy = abs(p2[1] - p1[1])
         dz = abs(p2[2] - p1[2])
@@ -691,23 +720,8 @@ def generate_hbeam(geom: Geometry, props: dict[str, Any]) -> dict[str, Any]:
             sidx = min(
                 br_rules[mz_k], key=lambda r: (r[0] - mx) ** 2 + (r[1] - my) ** 2
             )[2]
-
-        agg_tag = 10000 * sidx
-        mass_per_len = rho * patch_area[sidx]
-        elems_out.append((eid, n1, n2, n_ip, agg_tag, transf, mass_per_len))
-        length = math.dist(p1, p2)
-        half_w = -0.5 * mass_per_len * length * g
-        node_fz[n1] += half_w
-        node_fz[n2] += half_w
-
-    loads_out = [(n, node_fz[n]) for n in sorted(node_fz)]
-    return {
-        "fiber_secs": fiber_secs,
-        "elastics": elastics,
-        "aggregators": aggregators,
-        "elems": elems_out,
-        "loads": loads_out,
-    }
+        sidxs.append(sidx)
+    return sidxs
 
 
 def _poly_area_2d(pts: list[tuple[float, float]]) -> float:
