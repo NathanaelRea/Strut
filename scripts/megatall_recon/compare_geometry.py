@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import argparse
 import json
 from collections import defaultdict
@@ -15,10 +16,31 @@ if __package__:
 else:
     from geometry import ARITY, FAMILIES, PARAMS, Geometry, Point, generate
 
-MODEL1 = (
-    Path(__file__).resolve().parents[2]
-    / "tests/fixtures/opensees/OpenSeesExamples/MegaTallBuildingBenchmark/Model1"
+MODEL1 = Path(
+    os.environ.get(
+        "STRUT_MEGATALL_REAL_DIR",
+        Path(__file__).resolve().parents[2] / ".tmp/megatall-real/Model1",
+    )
 )
+# A copy of the real benchmark model, used only to extract and verify the
+# tables. Tests never need it: they use the generated bundle.
+
+
+def require_real_model(model_dir: Path) -> Path:
+    """Refuse the generated bundle: comparing it with itself proves nothing."""
+    if (model_dir / ".strut-generated").exists():
+        raise SystemExit(
+            f"{model_dir} is the generated bundle, not the real model. Point "
+            "STRUT_MEGATALL_REAL_DIR (or --model-dir) at a copy of the original Model1."
+        )
+    if not (model_dir / "opensees.tcl").is_file():
+        raise SystemExit(
+            f"real Model1 not found at {model_dir}; set STRUT_MEGATALL_REAL_DIR "
+            "(see scripts/megatall_recon/README.md)"
+        )
+    return model_dir
+
+
 TOLERANCE = 0.01  # metres
 
 
@@ -233,7 +255,7 @@ def main() -> int:
     parser.add_argument("--params", type=Path, default=PARAMS)
     args = parser.parse_args()
     try:
-        reference = read_reference(args.model_dir)
+        reference = read_reference(require_real_model(args.model_dir))
     except FileNotFoundError as error:
         parser.exit(
             2,

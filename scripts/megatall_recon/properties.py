@@ -8,6 +8,7 @@ mass, gravity-load, and ``dynamiccpu.tcl`` entry-script lines.
 
 from __future__ import annotations
 
+import os
 import argparse
 import collections
 import json
@@ -16,10 +17,31 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-DEFAULT_MODEL_DIR = (
-    Path(__file__).resolve().parents[2]
-    / "tests/fixtures/opensees/OpenSeesExamples/MegaTallBuildingBenchmark/Model1"
+DEFAULT_MODEL_DIR = Path(
+    os.environ.get(
+        "STRUT_MEGATALL_REAL_DIR",
+        Path(__file__).resolve().parents[2] / ".tmp/megatall-real/Model1",
+    )
 )
+# A copy of the real benchmark model, used only to extract and verify the
+# tables. Tests never need it: they use the generated bundle.
+
+
+def require_real_model(model_dir: Path) -> Path:
+    """Refuse the generated bundle: comparing it with itself proves nothing."""
+    if (model_dir / ".strut-generated").exists():
+        raise SystemExit(
+            f"{model_dir} is the generated bundle, not the real model. Point "
+            "STRUT_MEGATALL_REAL_DIR (or --model-dir) at a copy of the original Model1."
+        )
+    if not (model_dir / "opensees.tcl").is_file():
+        raise SystemExit(
+            f"real Model1 not found at {model_dir}; set STRUT_MEGATALL_REAL_DIR "
+            "(see scripts/megatall_recon/README.md)"
+        )
+    return model_dir
+
+
 DEFAULT_PROPS_PATH = Path(__file__).resolve().parent / "props.json"
 
 GRID_VALS = (

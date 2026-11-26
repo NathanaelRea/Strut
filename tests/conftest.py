@@ -53,6 +53,12 @@ def missing_pinned_fixtures(prefixes: tuple[str, ...] = ()) -> tuple[str, ...]:
     return tuple(problems)
 
 
+def pytest_sessionstart(session: pytest.Session) -> None:
+    # The mega-tall benchmark model is generated, never downloaded. Building it
+    # takes about 2 s and is skipped when the stamp says it is current.
+    _setup_reference_data().megatall_bundle().ensure_bundle()
+
+
 def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line(
         "markers",

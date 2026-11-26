@@ -1,3 +1,52 @@
+# Mega-tall benchmark model generator
+
+This directory rebuilds `Model1` of the OpenSees mega-tall building benchmark, a roughly 606 m, 128-floor core-and-outrigger tower with 27,220 nodes and 50,350 elements, without downloading it. The original is published as `Model1.rar` alongside the OpenSees examples. [SOURCES.md](SOURCES.md) lists the papers and pages it comes from. The generator writes the same nine files (`opensees.tcl`, `Hbeam.tcl`, `layershell.tcl`, `truss.tcl`, `trussload.tcl`, `rigiddigram.tcl`, `dynamiccpu.tcl`, `dynamicgpu.tcl`, `GMX.txt`) into `tests/fixtures/opensees/OpenSeesExamples/MegaTallBuildingBenchmark/Model1/`. Tests, parity cases and benchmarks read them from there.
+
+```sh
+uv run python -m scripts.megatall_recon.bundle --install          # into the fixture path (setup and pytest do this)
+uv run python -m scripts.megatall_recon.bundle --out-dir DIR      # anywhere else
+```
+
+## What is generated from what
+
+| Part | Source in this directory | Size | Derived or stored |
+| --- | --- | ---: | --- |
+| Elevations, core grids, façade setbacks, inclined mega-column rails, belt-truss floors | [geometry.py](geometry.py), [params.json](params.json) | 3 KB + 2 KB track table | Rules |
+| Original node and element IDs, file order, irregular element stencils | [legacy.bin](legacy.bin) | 44 KB | Stored (LZMA). Only needed to reproduce the original numbering. |
+| Materials, sections, section assignment, masses, loads, entry script | [properties.py](properties.py), [props.json](props.json) | 45 KB | Formulas over geometry plus tables. Hbeam section assignment (18 KB) and slab-panel templates (16 KB) are the largest tables. |
+| `geomTransf` definitions and each beam's tag | [bundle.py](bundle.py), [transf.bin](transf.bin) | 3.5 KB | Stored |
+| `GMX.txt` | [bundle.py](bundle.py) via `scripts/synthetic_ground_motion.py` | 0 | Synthetic. Rezaeian & Der Kiureghian record for a reverse-fault M7, 20 km, Vs30 = 600 m/s scenario with a fixed seed, in the original's layout (4,000 points, dt = 0.01 s, PGA 1.0). It is not the original record. |
+
+The original's `CuSPSolver.dll` is not reproduced.
+
+## How close it is
+
+All 27,220 nodes are within 3 mm of the original (p99 0.16 mm), and every element, connectivity, file order and diaphragm set matches exactly. 99.75% of the 220,729 property values computed from the generated geometry are within 1e-4 relative of the original, the worst is 1.5e-3, and none are unexplained. Most of the remaining difference is the original's float32 and 4-decimal printing.
+
+OpenSees 3.7.1 runs the same gravity analysis (the entry script's 10 `LoadControl` steps) and `eigen 10` on both bundles, using the repo's PSUMAT surrogate for both:
+
+| Result | Original | Generated | Relative difference |
+| --- | ---: | ---: | ---: |
+| Total base reaction (N) | 7,263,623,867 | 7,263,622,003 | 2.6e-7 |
+| Roof settlement, node 17367 (m) | -0.1207749217 | -0.1207749198 | 1.5e-8 |
+| Mid-height settlement, node 8956 (m) | -0.0292673472 | -0.0292673817 | 1.2e-6 |
+| Mode 5-8 periods | 6.14, 2.63, 2.26, 0.983 s | same | ≤ 2e-6 |
+| Mode 9 period | 0.85721 s | 0.85787 s | 7.8e-4 |
+| Mode 10 period | 0.82658 s | 0.82655 s | 4.5e-5 |
+
+Modes 1–4 are negative in both after the P-Delta gravity step, so these periods compare the two bundles and are not the building's design periods.
+
+The generated `elasticBeamColumn` rigid links omit a bare trailing `.10000E+01` that the original prints after the transformation tag. OpenSees ignores that token. Strut's converter used to read it as `rho = 1.0`.
+
+## Checking against the original
+
+The extraction and comparison scripts need a copy of the original `Model1`. Nothing in the repo downloads it. Put a copy at `.tmp/megatall-real/Model1` or point `STRUT_MEGATALL_REAL_DIR` at one; the scripts refuse the generated bundle.
+
+```sh
+uv run python scripts/megatall_recon/compare_geometry.py
+uv run python -m scripts.megatall_recon.compare_properties --generated-geometry
+```
+
 # Model1 geometry reconstruction
 
 `generate()` in [geometry.py](geometry.py) builds the benchmark mesh from the adjacent parameter and stencil tables. It returns node coordinates keyed by the original node IDs, ordered element node tuples keyed by the original element IDs, and diaphragm slave sets keyed by master node ID. The `element_order` mapping gives the Tcl command order for each source family. Generation uses the Python standard library and takes about 0.2 s for the full model.

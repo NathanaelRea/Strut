@@ -65,6 +65,7 @@ def test_fixture_gitignore_matches_manifest():
     }
     expected = {f"/{entry['path']}" for entry in manifest["files"]}
     expected |= {f"/{entry['path']}/" for entry in manifest["trees"]}
+    expected |= {f"/{path}/" for path in setup_reference_data.GENERATED_FIXTURE_DIRS}
     assert lines == expected
 
 

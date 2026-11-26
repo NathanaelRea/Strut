@@ -18,6 +18,7 @@ from typing import Any
 from scripts.megatall_recon.properties import (
     DEFAULT_MODEL_DIR,
     DEFAULT_PROPS_PATH,
+    require_real_model,
     generate_all,
     load_props,
     load_real_geometry,
@@ -875,7 +876,9 @@ def main() -> None:
         help="Generate properties from geometry.py output instead of the real nodes",
     )
     args = ap.parse_args()
-    run_comparison(args.model_dir, args.props, args.generated_geometry)
+    run_comparison(
+        require_real_model(args.model_dir), args.props, args.generated_geometry
+    )
 
 
 if __name__ == "__main__":
