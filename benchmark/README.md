@@ -59,6 +59,34 @@ uv run scripts/ab_compare.py --baseline build/baseline/strut --candidate build/s
   forces); rerun the case with a tighter `tol` to tell that apart from a real change.
 - This checks Strut against Strut. Parity against OpenSees is still `uv run run_tests.py`.
 
+## Pull request benchmark
+
+`.github/workflows/benchmark.yml` times every PR that touches the solver or scripts
+against its base branch. Timings from different shared runners differ by tens of
+percent, so there is no stored baseline: the job builds both solvers on one runner and
+`scripts/ci_benchmark.py` runs them alternately on the same inputs. The table lands in
+the job summary and a PR comment that each push updates.
+
+The suite is about fifteen timed cases of 20 ms to 1 s, picked to cover the code paths
+rather than every model: 2D and 3D force- and displacement-based fiber frames (Linear,
+PDelta, Corotational; rigid diaphragms), elastic frames through the linear and nonlinear
+transient drivers, a shell wall on SparseSYM, mega-tall slices (layered ConcreteS shells,
+trusses, diaphragms) on UmfPack and on SparseSYM at 1 and 4 threads, and a few OpenSees
+examples (Ex5/Ex6 frames, a quad solid, a DisplacementControl pushover). Every other
+validation case that runs without pinned ground motions is too short to time, so it only
+gets its outputs compared.
+
+The job fails when the PR crashes on a case main runs, or when a timed case is more than
+15% slower in two measurements in a row. Output differences are flagged but do not fail
+the job, since fixes change results on purpose. Large-model scaling (the full mega-tall
+case) is still a local measurement.
+
+```bash
+uv run scripts/ci_benchmark.py prepare
+uv run scripts/ci_benchmark.py compare --baseline build/baseline/strut --candidate build/strut/strut
+uv run scripts/ci_benchmark.py compare --baseline build/baseline/strut --candidate build/strut/strut --only megatall_slice_sparse_t4
+```
+
 ## Sampling profiler
 
 `scripts/profile_sample.py` gives a source-line profile without `perf` or root. It

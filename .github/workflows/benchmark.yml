@@ -1,0 +1,121 @@
+name: Benchmark
+
+# Times the PR against its base branch on one runner. Shared runners differ by
+# tens of percent between machines, so both builds run here, alternating, and
+# no stored numbers are used. See scripts/ci_benchmark.py.
+
+on:
+  pull_request:
+    paths:
+      - "src/mojo/**"
+      - "scripts/**"
+      - "uv.lock"
+      - ".github/workflows/benchmark.yml"
+
+concurrency:
+  group: benchmark-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+    steps:
+      # The default PR checkout is the merge commit: main plus this PR.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --locked
+
+      - name: Check out base
+        run: git worktree add --detach .bench-base "$BASE_SHA"
+
+      # Mojo compiles for the host CPU; see ci.yml.
+      - name: Fingerprint runner CPU
+        id: cpu
+        run: echo "features=$(grep -m1 '^flags' /proc/cpuinfo | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache base Mojo build
+        uses: actions/cache@v4
+        with:
+          path: .bench-base/build/strut
+          key: mojo-bench-base-${{ runner.os }}-${{ steps.cpu.outputs.features }}-${{ hashFiles('.bench-base/uv.lock') }}-${{ hashFiles('.bench-base/src/mojo/**/*.mojo') }}
+
+      # Same key as ci.yml, so a build from the check job is reused.
+      - name: Cache PR Mojo build
+        uses: actions/cache@v4
+        with:
+          path: build/strut
+          key: mojo-build-${{ runner.os }}-${{ steps.cpu.outputs.features }}-${{ hashFiles('uv.lock') }}-${{ hashFiles('src/mojo/**/*.mojo') }}
+
+      - name: Build base solver
+        working-directory: .bench-base
+        run: |
+          uv sync --locked
+          uv run python scripts/build_mojo_solver.py
+
+      - name: Build PR solver
+        run: uv run python scripts/build_mojo_solver.py
+
+      - name: Prepare benchmark suite
+        run: uv run scripts/ci_benchmark.py prepare
+
+      - name: Compare
+        id: compare
+        run: |
+          set +e
+          uv run scripts/ci_benchmark.py compare \
+            --baseline .bench-base/build/strut/strut \
+            --candidate build/strut/strut \
+            --title "### Benchmark: PR vs \`${BASE_SHA::7}\`" \
+            --markdown-out benchmark.md \
+            --json-out benchmark.json
+          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+
+      - name: Write job summary
+        if: always() && hashFiles('benchmark.md') != ''
+        run: cat benchmark.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload results
+        if: always() && hashFiles('benchmark.json') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark
+          path: |
+            benchmark.md
+            benchmark.json
+
+      # A PR from a fork gets a read-only token, so it only gets the job summary.
+      - name: Update PR comment
+        if: always() && hashFiles('benchmark.md') != '' && github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          marker='<!-- strut-benchmark -->'
+          { echo "$marker"; cat benchmark.md; } > comment.md
+          id=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --paginate \
+            --jq ".[] | select(.body | startswith(\"$marker\")) | .id" | head -n1)
+          if [ -n "$id" ]; then
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$id" -F body=@comment.md >/dev/null
+          else
+            gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" -F body=@comment.md >/dev/null
+          fi
+
+      - name: Fail on regression
+        if: steps.compare.outputs.exit_code != '0'
+        run: |
+          echo "::error::Benchmark found a regression or a crash; see the job summary."
+          exit 1
