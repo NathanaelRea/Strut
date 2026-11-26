@@ -188,18 +188,7 @@ fn beam3d_basic_fixed_end_and_reactions(
     elem_index: Int,
     load_scale: Float64,
     l: Float64,
-) -> (
-    Float64,
-    Float64,
-    Float64,
-    Float64,
-    Float64,
-    Float64,
-    Float64,
-    Float64,
-    Float64,
-    Float64,
-):
+) -> (Float64, Float64, Float64, Float64, Float64, Float64, Float64, Float64, Float64, Float64,):
     var q0_0 = 0.0
     var q0_1 = 0.0
     var q0_2 = 0.0

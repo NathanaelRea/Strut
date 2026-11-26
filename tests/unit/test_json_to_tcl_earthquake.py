@@ -38,7 +38,9 @@ def _base_uniform_case():
         ],
         "materials": [{"id": 1, "type": "Elastic", "params": {"E": 100.0}}],
         "sections": [],
-        "elements": [{"id": 1, "type": "truss", "nodes": [1, 2], "area": 1.0, "material": 1}],
+        "elements": [
+            {"id": 1, "type": "truss", "nodes": [1, 2], "area": 1.0, "material": 1}
+        ],
         "masses": [{"node": 2, "dof": 1, "value": 1.0}],
         "time_series": [{"type": "Path", "tag": 2, "dt": 0.1, "values": [1.0, 0.0]}],
         "pattern": {"type": "UniformExcitation", "tag": 3, "direction": 1, "accel": 2},
@@ -50,7 +52,14 @@ def _base_uniform_case():
             "tol": 1.0e-9,
             "max_iters": 15,
         },
-        "recorders": [{"type": "node_displacement", "nodes": [2], "dofs": [1], "output": "node_disp"}],
+        "recorders": [
+            {
+                "type": "node_displacement",
+                "nodes": [2],
+                "dofs": [1],
+                "output": "node_disp",
+            }
+        ],
     }
 
 
@@ -299,7 +308,10 @@ def test_json_to_tcl_emits_stage_initialize_before_analysis_setup():
 
     text = _run_json_to_tcl(case)
 
-    assert "initialize\nconstraints Transformation\nnumberer RCM\nsystem ProfileSPD\n" in text
+    assert (
+        "initialize\nconstraints Transformation\nnumberer RCM\nsystem ProfileSPD\n"
+        in text
+    )
 
 
 def test_json_to_tcl_emits_staged_analysis_with_load_const_and_pattern_override():
@@ -315,7 +327,11 @@ def test_json_to_tcl_emits_staged_analysis_with_load_const_and_pattern_override(
         "constraints": "Plain",
         "stages": [
             {
-                "analysis": {"type": "static_nonlinear", "steps": 2, "algorithm": "Newton"},
+                "analysis": {
+                    "type": "static_nonlinear",
+                    "steps": 2,
+                    "algorithm": "Newton",
+                },
                 "load_const": {"time": 0.0},
             },
             {
@@ -419,7 +435,9 @@ def test_json_to_tcl_treats_empty_constraints_list_as_free_node():
             }
         ],
         "analysis": {"type": "static_linear", "steps": 1},
-        "recorders": [{"type": "node_displacement", "nodes": [2], "dofs": [1], "output": "disp"}],
+        "recorders": [
+            {"type": "node_displacement", "nodes": [2], "dofs": [1], "output": "disp"}
+        ],
     }
 
     text = _run_json_to_tcl(case)
@@ -440,7 +458,11 @@ def test_json_to_tcl_staged_transient_fallback_does_not_emit_extra_analyze():
         "constraints": "Plain",
         "stages": [
             {
-                "analysis": {"type": "static_nonlinear", "steps": 2, "algorithm": "Newton"},
+                "analysis": {
+                    "type": "static_nonlinear",
+                    "steps": 2,
+                    "algorithm": "Newton",
+                },
                 "load_const": {"time": 0.0},
             },
             {
@@ -475,7 +497,10 @@ def test_json_to_tcl_staged_transient_fallback_does_not_emit_extra_analyze():
     }
 
     text = _run_json_to_tcl(case)
-    assert "for {set strut_tr_step 0} {$strut_tr_step < 2 && $strut_tr_ok == 0} {incr strut_tr_step} {\n" in text
+    assert (
+        "for {set strut_tr_step 0} {$strut_tr_step < 2 && $strut_tr_ok == 0} {incr strut_tr_step} {\n"
+        in text
+    )
     assert "set strut_tr_ok [analyze 1 0.1]\n" in text
     assert "if {$strut_tr_ok != 0} {\n" in text
     assert "if {strut_tr_ok != 0} {\n" not in text

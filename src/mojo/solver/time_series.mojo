@@ -4,7 +4,7 @@ from os import abort
 from tag_types import TimeSeriesTypeTag
 
 
-struct TimeSeriesInput(Movable, ImplicitlyCopyable):
+struct TimeSeriesInput(ImplicitlyCopyable, Movable):
     var tag: Int
     var type_tag: Int
     var factor: Float64
@@ -48,9 +48,7 @@ fn find_time_series_input(ts_list: List[TimeSeriesInput], tag: Int) -> Int:
     return -1
 
 
-fn _path_time_input(
-    ts: TimeSeriesInput, idx: Int, path_time: List[Float64]
-) raises -> Float64:
+fn _path_time_input(ts: TimeSeriesInput, idx: Int, path_time: List[Float64]) raises -> Float64:
     if ts.has_dt:
         return Float64(idx) * ts.dt
     if idx < 0 or idx >= ts.time_count:

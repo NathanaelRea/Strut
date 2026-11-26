@@ -19,7 +19,7 @@ fn _pow_abs(x: Float64, p: Float64) -> Float64:
     return _abs(x) ** p
 
 
-struct StressTangent(Defaultable, Movable, ImplicitlyCopyable):
+struct StressTangent(Defaultable, ImplicitlyCopyable, Movable):
     var stress: Float64
     var tangent: Float64
 
@@ -32,7 +32,7 @@ struct StressTangent(Defaultable, Movable, ImplicitlyCopyable):
         self.tangent = tangent
 
 
-struct EndStrainSlope(Defaultable, Movable, ImplicitlyCopyable):
+struct EndStrainSlope(Defaultable, ImplicitlyCopyable, Movable):
     var end_strain: Float64
     var unload_slope: Float64
 
@@ -45,7 +45,7 @@ struct EndStrainSlope(Defaultable, Movable, ImplicitlyCopyable):
         self.unload_slope = unload_slope
 
 
-struct UniMaterialDef(Defaultable, Movable, ImplicitlyCopyable):
+struct UniMaterialDef(Defaultable, ImplicitlyCopyable, Movable):
     var mat_type: Int
     var p0: Float64
     var p1: Float64
@@ -73,9 +73,7 @@ struct UniMaterialDef(Defaultable, Movable, ImplicitlyCopyable):
         self.p9 = 0.0
         self.p10 = 0.0
 
-    fn __init__(
-        out self, mat_type: Int, p0: Float64, p1: Float64, p2: Float64, p3: Float64
-    ):
+    fn __init__(out self, mat_type: Int, p0: Float64, p1: Float64, p2: Float64, p3: Float64):
         self.mat_type = mat_type
         self.p0 = p0
         self.p1 = p1
@@ -118,7 +116,7 @@ struct UniMaterialDef(Defaultable, Movable, ImplicitlyCopyable):
         self.p10 = p10
 
 
-struct UniMaterialState(Defaultable, Movable, ImplicitlyCopyable):
+struct UniMaterialState(Defaultable, ImplicitlyCopyable, Movable):
     var eps_c: Float64
     var sig_c: Float64
     var tangent_c: Float64
@@ -280,4 +278,3 @@ fn uni_mat_initial_tangent(mat_def: UniMaterialDef) -> Float64:
         return (2.0 * mat_def.p0) / mat_def.p1
     abort("unsupported uniaxial material")
     return 0.0
-

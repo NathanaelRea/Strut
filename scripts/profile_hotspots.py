@@ -58,7 +58,9 @@ def _parse_target_overrides(items: List[str]) -> Dict[str, float]:
     overrides: Dict[str, float] = {}
     for item in items:
         if "=" not in item:
-            raise ValueError(f"invalid target override '{item}', expected frame=speedup")
+            raise ValueError(
+                f"invalid target override '{item}', expected frame=speedup"
+            )
         frame, speedup_raw = item.split("=", 1)
         frame = frame.strip()
         if not frame:

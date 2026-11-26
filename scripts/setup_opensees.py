@@ -139,9 +139,10 @@ def ensure_micromamba() -> Path:
     fd, tmp_name = tempfile.mkstemp(dir=tool_dir, prefix=".micromamba-")
     tmp = Path(tmp_name)
     try:
-        with os.fdopen(fd, "wb") as out, urllib.request.urlopen(
-            MICROMAMBA_URL, timeout=120
-        ) as response:
+        with (
+            os.fdopen(fd, "wb") as out,
+            urllib.request.urlopen(MICROMAMBA_URL, timeout=120) as response,
+        ):
             shutil.copyfileobj(response, out)
         actual = sha256_file(tmp)
         if actual != MICROMAMBA_SHA256:
@@ -208,7 +209,9 @@ def smoke_test(prefix: Path) -> None:
             die(f"OpenSees smoke test failed (exit {result.returncode}):\n{output}")
         disp = float(values[0])
         if abs(disp - SMOKE_EXPECTED) > 1e-12 * SMOKE_EXPECTED:
-            die(f"OpenSees smoke test: tip displacement {disp}, expected {SMOKE_EXPECTED}")
+            die(
+                f"OpenSees smoke test: tip displacement {disp}, expected {SMOKE_EXPECTED}"
+            )
         log(f"OpenSees smoke test OK (tip displacement {disp:.12g})")
 
         (work / "smoke_mp.tcl").write_text(SMOKE_MP_TCL, encoding="utf-8")
@@ -261,7 +264,15 @@ def cmd_install(force: bool, skip_verify: bool) -> None:
             # completion last; is_ready() rejects a half-written prefix.
             run_micromamba(
                 exe,
-                ["create", "--yes", "--quiet", "--prefix", str(prefix), "--file", str(LOCK_FILE)],
+                [
+                    "create",
+                    "--yes",
+                    "--quiet",
+                    "--prefix",
+                    str(prefix),
+                    "--file",
+                    str(LOCK_FILE),
+                ],
             )
             if not skip_verify:
                 smoke_test(prefix)
@@ -337,10 +348,14 @@ def main() -> None:
     )
     sub = parser.add_subparsers(dest="command")
     install = sub.add_parser("install", help="install the locked environment (default)")
-    install.add_argument("--force", action="store_true", help="reinstall even if present")
+    install.add_argument(
+        "--force", action="store_true", help="reinstall even if present"
+    )
     install.add_argument("--skip-verify", action="store_true", help="skip smoke tests")
     path = sub.add_parser("path", help="print the installed binary path")
-    path.add_argument("--prefix", action="store_true", help="print the environment prefix")
+    path.add_argument(
+        "--prefix", action="store_true", help="print the environment prefix"
+    )
     path.add_argument("--binary", default="OpenSees", choices=(*BINARIES, "mpiexec"))
     sub.add_parser("verify", help="smoke test the installed binaries")
     sub.add_parser("lock", help="re-resolve the spec and rewrite the lockfile")

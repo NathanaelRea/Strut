@@ -155,8 +155,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
         "--parity-workers",
         default="8",
         help=(
-            "Worker count for parity pytest runs. Use an integer or 'auto'. "
-            "Default: 8."
+            "Worker count for parity pytest runs. Use an integer or 'auto'. Default: 8."
         ),
     )
     return parser
@@ -208,7 +207,14 @@ def main() -> int:
 
     run(
         _add_pytest_workers(
-            ["uv", "run", "pytest", "-q", "tests/unit", "tests/validation/test_json_cases.py"],
+            [
+                "uv",
+                "run",
+                "pytest",
+                "-q",
+                "tests/unit",
+                "tests/validation/test_json_cases.py",
+            ],
             args.pytest_workers,
         ),
         env=env,

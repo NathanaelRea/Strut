@@ -124,7 +124,7 @@ fn _profile_enabled(profile_path: String) -> Bool:
 fn _append_frame(mut frames: String, mut need_comma: Bool, name: String):
     if need_comma:
         frames += ","
-    frames += "{\"name\":\"" + name + "\"}"
+    frames += '{"name":"' + name + '"}'
     need_comma = True
 
 
@@ -134,13 +134,7 @@ fn _append_event(
     if need_comma:
         events += ","
     events += (
-        "{\"type\":\""
-        + event_type
-        + "\",\"frame\":"
-        + String(frame)
-        + ",\"at\":"
-        + String(at_us)
-        + "}"
+        '{"type":"' + event_type + '","frame":' + String(frame) + ',"at":' + String(at_us) + "}"
     )
     need_comma = True
 
@@ -148,15 +142,15 @@ fn _append_event(
 def _write_speedscope(profile_path: String, frames: String, events: String, total_us: Int):
     var json = String()
     json += "{"
-    json += "\"$schema\":\"https://www.speedscope.app/file-format-schema.json\","
-    json += "\"shared\":{\"frames\":[" + frames + "]},"
-    json += "\"profiles\":[{"
-    json += "\"type\":\"evented\","
-    json += "\"name\":\"strut\","
-    json += "\"unit\":\"microseconds\","
-    json += "\"startValue\":0,"
-    json += "\"endValue\":" + String(total_us) + ","
-    json += "\"events\":[" + events + "]"
+    json += '"$schema":"https://www.speedscope.app/file-format-schema.json",'
+    json += '"shared":{"frames":[' + frames + "]},"
+    json += '"profiles":[{'
+    json += '"type":"evented",'
+    json += '"name":"strut",'
+    json += '"unit":"microseconds",'
+    json += '"startValue":0,'
+    json += '"endValue":' + String(total_us) + ","
+    json += '"events":[' + events + "]"
     json += "}]}" + "\n"
 
     var pathlib = Python.import_module("pathlib")

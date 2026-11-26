@@ -1,8 +1,7 @@
 from materials.uniaxial.core import _abs, _pow_abs, UniMaterialDef, UniMaterialState
 
-fn _steel02_set_trial(
-    mat_def: UniMaterialDef, mut state: UniMaterialState, trial_eps: Float64
-):
+
+fn _steel02_set_trial(mat_def: UniMaterialDef, mut state: UniMaterialState, trial_eps: Float64):
     var Fy = mat_def.p0
     var E0 = mat_def.p1
     var b = mat_def.p2
@@ -71,7 +70,7 @@ fn _steel02_set_trial(
         if state.eps_c < epsmin:
             epsmin = state.eps_c
         var d1 = (epsmax - epsmin) / (2.0 * (a4 * epsy))
-        var shft = 1.0 + a3 * (d1 ** 0.8)
+        var shft = 1.0 + a3 * (d1**0.8)
         epss0 = (Fy * shft - Esh * epsy * shft - sigr + E0 * epsr) / (E0 - Esh)
         sigs0 = Fy * shft + Esh * (epss0 - epsy * shft)
         epspl = epsmax
@@ -82,7 +81,7 @@ fn _steel02_set_trial(
         if state.eps_c > epsmax:
             epsmax = state.eps_c
         var d1 = (epsmax - epsmin) / (2.0 * (a2 * epsy))
-        var shft = 1.0 + a1 * (d1 ** 0.8)
+        var shft = 1.0 + a1 * (d1**0.8)
         epss0 = (-Fy * shft + Esh * epsy * shft - sigr + E0 * epsr) / (E0 - Esh)
         sigs0 = -Fy * shft + Esh * (epss0 + epsy * shft)
         epspl = epsmin
@@ -112,5 +111,3 @@ fn _steel02_set_trial(
     state.s2_epsr_t = epsr
     state.s2_sigr_t = sigr
     state.s2_kon_t = kon
-
-

@@ -100,19 +100,11 @@ fn quad4_plane_stress_stiffness(
             var temp = _zero_matrix(3, 8)
             for i in range(3):
                 for j in range(8):
-                    temp[i][j] = (
-                        D[i][0] * B[0][j]
-                        + D[i][1] * B[1][j]
-                        + D[i][2] * B[2][j]
-                    )
+                    temp[i][j] = D[i][0] * B[0][j] + D[i][1] * B[1][j] + D[i][2] * B[2][j]
 
             for i in range(8):
                 for j in range(8):
-                    var sum = (
-                        B[0][i] * temp[0][j]
-                        + B[1][i] * temp[1][j]
-                        + B[2][i] * temp[2][j]
-                    )
+                    var sum = B[0][i] * temp[0][j] + B[1][i] * temp[1][j] + B[2][i] * temp[2][j]
                     K[i][j] += sum * t * detJ
 
     return K^

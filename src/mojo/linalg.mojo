@@ -36,9 +36,7 @@ fn matmul(a: List[List[Float64]], b: List[List[Float64]]) -> List[List[Float64]]
     return out^
 
 
-fn gaussian_elimination(
-    mut A: List[List[Float64]], mut b: List[Float64]
-) -> List[Float64]:
+fn gaussian_elimination(mut A: List[List[Float64]], mut b: List[Float64]) -> List[Float64]:
     var n = len(b)
     for i in range(n):
         var pivot = i

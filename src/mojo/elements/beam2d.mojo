@@ -68,9 +68,7 @@ fn _beam2d_transform_stiffness_local_to_global(
     return k_global^
 
 
-fn beam_local_stiffness(
-    E: Float64, A: Float64, I: Float64, L: Float64
-) -> List[List[Float64]]:
+fn beam_local_stiffness(E: Float64, A: Float64, I: Float64, L: Float64) -> List[List[Float64]]:
     var k: List[List[Float64]] = []
     for _ in range(6):
         var row: List[Float64] = []

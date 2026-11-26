@@ -15,7 +15,7 @@ alias SHELL_LAYER_KIND_ELASTIC_PLATE = 1
 alias SHELL_LAYER_KIND_REBAR = 2
 
 
-struct LayeredShellSectionDef(Defaultable, Movable, ImplicitlyCopyable):
+struct LayeredShellSectionDef(Defaultable, ImplicitlyCopyable, Movable):
     var section_id: Int
     var layer_count: Int
     var total_thickness: Float64
@@ -122,13 +122,10 @@ fn append_layered_shell_section_from_input(
                 if (
                     base_mat.props_count <= 0
                     or base_mat.props_offset < 0
-                    or base_mat.props_offset + base_mat.props_count
-                        > len(shell_material_props)
+                    or base_mat.props_offset + base_mat.props_count > len(shell_material_props)
                 ):
                     abort("PlaneStressUserMaterial surrogate requires props data")
-                var nu = shell_material_props[
-                    base_mat.props_offset + base_mat.props_count - 1
-                ]
+                var nu = shell_material_props[base_mat.props_offset + base_mat.props_count - 1]
                 sec_def.layer_kind[i] = SHELL_LAYER_KIND_ELASTIC_PLATE
                 sec_def.elastic_E[i] = 2.0 * mat.gmod * (1.0 + nu)
                 sec_def.elastic_nu[i] = nu
@@ -138,7 +135,8 @@ fn append_layered_shell_section_from_input(
                 continue
             if base_mat.type != "ElasticIsotropic":
                 abort(
-                    "LayeredShellSection currently supports PlateFromPlaneStress only over ElasticIsotropic"
+                    "LayeredShellSection currently supports PlateFromPlaneStress only over"
+                    " ElasticIsotropic"
                 )
             sec_def.layer_kind[i] = SHELL_LAYER_KIND_ELASTIC_PLATE
             sec_def.elastic_E[i] = base_mat.E
@@ -187,7 +185,8 @@ fn append_layered_shell_section_from_input(
 
         if mat.type == "PlaneStressUserMaterial":
             abort(
-                "LayeredShellSection runtime does not support PlaneStressUserMaterial because the OpenSees PSUMAT implementation is not present in the reference repo"
+                "LayeredShellSection runtime does not support PlaneStressUserMaterial because the"
+                " OpenSees PSUMAT implementation is not present in the reference repo"
             )
         abort("unsupported LayeredShellSection material: " + mat.type)
 
@@ -331,7 +330,9 @@ fn layered_shell_set_trial_from_offset(
             elif sec_def.rebar_angle_deg[i] == 90.0:
                 axial_strain = layer_strain[1]
             else:
-                axial_strain = layer_strain[0] * c * c + layer_strain[1] * s * s + layer_strain[2] * c * s
+                axial_strain = (
+                    layer_strain[0] * c * c + layer_strain[1] * s * s + layer_strain[2] * c * s
+                )
             uniaxial_set_trial_strain(mat_def, state, axial_strain)
             var sig = state.sig_t
             var tan = state.tangent_t

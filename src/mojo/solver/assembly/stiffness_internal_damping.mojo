@@ -93,9 +93,7 @@ fn assemble_zero_length_damping_typed(
             continue
         if elem.damp_material_count <= 0:
             continue
-        _assemble_zero_length_damping_element(
-            elem, nodes, ndf, ndm, materials_by_id, C
-        )
+        _assemble_zero_length_damping_element(elem, nodes, ndf, ndm, materials_by_id, C)
 
 
 fn _find_damping_input(dampings: List[DampingInput], tag: Int) -> Int:

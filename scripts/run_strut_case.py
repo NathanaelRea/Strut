@@ -38,7 +38,9 @@ def _resolve_optional_repo_path(path_text, repo_root: Path):
     return (repo_root / path_obj).resolve()
 
 
-def _iter_relative_path_candidates(base_dir: Path, rel_path: Path, stop_dir: Path | None = None):
+def _iter_relative_path_candidates(
+    base_dir: Path, rel_path: Path, stop_dir: Path | None = None
+):
     current = base_dir.resolve()
     stop = stop_dir.resolve() if stop_dir is not None else None
     seen = set()

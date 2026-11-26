@@ -1,5 +1,6 @@
 from materials.uniaxial.core import _abs, StressTangent, UniMaterialDef, UniMaterialState
 
+
 fn _concrete02_tens_envlp(
     fc: Float64, epsc0: Float64, ft: Float64, Ets: Float64, strain: Float64
 ) -> StressTangent:
@@ -31,9 +32,7 @@ fn _concrete02_compr_envlp(
         return StressTangent(fcu, 1.0e-10)
 
 
-fn _concrete02_set_trial(
-    mat_def: UniMaterialDef, mut state: UniMaterialState, strain: Float64
-):
+fn _concrete02_set_trial(mat_def: UniMaterialDef, mut state: UniMaterialState, strain: Float64):
     var fc = mat_def.p0
     var epsc0 = mat_def.p1
     var fcu = mat_def.p2
@@ -91,9 +90,7 @@ fn _concrete02_set_trial(
 
     var epn = ept + state.c2_dept_t
     if strain <= epn:
-        var sicn_env = _concrete02_tens_envlp(
-            fc, epsc0, ft, Ets, state.c2_dept_t
-        )
+        var sicn_env = _concrete02_tens_envlp(fc, epsc0, ft, Ets, state.c2_dept_t)
         var e = Ec0
         if state.c2_dept_t != 0.0:
             e = sicn_env.stress / state.c2_dept_t
@@ -107,5 +104,3 @@ fn _concrete02_set_trial(
 
     state.eps_p_t = state.eps_p_c
     state.alpha_t = state.alpha_c
-
-

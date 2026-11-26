@@ -340,7 +340,7 @@ fn shell4_mindlin_stiffness(
             for p in range(6):
                 BdrillJ[p] = Bdrill_all[j][p]
             for p in range(6):
-                BdrillJ[p] *= (Ktt * dvol)
+                BdrillJ[p] *= Ktt * dvol
 
             for k in range(4):
                 for p in range(6):

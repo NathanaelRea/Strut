@@ -117,7 +117,9 @@ def _build_chart_lines(
             for other_idx, (_, other_engine_key) in enumerate(active_engines):
                 if slot_idx == other_idx:
                     engine_slots[other_engine_key].append(
-                        _mermaid_scaled_value(engines[other_engine_key][idx], unit_divisor_us)
+                        _mermaid_scaled_value(
+                            engines[other_engine_key][idx], unit_divisor_us
+                        )
                     )
                 else:
                     engine_slots[other_engine_key].append("0.0")
@@ -142,7 +144,7 @@ def _build_chart_lines(
         "---",
         "xychart-beta",
         f'    title "Benchmark: {example_title}"',
-        f'    x-axis [{x_axis}]',
+        f"    x-axis [{x_axis}]",
         f'    y-axis "Analysis time ({unit_label})" 0 --> {axis_max:.3f}',
         *[
             f'    bar "{series_label}" [{", ".join(engine_slots[engine_key])}]'

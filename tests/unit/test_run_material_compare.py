@@ -8,7 +8,9 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-RUN_MATERIAL_COMPARE_PATH = REPO_ROOT / "benchmark" / "micro" / "run_material_compare.py"
+RUN_MATERIAL_COMPARE_PATH = (
+    REPO_ROOT / "benchmark" / "micro" / "run_material_compare.py"
+)
 RUN_MATERIAL_COMPARE_DIR = RUN_MATERIAL_COMPARE_PATH.parent
 
 if str(RUN_MATERIAL_COMPARE_DIR) not in sys.path:
@@ -17,7 +19,9 @@ if str(RUN_MATERIAL_COMPARE_DIR) not in sys.path:
 
 def _load_module():
     module_name = "strut_run_material_compare_test_module"
-    spec = importlib.util.spec_from_file_location(module_name, RUN_MATERIAL_COMPARE_PATH)
+    spec = importlib.util.spec_from_file_location(
+        module_name, RUN_MATERIAL_COMPARE_PATH
+    )
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -67,7 +71,11 @@ def test_build_default_material_case_merges_and_deduplicates_materials(
         json.dumps(
             {
                 "materials": [
-                    {"id": 10, "type": "Steel01", "params": {"Fy": 50.0, "E0": 200.0, "b": 0.01}},
+                    {
+                        "id": 10,
+                        "type": "Steel01",
+                        "params": {"Fy": 50.0, "E0": 200.0, "b": 0.01},
+                    },
                     {"id": 11, "type": "Elastic", "params": {"E": 300.0}},
                 ]
             }
@@ -79,7 +87,16 @@ def test_build_default_material_case_merges_and_deduplicates_materials(
         json.dumps(
             {
                 "materials": [
-                    {"id": 20, "type": "Concrete01", "params": {"fpc": -6.0, "epsc0": -0.002, "fpcu": -5.0, "epscu": -0.006}},
+                    {
+                        "id": 20,
+                        "type": "Concrete01",
+                        "params": {
+                            "fpc": -6.0,
+                            "epsc0": -0.002,
+                            "fpcu": -5.0,
+                            "epscu": -0.006,
+                        },
+                    },
                     {"id": 21, "type": "Elastic", "params": {"E": 300.0}},
                 ]
             }
@@ -95,7 +112,9 @@ def test_build_default_material_case_merges_and_deduplicates_materials(
     monkeypatch.setattr(
         run_material_compare,
         "resolve_case_input",
-        lambda raw: {"base": base_case, "steel": steel_case, "concrete": concrete_case}[raw],
+        lambda raw: {"base": base_case, "steel": steel_case, "concrete": concrete_case}[
+            raw
+        ],
     )
     monkeypatch.setattr(
         run_material_compare,

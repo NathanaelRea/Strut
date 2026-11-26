@@ -416,9 +416,9 @@ def test_json_to_tcl_orders_material_dependencies_before_plate_rebar():
     proc, text = _run_json_to_tcl(case_data)
 
     assert proc.returncode == 0, proc.stderr
-    assert text.index("nDMaterial PlaneStressUserMaterial 71 40 3 1.0 2.0 3.0\n") < text.index(
-        "nDMaterial PlateFromPlaneStress 7199 71 15000000000.0\n"
-    )
+    assert text.index(
+        "nDMaterial PlaneStressUserMaterial 71 40 3 1.0 2.0 3.0\n"
+    ) < text.index("nDMaterial PlateFromPlaneStress 7199 71 15000000000.0\n")
     assert text.index(
         "uniaxialMaterial Steel02 76997 345000000.0 199999995904.0 0.0 18.5 0.925 0.15\n"
     ) < text.index("nDMaterial PlateRebar 7698 76997 0.0\n")
@@ -431,7 +431,9 @@ def test_json_to_tcl_emits_fiber_section3d_without_optional_torsion_gj():
         {"id": 1, "x": 0.0, "y": 0.0, "z": 0.0},
         {"id": 2, "x": 1.0, "y": 0.0, "z": 0.0},
     ]
-    case_data["materials"] = [{"id": 1, "type": "Elastic", "params": {"E": 30000000000.0}}]
+    case_data["materials"] = [
+        {"id": 1, "type": "Elastic", "params": {"E": 30000000000.0}}
+    ]
     case_data["sections"] = [
         {
             "id": 7,
@@ -472,7 +474,9 @@ def test_json_to_tcl_emits_elastic_beam_column3d_section_form_for_fiber_section(
         {"id": 1, "x": 0.0, "y": 0.0, "z": 0.0},
         {"id": 2, "x": 1.0, "y": 0.0, "z": 0.0},
     ]
-    case_data["materials"] = [{"id": 1, "type": "Elastic", "params": {"E": 30000000000.0}}]
+    case_data["materials"] = [
+        {"id": 1, "type": "Elastic", "params": {"E": 30000000000.0}}
+    ]
     case_data["sections"] = [
         {
             "id": 7,
@@ -722,15 +726,15 @@ def test_json_to_tcl_emits_fiber_section3d_block():
         ],
         "materials": [{"id": 1, "type": "Elastic", "params": {"E": 3.0e10}}],
         "sections": [
-                {
-                    "id": 14,
-                    "type": "FiberSection3d",
-                    "params": {
-                        "G": 1.2e10,
-                        "J": 2.0e-4,
-                        "patches": [
-                            {
-                                "type": "rect",
+            {
+                "id": 14,
+                "type": "FiberSection3d",
+                "params": {
+                    "G": 1.2e10,
+                    "J": 2.0e-4,
+                    "patches": [
+                        {
+                            "type": "rect",
                             "material": 1,
                             "num_subdiv_y": 2,
                             "num_subdiv_z": 2,

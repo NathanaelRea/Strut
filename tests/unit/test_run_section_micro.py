@@ -29,10 +29,12 @@ run_section_micro = _load_module()
 
 
 def test_build_material_sweep_case_creates_one_section_per_material():
-    case_json, temp_roots, section_labels = run_section_micro._build_material_sweep_case(
-        ["elastic", "steel01", "concrete01"],
-        num_subdiv_y=8,
-        num_subdiv_z=2,
+    case_json, temp_roots, section_labels = (
+        run_section_micro._build_material_sweep_case(
+            ["elastic", "steel01", "concrete01"],
+            num_subdiv_y=8,
+            num_subdiv_z=2,
+        )
     )
     try:
         data = json.loads(case_json.read_text(encoding="utf-8"))
@@ -52,7 +54,8 @@ def test_build_material_sweep_case_creates_one_section_per_material():
         3: "Concrete01",
     }
     assert all(
-        section["params"]["patches"][0]["material"] == section["id"] for section in data["sections"]
+        section["params"]["patches"][0]["material"] == section["id"]
+        for section in data["sections"]
     )
 
 

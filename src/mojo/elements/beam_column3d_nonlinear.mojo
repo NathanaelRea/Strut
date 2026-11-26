@@ -508,9 +508,7 @@ fn beam_column3d_fiber_global_tangent_and_internal(
             var Ba_mz = b_kz[a]
             if not has_element_loads:
                 f_local[a] += wL * (
-                    Ba_n * resp.axial_force
-                    + Ba_my * resp.moment_y
-                    + Ba_mz * resp.moment_z
+                    Ba_n * resp.axial_force + Ba_my * resp.moment_y + Ba_mz * resp.moment_z
                 )
             for b in range(12):
                 var Bb_n = b_eps[b]

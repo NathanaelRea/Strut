@@ -100,7 +100,9 @@ def _plate_from_plane_stress_surrogate(
     }
 
 
-def _uniaxial_initial_modulus(material_by_id: dict[int, dict], material_id: int) -> float:
+def _uniaxial_initial_modulus(
+    material_by_id: dict[int, dict], material_id: int
+) -> float:
     material = material_by_id.get(material_id)
     if material is None:
         return 1.0
@@ -308,7 +310,9 @@ def build_smoke_case(input_path: Path = DEFAULT_INPUT) -> dict:
         for element in element_by_id.values()
         if int(element["id"]) in SMOKE_ELEMENT_IDS and "section" in element
     }
-    sections, materials = _collect_material_closure(data, section_ids, direct_material_ids)
+    sections, materials = _collect_material_closure(
+        data, section_ids, direct_material_ids
+    )
 
     nodes = []
     for node_id in sorted(SMOKE_NODE_IDS):
@@ -320,7 +324,8 @@ def build_smoke_case(input_path: Path = DEFAULT_INPUT) -> dict:
         nodes.append(node)
 
     elements = [
-        copy.deepcopy(element_by_id[element_id]) for element_id in sorted(SMOKE_ELEMENT_IDS)
+        copy.deepcopy(element_by_id[element_id])
+        for element_id in sorted(SMOKE_ELEMENT_IDS)
     ]
 
     masses = [

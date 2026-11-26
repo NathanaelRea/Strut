@@ -157,7 +157,9 @@ fn _assemble_frame2d_native_soa_indices(
                     F_int[dof_map6[a]] += f_elem[a] - f_load_global[a]
             else:
                 for a in range(6):
-                    F_int[dof_map6[a]] += _dot_row_simd(k_global[a], dof_map6, u, 6) - f_load_global[a]
+                    F_int[dof_map6[a]] += (
+                        _dot_row_simd(k_global[a], dof_map6, u, 6) - f_load_global[a]
+                    )
             if runtime_metrics.enabled:
                 _profile_metrics_note_element_timing(
                     runtime_metrics,
@@ -189,9 +191,7 @@ fn _assemble_frame2d_native_soa_indices(
                     sec.E, sec.A, sec.I, x1, y1, x2, y2, u_elem6
                 )
             else:
-                abort(
-                    "forceBeamColumn2d/dispBeamColumn2d supports geomTransf Linear or PDelta"
-                )
+                abort("forceBeamColumn2d/dispBeamColumn2d supports geomTransf Linear or PDelta")
             f_global.resize(6, 0.0)
             for a in range(6):
                 f_global[a] = _dot_row_simd(k_global[a], dof_map6, u, 6)
@@ -445,9 +445,10 @@ fn _assemble_frame2d_soa_indices(
             else:
                 for a in range(6):
                     var Aidx = dof_map6[a]
-                    F_int[Aidx] += _scatter_add_and_dot_row_simd(
-                        K, Aidx, k_global[a], dof_map6, u, 6
-                    ) - f_load_global[a]
+                    F_int[Aidx] += (
+                        _scatter_add_and_dot_row_simd(K, Aidx, k_global[a], dof_map6, u, 6)
+                        - f_load_global[a]
+                    )
             if runtime_metrics.enabled:
                 _profile_metrics_note_element_timing(
                     runtime_metrics,
@@ -479,9 +480,7 @@ fn _assemble_frame2d_soa_indices(
                     sec.E, sec.A, sec.I, x1, y1, x2, y2, u_elem6
                 )
             else:
-                abort(
-                    "forceBeamColumn2d/dispBeamColumn2d supports geomTransf Linear or PDelta"
-                )
+                abort("forceBeamColumn2d/dispBeamColumn2d supports geomTransf Linear or PDelta")
             f_global.resize(6, 0.0)
             for a in range(6):
                 var sum = 0.0
@@ -741,9 +740,10 @@ fn _assemble_frame2d_element(
         else:
             for a in range(6):
                 var Aidx = dof_map6[a]
-                F_int[Aidx] += _scatter_add_and_dot_row_simd(
-                    K, Aidx, k_global[a], dof_map6, u, 6
-                ) - f_load_global[a]
+                F_int[Aidx] += (
+                    _scatter_add_and_dot_row_simd(K, Aidx, k_global[a], dof_map6, u, 6)
+                    - f_load_global[a]
+                )
         return
 
     var sec = sections_by_id[elem.section]
@@ -786,9 +786,7 @@ fn _assemble_frame2d_element(
                 u_elem6,
             )
         else:
-            abort(
-                "forceBeamColumn2d/dispBeamColumn2d supports geomTransf Linear or PDelta"
-            )
+            abort("forceBeamColumn2d/dispBeamColumn2d supports geomTransf Linear or PDelta")
         f_global.resize(6, 0.0)
         for a in range(6):
             var sum = 0.0

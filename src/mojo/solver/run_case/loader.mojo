@@ -65,6 +65,7 @@ from tag_types import (
     UniMaterialTypeTag,
 )
 
+
 struct RunCaseState(Movable):
     var ndm: Int
     var ndf: Int
@@ -380,9 +381,7 @@ fn _set_elem_damp_material(mut elem: ElementInput, idx: Int, value: Int):
         elem.damp_material_6 = value
 
 
-fn _remap_compact_index_or_abort(
-    raw_id: Int, raw_to_compact: List[Int], label: String
-) -> Int:
+fn _remap_compact_index_or_abort(raw_id: Int, raw_to_compact: List[Int], label: String) -> Int:
     if raw_id < 0:
         return -1
     if raw_id >= len(raw_to_compact) or raw_to_compact[raw_id] < 0:
@@ -438,18 +437,13 @@ fn _coerce_aggregator_section2d_for_beam_column(
         abort(beam_col_type + " does not support AggregatorSection2d with -section")
     if sec.axial_material < 0 or sec.flexural_material < 0:
         abort(beam_col_type + " requires AggregatorSection2d with P and Mz responses")
-    if (
-        sec.axial_material >= len(uniaxial_def_by_id)
-        or uniaxial_def_by_id[sec.axial_material] < 0
-    ):
+    if sec.axial_material >= len(uniaxial_def_by_id) or uniaxial_def_by_id[sec.axial_material] < 0:
         abort(beam_col_type + " AggregatorSection2d axial material must be uniaxial")
     if (
         sec.flexural_material >= len(uniaxial_def_by_id)
         or uniaxial_def_by_id[sec.flexural_material] < 0
     ):
-        abort(
-            beam_col_type + " AggregatorSection2d flexural material must be uniaxial"
-        )
+        abort(beam_col_type + " AggregatorSection2d flexural material must be uniaxial")
     var axial_def = uniaxial_defs[uniaxial_def_by_id[sec.axial_material]]
     var flexural_def = uniaxial_defs[uniaxial_def_by_id[sec.flexural_material]]
     sec.type = "ElasticSection2d"
@@ -708,7 +702,10 @@ fn _accumulate_beam_element_lumped_mass(
 ):
     if rho == 0.0:
         return
-    if elem.type_tag == ElementTypeTag.DispBeamColumn2d or elem.type_tag == ElementTypeTag.DispBeamColumn3d:
+    if (
+        elem.type_tag == ElementTypeTag.DispBeamColumn2d
+        or elem.type_tag == ElementTypeTag.DispBeamColumn3d
+    ):
         if elem.use_cmass:
             abort(elem.type + " cMass is not yet supported")
     var node1 = typed_nodes[elem.node_index_1]
@@ -755,9 +752,7 @@ fn _elem_dir(elem: ElementInput, idx: Int) -> Int:
     return elem.dir_6
 
 
-fn load_case_state_from_input(
-    var input: CaseInput, progress_path: String
-) raises -> RunCaseState:
+fn load_case_state_from_input(var input: CaseInput, progress_path: String) raises -> RunCaseState:
     var state = RunCaseState()
     var ndm = input.model.ndm
     var ndf = input.model.ndf
@@ -1278,13 +1273,8 @@ fn load_case_state_from_input(
                 and elem.geom_tag != GeomTransfTag.PDelta
                 and elem.geom_tag != GeomTransfTag.Corotational
             ):
-                abort(
-                    beam_col_type
-                    + " supports geomTransf Linear, PDelta, or Corotational"
-                )
-            beam_integration_validate_or_abort(
-                beam_col_type, elem.integration, elem.num_int_pts
-            )
+                abort(beam_col_type + " supports geomTransf Linear, PDelta, or Corotational")
+            beam_integration_validate_or_abort(beam_col_type, elem.integration, elem.num_int_pts)
             if elem.section < 0 or elem.section >= len(typed_sections_by_id):
                 abort(beam_col_type + " section not found")
             var sec = typed_sections_by_id[elem.section]
@@ -1309,10 +1299,7 @@ fn load_case_state_from_input(
                 abort("dispBeamColumn2d requires ndm=2, ndf=3")
             if elem.node_count != 2:
                 abort("dispBeamColumn2d requires 2 nodes")
-            if (
-                elem.geom_tag != GeomTransfTag.Linear
-                and elem.geom_tag != GeomTransfTag.PDelta
-            ):
+            if elem.geom_tag != GeomTransfTag.Linear and elem.geom_tag != GeomTransfTag.PDelta:
                 abort("dispBeamColumn2d supports geomTransf Linear or PDelta")
             beam_integration_validate_or_abort(
                 "dispBeamColumn2d", elem.integration, elem.num_int_pts
@@ -1380,12 +1367,8 @@ fn load_case_state_from_input(
                 and elem.geom_tag != GeomTransfTag.PDelta
                 and elem.geom_tag != GeomTransfTag.Corotational
             ):
-                abort(
-                    beam_col_type + " supports geomTransf Linear, PDelta, or Corotational"
-                )
-            beam_integration_validate_or_abort(
-                beam_col_type, elem.integration, elem.num_int_pts
-            )
+                abort(beam_col_type + " supports geomTransf Linear, PDelta, or Corotational")
+            beam_integration_validate_or_abort(beam_col_type, elem.integration, elem.num_int_pts)
             if elem.section < 0 or elem.section >= len(typed_sections_by_id):
                 abort(beam_col_type + " section not found")
             var sec = typed_sections_by_id[elem.section]
@@ -1425,10 +1408,7 @@ fn load_case_state_from_input(
                 abort("zeroLength requires 2 nodes")
             if elem.material_count != elem.dir_count:
                 abort("zeroLength materials/dirs mismatch")
-            if (
-                elem.damp_material_count > 0
-                and elem.damp_material_count != elem.material_count
-            ):
+            if elem.damp_material_count > 0 and elem.damp_material_count != elem.material_count:
                 abort("zeroLength dampMats/materials mismatch")
             for m in range(elem.damp_material_count):
                 var damp_mat_id = _elem_damp_material(elem, m)
@@ -1451,9 +1431,7 @@ fn load_case_state_from_input(
                 )
             for d in range(ndf):
                 _set_elem_dof(elem, d, node_dof_index(elem.node_index_1, d + 1, ndf))
-                _set_elem_dof(
-                    elem, d + ndf, node_dof_index(elem.node_index_2, d + 1, ndf)
-                )
+                _set_elem_dof(elem, d + ndf, node_dof_index(elem.node_index_2, d + 1, ndf))
         elif elem.type_tag == ElementTypeTag.TwoNodeLink:
             if elem.node_count != 2:
                 abort("twoNodeLink requires 2 nodes")
@@ -1472,9 +1450,7 @@ fn load_case_state_from_input(
                 )
             for d in range(ndf):
                 _set_elem_dof(elem, d, node_dof_index(elem.node_index_1, d + 1, ndf))
-                _set_elem_dof(
-                    elem, d + ndf, node_dof_index(elem.node_index_2, d + 1, ndf)
-                )
+                _set_elem_dof(elem, d + ndf, node_dof_index(elem.node_index_2, d + 1, ndf))
         elif elem.type_tag == ElementTypeTag.ZeroLengthSection:
             if ndm != 2 or ndf != 3:
                 abort("zeroLengthSection requires ndm=2, ndf=3")
@@ -1491,7 +1467,8 @@ fn load_case_state_from_input(
                 and sec.type != "AggregatorSection2d"
             ):
                 abort(
-                    "zeroLengthSection requires FiberSection2d, ElasticSection2d, or AggregatorSection2d"
+                    "zeroLengthSection requires FiberSection2d, ElasticSection2d, or"
+                    " AggregatorSection2d"
                 )
             elem.dof_count = 6
             _set_elem_dof(elem, 0, node_dof_index(elem.node_index_1, 1, ndf))
@@ -1877,9 +1854,7 @@ fn load_case_state_from_input(
                     abort("zeroLengthSection fiber section not found")
                 ref sec_def = fiber_section_defs[sec_index]
                 var state_count = sec_def.fiber_count
-                elem_uniaxial_offsets[e] = fiber_section2d_runtime_alloc_instances(
-                    sec_def, 1
-                )
+                elem_uniaxial_offsets[e] = fiber_section2d_runtime_alloc_instances(sec_def, 1)
                 elem_uniaxial_counts[e] = state_count
                 for _ in range(state_count):
                     elem_uniaxial_state_ids.append(-1)
@@ -1922,7 +1897,8 @@ fn load_case_state_from_input(
                 elem_uniaxial_counts[e] = 0
             else:
                 abort(
-                    "zeroLengthSection requires FiberSection2d, ElasticSection2d, or AggregatorSection2d"
+                    "zeroLengthSection requires FiberSection2d, ElasticSection2d, or"
+                    " AggregatorSection2d"
                 )
         else:
             elem_uniaxial_offsets[e] = len(elem_uniaxial_state_ids)
@@ -2005,13 +1981,9 @@ fn load_case_state_from_input(
             M_rayleigh_total,
         )
         if typed_elements[e].type_tag == ElementTypeTag.TwoNodeLink:
-            _accumulate_two_node_link_lumped_mass(
-                typed_elements[e], ndm, ndf, M_total
-            )
+            _accumulate_two_node_link_lumped_mass(typed_elements[e], ndm, ndf, M_total)
             if typed_elements[e].do_rayleigh:
-                _accumulate_two_node_link_lumped_mass(
-                    typed_elements[e], ndm, ndf, M_rayleigh_total
-                )
+                _accumulate_two_node_link_lumped_mass(typed_elements[e], ndm, ndf, M_rayleigh_total)
 
     # Lump translational mass from fourNodeQuad/bbarQuad density when provided.
     for e in range(elem_count):
@@ -2204,10 +2176,7 @@ fn load_case_state_from_input(
                         "force_beam_mode=linear_if_elastic requires static_linear "
                         "analysis for elastic forceBeamColumn2d/dispBeamColumn2d"
                     )
-            elif (
-                analysis_type_tag == AnalysisTypeTag.StaticLinear
-                and force_beam_has_nonelastic
-            ):
+            elif analysis_type_tag == AnalysisTypeTag.StaticLinear and force_beam_has_nonelastic:
                 abort(
                     "forceBeamColumn2d/dispBeamColumn2d with "
                     "non-elastic fibers requires "
@@ -2220,7 +2189,9 @@ fn load_case_state_from_input(
         and analysis_type_tag != AnalysisTypeTag.Staged
         and used_nonelastic_uniaxial
     ):
-        abort("nonlinear uniaxial materials require static_nonlinear or transient_nonlinear analysis")
+        abort(
+            "nonlinear uniaxial materials require static_nonlinear or transient_nonlinear analysis"
+        )
 
     var system_tag = analysis_input.system_tag
     if system_tag == AnalysisSystemTag.Unknown:
@@ -2316,9 +2287,7 @@ fn load_case_state_from_input(
             for row in range(mpc.rigid_constrained_dof_count):
                 var constrained_dof_no = _mp_constraint_rigid_constrained_dof(mpc, row)
                 require_dof_in_range(constrained_dof_no, ndf, "rigidDiaphragm")
-                var constrained_dof = node_dof_index(
-                    constrained_idx, constrained_dof_no, ndf
-                )
+                var constrained_dof = node_dof_index(constrained_idx, constrained_dof_no, ndf)
                 if mpc_slave_dof[constrained_dof]:
                     abort("[load-fail] rigidDiaphragm constrained dof already controlled")
                 mpc_row_count[constrained_dof] = mpc.rigid_retained_dof_count
@@ -2561,12 +2530,8 @@ fn load_case_state_from_input(
     state.fiber_section3d_index_by_id = fiber_section3d_index_by_id^
     state.layered_shell_section_defs = layered_shell_section_defs^
     state.layered_shell_section_index_by_id = layered_shell_section_index_by_id^
-    state.layered_shell_section_uniaxial_offsets = (
-        layered_shell_section_uniaxial_offsets^
-    )
-    state.layered_shell_section_uniaxial_counts = (
-        layered_shell_section_uniaxial_counts^
-    )
+    state.layered_shell_section_uniaxial_offsets = layered_shell_section_uniaxial_offsets^
+    state.layered_shell_section_uniaxial_counts = layered_shell_section_uniaxial_counts^
     swap(state.typed_elements, input.elements)
     state.elem_count = elem_count
     swap(state.element_loads, input.element_loads)

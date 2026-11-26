@@ -84,9 +84,7 @@ fn _solve_dense_flat_system(
     for i in range(n - 1, -1, -1):
         var sum = rhs_work[i]
         for col in range(i + 1, n):
-            sum -= (
-                factor_work[_dense_flat_index(n, i, col)] * solution_out[col]
-            )
+            sum -= factor_work[_dense_flat_index(n, i, col)] * solution_out[col]
         var diag = factor_work[_dense_flat_index(n, i, i)]
         if abs(diag) <= eps:
             return False
@@ -126,9 +124,7 @@ fn krylov_apply_acceleration(
         var rhs_value = dot_float64_contiguous(history_av[i], update, count)
         normal_rhs[i] = rhs_value
         for j in range(i, k):
-            var value = dot_float64_contiguous(
-                history_av[i], history_av[j], count
-            )
+            var value = dot_float64_contiguous(history_av[i], history_av[j], count)
             normal_matrix_flat[_dense_flat_index(k, i, j)] = value
             normal_matrix_flat[_dense_flat_index(k, j, i)] = value
             if i == j and value > max_diag:
