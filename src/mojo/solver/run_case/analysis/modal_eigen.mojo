@@ -3,6 +3,7 @@ from math import sqrt
 from os import abort
 
 from materials import UniMaterialDef, UniMaterialState
+from solver.assembly.shell_cache import ShellAssemblyCache
 from solver.assembly import assemble_global_stiffness_typed
 from solver.dof import node_dof_index, require_dof_in_range
 from solver.eigen import jacobi_symmetric_eigen
@@ -166,14 +167,11 @@ fn run_modal_eigen(
     mut fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
-    fiber_section3d_defs: List[FiberSection3dDef],
+    mut fiber_section3d_defs: List[FiberSection3dDef],
     fiber_section3d_cells: List[FiberCell],
     fiber_section3d_index_by_id: List[Int],
-    mut layered_shell_section_defs: List[LayeredShellSectionDef],
-    layered_shell_section_index_by_id: List[Int],
-    layered_shell_section_uniaxial_offsets: List[Int],
-    layered_shell_section_uniaxial_counts: List[Int],
-    shell_elem_instance_offsets: List[Int],
+    layered_shell_section_defs: List[LayeredShellSectionDef],
+    mut shell_cache: ShellAssemblyCache,
     M_total: List[Float64],
     constrained: List[Bool],
     free: List[Int],
@@ -215,10 +213,7 @@ fn run_modal_eigen(
         fiber_section3d_cells,
         fiber_section3d_index_by_id,
         layered_shell_section_defs,
-        layered_shell_section_index_by_id,
-        layered_shell_section_uniaxial_offsets,
-        layered_shell_section_uniaxial_counts,
-        shell_elem_instance_offsets,
+        shell_cache,
     )
     if has_transformation_mpc:
         K = _collapse_matrix_by_mpc(K, mpc_row_offsets, mpc_dof_pool, mpc_coeff_pool)

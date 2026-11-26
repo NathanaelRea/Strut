@@ -49,6 +49,8 @@ struct RuntimeProfileMetrics(Movable):
     var local_flexibility_accumulation_ns: Int
     var local_3x3_solve_ns: Int
     var local_commit_revert_ns: Int
+    var shell_compute_ns: Int
+    var shell_scatter_ns: Int
     var element_type_call_counts: List[Int]
     var element_type_total_ns: List[Int]
 
@@ -67,6 +69,8 @@ struct RuntimeProfileMetrics(Movable):
         self.local_flexibility_accumulation_ns = 0
         self.local_3x3_solve_ns = 0
         self.local_commit_revert_ns = 0
+        self.shell_compute_ns = 0
+        self.shell_scatter_ns = 0
         self.element_type_call_counts = []
         self.element_type_total_ns = []
         self.element_type_call_counts.resize(PROFILE_ELEMENT_TYPE_CAPACITY, 0)

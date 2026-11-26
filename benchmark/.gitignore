@@ -4,6 +4,6 @@
 lib/
 bin/
 results/
-results-profile/
+results-*/
 archive/
 speedscope/

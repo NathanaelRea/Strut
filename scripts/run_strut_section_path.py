@@ -5,6 +5,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from mojo_tool_build import ensure_built
+
 
 def run(cmd, env=None, verbose=False):
     if verbose:
@@ -27,38 +29,18 @@ def main():
 
     verbose = os.getenv("STRUT_VERBOSE") == "1"
     bin_path = repo_root / "build" / "strut" / "section_path"
-    rebuild = not bin_path.exists()
-    if not rebuild:
-        src_roots = [
-            repo_root / "src" / "mojo" / "section_path.mojo",
+    entry = repo_root / "src" / "mojo" / "section_path.mojo"
+    ensure_built(
+        uv,
+        entry,
+        bin_path,
+        [
+            entry,
             repo_root / "src" / "mojo" / "sections",
             repo_root / "src" / "mojo" / "materials",
-        ]
-        latest_src = 0.0
-        for src in src_roots:
-            if src.is_dir():
-                latest_src = max(
-                    latest_src,
-                    max((p.stat().st_mtime for p in src.rglob("*.mojo")), default=0.0),
-                )
-            else:
-                latest_src = max(latest_src, src.stat().st_mtime)
-        rebuild = bin_path.stat().st_mtime < latest_src
-
-    if rebuild:
-        bin_path.parent.mkdir(parents=True, exist_ok=True)
-        run(
-            [
-                uv,
-                "run",
-                "mojo",
-                "build",
-                str(repo_root / "src" / "mojo" / "section_path.mojo"),
-                "-o",
-                str(bin_path),
-            ],
-            verbose=verbose,
-        )
+        ],
+        verbose=verbose,
+    )
 
     run(
         [

@@ -546,7 +546,7 @@ fn _beam_column3d_element_force_global(
     sections_by_id: List[SectionInput],
     ndf: Int,
     u: List[Float64],
-    fiber_section3d_defs: List[FiberSection3dDef],
+    mut fiber_section3d_defs: List[FiberSection3dDef],
     fiber_section3d_cells: List[FiberCell],
     fiber_section3d_index_by_id: List[Int],
     uniaxial_defs: List[UniMaterialDef],
@@ -2161,7 +2161,7 @@ fn _beam_column3d_section_response(
     load_scale: Float64,
     nodes: List[NodeInput],
     sections_by_id: List[SectionInput],
-    fiber_section3d_defs: List[FiberSection3dDef],
+    mut fiber_section3d_defs: List[FiberSection3dDef],
     fiber_section3d_cells: List[FiberCell],
     fiber_section3d_index_by_id: List[Int],
     uniaxial_defs: List[UniMaterialDef],
@@ -2419,7 +2419,7 @@ fn _section_response_for_recorder(
     mut fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
-    fiber_section3d_defs: List[FiberSection3dDef],
+    mut fiber_section3d_defs: List[FiberSection3dDef],
     fiber_section3d_cells: List[FiberCell],
     fiber_section3d_index_by_id: List[Int],
     uniaxial_defs: List[UniMaterialDef],
@@ -2587,7 +2587,7 @@ fn _element_force_global_for_recorder(
     mut fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
-    fiber_section3d_defs: List[FiberSection3dDef],
+    mut fiber_section3d_defs: List[FiberSection3dDef],
     fiber_section3d_cells: List[FiberCell],
     fiber_section3d_index_by_id: List[Int],
     uniaxial_defs: List[UniMaterialDef],
@@ -2646,7 +2646,7 @@ fn _element_force_global_for_recorder(
     mut fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
-    fiber_section3d_defs: List[FiberSection3dDef],
+    mut fiber_section3d_defs: List[FiberSection3dDef],
     fiber_section3d_cells: List[FiberCell],
     fiber_section3d_index_by_id: List[Int],
     uniaxial_defs: List[UniMaterialDef],
@@ -2809,7 +2809,7 @@ fn _element_local_force_for_recorder(
     mut fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
-    fiber_section3d_defs: List[FiberSection3dDef],
+    mut fiber_section3d_defs: List[FiberSection3dDef],
     fiber_section3d_cells: List[FiberCell],
     fiber_section3d_index_by_id: List[Int],
     uniaxial_defs: List[UniMaterialDef],
@@ -3283,6 +3283,25 @@ fn _collapse_vector_by_mpc(
         var row_end = row_offsets[i + 1]
         for row_term in range(row_start, row_end):
             out[dof_pool[row_term]] += coeff_pool[row_term] * values[i]
+    return out^
+
+
+fn _collapse_load_keeping_restrained(
+    values: List[Float64],
+    row_offsets: List[Int],
+    dof_pool: List[Int],
+    coeff_pool: List[Float64],
+) -> List[Float64]:
+    """Collapse a load vector through the constraints without losing restrained DOFs.
+
+    A restrained DOF has no representative, so `_collapse_vector_by_mpc` drops
+    its entry. The solve never reads those entries, but a reaction is the
+    internal force minus this load, so they have to survive.
+    """
+    var out = _collapse_vector_by_mpc(values, row_offsets, dof_pool, coeff_pool)
+    for i in range(len(values)):
+        if row_offsets[i] == row_offsets[i + 1]:
+            out[i] = values[i]
     return out^
 
 

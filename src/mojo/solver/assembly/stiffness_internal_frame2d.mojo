@@ -30,10 +30,7 @@ from solver.profile import (
     RuntimeProfileMetrics,
     _profile_metrics_note_element_timing,
 )
-from solver.run_case.linear_solver_backend import (
-    LinearSolverBackend,
-    add_element_matrix_from_pool,
-)
+from solver.sparse_pattern import ElementMatrixSink
 from solver.run_case.input_types import (
     ElementInput,
     ElementLoadInput,
@@ -44,7 +41,9 @@ from sections import FiberCell, FiberSection2dDef
 from tag_types import ElementTypeTag, GeomTransfTag
 
 
-fn _assemble_frame2d_native_soa_indices(
+fn _assemble_frame2d_native_soa_indices[
+    S: ElementMatrixSink
+](
     frame2d_elem_indices: List[Int],
     node_x: List[Float64],
     node_y: List[Float64],
@@ -79,7 +78,7 @@ fn _assemble_frame2d_native_soa_indices(
     mut force_beam_column2d_scratch: ForceBeamColumn2dScratch,
     mut dof_map6: List[Int],
     mut u_elem6: List[Float64],
-    mut backend: LinearSolverBackend,
+    mut backend: S,
     mut F_int: List[Float64],
     do_profile: Bool,
     t0: Int,
@@ -151,7 +150,7 @@ fn _assemble_frame2d_native_soa_indices(
             else:
                 abort("unsupported geomTransf tag")
 
-            add_element_matrix_from_pool(backend, elem_free_pool, free_offset, 6, k_global)
+            backend.add_element_matrix(e, elem_free_pool, free_offset, 6, k_global)
             if elem_geom_tags[e] == GeomTransfTag.Corotational:
                 for a in range(6):
                     F_int[dof_map6[a]] += f_elem[a] - f_load_global[a]
@@ -195,7 +194,7 @@ fn _assemble_frame2d_native_soa_indices(
             f_global.resize(6, 0.0)
             for a in range(6):
                 f_global[a] = _dot_row_simd(k_global[a], dof_map6, u, 6)
-            add_element_matrix_from_pool(backend, elem_free_pool, free_offset, 6, k_global)
+            backend.add_element_matrix(e, elem_free_pool, free_offset, 6, k_global)
             for a in range(6):
                 F_int[dof_map6[a]] += f_global[a] - f_load_global[a]
             if runtime_metrics.enabled:
@@ -294,7 +293,7 @@ fn _assemble_frame2d_native_soa_indices(
             PROFILE_FRAME_ASSEMBLE_FIBER_MATRIX_SCATTER,
             t0,
         )
-        add_element_matrix_from_pool(backend, elem_free_pool, free_offset, 6, k_global)
+        backend.add_element_matrix(e, elem_free_pool, free_offset, 6, k_global)
         _profile_scope_close(
             do_profile,
             events,

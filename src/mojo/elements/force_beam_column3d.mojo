@@ -3,7 +3,11 @@ from math import sqrt
 from os import abort
 
 from elements.beam_loads import beam3d_basic_fixed_end_and_reactions, beam3d_section_load_response
-from elements.beam_integration import BeamIntegrationCache, beam_integration_cache_ensure
+from elements.beam_integration import (
+    BeamIntegrationCache,
+    beam_integration_cache_ensure,
+    beam_integration_rule,
+)
 from elements.utils import (
     _beam3d_local_axes_from_vecxz,
     _ensure_zero_matrix,
@@ -16,13 +20,12 @@ from sections import (
     FiberCell,
     FiberSection3dDef,
     FiberSection3dResponse,
-    fiber_section3d_set_trial_from_offset,
+    fiber_section3d_set_trial_instance,
 )
 from utils import StaticTuple
 
 
 alias Beam3dMat3 = StaticTuple[Float64, 9]
-alias Beam3dCoeff72 = StaticTuple[Float64, 72]
 alias Beam3dVec10 = StaticTuple[Float64, 10]
 alias Beam3dMat5 = StaticTuple[Float64, 25]
 alias Beam3dVec5 = StaticTuple[Float64, 5]
@@ -30,7 +33,7 @@ alias Beam3dMat12 = StaticTuple[Float64, 144]
 alias Beam3dVec12 = StaticTuple[Float64, 12]
 
 
-struct ForceBeamColumn3dScratch(Movable):
+struct ForceBeamColumn3dScratch(Copyable, Movable):
     var integration_cache: BeamIntegrationCache
     var R: Beam3dMat3
     var u_local: Beam3dVec12
@@ -48,13 +51,15 @@ struct ForceBeamColumn3dScratch(Movable):
     var k_work_flat: Beam3dMat12
     var geometry_valid: List[Bool]
     var load_valid: List[Bool]
+    var load_has_nonzero: List[Bool]
     var cached_length: List[Float64]
     var cached_inv_length: List[Float64]
-    var basic_coeff_cache: List[Beam3dCoeff72]
     var rotation_cache: List[Beam3dMat3]
-    var section_load_axial_cache: List[List[Float64]]
-    var section_load_my_cache: List[List[Float64]]
-    var section_load_mz_cache: List[List[Float64]]
+    var section_load_offsets: List[Int]
+    var section_load_counts: List[Int]
+    var section_load_axial_pool: List[Float64]
+    var section_load_my_pool: List[Float64]
+    var section_load_mz_pool: List[Float64]
     var fixed_end_cache: List[Beam3dVec10]
     var section_vs_eps0: List[Float64]
     var section_vs_ky: List[Float64]
@@ -80,6 +85,12 @@ struct ForceBeamColumn3dScratch(Movable):
     var section_fs_subdivide22: List[Float64]
     var section_fs_subdivide23: List[Float64]
     var section_fs_subdivide33: List[Float64]
+    var section_init_fs11: List[Float64]
+    var section_init_fs12: List[Float64]
+    var section_init_fs13: List[Float64]
+    var section_init_fs22: List[Float64]
+    var section_init_fs23: List[Float64]
+    var section_init_fs33: List[Float64]
 
     fn __init__(out self):
         self.integration_cache = BeamIntegrationCache()
@@ -99,13 +110,15 @@ struct ForceBeamColumn3dScratch(Movable):
         self.k_work_flat = Beam3dMat12(fill=0.0)
         self.geometry_valid = []
         self.load_valid = []
+        self.load_has_nonzero = []
         self.cached_length = []
         self.cached_inv_length = []
-        self.basic_coeff_cache = []
         self.rotation_cache = []
-        self.section_load_axial_cache = []
-        self.section_load_my_cache = []
-        self.section_load_mz_cache = []
+        self.section_load_offsets = []
+        self.section_load_counts = []
+        self.section_load_axial_pool = []
+        self.section_load_my_pool = []
+        self.section_load_mz_pool = []
         self.fixed_end_cache = []
         self.section_vs_eps0 = []
         self.section_vs_ky = []
@@ -131,25 +144,34 @@ struct ForceBeamColumn3dScratch(Movable):
         self.section_fs_subdivide22 = []
         self.section_fs_subdivide23 = []
         self.section_fs_subdivide33 = []
+        self.section_init_fs11 = []
+        self.section_init_fs12 = []
+        self.section_init_fs13 = []
+        self.section_init_fs22 = []
+        self.section_init_fs23 = []
+        self.section_init_fs33 = []
 
 
 fn reset_force_beam_column3d_scratch(mut scratch: ForceBeamColumn3dScratch):
     scratch.integration_cache.is_valid = False
-    scratch.geometry_valid = []
-    scratch.load_valid = []
-    scratch.cached_length = []
-    scratch.cached_inv_length = []
-    scratch.basic_coeff_cache = []
-    scratch.rotation_cache = []
-    scratch.section_load_axial_cache = []
-    scratch.section_load_my_cache = []
-    scratch.section_load_mz_cache = []
-    scratch.fixed_end_cache = []
+    scratch.geometry_valid.clear()
+    scratch.load_valid.clear()
+    scratch.load_has_nonzero.clear()
+    scratch.cached_length.clear()
+    scratch.cached_inv_length.clear()
+    scratch.rotation_cache.clear()
+    scratch.section_load_offsets.clear()
+    scratch.section_load_counts.clear()
+    scratch.section_load_axial_pool.clear()
+    scratch.section_load_my_pool.clear()
+    scratch.section_load_mz_pool.clear()
+    scratch.fixed_end_cache.clear()
 
 
 fn invalidate_force_beam_column3d_load_cache(mut scratch: ForceBeamColumn3dScratch):
+    var ptr = scratch.load_valid.unsafe_ptr()
     for i in range(len(scratch.load_valid)):
-        scratch.load_valid[i] = False
+        ptr[i] = False
 
 
 @always_inline
@@ -157,68 +179,20 @@ fn _mat3_index(row: Int, col: Int) -> Int:
     return row * 3 + col
 
 
-fn _beam3d_rotation_into(
-    x1: Float64,
-    y1: Float64,
-    z1: Float64,
-    x2: Float64,
-    y2: Float64,
-    z2: Float64,
-    mut R: List[List[Float64]],
-):
-    _beam3d_rotation_into(x1, y1, z1, x2, y2, z2, False, 0.0, 0.0, 0.0, R)
+@always_inline
+fn _mat5_index(row: Int, col: Int) -> Int:
+    return row * 5 + col
 
 
-fn _beam3d_rotation_into(
-    x1: Float64,
-    y1: Float64,
-    z1: Float64,
-    x2: Float64,
-    y2: Float64,
-    z2: Float64,
-    has_vecxz: Bool,
-    vecxz_x: Float64,
-    vecxz_y: Float64,
-    vecxz_z: Float64,
-    mut R: List[List[Float64]],
-):
-    var dx = x2 - x1
-    var dy = y2 - y1
-    var dz = z2 - z1
-    var L = sqrt(dx * dx + dy * dy + dz * dz)
-    if L == 0.0:
-        abort("zero-length element")
+@always_inline
+fn _mat12_index(row: Int, col: Int) -> Int:
+    return row * 12 + col
 
-    var lx: Float64
-    var ly: Float64
-    var lz: Float64
-    (lx, ly, lz) = _normalize(dx, dy, dz)
 
-    var yx: Float64
-    var yy: Float64
-    var yz: Float64
-    var zx: Float64
-    var zy: Float64
-    var zz: Float64
-    (yx, yy, yz, zx, zy, zz) = _beam3d_local_axes_from_vecxz(
-        lx,
-        ly,
-        lz,
-        has_vecxz,
-        vecxz_x,
-        vecxz_y,
-        vecxz_z,
-    )
-    _ensure_zero_matrix(R, 3, 3)
-    R[0][0] = lx
-    R[0][1] = ly
-    R[0][2] = lz
-    R[1][0] = yx
-    R[1][1] = yy
-    R[1][2] = yz
-    R[2][0] = zx
-    R[2][1] = zy
-    R[2][2] = zz
+@always_inline
+fn _zero_static_tuple[size: Int](mut values: StaticTuple[Float64, size]):
+    for i in range(size):
+        values[i] = 0.0
 
 
 fn _beam3d_rotation_into_static(
@@ -273,274 +247,15 @@ fn _beam3d_rotation_into_static(
         vecxz_y,
         vecxz_z,
     )
-    R[_mat3_index(0, 0)] = lx
-    R[_mat3_index(0, 1)] = ly
-    R[_mat3_index(0, 2)] = lz
-    R[_mat3_index(1, 0)] = yx
-    R[_mat3_index(1, 1)] = yy
-    R[_mat3_index(1, 2)] = yz
-    R[_mat3_index(2, 0)] = zx
-    R[_mat3_index(2, 1)] = zy
-    R[_mat3_index(2, 2)] = zz
-
-
-fn _beam3d_rotation(
-    x1: Float64,
-    y1: Float64,
-    z1: Float64,
-    x2: Float64,
-    y2: Float64,
-    z2: Float64,
-) -> List[List[Float64]]:
-    return _beam3d_rotation(x1, y1, z1, x2, y2, z2, False, 0.0, 0.0, 0.0)
-
-
-fn _beam3d_rotation(
-    x1: Float64,
-    y1: Float64,
-    z1: Float64,
-    x2: Float64,
-    y2: Float64,
-    z2: Float64,
-    has_vecxz: Bool,
-    vecxz_x: Float64,
-    vecxz_y: Float64,
-    vecxz_z: Float64,
-) -> List[List[Float64]]:
-    var R: List[List[Float64]] = []
-    _beam3d_rotation_into(
-        x1,
-        y1,
-        z1,
-        x2,
-        y2,
-        z2,
-        has_vecxz,
-        vecxz_x,
-        vecxz_y,
-        vecxz_z,
-        R,
-    )
-    return R^
-
-
-fn _beam3d_transform_u_global_to_local(
-    R: List[List[Float64]], u_global: List[Float64], mut u_local: List[Float64]
-):
-    _ensure_zero_vector(u_local, 12)
-    for block in range(4):
-        var offset = 3 * block
-        var g0 = u_global[offset]
-        var g1 = u_global[offset + 1]
-        var g2 = u_global[offset + 2]
-        for i in range(3):
-            u_local[offset + i] = R[i][0] * g0 + R[i][1] * g1 + R[i][2] * g2
-
-
-fn _beam3d_transform_u_global_to_local_static(
-    R: Beam3dMat3, u_global: List[Float64], mut u_local: Beam3dVec12
-):
-    for i in range(12):
-        u_local[i] = 0.0
-    for block in range(4):
-        var offset = 3 * block
-        var g0 = u_global[offset]
-        var g1 = u_global[offset + 1]
-        var g2 = u_global[offset + 2]
-        for i in range(3):
-            u_local[offset + i] = (
-                R[_mat3_index(i, 0)] * g0 + R[_mat3_index(i, 1)] * g1 + R[_mat3_index(i, 2)] * g2
-            )
-
-
-fn _beam3d_transform_f_local_to_global(
-    R: List[List[Float64]], f_local: List[Float64], mut f_global: List[Float64]
-):
-    _ensure_zero_vector(f_global, 12)
-    for block in range(4):
-        var offset = 3 * block
-        var l0 = f_local[offset]
-        var l1 = f_local[offset + 1]
-        var l2 = f_local[offset + 2]
-        for i in range(3):
-            f_global[offset + i] = R[0][i] * l0 + R[1][i] * l1 + R[2][i] * l2
-
-
-fn _beam3d_transform_f_local_to_global_static(
-    R: Beam3dMat3, f_local: Beam3dVec12, mut f_global: List[Float64]
-):
-    _ensure_zero_vector(f_global, 12)
-    for block in range(4):
-        var offset = 3 * block
-        var l0 = f_local[offset]
-        var l1 = f_local[offset + 1]
-        var l2 = f_local[offset + 2]
-        for i in range(3):
-            f_global[offset + i] = (
-                R[_mat3_index(0, i)] * l0 + R[_mat3_index(1, i)] * l1 + R[_mat3_index(2, i)] * l2
-            )
-
-
-fn _beam3d_transform_stiffness_local_to_global(
-    R: List[List[Float64]],
-    k_local: List[List[Float64]],
-    mut work: List[List[Float64]],
-    mut k_global: List[List[Float64]],
-):
-    _ensure_zero_matrix(work, 12, 12)
-    _ensure_zero_matrix(k_global, 12, 12)
-    for row_block in range(4):
-        var row_offset = 3 * row_block
-        for col_block in range(4):
-            var col_offset = 3 * col_block
-            for i in range(3):
-                var src0 = k_local[row_offset + i][col_offset]
-                var src1 = k_local[row_offset + i][col_offset + 1]
-                var src2 = k_local[row_offset + i][col_offset + 2]
-                for j in range(3):
-                    work[row_offset + i][col_offset + j] = (
-                        src0 * R[0][j] + src1 * R[1][j] + src2 * R[2][j]
-                    )
-    for row_block in range(4):
-        var row_offset = 3 * row_block
-        for col in range(12):
-            for i in range(3):
-                k_global[row_offset + i][col] = (
-                    R[0][i] * work[row_offset][col]
-                    + R[1][i] * work[row_offset + 1][col]
-                    + R[2][i] * work[row_offset + 2][col]
-                )
-
-
-@always_inline
-fn _beam3d_local_basic_coeff(row: Int, col: Int, inv_L: Float64) -> Float64:
-    if row == 0:
-        if col == 0:
-            return -1.0
-        if col == 6:
-            return 1.0
-        return 0.0
-    if row == 1:
-        if col == 1:
-            return inv_L
-        if col == 5:
-            return 1.0
-        if col == 7:
-            return -inv_L
-        return 0.0
-    if row == 2:
-        if col == 1:
-            return inv_L
-        if col == 7:
-            return -inv_L
-        if col == 11:
-            return 1.0
-        return 0.0
-    if row == 3:
-        if col == 2:
-            return -inv_L
-        if col == 4:
-            return 1.0
-        if col == 8:
-            return inv_L
-        return 0.0
-    if row == 4:
-        if col == 2:
-            return -inv_L
-        if col == 8:
-            return inv_L
-        if col == 10:
-            return 1.0
-        return 0.0
-    if col == 3:
-        return -1.0
-    if col == 9:
-        return 1.0
-    return 0.0
-
-
-fn _beam3d_add_axial_geometric_stiffness(
-    mut k_local: List[List[Float64]], axial_force: Float64, L: Float64
-):
-    var N_over_L = axial_force / L
-
-    k_local[1][1] += N_over_L
-    k_local[1][7] -= N_over_L
-    k_local[7][1] -= N_over_L
-    k_local[7][7] += N_over_L
-
-    k_local[2][2] += N_over_L
-    k_local[2][8] -= N_over_L
-    k_local[8][2] -= N_over_L
-    k_local[8][8] += N_over_L
-
-
-fn _element_rotation_into(
-    x1: Float64,
-    y1: Float64,
-    z1: Float64,
-    x2: Float64,
-    y2: Float64,
-    z2: Float64,
-    u_elem_global: List[Float64],
-    geom_transf: String,
-    mut R: List[List[Float64]],
-):
-    _element_rotation_into(
-        x1,
-        y1,
-        z1,
-        x2,
-        y2,
-        z2,
-        u_elem_global,
-        geom_transf,
-        False,
-        0.0,
-        0.0,
-        0.0,
-        R,
-    )
-
-
-fn _element_rotation_into(
-    x1: Float64,
-    y1: Float64,
-    z1: Float64,
-    x2: Float64,
-    y2: Float64,
-    z2: Float64,
-    u_elem_global: List[Float64],
-    geom_transf: String,
-    has_vecxz: Bool,
-    vecxz_x: Float64,
-    vecxz_y: Float64,
-    vecxz_z: Float64,
-    mut R: List[List[Float64]],
-):
-    var dx0 = x2 - x1
-    var dy0 = y2 - y1
-    var dz0 = z2 - z1
-    var L0 = sqrt(dx0 * dx0 + dy0 * dy0 + dz0 * dz0)
-    if L0 == 0.0:
-        abort("zero-length element")
-
-    if geom_transf == "Corotational":
-        _beam3d_rotation_into(
-            x1 + u_elem_global[0],
-            y1 + u_elem_global[1],
-            z1 + u_elem_global[2],
-            x2 + u_elem_global[6],
-            y2 + u_elem_global[7],
-            z2 + u_elem_global[8],
-            has_vecxz,
-            vecxz_x,
-            vecxz_y,
-            vecxz_z,
-            R,
-        )
-        return
-    _beam3d_rotation_into(x1, y1, z1, x2, y2, z2, has_vecxz, vecxz_x, vecxz_y, vecxz_z, R)
+    R[0] = lx
+    R[1] = ly
+    R[2] = lz
+    R[3] = yx
+    R[4] = yy
+    R[5] = yz
+    R[6] = zx
+    R[7] = zy
+    R[8] = zz
 
 
 fn _element_rotation_into_static(
@@ -611,65 +326,382 @@ fn _element_rotation_into_static(
     _beam3d_rotation_into_static(x1, y1, z1, x2, y2, z2, has_vecxz, vecxz_x, vecxz_y, vecxz_z, R)
 
 
-fn _element_rotation(
-    x1: Float64,
-    y1: Float64,
-    z1: Float64,
-    x2: Float64,
-    y2: Float64,
-    z2: Float64,
-    u_elem_global: List[Float64],
-    geom_transf: String,
-) -> List[List[Float64]]:
-    return _element_rotation(
-        x1,
-        y1,
-        z1,
-        x2,
-        y2,
-        z2,
-        u_elem_global,
-        geom_transf,
-        False,
-        0.0,
-        0.0,
-        0.0,
+@always_inline
+fn _beam3d_transform_u_global_to_local_static(
+    R: Beam3dMat3, u_global: List[Float64], mut u_local: Beam3dVec12
+):
+    var r00 = R[0]
+    var r01 = R[1]
+    var r02 = R[2]
+    var r10 = R[3]
+    var r11 = R[4]
+    var r12 = R[5]
+    var r20 = R[6]
+    var r21 = R[7]
+    var r22 = R[8]
+    var ug = u_global.unsafe_ptr()
+    for block in range(4):
+        var offset = 3 * block
+        var g0 = ug[offset]
+        var g1 = ug[offset + 1]
+        var g2 = ug[offset + 2]
+        u_local[offset] = r00 * g0 + r01 * g1 + r02 * g2
+        u_local[offset + 1] = r10 * g0 + r11 * g1 + r12 * g2
+        u_local[offset + 2] = r20 * g0 + r21 * g1 + r22 * g2
+
+
+@always_inline
+fn _beam3d_transform_f_local_to_global_static(
+    R: Beam3dMat3, f_local: Beam3dVec12, mut f_global: List[Float64]
+):
+    if len(f_global) != 12:
+        _ensure_zero_vector(f_global, 12)
+    var r00 = R[0]
+    var r01 = R[1]
+    var r02 = R[2]
+    var r10 = R[3]
+    var r11 = R[4]
+    var r12 = R[5]
+    var r20 = R[6]
+    var r21 = R[7]
+    var r22 = R[8]
+    var out = f_global.unsafe_ptr()
+    for block in range(4):
+        var offset = 3 * block
+        var l0 = f_local[offset]
+        var l1 = f_local[offset + 1]
+        var l2 = f_local[offset + 2]
+        out[offset] = r00 * l0 + r10 * l1 + r20 * l2
+        out[offset + 1] = r01 * l0 + r11 * l1 + r21 * l2
+        out[offset + 2] = r02 * l0 + r12 * l1 + r22 * l2
+
+
+@always_inline
+fn _beam3d_transform_stiffness_local_to_global_flat(
+    R: Beam3dMat3,
+    k_local: Beam3dMat12,
+    mut work: Beam3dMat12,
+    mut k_global: List[List[Float64]],
+):
+    if len(k_global) != 12 or len(k_global[0]) != 12:
+        _ensure_zero_matrix(k_global, 12, 12)
+    var r00 = R[0]
+    var r01 = R[1]
+    var r02 = R[2]
+    var r10 = R[3]
+    var r11 = R[4]
+    var r12 = R[5]
+    var r20 = R[6]
+    var r21 = R[7]
+    var r22 = R[8]
+    var r0_v4 = SIMD[DType.float64, 4](r00, r01, r02, 0.0)
+    var r1_v4 = SIMD[DType.float64, 4](r10, r11, r12, 0.0)
+    var r2_v4 = SIMD[DType.float64, 4](r20, r21, r22, 0.0)
+    for row in range(12):
+        var row_base = row * 12
+
+        @parameter
+        for col_block in range(4):
+            var base = row_base + 3 * col_block
+            var out = r0_v4 * k_local[base] + r1_v4 * k_local[base + 1] + r2_v4 * k_local[base + 2]
+            work[base] = out[0]
+            work[base + 1] = out[1]
+            work[base + 2] = out[2]
+
+    var r00_8 = SIMD[DType.float64, 8](r00)
+    var r10_8 = SIMD[DType.float64, 8](r10)
+    var r20_8 = SIMD[DType.float64, 8](r20)
+    var r01_8 = SIMD[DType.float64, 8](r01)
+    var r11_8 = SIMD[DType.float64, 8](r11)
+    var r21_8 = SIMD[DType.float64, 8](r21)
+    var r02_8 = SIMD[DType.float64, 8](r02)
+    var r12_8 = SIMD[DType.float64, 8](r12)
+    var r22_8 = SIMD[DType.float64, 8](r22)
+
+    var r00_4 = SIMD[DType.float64, 4](r00)
+    var r10_4 = SIMD[DType.float64, 4](r10)
+    var r20_4 = SIMD[DType.float64, 4](r20)
+    var r01_4 = SIMD[DType.float64, 4](r01)
+    var r11_4 = SIMD[DType.float64, 4](r11)
+    var r21_4 = SIMD[DType.float64, 4](r21)
+    var r02_4 = SIMD[DType.float64, 4](r02)
+    var r12_4 = SIMD[DType.float64, 4](r12)
+    var r22_4 = SIMD[DType.float64, 4](r22)
+
+    @parameter
+    for row_block in range(4):
+        var row_offset = 3 * row_block
+        var w0_base = row_offset * 12
+        var w1_base = (row_offset + 1) * 12
+        var w2_base = (row_offset + 2) * 12
+        var dst0 = k_global[row_offset].unsafe_ptr()
+        var dst1 = k_global[row_offset + 1].unsafe_ptr()
+        var dst2 = k_global[row_offset + 2].unsafe_ptr()
+
+        var w0_lo = SIMD[DType.float64, 8](
+            work[w0_base],
+            work[w0_base + 1],
+            work[w0_base + 2],
+            work[w0_base + 3],
+            work[w0_base + 4],
+            work[w0_base + 5],
+            work[w0_base + 6],
+            work[w0_base + 7],
+        )
+        var w1_lo = SIMD[DType.float64, 8](
+            work[w1_base],
+            work[w1_base + 1],
+            work[w1_base + 2],
+            work[w1_base + 3],
+            work[w1_base + 4],
+            work[w1_base + 5],
+            work[w1_base + 6],
+            work[w1_base + 7],
+        )
+        var w2_lo = SIMD[DType.float64, 8](
+            work[w2_base],
+            work[w2_base + 1],
+            work[w2_base + 2],
+            work[w2_base + 3],
+            work[w2_base + 4],
+            work[w2_base + 5],
+            work[w2_base + 6],
+            work[w2_base + 7],
+        )
+        dst0.store(0, r00_8 * w0_lo + r10_8 * w1_lo + r20_8 * w2_lo)
+        dst1.store(0, r01_8 * w0_lo + r11_8 * w1_lo + r21_8 * w2_lo)
+        dst2.store(0, r02_8 * w0_lo + r12_8 * w1_lo + r22_8 * w2_lo)
+
+        var w0_hi = SIMD[DType.float64, 4](
+            work[w0_base + 8],
+            work[w0_base + 9],
+            work[w0_base + 10],
+            work[w0_base + 11],
+        )
+        var w1_hi = SIMD[DType.float64, 4](
+            work[w1_base + 8],
+            work[w1_base + 9],
+            work[w1_base + 10],
+            work[w1_base + 11],
+        )
+        var w2_hi = SIMD[DType.float64, 4](
+            work[w2_base + 8],
+            work[w2_base + 9],
+            work[w2_base + 10],
+            work[w2_base + 11],
+        )
+        dst0.store(8, r00_4 * w0_hi + r10_4 * w1_hi + r20_4 * w2_hi)
+        dst1.store(8, r01_4 * w0_hi + r11_4 * w1_hi + r21_4 * w2_hi)
+        dst2.store(8, r02_4 * w0_hi + r12_4 * w1_hi + r22_4 * w2_hi)
+
+
+@always_inline
+fn _beam3d_write_local_stiffness_col_pair(
+    col: Int,
+    neg_col: Int,
+    m0: Float64,
+    m1: Float64,
+    m2: Float64,
+    m3: Float64,
+    m4: Float64,
+    inv_L: Float64,
+    mut k_local: Beam3dMat12,
+):
+    var r0 = -m0
+    var r1 = (m1 + m2) * inv_L
+    var r2 = -(m3 + m4) * inv_L
+    k_local[0 * 12 + col] = r0
+    k_local[1 * 12 + col] = r1
+    k_local[2 * 12 + col] = r2
+    k_local[3 * 12 + col] = 0.0
+    k_local[4 * 12 + col] = m3
+    k_local[5 * 12 + col] = m1
+    k_local[6 * 12 + col] = -r0
+    k_local[7 * 12 + col] = -r1
+    k_local[8 * 12 + col] = -r2
+    k_local[9 * 12 + col] = 0.0
+    k_local[10 * 12 + col] = m4
+    k_local[11 * 12 + col] = m2
+
+    k_local[0 * 12 + neg_col] = -r0
+    k_local[1 * 12 + neg_col] = -r1
+    k_local[2 * 12 + neg_col] = -r2
+    k_local[3 * 12 + neg_col] = 0.0
+    k_local[4 * 12 + neg_col] = -m3
+    k_local[5 * 12 + neg_col] = -m1
+    k_local[6 * 12 + neg_col] = r0
+    k_local[7 * 12 + neg_col] = r1
+    k_local[8 * 12 + neg_col] = r2
+    k_local[9 * 12 + neg_col] = 0.0
+    k_local[10 * 12 + neg_col] = -m4
+    k_local[11 * 12 + neg_col] = -m2
+
+
+@always_inline
+fn _beam3d_write_local_stiffness_col_single(
+    col: Int,
+    m0: Float64,
+    m1: Float64,
+    m2: Float64,
+    m3: Float64,
+    m4: Float64,
+    inv_L: Float64,
+    mut k_local: Beam3dMat12,
+):
+    var r0 = -m0
+    var r1 = (m1 + m2) * inv_L
+    var r2 = -(m3 + m4) * inv_L
+    k_local[0 * 12 + col] = r0
+    k_local[1 * 12 + col] = r1
+    k_local[2 * 12 + col] = r2
+    k_local[3 * 12 + col] = 0.0
+    k_local[4 * 12 + col] = m3
+    k_local[5 * 12 + col] = m1
+    k_local[6 * 12 + col] = -r0
+    k_local[7 * 12 + col] = -r1
+    k_local[8 * 12 + col] = -r2
+    k_local[9 * 12 + col] = 0.0
+    k_local[10 * 12 + col] = m4
+    k_local[11 * 12 + col] = m2
+
+
+@always_inline
+fn _beam3d_assemble_local_stiffness_from_basic(
+    k_basic: Beam3dMat5,
+    inv_L: Float64,
+    torsion_k: Float64,
+    mut k_local: Beam3dMat12,
+):
+    var k00 = k_basic[0]
+    var k01 = k_basic[1]
+    var k02 = k_basic[2]
+    var k03 = k_basic[3]
+    var k04 = k_basic[4]
+    var k10 = k_basic[5]
+    var k11 = k_basic[6]
+    var k12 = k_basic[7]
+    var k13 = k_basic[8]
+    var k14 = k_basic[9]
+    var k20 = k_basic[10]
+    var k21 = k_basic[11]
+    var k22 = k_basic[12]
+    var k23 = k_basic[13]
+    var k24 = k_basic[14]
+    var k30 = k_basic[15]
+    var k31 = k_basic[16]
+    var k32 = k_basic[17]
+    var k33 = k_basic[18]
+    var k34 = k_basic[19]
+    var k40 = k_basic[20]
+    var k41 = k_basic[21]
+    var k42 = k_basic[22]
+    var k43 = k_basic[23]
+    var k44 = k_basic[24]
+
+    # Columns 0 and 6 (col 6 = -col 0)
+    _beam3d_write_local_stiffness_col_pair(0, 6, -k00, -k10, -k20, -k30, -k40, inv_L, k_local)
+    # Columns 1 and 7 (col 7 = -col 1)
+    _beam3d_write_local_stiffness_col_pair(
+        1,
+        7,
+        (k01 + k02) * inv_L,
+        (k11 + k12) * inv_L,
+        (k21 + k22) * inv_L,
+        (k31 + k32) * inv_L,
+        (k41 + k42) * inv_L,
+        inv_L,
+        k_local,
     )
-
-
-fn _element_rotation(
-    x1: Float64,
-    y1: Float64,
-    z1: Float64,
-    x2: Float64,
-    y2: Float64,
-    z2: Float64,
-    u_elem_global: List[Float64],
-    geom_transf: String,
-    has_vecxz: Bool,
-    vecxz_x: Float64,
-    vecxz_y: Float64,
-    vecxz_z: Float64,
-) -> List[List[Float64]]:
-    var R: List[List[Float64]] = []
-    _element_rotation_into(
-        x1,
-        y1,
-        z1,
-        x2,
-        y2,
-        z2,
-        u_elem_global,
-        geom_transf,
-        has_vecxz,
-        vecxz_x,
-        vecxz_y,
-        vecxz_z,
-        R,
+    # Columns 2 and 8 (col 8 = -col 2)
+    _beam3d_write_local_stiffness_col_pair(
+        2,
+        8,
+        -(k03 + k04) * inv_L,
+        -(k13 + k14) * inv_L,
+        -(k23 + k24) * inv_L,
+        -(k33 + k34) * inv_L,
+        -(k43 + k44) * inv_L,
+        inv_L,
+        k_local,
     )
-    return R^
+    # Rotational columns 4, 5, 10, 11
+    _beam3d_write_local_stiffness_col_single(4, k03, k13, k23, k33, k43, inv_L, k_local)
+    _beam3d_write_local_stiffness_col_single(5, k01, k11, k21, k31, k41, inv_L, k_local)
+    _beam3d_write_local_stiffness_col_single(10, k04, k14, k24, k34, k44, inv_L, k_local)
+    _beam3d_write_local_stiffness_col_single(11, k02, k12, k22, k32, k42, inv_L, k_local)
+    # Torsion columns 3 and 9
+    for r in range(12):
+        k_local[r * 12 + 3] = 0.0
+        k_local[r * 12 + 9] = 0.0
+    if torsion_k != 0.0:
+        k_local[3 * 12 + 3] = torsion_k
+        k_local[3 * 12 + 9] = -torsion_k
+        k_local[9 * 12 + 3] = -torsion_k
+        k_local[9 * 12 + 9] = torsion_k
 
 
+@always_inline
+fn _beam3d_assemble_local_force_from_basic(
+    q0: Float64,
+    q1: Float64,
+    q2: Float64,
+    q3: Float64,
+    q4: Float64,
+    q5: Float64,
+    inv_L: Float64,
+    mut f_local: Beam3dVec12,
+):
+    var vz = (q1 + q2) * inv_L
+    var vy = -(q3 + q4) * inv_L
+    f_local[0] = -q0
+    f_local[1] = vz
+    f_local[2] = vy
+    f_local[3] = -q5
+    f_local[4] = q3
+    f_local[5] = q1
+    f_local[6] = q0
+    f_local[7] = -vz
+    f_local[8] = -vy
+    f_local[9] = q5
+    f_local[10] = q4
+    f_local[11] = q2
+
+
+@always_inline
+fn _beam3d_add_axial_geometric_stiffness_flat(
+    mut k_local: Beam3dMat12, axial_force: Float64, inv_L: Float64
+):
+    var N_over_L = axial_force * inv_L
+    k_local[1 * 12 + 1] += N_over_L
+    k_local[1 * 12 + 7] -= N_over_L
+    k_local[7 * 12 + 1] -= N_over_L
+    k_local[7 * 12 + 7] += N_over_L
+    k_local[2 * 12 + 2] += N_over_L
+    k_local[2 * 12 + 8] -= N_over_L
+    k_local[8 * 12 + 2] -= N_over_L
+    k_local[8 * 12 + 8] += N_over_L
+
+
+@always_inline
+fn _beam3d_add_axial_geometric_force(
+    mut f_local: Beam3dVec12, u_local: Beam3dVec12, axial_force: Float64, inv_L: Float64
+):
+    """Add the P-Delta shears of an axial force acting through the chord drift.
+
+    This is the force of `_beam3d_add_axial_geometric_stiffness_flat` at `u_local`
+    (OpenSees PDeltaCrdTransf3d::getGlobalResistingForce). Without it the tangent
+    carries P-Delta but the converged state does not.
+    """
+    var N_over_L = axial_force * inv_L
+    var shear_y = (u_local[1] - u_local[7]) * N_over_L
+    var shear_z = (u_local[2] - u_local[8]) * N_over_L
+    f_local[1] += shear_y
+    f_local[7] -= shear_y
+    f_local[2] += shear_z
+    f_local[8] -= shear_z
+
+
+@always_inline
 fn _invert_3x3_values(
     a: Float64,
     b: Float64,
@@ -710,75 +742,31 @@ fn _invert_3x3_values(
     )
 
 
-fn _invert_5x5_into(mut a: List[List[Float64]], mut inv_out: List[List[Float64]]) -> Bool:
-    var n = 5
-    _ensure_zero_matrix(inv_out, n, n)
-    for i in range(n):
-        inv_out[i][i] = 1.0
-
-    for i in range(n):
-        var pivot = i
-        var max_val = abs(a[i][i])
-        for r in range(i + 1, n):
-            var abs_val = abs(a[r][i])
-            if abs_val > max_val:
-                max_val = abs_val
-                pivot = r
-        if max_val <= 1.0e-40:
-            return False
-
-        if pivot != i:
-            for c in range(n):
-                var tmp = a[i][c]
-                a[i][c] = a[pivot][c]
-                a[pivot][c] = tmp
-                var inv_tmp = inv_out[i][c]
-                inv_out[i][c] = inv_out[pivot][c]
-                inv_out[pivot][c] = inv_tmp
-
-        var piv = a[i][i]
-        for c in range(n):
-            a[i][c] /= piv
-            inv_out[i][c] /= piv
-
-        for r in range(n):
-            if r == i:
-                continue
-            var factor = a[r][i]
-            if factor == 0.0:
-                continue
-            for c in range(n):
-                a[r][c] -= factor * a[i][c]
-                inv_out[r][c] -= factor * inv_out[i][c]
-    return True
-
-
 @always_inline
-fn _mat5_index(row: Int, col: Int) -> Int:
-    return row * 5 + col
-
-
-@always_inline
-fn _mat12_index(row: Int, col: Int) -> Int:
-    return row * 12 + col
-
-
-fn _zero_static_tuple[size: Int](mut values: StaticTuple[Float64, size]):
-    for i in range(size):
-        values[i] = 0.0
-
-
 fn _invert_5x5_flat_into(mut a: Beam3dMat5, mut inv_out: Beam3dMat5) -> Bool:
-    var n = 5
-    _zero_static_tuple(inv_out)
-    for i in range(n):
-        inv_out[_mat5_index(i, i)] = 1.0
+    var a_rows = InlineArray[SIMD[DType.float64, 8], 5](
+        SIMD[DType.float64, 8](a[0], a[1], a[2], a[3], a[4], 0.0, 0.0, 0.0),
+        SIMD[DType.float64, 8](a[5], a[6], a[7], a[8], a[9], 0.0, 0.0, 0.0),
+        SIMD[DType.float64, 8](a[10], a[11], a[12], a[13], a[14], 0.0, 0.0, 0.0),
+        SIMD[DType.float64, 8](a[15], a[16], a[17], a[18], a[19], 0.0, 0.0, 0.0),
+        SIMD[DType.float64, 8](a[20], a[21], a[22], a[23], a[24], 0.0, 0.0, 0.0),
+    )
+    var inv_rows = InlineArray[SIMD[DType.float64, 8], 5](
+        SIMD[DType.float64, 8](1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        SIMD[DType.float64, 8](0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        SIMD[DType.float64, 8](0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        SIMD[DType.float64, 8](0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0),
+        SIMD[DType.float64, 8](0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0),
+    )
 
-    for i in range(n):
+    @parameter
+    for i in range(5):
         var pivot = i
-        var max_val = abs(a[_mat5_index(i, i)])
-        for r in range(i + 1, n):
-            var abs_val = abs(a[_mat5_index(r, i)])
+        var max_val = abs(a_rows[i][i])
+
+        @parameter
+        for r in range(i + 1, 5):
+            var abs_val = abs(a_rows[r][i])
             if abs_val > max_val:
                 max_val = abs_val
                 pivot = r
@@ -786,68 +774,38 @@ fn _invert_5x5_flat_into(mut a: Beam3dMat5, mut inv_out: Beam3dMat5) -> Bool:
             return False
 
         if pivot != i:
-            for c in range(n):
-                var idx_i = _mat5_index(i, c)
-                var idx_p = _mat5_index(pivot, c)
-                var tmp = a[idx_i]
-                a[idx_i] = a[idx_p]
-                a[idx_p] = tmp
-                var inv_tmp = inv_out[idx_i]
-                inv_out[idx_i] = inv_out[idx_p]
-                inv_out[idx_p] = inv_tmp
+            var tmp_a = a_rows[i]
+            a_rows[i] = a_rows[pivot]
+            a_rows[pivot] = tmp_a
+            var tmp_inv = inv_rows[i]
+            inv_rows[i] = inv_rows[pivot]
+            inv_rows[pivot] = tmp_inv
 
-        var piv = a[_mat5_index(i, i)]
-        for c in range(n):
-            var idx = _mat5_index(i, c)
-            a[idx] /= piv
-            inv_out[idx] /= piv
+        var inv_piv = 1.0 / a_rows[i][i]
+        var ai = a_rows[i] * inv_piv
+        var invi = inv_rows[i] * inv_piv
+        a_rows[i] = ai
+        inv_rows[i] = invi
 
-        for r in range(n):
-            if r == i:
-                continue
-            var factor = a[_mat5_index(r, i)]
-            if factor == 0.0:
-                continue
-            for c in range(n):
-                var idx_rc = _mat5_index(r, c)
-                var idx_ic = _mat5_index(i, c)
-                a[idx_rc] -= factor * a[idx_ic]
-                inv_out[idx_rc] -= factor * inv_out[idx_ic]
+        @parameter
+        for r in range(5):
+
+            @parameter
+            if r != i:
+                var factor = a_rows[r][i]
+                a_rows[r] -= factor * ai
+                inv_rows[r] -= factor * invi
+
+    @parameter
+    for r in range(5):
+        var row = inv_rows[r]
+        var base = r * 5
+        inv_out[base] = row[0]
+        inv_out[base + 1] = row[1]
+        inv_out[base + 2] = row[2]
+        inv_out[base + 3] = row[3]
+        inv_out[base + 4] = row[4]
     return True
-
-
-fn _beam3d_transform_stiffness_local_to_global_flat(
-    R: Beam3dMat3,
-    k_local: Beam3dMat12,
-    mut work: Beam3dMat12,
-    mut k_global: List[List[Float64]],
-):
-    _zero_static_tuple(work)
-    _ensure_zero_matrix(k_global, 12, 12)
-    for row_block in range(4):
-        var row_offset = 3 * row_block
-        for col_block in range(4):
-            var col_offset = 3 * col_block
-            for i in range(3):
-                var base = _mat12_index(row_offset + i, col_offset)
-                var src0 = k_local[base]
-                var src1 = k_local[base + 1]
-                var src2 = k_local[base + 2]
-                for j in range(3):
-                    work[base + j] = (
-                        src0 * R[_mat3_index(0, j)]
-                        + src1 * R[_mat3_index(1, j)]
-                        + src2 * R[_mat3_index(2, j)]
-                    )
-    for row_block in range(4):
-        var row_offset = 3 * row_block
-        for col in range(12):
-            for i in range(3):
-                k_global[row_offset + i][col] = (
-                    R[_mat3_index(0, i)] * work[_mat12_index(row_offset, col)]
-                    + R[_mat3_index(1, i)] * work[_mat12_index(row_offset + 1, col)]
-                    + R[_mat3_index(2, i)] * work[_mat12_index(row_offset + 2, col)]
-                )
 
 
 fn _ensure_force_beam_column3d_cache_slot(mut scratch: ForceBeamColumn3dScratch, elem_index: Int):
@@ -855,20 +813,26 @@ fn _ensure_force_beam_column3d_cache_slot(mut scratch: ForceBeamColumn3dScratch,
         return
     var needed = elem_index + 1
     if len(scratch.geometry_valid) < needed:
+        # Elements arrive in index order, so grow capacity geometrically; the
+        # lengths below stay exact because callers test them for cache hits.
+        if scratch.geometry_valid.capacity < needed:
+            var capacity = max(needed, 2 * scratch.geometry_valid.capacity)
+            scratch.geometry_valid.reserve(capacity)
+            scratch.load_valid.reserve(capacity)
+            scratch.load_has_nonzero.reserve(capacity)
+            scratch.cached_length.reserve(capacity)
+            scratch.cached_inv_length.reserve(capacity)
+            scratch.section_load_offsets.reserve(capacity)
+            scratch.section_load_counts.reserve(capacity)
         scratch.geometry_valid.resize(needed, False)
         scratch.load_valid.resize(needed, False)
+        scratch.load_has_nonzero.resize(needed, False)
         scratch.cached_length.resize(needed, 0.0)
         scratch.cached_inv_length.resize(needed, 0.0)
-        while len(scratch.basic_coeff_cache) < needed:
-            scratch.basic_coeff_cache.append(Beam3dCoeff72(fill=0.0))
+        scratch.section_load_offsets.resize(needed, -1)
+        scratch.section_load_counts.resize(needed, 0)
         while len(scratch.rotation_cache) < needed:
             scratch.rotation_cache.append(Beam3dMat3(fill=0.0))
-        while len(scratch.section_load_axial_cache) < needed:
-            scratch.section_load_axial_cache.append(List[Float64]())
-        while len(scratch.section_load_my_cache) < needed:
-            scratch.section_load_my_cache.append(List[Float64]())
-        while len(scratch.section_load_mz_cache) < needed:
-            scratch.section_load_mz_cache.append(List[Float64]())
         while len(scratch.fixed_end_cache) < needed:
             scratch.fixed_end_cache.append(Beam3dVec10(fill=0.0))
 
@@ -917,20 +881,10 @@ fn _ensure_force_beam_column3d_geometry_cache(
     scratch.cached_length[elem_index] = L
     scratch.cached_inv_length[elem_index] = inv_L
 
-    var basic_coeff = scratch.basic_coeff_cache[elem_index]
-    for row in range(6):
-        for col in range(12):
-            basic_coeff[row * 12 + col] = _beam3d_local_basic_coeff(row, col, inv_L)
-    scratch.basic_coeff_cache[elem_index] = basic_coeff
-
-    var rotation = scratch.rotation_cache[elem_index]
     _beam3d_rotation_into_static(
         x1, y1, z1, x2, y2, z2, has_vecxz, vecxz_x, vecxz_y, vecxz_z, scratch.R
     )
-    for i in range(3):
-        for j in range(3):
-            rotation[_mat3_index(i, j)] = scratch.R[_mat3_index(i, j)]
-    scratch.rotation_cache[elem_index] = rotation
+    scratch.rotation_cache[elem_index] = scratch.R
     scratch.geometry_valid[elem_index] = True
 
 
@@ -949,14 +903,32 @@ fn _ensure_force_beam_column3d_load_cache(
     _ensure_force_beam_column3d_cache_slot(scratch, elem_index)
     if scratch.load_valid[elem_index]:
         return
+
+    var has_elem_loads = (
+        load_scale != 0.0
+        and elem_index + 1 < len(elem_load_offsets)
+        and elem_load_offsets[elem_index] < elem_load_offsets[elem_index + 1]
+    )
+    scratch.load_has_nonzero[elem_index] = has_elem_loads
+    if not has_elem_loads:
+        scratch.fixed_end_cache[elem_index] = Beam3dVec10(fill=0.0)
+        scratch.load_valid[elem_index] = True
+        return
+
     beam_integration_cache_ensure(scratch.integration_cache, integration, num_int_pts)
     var L = scratch.cached_length[elem_index]
-    var axial = scratch.section_load_axial_cache[elem_index].copy()
-    var my = scratch.section_load_my_cache[elem_index].copy()
-    var mz = scratch.section_load_mz_cache[elem_index].copy()
-    axial.resize(num_int_pts, 0.0)
-    my.resize(num_int_pts, 0.0)
-    mz.resize(num_int_pts, 0.0)
+    var offset = scratch.section_load_offsets[elem_index]
+    if offset < 0 or scratch.section_load_counts[elem_index] < num_int_pts:
+        offset = len(scratch.section_load_axial_pool)
+        scratch.section_load_offsets[elem_index] = offset
+        scratch.section_load_counts[elem_index] = num_int_pts
+        scratch.section_load_axial_pool.resize(offset + num_int_pts, 0.0)
+        scratch.section_load_my_pool.resize(offset + num_int_pts, 0.0)
+        scratch.section_load_mz_pool.resize(offset + num_int_pts, 0.0)
+
+    var axial_ptr = scratch.section_load_axial_pool.unsafe_ptr()
+    var my_ptr = scratch.section_load_my_pool.unsafe_ptr()
+    var mz_ptr = scratch.section_load_mz_pool.unsafe_ptr()
     for ip in range(num_int_pts):
         var loads = beam3d_section_load_response(
             element_loads,
@@ -967,17 +939,14 @@ fn _ensure_force_beam_column3d_load_cache(
             scratch.integration_cache.xis[ip] * L,
             L,
         )
-        axial[ip] = loads[0]
-        my[ip] = loads[1]
-        mz[ip] = loads[2]
-    scratch.section_load_axial_cache[elem_index] = axial^
-    scratch.section_load_my_cache[elem_index] = my^
-    scratch.section_load_mz_cache[elem_index] = mz^
+        axial_ptr[offset + ip] = loads[0]
+        my_ptr[offset + ip] = loads[1]
+        mz_ptr[offset + ip] = loads[2]
 
-    var fixed_end = scratch.fixed_end_cache[elem_index]
     var fixed = beam3d_basic_fixed_end_and_reactions(
         element_loads, elem_load_offsets, elem_load_pool, elem_index, load_scale, L
     )
+    var fixed_end = Beam3dVec10(fill=0.0)
     fixed_end[0] = fixed[0]
     fixed_end[1] = fixed[1]
     fixed_end[2] = fixed[2]
@@ -992,85 +961,7 @@ fn _ensure_force_beam_column3d_load_cache(
     scratch.load_valid[elem_index] = True
 
 
-fn _fiber_section3d_set_trial_from_offset(
-    sec_def: FiberSection3dDef,
-    mut uniaxial_states: List[UniMaterialState],
-    section_state_offset: Int,
-    section_state_count: Int,
-    eps0: Float64,
-    kappa_y: Float64,
-    kappa_z: Float64,
-) -> FiberSection3dResponse:
-    return fiber_section3d_set_trial_from_offset(
-        sec_def,
-        uniaxial_states,
-        section_state_offset,
-        section_state_count,
-        eps0,
-        kappa_y,
-        kappa_z,
-    )
-
-
-fn _fiber_section3d_solve_for_force(
-    sec_def: FiberSection3dDef,
-    fibers: List[FiberCell],
-    uniaxial_defs: List[UniMaterialDef],
-    mut uniaxial_states: List[UniMaterialState],
-    section_state_offset: Int,
-    section_state_count: Int,
-    axial_force_target: Float64,
-    moment_y_target: Float64,
-    moment_z_target: Float64,
-    mut eps0_guess: Float64,
-    mut kappa_y_guess: Float64,
-    mut kappa_z_guess: Float64,
-    max_iters: Int,
-    tol: Float64,
-) -> (FiberSection3dResponse, Float64, Float64, Float64):
-    var iter = 0
-    var resp = FiberSection3dResponse()
-    while iter < max_iters:
-        resp = _fiber_section3d_set_trial_from_offset(
-            sec_def,
-            uniaxial_states,
-            section_state_offset,
-            section_state_count,
-            eps0_guess,
-            kappa_y_guess,
-            kappa_z_guess,
-        )
-
-        var r_axial = axial_force_target - resp.axial_force
-        var r_my = moment_y_target - resp.moment_y
-        var r_mz = moment_z_target - resp.moment_z
-        if abs(r_axial) <= tol and abs(r_my) <= tol and abs(r_mz) <= tol:
-            return (resp, eps0_guess, kappa_y_guess, kappa_z_guess)
-
-        var inv_sec = _invert_3x3_values(
-            resp.k11,
-            resp.k12,
-            resp.k13,
-            resp.k12,
-            resp.k22,
-            resp.k23,
-            resp.k13,
-            resp.k23,
-            resp.k33,
-        )
-        if not inv_sec[0]:
-            return (resp, eps0_guess, kappa_y_guess, kappa_z_guess)
-
-        var de0 = inv_sec[1] * r_axial + inv_sec[4] * r_my + inv_sec[7] * r_mz
-        var dky = inv_sec[2] * r_axial + inv_sec[5] * r_my + inv_sec[8] * r_mz
-        var dkz = inv_sec[3] * r_axial + inv_sec[6] * r_my + inv_sec[9] * r_mz
-        eps0_guess += de0
-        kappa_y_guess += dky
-        kappa_z_guess += dkz
-        iter += 1
-    return (resp, eps0_guess, kappa_y_guess, kappa_z_guess)
-
-
+@always_inline
 fn _fiber_section3d_response_flexibility(
     resp: FiberSection3dResponse,
 ) -> (Bool, Float64, Float64, Float64, Float64, Float64, Float64):
@@ -1098,9 +989,75 @@ fn _fiber_section3d_response_flexibility(
     )
 
 
+@always_inline
+fn _accum_basic_flexibility_ip(
+    mut f_basic: Beam3dMat5,
+    wL: Float64,
+    b_mi: Float64,
+    b_mj: Float64,
+    sec_f11: Float64,
+    sec_f12: Float64,
+    sec_f13: Float64,
+    sec_f22: Float64,
+    sec_f23: Float64,
+    sec_f33: Float64,
+):
+    var wf11 = wL * sec_f11
+    var wf12 = wL * sec_f12
+    var wf13 = wL * sec_f13
+    var wf22 = wL * sec_f22
+    var wf23 = wL * sec_f23
+    var wf33 = wL * sec_f33
+    var b_mi2 = b_mi * b_mi
+    var b_mimj = b_mi * b_mj
+    var b_mj2 = b_mj * b_mj
+
+    var wf13_mi = wf13 * b_mi
+    var wf13_mj = wf13 * b_mj
+    var wf12_mi = wf12 * b_mi
+    var wf12_mj = wf12 * b_mj
+    var wf23_mi2 = wf23 * b_mi2
+    var wf23_mimj = wf23 * b_mimj
+    var wf23_mj2 = wf23 * b_mj2
+    var wf33_mimj = wf33 * b_mimj
+    var wf22_mimj = wf22 * b_mimj
+
+    f_basic[0] += wf11
+    f_basic[1] += wf13_mi
+    f_basic[2] += wf13_mj
+    f_basic[3] += wf12_mi
+    f_basic[4] += wf12_mj
+
+    f_basic[5] += wf13_mi
+    f_basic[6] += wf33 * b_mi2
+    f_basic[7] += wf33_mimj
+    f_basic[8] += wf23_mi2
+    f_basic[9] += wf23_mimj
+
+    f_basic[10] += wf13_mj
+    f_basic[11] += wf33_mimj
+    f_basic[12] += wf33 * b_mj2
+    f_basic[13] += wf23_mimj
+    f_basic[14] += wf23_mj2
+
+    f_basic[15] += wf12_mi
+    f_basic[16] += wf23_mi2
+    f_basic[17] += wf23_mimj
+    f_basic[18] += wf22 * b_mi2
+    f_basic[19] += wf22_mimj
+
+    f_basic[20] += wf12_mj
+    f_basic[21] += wf23_mimj
+    f_basic[22] += wf23_mj2
+    f_basic[23] += wf22_mimj
+    f_basic[24] += wf22 * b_mj2
+
+
 fn _ensure_force_beam_column3d_section_history_capacity(
     mut scratch: ForceBeamColumn3dScratch, num_int_pts: Int
 ):
+    if len(scratch.section_vs_eps0) >= num_int_pts:
+        return
     scratch.section_vs_eps0.resize(num_int_pts, 0.0)
     scratch.section_vs_ky.resize(num_int_pts, 0.0)
     scratch.section_vs_kz.resize(num_int_pts, 0.0)
@@ -1125,6 +1082,12 @@ fn _ensure_force_beam_column3d_section_history_capacity(
     scratch.section_fs_subdivide22.resize(num_int_pts, 0.0)
     scratch.section_fs_subdivide23.resize(num_int_pts, 0.0)
     scratch.section_fs_subdivide33.resize(num_int_pts, 0.0)
+    scratch.section_init_fs11.resize(num_int_pts, 0.0)
+    scratch.section_init_fs12.resize(num_int_pts, 0.0)
+    scratch.section_init_fs13.resize(num_int_pts, 0.0)
+    scratch.section_init_fs22.resize(num_int_pts, 0.0)
+    scratch.section_init_fs23.resize(num_int_pts, 0.0)
+    scratch.section_init_fs33.resize(num_int_pts, 0.0)
 
 
 fn _restore_force_beam_column3d_predictor_state(
@@ -1183,14 +1146,11 @@ fn _force_beam_column3d_section_basic_deformation(
 
 fn _force_beam_column3d_try_increment(
     L: Float64,
-    sec_def: FiberSection3dDef,
-    fibers: List[FiberCell],
-    uniaxial_defs: List[UniMaterialDef],
-    mut uniaxial_states: List[UniMaterialState],
-    elem_state_ids: List[Int],
-    elem_state_offset: Int,
-    fibers_per_section: Int,
+    mut sec_def: FiberSection3dDef,
+    elem_inst_base: Int,
     num_int_pts: Int,
+    has_elem_loads: Bool,
+    section_load_offset: Int,
     mut force_basic_q_state: List[Float64],
     force_basic_q_offset: Int,
     mut scratch: ForceBeamColumn3dScratch,
@@ -1225,20 +1185,9 @@ fn _force_beam_column3d_try_increment(
     var target_v4 = base_v4 + dv_trial4
 
     _ensure_force_beam_column3d_section_history_capacity(scratch, num_int_pts)
+    var need_init_flex = use_initial_section_flexibility != 0
 
-    var init_fs11: List[Float64] = []
-    var init_fs12: List[Float64] = []
-    var init_fs13: List[Float64] = []
-    var init_fs22: List[Float64] = []
-    var init_fs23: List[Float64] = []
-    var init_fs33: List[Float64] = []
-    init_fs11.resize(num_int_pts, 0.0)
-    init_fs12.resize(num_int_pts, 0.0)
-    init_fs13.resize(num_int_pts, 0.0)
-    init_fs22.resize(num_int_pts, 0.0)
-    init_fs23.resize(num_int_pts, 0.0)
-    init_fs33.resize(num_int_pts, 0.0)
-
+    var predictor_f = Beam3dMat5(fill=0.0)
     for ip in range(num_int_pts):
         var eps0 = force_basic_q_state[eps0_offset + ip]
         var kappa_y = force_basic_q_state[ky_offset + ip]
@@ -1247,15 +1196,8 @@ fn _force_beam_column3d_try_increment(
         scratch.section_vs_ky[ip] = kappa_y
         scratch.section_vs_kz[ip] = kappa_z
 
-        var ip_state_offset = elem_state_offset + ip * fibers_per_section
-        var resp_trial = _fiber_section3d_set_trial_from_offset(
-            sec_def,
-            uniaxial_states,
-            ip_state_offset,
-            fibers_per_section,
-            eps0,
-            kappa_y,
-            kappa_z,
+        var resp_trial = fiber_section3d_set_trial_instance(
+            sec_def, elem_inst_base + ip, eps0, kappa_y, kappa_z
         )
         scratch.section_ssr_axial[ip] = resp_trial.axial_force
         scratch.section_ssr_my[ip] = resp_trial.moment_y
@@ -1263,12 +1205,18 @@ fn _force_beam_column3d_try_increment(
         var sec_flex = _fiber_section3d_response_flexibility(resp_trial)
         if not sec_flex[0]:
             return (False, 0.0, 0.0, 0.0, 0.0, 0.0)
-        scratch.section_fs11[ip] = sec_flex[1]
-        scratch.section_fs12[ip] = sec_flex[2]
-        scratch.section_fs13[ip] = sec_flex[3]
-        scratch.section_fs22[ip] = sec_flex[4]
-        scratch.section_fs23[ip] = sec_flex[5]
-        scratch.section_fs33[ip] = sec_flex[6]
+        var sf11 = sec_flex[1]
+        var sf12 = sec_flex[2]
+        var sf13 = sec_flex[3]
+        var sf22 = sec_flex[4]
+        var sf23 = sec_flex[5]
+        var sf33 = sec_flex[6]
+        scratch.section_fs11[ip] = sf11
+        scratch.section_fs12[ip] = sf12
+        scratch.section_fs13[ip] = sf13
+        scratch.section_fs22[ip] = sf22
+        scratch.section_fs23[ip] = sf23
+        scratch.section_fs33[ip] = sf33
 
         scratch.section_vs_subdivide_eps0[ip] = eps0
         scratch.section_vs_subdivide_ky[ip] = kappa_y
@@ -1276,104 +1224,69 @@ fn _force_beam_column3d_try_increment(
         scratch.section_ssr_subdivide_axial[ip] = resp_trial.axial_force
         scratch.section_ssr_subdivide_my[ip] = resp_trial.moment_y
         scratch.section_ssr_subdivide_mz[ip] = resp_trial.moment_z
-        scratch.section_fs_subdivide11[ip] = sec_flex[1]
-        scratch.section_fs_subdivide12[ip] = sec_flex[2]
-        scratch.section_fs_subdivide13[ip] = sec_flex[3]
-        scratch.section_fs_subdivide22[ip] = sec_flex[4]
-        scratch.section_fs_subdivide23[ip] = sec_flex[5]
-        scratch.section_fs_subdivide33[ip] = sec_flex[6]
+        scratch.section_fs_subdivide11[ip] = sf11
+        scratch.section_fs_subdivide12[ip] = sf12
+        scratch.section_fs_subdivide13[ip] = sf13
+        scratch.section_fs_subdivide22[ip] = sf22
+        scratch.section_fs_subdivide23[ip] = sf23
+        scratch.section_fs_subdivide33[ip] = sf33
 
-        var init_resp = _fiber_section3d_set_trial_from_offset(
-            sec_def,
-            uniaxial_states,
-            ip_state_offset,
-            fibers_per_section,
-            0.0,
-            0.0,
-            0.0,
-        )
-        var init_flex = _fiber_section3d_response_flexibility(init_resp)
-        if not init_flex[0]:
-            return (False, 0.0, 0.0, 0.0, 0.0, 0.0)
-        init_fs11[ip] = init_flex[1]
-        init_fs12[ip] = init_flex[2]
-        init_fs13[ip] = init_flex[3]
-        init_fs22[ip] = init_flex[4]
-        init_fs23[ip] = init_flex[5]
-        init_fs33[ip] = init_flex[6]
-    var predictor_f = Beam3dMat5(fill=0.0)
-    for ip in range(num_int_pts):
+        if need_init_flex:
+            var init_resp = fiber_section3d_set_trial_instance(
+                sec_def, elem_inst_base + ip, 0.0, 0.0, 0.0
+            )
+            var init_flex = _fiber_section3d_response_flexibility(init_resp)
+            if not init_flex[0]:
+                return (False, 0.0, 0.0, 0.0, 0.0, 0.0)
+            scratch.section_init_fs11[ip] = init_flex[1]
+            scratch.section_init_fs12[ip] = init_flex[2]
+            scratch.section_init_fs13[ip] = init_flex[3]
+            scratch.section_init_fs22[ip] = init_flex[4]
+            scratch.section_init_fs23[ip] = init_flex[5]
+            scratch.section_init_fs33[ip] = init_flex[6]
+
         var xi = scratch.integration_cache.xis[ip]
         var wL = scratch.integration_cache.weights[ip] * L
-        var b_mi = xi - 1.0
-        var b_mj = xi
-        var sec_f11 = scratch.section_fs11[ip]
-        var sec_f12 = scratch.section_fs12[ip]
-        var sec_f13 = scratch.section_fs13[ip]
-        var sec_f22 = scratch.section_fs22[ip]
-        var sec_f23 = scratch.section_fs23[ip]
-        var sec_f33 = scratch.section_fs33[ip]
-        predictor_f[_mat5_index(0, 0)] += wL * sec_f11
-        predictor_f[_mat5_index(0, 1)] += wL * sec_f13 * b_mi
-        predictor_f[_mat5_index(0, 2)] += wL * sec_f13 * b_mj
-        predictor_f[_mat5_index(0, 3)] += wL * sec_f12 * b_mi
-        predictor_f[_mat5_index(0, 4)] += wL * sec_f12 * b_mj
-        predictor_f[_mat5_index(1, 0)] += wL * b_mi * sec_f13
-        predictor_f[_mat5_index(1, 1)] += wL * b_mi * sec_f33 * b_mi
-        predictor_f[_mat5_index(1, 2)] += wL * b_mi * sec_f33 * b_mj
-        predictor_f[_mat5_index(1, 3)] += wL * b_mi * sec_f23 * b_mi
-        predictor_f[_mat5_index(1, 4)] += wL * b_mi * sec_f23 * b_mj
-        predictor_f[_mat5_index(2, 0)] += wL * b_mj * sec_f13
-        predictor_f[_mat5_index(2, 1)] += wL * b_mj * sec_f33 * b_mi
-        predictor_f[_mat5_index(2, 2)] += wL * b_mj * sec_f33 * b_mj
-        predictor_f[_mat5_index(2, 3)] += wL * b_mj * sec_f23 * b_mi
-        predictor_f[_mat5_index(2, 4)] += wL * b_mj * sec_f23 * b_mj
-        predictor_f[_mat5_index(3, 0)] += wL * b_mi * sec_f12
-        predictor_f[_mat5_index(3, 1)] += wL * b_mi * sec_f23 * b_mi
-        predictor_f[_mat5_index(3, 2)] += wL * b_mi * sec_f23 * b_mj
-        predictor_f[_mat5_index(3, 3)] += wL * b_mi * sec_f22 * b_mi
-        predictor_f[_mat5_index(3, 4)] += wL * b_mi * sec_f22 * b_mj
-        predictor_f[_mat5_index(4, 0)] += wL * b_mj * sec_f12
-        predictor_f[_mat5_index(4, 1)] += wL * b_mj * sec_f23 * b_mi
-        predictor_f[_mat5_index(4, 2)] += wL * b_mj * sec_f23 * b_mj
-        predictor_f[_mat5_index(4, 3)] += wL * b_mj * sec_f22 * b_mi
-        predictor_f[_mat5_index(4, 4)] += wL * b_mj * sec_f22 * b_mj
+        _accum_basic_flexibility_ip(
+            predictor_f, wL, xi - 1.0, xi, sf11, sf12, sf13, sf22, sf23, sf33
+        )
+
     var predictor_f_copy = predictor_f
     if _invert_5x5_flat_into(predictor_f_copy, scratch.k_basic_flat):
         q0 += (
-            scratch.k_basic_flat[_mat5_index(0, 0)] * dv_trial0
-            + scratch.k_basic_flat[_mat5_index(0, 1)] * dv_trial1
-            + scratch.k_basic_flat[_mat5_index(0, 2)] * dv_trial2
-            + scratch.k_basic_flat[_mat5_index(0, 3)] * dv_trial3
-            + scratch.k_basic_flat[_mat5_index(0, 4)] * dv_trial4
+            scratch.k_basic_flat[0] * dv_trial0
+            + scratch.k_basic_flat[1] * dv_trial1
+            + scratch.k_basic_flat[2] * dv_trial2
+            + scratch.k_basic_flat[3] * dv_trial3
+            + scratch.k_basic_flat[4] * dv_trial4
         )
         q1 += (
-            scratch.k_basic_flat[_mat5_index(1, 0)] * dv_trial0
-            + scratch.k_basic_flat[_mat5_index(1, 1)] * dv_trial1
-            + scratch.k_basic_flat[_mat5_index(1, 2)] * dv_trial2
-            + scratch.k_basic_flat[_mat5_index(1, 3)] * dv_trial3
-            + scratch.k_basic_flat[_mat5_index(1, 4)] * dv_trial4
+            scratch.k_basic_flat[5] * dv_trial0
+            + scratch.k_basic_flat[6] * dv_trial1
+            + scratch.k_basic_flat[7] * dv_trial2
+            + scratch.k_basic_flat[8] * dv_trial3
+            + scratch.k_basic_flat[9] * dv_trial4
         )
         q2 += (
-            scratch.k_basic_flat[_mat5_index(2, 0)] * dv_trial0
-            + scratch.k_basic_flat[_mat5_index(2, 1)] * dv_trial1
-            + scratch.k_basic_flat[_mat5_index(2, 2)] * dv_trial2
-            + scratch.k_basic_flat[_mat5_index(2, 3)] * dv_trial3
-            + scratch.k_basic_flat[_mat5_index(2, 4)] * dv_trial4
+            scratch.k_basic_flat[10] * dv_trial0
+            + scratch.k_basic_flat[11] * dv_trial1
+            + scratch.k_basic_flat[12] * dv_trial2
+            + scratch.k_basic_flat[13] * dv_trial3
+            + scratch.k_basic_flat[14] * dv_trial4
         )
         q3 += (
-            scratch.k_basic_flat[_mat5_index(3, 0)] * dv_trial0
-            + scratch.k_basic_flat[_mat5_index(3, 1)] * dv_trial1
-            + scratch.k_basic_flat[_mat5_index(3, 2)] * dv_trial2
-            + scratch.k_basic_flat[_mat5_index(3, 3)] * dv_trial3
-            + scratch.k_basic_flat[_mat5_index(3, 4)] * dv_trial4
+            scratch.k_basic_flat[15] * dv_trial0
+            + scratch.k_basic_flat[16] * dv_trial1
+            + scratch.k_basic_flat[17] * dv_trial2
+            + scratch.k_basic_flat[18] * dv_trial3
+            + scratch.k_basic_flat[19] * dv_trial4
         )
         q4 += (
-            scratch.k_basic_flat[_mat5_index(4, 0)] * dv_trial0
-            + scratch.k_basic_flat[_mat5_index(4, 1)] * dv_trial1
-            + scratch.k_basic_flat[_mat5_index(4, 2)] * dv_trial2
-            + scratch.k_basic_flat[_mat5_index(4, 3)] * dv_trial3
-            + scratch.k_basic_flat[_mat5_index(4, 4)] * dv_trial4
+            scratch.k_basic_flat[20] * dv_trial0
+            + scratch.k_basic_flat[21] * dv_trial1
+            + scratch.k_basic_flat[22] * dv_trial2
+            + scratch.k_basic_flat[23] * dv_trial3
+            + scratch.k_basic_flat[24] * dv_trial4
         )
 
     var num_elem_iters = max_elem_iters
@@ -1382,7 +1295,11 @@ fn _force_beam_column3d_try_increment(
 
     for elem_iter in range(num_elem_iters):
         _zero_static_tuple(scratch.f_basic_flat)
-        _zero_static_tuple(scratch.v_from)
+        var v_from_0 = 0.0
+        var v_from_1 = 0.0
+        var v_from_2 = 0.0
+        var v_from_3 = 0.0
+        var v_from_4 = 0.0
         var use_initial_flex = use_initial_section_flexibility == 1 or (
             use_initial_section_flexibility == 2 and elem_iter == 0
         )
@@ -1391,9 +1308,19 @@ fn _force_beam_column3d_try_increment(
             var wL = scratch.integration_cache.weights[ip] * L
             var b_mi = xi - 1.0
             var b_mj = xi
-            var axial_target = q0 + scratch.section_load_axial[ip]
-            var moment_z_target = b_mi * q1 + b_mj * q2 + scratch.section_load_mz[ip]
-            var moment_y_target = b_mi * q3 + b_mj * q4 + scratch.section_load_my[ip]
+            var axial_target = q0
+            var moment_z_target = b_mi * q1 + b_mj * q2
+            var moment_y_target = b_mi * q3 + b_mj * q4
+            if has_elem_loads:
+                if section_load_offset >= 0:
+                    axial_target += scratch.section_load_axial_pool[section_load_offset + ip]
+                    moment_y_target += scratch.section_load_my_pool[section_load_offset + ip]
+                    moment_z_target += scratch.section_load_mz_pool[section_load_offset + ip]
+                else:
+                    axial_target += scratch.section_load_axial[ip]
+                    moment_y_target += scratch.section_load_my[ip]
+                    moment_z_target += scratch.section_load_mz[ip]
+
             var dss0 = axial_target - scratch.section_ssr_subdivide_axial[ip]
             var dss1 = moment_y_target - scratch.section_ssr_subdivide_my[ip]
             var dss2 = moment_z_target - scratch.section_ssr_subdivide_mz[ip]
@@ -1405,12 +1332,12 @@ fn _force_beam_column3d_try_increment(
             var solve_f23: Float64
             var solve_f33: Float64
             if use_initial_flex:
-                solve_f11 = init_fs11[ip]
-                solve_f12 = init_fs12[ip]
-                solve_f13 = init_fs13[ip]
-                solve_f22 = init_fs22[ip]
-                solve_f23 = init_fs23[ip]
-                solve_f33 = init_fs33[ip]
+                solve_f11 = scratch.section_init_fs11[ip]
+                solve_f12 = scratch.section_init_fs12[ip]
+                solve_f13 = scratch.section_init_fs13[ip]
+                solve_f22 = scratch.section_init_fs22[ip]
+                solve_f23 = scratch.section_init_fs23[ip]
+                solve_f33 = scratch.section_init_fs33[ip]
             else:
                 solve_f11 = scratch.section_fs_subdivide11[ip]
                 solve_f12 = scratch.section_fs_subdivide12[ip]
@@ -1425,15 +1352,8 @@ fn _force_beam_column3d_try_increment(
             var sec_vs0 = scratch.section_vs_subdivide_eps0[ip] + dvs0
             var sec_vs1 = scratch.section_vs_subdivide_ky[ip] + dvs1
             var sec_vs2 = scratch.section_vs_subdivide_kz[ip] + dvs2
-            var ip_state_offset = elem_state_offset + ip * fibers_per_section
-            var resp_trial = _fiber_section3d_set_trial_from_offset(
-                sec_def,
-                uniaxial_states,
-                ip_state_offset,
-                fibers_per_section,
-                sec_vs0,
-                sec_vs1,
-                sec_vs2,
+            var resp_trial = fiber_section3d_set_trial_instance(
+                sec_def, elem_inst_base + ip, sec_vs0, sec_vs1, sec_vs2
             )
             scratch.section_vs_subdivide_eps0[ip] = sec_vs0
             scratch.section_vs_subdivide_ky[ip] = sec_vs1
@@ -1444,105 +1364,82 @@ fn _force_beam_column3d_try_increment(
             var sec_flex = _fiber_section3d_response_flexibility(resp_trial)
             if not sec_flex[0]:
                 return (False, 0.0, 0.0, 0.0, 0.0, 0.0)
-            scratch.section_fs_subdivide11[ip] = sec_flex[1]
-            scratch.section_fs_subdivide12[ip] = sec_flex[2]
-            scratch.section_fs_subdivide13[ip] = sec_flex[3]
-            scratch.section_fs_subdivide22[ip] = sec_flex[4]
-            scratch.section_fs_subdivide23[ip] = sec_flex[5]
-            scratch.section_fs_subdivide33[ip] = sec_flex[6]
+            var sf11 = sec_flex[1]
+            var sf12 = sec_flex[2]
+            var sf13 = sec_flex[3]
+            var sf22 = sec_flex[4]
+            var sf23 = sec_flex[5]
+            var sf33 = sec_flex[6]
+            scratch.section_fs_subdivide11[ip] = sf11
+            scratch.section_fs_subdivide12[ip] = sf12
+            scratch.section_fs_subdivide13[ip] = sf13
+            scratch.section_fs_subdivide22[ip] = sf22
+            scratch.section_fs_subdivide23[ip] = sf23
+            scratch.section_fs_subdivide33[ip] = sf33
 
-            var dss_res0 = axial_target - scratch.section_ssr_subdivide_axial[ip]
-            var dss_res1 = moment_y_target - scratch.section_ssr_subdivide_my[ip]
-            var dss_res2 = moment_z_target - scratch.section_ssr_subdivide_mz[ip]
-            var dvs_res0 = sec_flex[1] * dss_res0 + sec_flex[2] * dss_res1 + sec_flex[3] * dss_res2
-            var dvs_res1 = sec_flex[2] * dss_res0 + sec_flex[4] * dss_res1 + sec_flex[5] * dss_res2
-            var dvs_res2 = sec_flex[3] * dss_res0 + sec_flex[5] * dss_res1 + sec_flex[6] * dss_res2
+            var dss_res0 = axial_target - resp_trial.axial_force
+            var dss_res1 = moment_y_target - resp_trial.moment_y
+            var dss_res2 = moment_z_target - resp_trial.moment_z
+            var dvs_res0 = sf11 * dss_res0 + sf12 * dss_res1 + sf13 * dss_res2
+            var dvs_res1 = sf12 * dss_res0 + sf22 * dss_res1 + sf23 * dss_res2
+            var dvs_res2 = sf13 * dss_res0 + sf23 * dss_res1 + sf33 * dss_res2
 
-            scratch.v_from[0] += wL * (sec_vs0 + dvs_res0)
-            scratch.v_from[1] += wL * b_mi * (sec_vs2 + dvs_res2)
-            scratch.v_from[2] += wL * b_mj * (sec_vs2 + dvs_res2)
-            scratch.v_from[3] += wL * b_mi * (sec_vs1 + dvs_res1)
-            scratch.v_from[4] += wL * b_mj * (sec_vs1 + dvs_res1)
+            var tot_vs0 = sec_vs0 + dvs_res0
+            var tot_vs1 = sec_vs1 + dvs_res1
+            var tot_vs2 = sec_vs2 + dvs_res2
+            v_from_0 += wL * tot_vs0
+            v_from_1 += wL * b_mi * tot_vs2
+            v_from_2 += wL * b_mj * tot_vs2
+            v_from_3 += wL * b_mi * tot_vs1
+            v_from_4 += wL * b_mj * tot_vs1
 
-            for a in range(5):
-                var Ba_n = 0.0
-                var Ba_my = 0.0
-                var Ba_mz = 0.0
-                if a == 0:
-                    Ba_n = 1.0
-                elif a == 1:
-                    Ba_mz = b_mi
-                elif a == 2:
-                    Ba_mz = b_mj
-                elif a == 3:
-                    Ba_my = b_mi
-                else:
-                    Ba_my = b_mj
-                for b in range(5):
-                    var Bb_n = 0.0
-                    var Bb_my = 0.0
-                    var Bb_mz = 0.0
-                    if b == 0:
-                        Bb_n = 1.0
-                    elif b == 1:
-                        Bb_mz = b_mi
-                    elif b == 2:
-                        Bb_mz = b_mj
-                    elif b == 3:
-                        Bb_my = b_mi
-                    else:
-                        Bb_my = b_mj
-                    var dEps = sec_flex[1] * Bb_n + sec_flex[2] * Bb_my + sec_flex[3] * Bb_mz
-                    var dKy = sec_flex[2] * Bb_n + sec_flex[4] * Bb_my + sec_flex[5] * Bb_mz
-                    var dKz = sec_flex[3] * Bb_n + sec_flex[5] * Bb_my + sec_flex[6] * Bb_mz
-                    scratch.f_basic_flat[_mat5_index(a, b)] += wL * (
-                        Ba_n * dEps + Ba_my * dKy + Ba_mz * dKz
-                    )
-        _zero_static_tuple(scratch.f_basic_copy_flat)
-        for i in range(25):
-            scratch.f_basic_copy_flat[i] = scratch.f_basic_flat[i]
+            _accum_basic_flexibility_ip(
+                scratch.f_basic_flat, wL, b_mi, b_mj, sf11, sf12, sf13, sf22, sf23, sf33
+            )
+
+        scratch.f_basic_copy_flat = scratch.f_basic_flat
         if not _invert_5x5_flat_into(scratch.f_basic_copy_flat, scratch.k_basic_flat):
             return (False, 0.0, 0.0, 0.0, 0.0, 0.0)
 
-        var residual_0 = target_v0 - scratch.v_from[0]
-        var residual_1 = target_v1 - scratch.v_from[1]
-        var residual_2 = target_v2 - scratch.v_from[2]
-        var residual_3 = target_v3 - scratch.v_from[3]
-        var residual_4 = target_v4 - scratch.v_from[4]
+        var residual_0 = target_v0 - v_from_0
+        var residual_1 = target_v1 - v_from_1
+        var residual_2 = target_v2 - v_from_2
+        var residual_3 = target_v3 - v_from_3
+        var residual_4 = target_v4 - v_from_4
         var dq0 = (
-            scratch.k_basic_flat[_mat5_index(0, 0)] * residual_0
-            + scratch.k_basic_flat[_mat5_index(0, 1)] * residual_1
-            + scratch.k_basic_flat[_mat5_index(0, 2)] * residual_2
-            + scratch.k_basic_flat[_mat5_index(0, 3)] * residual_3
-            + scratch.k_basic_flat[_mat5_index(0, 4)] * residual_4
+            scratch.k_basic_flat[0] * residual_0
+            + scratch.k_basic_flat[1] * residual_1
+            + scratch.k_basic_flat[2] * residual_2
+            + scratch.k_basic_flat[3] * residual_3
+            + scratch.k_basic_flat[4] * residual_4
         )
         var dq1 = (
-            scratch.k_basic_flat[_mat5_index(1, 0)] * residual_0
-            + scratch.k_basic_flat[_mat5_index(1, 1)] * residual_1
-            + scratch.k_basic_flat[_mat5_index(1, 2)] * residual_2
-            + scratch.k_basic_flat[_mat5_index(1, 3)] * residual_3
-            + scratch.k_basic_flat[_mat5_index(1, 4)] * residual_4
+            scratch.k_basic_flat[5] * residual_0
+            + scratch.k_basic_flat[6] * residual_1
+            + scratch.k_basic_flat[7] * residual_2
+            + scratch.k_basic_flat[8] * residual_3
+            + scratch.k_basic_flat[9] * residual_4
         )
         var dq2 = (
-            scratch.k_basic_flat[_mat5_index(2, 0)] * residual_0
-            + scratch.k_basic_flat[_mat5_index(2, 1)] * residual_1
-            + scratch.k_basic_flat[_mat5_index(2, 2)] * residual_2
-            + scratch.k_basic_flat[_mat5_index(2, 3)] * residual_3
-            + scratch.k_basic_flat[_mat5_index(2, 4)] * residual_4
+            scratch.k_basic_flat[10] * residual_0
+            + scratch.k_basic_flat[11] * residual_1
+            + scratch.k_basic_flat[12] * residual_2
+            + scratch.k_basic_flat[13] * residual_3
+            + scratch.k_basic_flat[14] * residual_4
         )
         var dq3 = (
-            scratch.k_basic_flat[_mat5_index(3, 0)] * residual_0
-            + scratch.k_basic_flat[_mat5_index(3, 1)] * residual_1
-            + scratch.k_basic_flat[_mat5_index(3, 2)] * residual_2
-            + scratch.k_basic_flat[_mat5_index(3, 3)] * residual_3
-            + scratch.k_basic_flat[_mat5_index(3, 4)] * residual_4
+            scratch.k_basic_flat[15] * residual_0
+            + scratch.k_basic_flat[16] * residual_1
+            + scratch.k_basic_flat[17] * residual_2
+            + scratch.k_basic_flat[18] * residual_3
+            + scratch.k_basic_flat[19] * residual_4
         )
         var dq4 = (
-            scratch.k_basic_flat[_mat5_index(4, 0)] * residual_0
-            + scratch.k_basic_flat[_mat5_index(4, 1)] * residual_1
-            + scratch.k_basic_flat[_mat5_index(4, 2)] * residual_2
-            + scratch.k_basic_flat[_mat5_index(4, 3)] * residual_3
-            + scratch.k_basic_flat[_mat5_index(4, 4)] * residual_4
+            scratch.k_basic_flat[20] * residual_0
+            + scratch.k_basic_flat[21] * residual_1
+            + scratch.k_basic_flat[22] * residual_2
+            + scratch.k_basic_flat[23] * residual_3
+            + scratch.k_basic_flat[24] * residual_4
         )
         var work_norm = abs(
             residual_0 * dq0
@@ -1582,26 +1479,12 @@ fn _force_beam_column3d_try_increment(
     return (False, 0.0, 0.0, 0.0, 0.0, 0.0)
 
 
+@always_inline
 fn _force_beam_column3d_basic_state(
-    u_local: List[Float64], L: Float64
+    u_local: Beam3dVec12, inv_L: Float64
 ) -> (Float64, Float64, Float64, Float64, Float64, Float64):
-    var chord_z = (u_local[7] - u_local[1]) / L
-    var chord_y = (u_local[8] - u_local[2]) / L
-    return (
-        u_local[6] - u_local[0],
-        u_local[5] - chord_z,
-        u_local[11] - chord_z,
-        u_local[4] + chord_y,
-        u_local[10] + chord_y,
-        u_local[9] - u_local[3],
-    )
-
-
-fn _force_beam_column3d_basic_state(
-    u_local: Beam3dVec12, L: Float64
-) -> (Float64, Float64, Float64, Float64, Float64, Float64):
-    var chord_z = (u_local[7] - u_local[1]) / L
-    var chord_y = (u_local[8] - u_local[2]) / L
+    var chord_z = (u_local[7] - u_local[1]) * inv_L
+    var chord_y = (u_local[8] - u_local[2]) * inv_L
     return (
         u_local[6] - u_local[0],
         u_local[5] - chord_z,
@@ -1943,14 +1826,19 @@ fn force_beam_column3d_global_tangent_and_internal(
     _ensure_force_beam_column3d_geometry_cache(
         elem_index, x1, y1, z1, x2, y2, z2, has_vecxz, vecxz_x, vecxz_y, vecxz_z, scratch
     )
-    var dx = x2 - x1
-    var dy = y2 - y1
-    var dz = z2 - z1
-    var L = sqrt(dx * dx + dy * dy + dz * dz)
+    var L: Float64
+    var inv_L: Float64
     if elem_index >= 0 and elem_index < len(scratch.cached_length):
         L = scratch.cached_length[elem_index]
-    if L == 0.0:
-        abort("zero-length element")
+        inv_L = scratch.cached_inv_length[elem_index]
+    else:
+        var dx = x2 - x1
+        var dy = y2 - y1
+        var dz = z2 - z1
+        L = sqrt(dx * dx + dy * dy + dz * dz)
+        if L == 0.0:
+            abort("zero-length element")
+        inv_L = 1.0 / L
 
     if geom_transf == "Corotational":
         _element_rotation_into_static(
@@ -1987,22 +1875,65 @@ fn force_beam_column3d_global_tangent_and_internal(
             scratch.R,
         )
     _beam3d_transform_u_global_to_local_static(scratch.R, u_elem_global, scratch.u_local)
-    var fixed_end = beam3d_basic_fixed_end_and_reactions(
-        element_loads, elem_load_offsets, elem_load_pool, elem_index, load_scale, L
+
+    var fe0 = 0.0
+    var fe1 = 0.0
+    var fe2 = 0.0
+    var fe3 = 0.0
+    var fe4 = 0.0
+    var fe5 = 0.0
+    var fe6 = 0.0
+    var fe7 = 0.0
+    var fe8 = 0.0
+    var fe9 = 0.0
+    var has_elem_loads = (
+        elem_index >= 0
+        and load_scale != 0.0
+        and elem_index + 1 < len(elem_load_offsets)
+        and elem_load_offsets[elem_index] < elem_load_offsets[elem_index + 1]
     )
-    if elem_index >= 0 and elem_index < len(scratch.fixed_end_cache):
-        fixed_end = (
-            scratch.fixed_end_cache[elem_index][0],
-            scratch.fixed_end_cache[elem_index][1],
-            scratch.fixed_end_cache[elem_index][2],
-            scratch.fixed_end_cache[elem_index][3],
-            scratch.fixed_end_cache[elem_index][4],
-            scratch.fixed_end_cache[elem_index][5],
-            scratch.fixed_end_cache[elem_index][6],
-            scratch.fixed_end_cache[elem_index][7],
-            scratch.fixed_end_cache[elem_index][8],
-            scratch.fixed_end_cache[elem_index][9],
-        )
+    if has_elem_loads:
+        if elem_index < len(scratch.load_valid) and scratch.load_valid[elem_index]:
+            ref fe = scratch.fixed_end_cache[elem_index]
+            fe0 = fe[0]
+            fe1 = fe[1]
+            fe2 = fe[2]
+            fe3 = fe[3]
+            fe4 = fe[4]
+            fe5 = fe[5]
+            fe6 = fe[6]
+            fe7 = fe[7]
+            fe8 = fe[8]
+            fe9 = fe[9]
+        else:
+            var fixed = beam3d_basic_fixed_end_and_reactions(
+                element_loads, elem_load_offsets, elem_load_pool, elem_index, load_scale, L
+            )
+            fe0 = fixed[0]
+            fe1 = fixed[1]
+            fe2 = fixed[2]
+            fe3 = fixed[3]
+            fe4 = fixed[4]
+            fe5 = fixed[5]
+            fe6 = fixed[6]
+            fe7 = fixed[7]
+            fe8 = fixed[8]
+            fe9 = fixed[9]
+            if elem_index < len(scratch.fixed_end_cache):
+                var fe_cache = Beam3dVec10(fill=0.0)
+                fe_cache[0] = fe0
+                fe_cache[1] = fe1
+                fe_cache[2] = fe2
+                fe_cache[3] = fe3
+                fe_cache[4] = fe4
+                fe_cache[5] = fe5
+                fe_cache[6] = fe6
+                fe_cache[7] = fe7
+                fe_cache[8] = fe8
+                fe_cache[9] = fe9
+                scratch.fixed_end_cache[elem_index] = fe_cache
+                scratch.load_has_nonzero[elem_index] = True
+                scratch.load_valid[elem_index] = True
 
     var v_basic_0: Float64
     var v_basic_1: Float64
@@ -2017,112 +1948,49 @@ fn force_beam_column3d_global_tangent_and_internal(
         v_basic_3,
         v_basic_4,
         torsion_basic,
-    ) = _force_beam_column3d_basic_state(scratch.u_local, L)
-    var q_basic_0 = (E * A / L) * v_basic_0 + fixed_end[0]
-    var q_basic_1 = (E * Iz / L) * (4.0 * v_basic_1 + 2.0 * v_basic_2) + fixed_end[1]
-    var q_basic_2 = (E * Iz / L) * (2.0 * v_basic_1 + 4.0 * v_basic_2) + fixed_end[2]
-    var q_basic_3 = (E * Iy / L) * (4.0 * v_basic_3 + 2.0 * v_basic_4) + fixed_end[3]
-    var q_basic_4 = (E * Iy / L) * (2.0 * v_basic_3 + 4.0 * v_basic_4) + fixed_end[4]
-    var q_basic_5 = 0.0
-    if G > 0.0 and J > 0.0:
-        q_basic_5 = (G * J / L) * torsion_basic
-
-    var inv_L = 1.0 / L
-    if elem_index >= 0 and elem_index < len(scratch.cached_inv_length):
-        inv_L = scratch.cached_inv_length[elem_index]
-    _zero_static_tuple(scratch.k_local_flat)
-    var axial_k = E * A / L
-    var flex_z = E * Iz / L
-    var flex_y = E * Iy / L
+    ) = _force_beam_column3d_basic_state(scratch.u_local, inv_L)
+    var axial_k = E * A * inv_L
+    var flex_z = E * Iz * inv_L
+    var flex_y = E * Iy * inv_L
     var torsion_k = 0.0
     if G > 0.0 and J > 0.0:
-        torsion_k = G * J / L
-    var use_cached_basic_coeff = elem_index >= 0 and elem_index < len(scratch.basic_coeff_cache)
-    if use_cached_basic_coeff:
-        var coeff = scratch.basic_coeff_cache[elem_index]
-        for a in range(12):
-            for b in range(12):
-                var a0 = coeff[0 * 12 + a]
-                var a1 = coeff[1 * 12 + a]
-                var a2 = coeff[2 * 12 + a]
-                var a3 = coeff[3 * 12 + a]
-                var a4 = coeff[4 * 12 + a]
-                var a5 = coeff[5 * 12 + a]
-                var b0 = coeff[0 * 12 + b]
-                var b1 = coeff[1 * 12 + b]
-                var b2 = coeff[2 * 12 + b]
-                var b3 = coeff[3 * 12 + b]
-                var b4 = coeff[4 * 12 + b]
-                var b5 = coeff[5 * 12 + b]
-                var idx = _mat12_index(a, b)
-                scratch.k_local_flat[idx] += a0 * axial_k * b0
-                scratch.k_local_flat[idx] += flex_z * (
-                    a1 * (4.0 * b1 + 2.0 * b2) + a2 * (2.0 * b1 + 4.0 * b2)
-                )
-                scratch.k_local_flat[idx] += flex_y * (
-                    a3 * (4.0 * b3 + 2.0 * b4) + a4 * (2.0 * b3 + 4.0 * b4)
-                )
-                if torsion_k != 0.0:
-                    scratch.k_local_flat[idx] += a5 * torsion_k * b5
-    else:
-        for a in range(12):
-            for b in range(12):
-                var a0 = _beam3d_local_basic_coeff(0, a, inv_L)
-                var a1 = _beam3d_local_basic_coeff(1, a, inv_L)
-                var a2 = _beam3d_local_basic_coeff(2, a, inv_L)
-                var a3 = _beam3d_local_basic_coeff(3, a, inv_L)
-                var a4 = _beam3d_local_basic_coeff(4, a, inv_L)
-                var a5 = _beam3d_local_basic_coeff(5, a, inv_L)
-                var b0 = _beam3d_local_basic_coeff(0, b, inv_L)
-                var b1 = _beam3d_local_basic_coeff(1, b, inv_L)
-                var b2 = _beam3d_local_basic_coeff(2, b, inv_L)
-                var b3 = _beam3d_local_basic_coeff(3, b, inv_L)
-                var b4 = _beam3d_local_basic_coeff(4, b, inv_L)
-                var b5 = _beam3d_local_basic_coeff(5, b, inv_L)
-                var idx = _mat12_index(a, b)
-                scratch.k_local_flat[idx] += a0 * axial_k * b0
-                scratch.k_local_flat[idx] += flex_z * (
-                    a1 * (4.0 * b1 + 2.0 * b2) + a2 * (2.0 * b1 + 4.0 * b2)
-                )
-                scratch.k_local_flat[idx] += flex_y * (
-                    a3 * (4.0 * b3 + 2.0 * b4) + a4 * (2.0 * b3 + 4.0 * b4)
-                )
-                if torsion_k != 0.0:
-                    scratch.k_local_flat[idx] += a5 * torsion_k * b5
+        torsion_k = G * J * inv_L
+
+    var q_basic_0 = axial_k * v_basic_0 + fe0
+    var q_basic_1 = flex_z * (4.0 * v_basic_1 + 2.0 * v_basic_2) + fe1
+    var q_basic_2 = flex_z * (2.0 * v_basic_1 + 4.0 * v_basic_2) + fe2
+    var q_basic_3 = flex_y * (4.0 * v_basic_3 + 2.0 * v_basic_4) + fe3
+    var q_basic_4 = flex_y * (2.0 * v_basic_3 + 4.0 * v_basic_4) + fe4
+    var q_basic_5 = torsion_k * torsion_basic
+
+    _zero_static_tuple(scratch.k_basic_flat)
+    scratch.k_basic_flat[0] = axial_k
+    scratch.k_basic_flat[6] = 4.0 * flex_z
+    scratch.k_basic_flat[7] = 2.0 * flex_z
+    scratch.k_basic_flat[11] = 2.0 * flex_z
+    scratch.k_basic_flat[12] = 4.0 * flex_z
+    scratch.k_basic_flat[18] = 4.0 * flex_y
+    scratch.k_basic_flat[19] = 2.0 * flex_y
+    scratch.k_basic_flat[23] = 2.0 * flex_y
+    scratch.k_basic_flat[24] = 4.0 * flex_y
+    _beam3d_assemble_local_stiffness_from_basic(
+        scratch.k_basic_flat, inv_L, torsion_k, scratch.k_local_flat
+    )
 
     if geom_transf == "PDelta" or geom_transf == "Corotational":
-        scratch.k_local_flat[_mat12_index(1, 1)] += q_basic_0 / L
-        scratch.k_local_flat[_mat12_index(1, 7)] -= q_basic_0 / L
-        scratch.k_local_flat[_mat12_index(7, 1)] -= q_basic_0 / L
-        scratch.k_local_flat[_mat12_index(7, 7)] += q_basic_0 / L
-        scratch.k_local_flat[_mat12_index(2, 2)] += q_basic_0 / L
-        scratch.k_local_flat[_mat12_index(2, 8)] -= q_basic_0 / L
-        scratch.k_local_flat[_mat12_index(8, 2)] -= q_basic_0 / L
-        scratch.k_local_flat[_mat12_index(8, 8)] += q_basic_0 / L
+        _beam3d_add_axial_geometric_stiffness_flat(scratch.k_local_flat, q_basic_0, inv_L)
 
-    _zero_static_tuple(scratch.f_local)
-    if use_cached_basic_coeff:
-        var coeff = scratch.basic_coeff_cache[elem_index]
-        for a in range(12):
-            scratch.f_local[a] += coeff[0 * 12 + a] * q_basic_0
-            scratch.f_local[a] += coeff[1 * 12 + a] * q_basic_1
-            scratch.f_local[a] += coeff[2 * 12 + a] * q_basic_2
-            scratch.f_local[a] += coeff[3 * 12 + a] * q_basic_3
-            scratch.f_local[a] += coeff[4 * 12 + a] * q_basic_4
-            scratch.f_local[a] += coeff[5 * 12 + a] * q_basic_5
-    else:
-        for a in range(12):
-            scratch.f_local[a] += _beam3d_local_basic_coeff(0, a, inv_L) * q_basic_0
-            scratch.f_local[a] += _beam3d_local_basic_coeff(1, a, inv_L) * q_basic_1
-            scratch.f_local[a] += _beam3d_local_basic_coeff(2, a, inv_L) * q_basic_2
-            scratch.f_local[a] += _beam3d_local_basic_coeff(3, a, inv_L) * q_basic_3
-            scratch.f_local[a] += _beam3d_local_basic_coeff(4, a, inv_L) * q_basic_4
-            scratch.f_local[a] += _beam3d_local_basic_coeff(5, a, inv_L) * q_basic_5
-    scratch.f_local[0] += fixed_end[5]
-    scratch.f_local[1] += fixed_end[6]
-    scratch.f_local[2] += fixed_end[8]
-    scratch.f_local[7] += fixed_end[7]
-    scratch.f_local[8] += fixed_end[9]
+    _beam3d_assemble_local_force_from_basic(
+        q_basic_0, q_basic_1, q_basic_2, q_basic_3, q_basic_4, q_basic_5, inv_L, scratch.f_local
+    )
+    if has_elem_loads:
+        scratch.f_local[0] += fe5
+        scratch.f_local[1] += fe6
+        scratch.f_local[2] += fe8
+        scratch.f_local[7] += fe7
+        scratch.f_local[8] += fe9
+    if geom_transf == "PDelta" or geom_transf == "Corotational":
+        _beam3d_add_axial_geometric_force(scratch.f_local, scratch.u_local, q_basic_0, inv_L)
 
     _beam3d_transform_stiffness_local_to_global_flat(
         scratch.R, scratch.k_local_flat, scratch.k_work_flat, k_global_out
@@ -2139,7 +2007,7 @@ fn force_beam_column3d_fiber_global_tangent_and_internal(
     z2: Float64,
     u_elem_global: List[Float64],
     geom_transf: String,
-    sec_def: FiberSection3dDef,
+    mut sec_def: FiberSection3dDef,
     fibers: List[FiberCell],
     uniaxial_defs: List[UniMaterialDef],
     mut uniaxial_states: List[UniMaterialState],
@@ -2203,7 +2071,7 @@ fn force_beam_column3d_fiber_global_tangent_and_internal(
     vecxz_x: Float64,
     vecxz_y: Float64,
     vecxz_z: Float64,
-    sec_def: FiberSection3dDef,
+    mut sec_def: FiberSection3dDef,
     fibers: List[FiberCell],
     uniaxial_defs: List[UniMaterialDef],
     mut uniaxial_states: List[UniMaterialState],
@@ -2271,7 +2139,7 @@ fn force_beam_column3d_fiber_global_tangent_and_internal(
     z2: Float64,
     u_elem_global: List[Float64],
     geom_transf: String,
-    sec_def: FiberSection3dDef,
+    mut sec_def: FiberSection3dDef,
     fibers: List[FiberCell],
     uniaxial_defs: List[UniMaterialDef],
     mut uniaxial_states: List[UniMaterialState],
@@ -2333,7 +2201,7 @@ fn force_beam_column3d_fiber_global_tangent_and_internal(
     vecxz_x: Float64,
     vecxz_y: Float64,
     vecxz_z: Float64,
-    sec_def: FiberSection3dDef,
+    mut sec_def: FiberSection3dDef,
     fibers: List[FiberCell],
     uniaxial_defs: List[UniMaterialDef],
     mut uniaxial_states: List[UniMaterialState],
@@ -2398,7 +2266,7 @@ fn force_beam_column3d_fiber_global_tangent_and_internal(
     elem_load_offsets: List[Int],
     elem_load_pool: List[Int],
     load_scale: Float64,
-    sec_def: FiberSection3dDef,
+    mut sec_def: FiberSection3dDef,
     fibers: List[FiberCell],
     uniaxial_defs: List[UniMaterialDef],
     mut uniaxial_states: List[UniMaterialState],
@@ -2470,7 +2338,7 @@ fn force_beam_column3d_fiber_global_tangent_and_internal(
     elem_load_offsets: List[Int],
     elem_load_pool: List[Int],
     load_scale: Float64,
-    sec_def: FiberSection3dDef,
+    mut sec_def: FiberSection3dDef,
     fibers: List[FiberCell],
     uniaxial_defs: List[UniMaterialDef],
     mut uniaxial_states: List[UniMaterialState],
@@ -2544,7 +2412,7 @@ fn force_beam_column3d_fiber_global_tangent_and_internal(
     elem_load_offsets: List[Int],
     elem_load_pool: List[Int],
     load_scale: Float64,
-    sec_def: FiberSection3dDef,
+    mut sec_def: FiberSection3dDef,
     fibers: List[FiberCell],
     uniaxial_defs: List[UniMaterialDef],
     mut uniaxial_states: List[UniMaterialState],
@@ -2565,6 +2433,14 @@ fn force_beam_column3d_fiber_global_tangent_and_internal(
     var fibers_per_section = sec_def.fiber_count
     if elem_state_count != num_int_pts * fibers_per_section:
         abort("forceBeamColumn3d element state count mismatch")
+
+    var local_state_offset = elem_state_offset - sec_def.runtime_state_offset_base
+    if (
+        local_state_offset < 0
+        or local_state_offset + elem_state_count > sec_def.runtime_state_count
+    ):
+        abort("forceBeamColumn3d section states out of range")
+    var elem_inst_base = local_state_offset // fibers_per_section
 
     var predictor_state_count = 5 + 3 * num_int_pts
     if force_basic_q_count < predictor_state_count:
@@ -2587,14 +2463,19 @@ fn force_beam_column3d_fiber_global_tangent_and_internal(
         load_scale,
         scratch,
     )
-    var dx = x2 - x1
-    var dy = y2 - y1
-    var dz = z2 - z1
-    var L = sqrt(dx * dx + dy * dy + dz * dz)
+    var L: Float64
+    var inv_L: Float64
     if elem_index >= 0 and elem_index < len(scratch.cached_length):
         L = scratch.cached_length[elem_index]
-    if L == 0.0:
-        abort("zero-length element")
+        inv_L = scratch.cached_inv_length[elem_index]
+    else:
+        var dx = x2 - x1
+        var dy = y2 - y1
+        var dz = z2 - z1
+        L = sqrt(dx * dx + dy * dy + dz * dz)
+        if L == 0.0:
+            abort("zero-length element")
+        inv_L = 1.0 / L
 
     if geom_transf == "Corotational":
         _element_rotation_into_static(
@@ -2633,29 +2514,55 @@ fn force_beam_column3d_fiber_global_tangent_and_internal(
     _beam3d_transform_u_global_to_local_static(scratch.R, u_elem_global, scratch.u_local)
 
     beam_integration_cache_ensure(scratch.integration_cache, integration, num_int_pts)
-    scratch.section_load_axial.resize(num_int_pts, 0.0)
-    scratch.section_load_my.resize(num_int_pts, 0.0)
-    scratch.section_load_mz.resize(num_int_pts, 0.0)
-    for ip in range(num_int_pts):
-        scratch.section_load_axial[ip] = scratch.section_load_axial_cache[elem_index][ip]
-        scratch.section_load_my[ip] = scratch.section_load_my_cache[elem_index][ip]
-        scratch.section_load_mz[ip] = scratch.section_load_mz_cache[elem_index][ip]
-    var fixed_end = beam3d_basic_fixed_end_and_reactions(
-        element_loads, elem_load_offsets, elem_load_pool, elem_index, load_scale, L
-    )
-    if elem_index >= 0 and elem_index < len(scratch.fixed_end_cache):
-        fixed_end = (
-            scratch.fixed_end_cache[elem_index][0],
-            scratch.fixed_end_cache[elem_index][1],
-            scratch.fixed_end_cache[elem_index][2],
-            scratch.fixed_end_cache[elem_index][3],
-            scratch.fixed_end_cache[elem_index][4],
-            scratch.fixed_end_cache[elem_index][5],
-            scratch.fixed_end_cache[elem_index][6],
-            scratch.fixed_end_cache[elem_index][7],
-            scratch.fixed_end_cache[elem_index][8],
-            scratch.fixed_end_cache[elem_index][9],
+    var has_elem_loads: Bool
+    var section_load_offset = -1
+    var fe5 = 0.0
+    var fe6 = 0.0
+    var fe7 = 0.0
+    var fe8 = 0.0
+    var fe9 = 0.0
+    if elem_index >= 0 and elem_index < len(scratch.load_has_nonzero):
+        has_elem_loads = scratch.load_has_nonzero[elem_index]
+        if has_elem_loads:
+            section_load_offset = scratch.section_load_offsets[elem_index]
+            ref fe = scratch.fixed_end_cache[elem_index]
+            fe5 = fe[5]
+            fe6 = fe[6]
+            fe7 = fe[7]
+            fe8 = fe[8]
+            fe9 = fe[9]
+    else:
+        has_elem_loads = (
+            load_scale != 0.0
+            and elem_index >= 0
+            and elem_index + 1 < len(elem_load_offsets)
+            and elem_load_offsets[elem_index] < elem_load_offsets[elem_index + 1]
         )
+        if has_elem_loads:
+            scratch.section_load_axial.resize(num_int_pts, 0.0)
+            scratch.section_load_my.resize(num_int_pts, 0.0)
+            scratch.section_load_mz.resize(num_int_pts, 0.0)
+            for ip in range(num_int_pts):
+                var loads = beam3d_section_load_response(
+                    element_loads,
+                    elem_load_offsets,
+                    elem_load_pool,
+                    elem_index,
+                    load_scale,
+                    scratch.integration_cache.xis[ip] * L,
+                    L,
+                )
+                scratch.section_load_axial[ip] = loads[0]
+                scratch.section_load_my[ip] = loads[1]
+                scratch.section_load_mz[ip] = loads[2]
+            var fixed = beam3d_basic_fixed_end_and_reactions(
+                element_loads, elem_load_offsets, elem_load_pool, elem_index, load_scale, L
+            )
+            fe5 = fixed[5]
+            fe6 = fixed[6]
+            fe7 = fixed[7]
+            fe8 = fixed[8]
+            fe9 = fixed[9]
 
     var v_basic_0: Float64
     var v_basic_1: Float64
@@ -2670,7 +2577,7 @@ fn force_beam_column3d_fiber_global_tangent_and_internal(
         v_basic_3,
         v_basic_4,
         torsion_basic,
-    ) = _force_beam_column3d_basic_state(scratch.u_local, L)
+    ) = _force_beam_column3d_basic_state(scratch.u_local, inv_L)
 
     var eps0_offset = force_basic_q_offset + 5
     var ky_offset = eps0_offset + num_int_pts
@@ -2744,13 +2651,10 @@ fn force_beam_column3d_fiber_global_tangent_and_internal(
             var solved = _force_beam_column3d_try_increment(
                 L,
                 sec_def,
-                fibers,
-                uniaxial_defs,
-                uniaxial_states,
-                elem_state_ids,
-                elem_state_offset,
-                fibers_per_section,
+                elem_inst_base,
                 num_int_pts,
+                has_elem_loads,
+                section_load_offset,
                 force_basic_q_state,
                 force_basic_q_offset,
                 scratch,
@@ -2834,139 +2738,26 @@ fn force_beam_column3d_fiber_global_tangent_and_internal(
     var q3 = accepted_q3
     var q4 = accepted_q4
 
-    var inv_L = 1.0 / L
-    if elem_index >= 0 and elem_index < len(scratch.cached_inv_length):
-        inv_L = scratch.cached_inv_length[elem_index]
-    _zero_static_tuple(scratch.k_local_flat)
-    var use_cached_basic_coeff = elem_index >= 0 and elem_index < len(scratch.basic_coeff_cache)
-
-    if use_cached_basic_coeff:
-        var coeff = scratch.basic_coeff_cache[elem_index]
-        for a in range(12):
-            for b in range(12):
-                var a0 = coeff[0 * 12 + a]
-                var a1 = coeff[1 * 12 + a]
-                var a2 = coeff[2 * 12 + a]
-                var a3 = coeff[3 * 12 + a]
-                var a4 = coeff[4 * 12 + a]
-                var b0 = coeff[0 * 12 + b]
-                var b1 = coeff[1 * 12 + b]
-                var b2 = coeff[2 * 12 + b]
-                var b3 = coeff[3 * 12 + b]
-                var b4 = coeff[4 * 12 + b]
-                for i in range(5):
-                    for j in range(5):
-                        var ai = a4
-                        if i == 0:
-                            ai = a0
-                        elif i == 1:
-                            ai = a1
-                        elif i == 2:
-                            ai = a2
-                        elif i == 3:
-                            ai = a3
-                        var bj = b4
-                        if j == 0:
-                            bj = b0
-                        elif j == 1:
-                            bj = b1
-                        elif j == 2:
-                            bj = b2
-                        elif j == 3:
-                            bj = b3
-                        scratch.k_local_flat[_mat12_index(a, b)] += (
-                            ai * scratch.k_basic_flat[_mat5_index(i, j)] * bj
-                        )
-    else:
-        for a in range(12):
-            for b in range(12):
-                var a0 = _beam3d_local_basic_coeff(0, a, inv_L)
-                var a1 = _beam3d_local_basic_coeff(1, a, inv_L)
-                var a2 = _beam3d_local_basic_coeff(2, a, inv_L)
-                var a3 = _beam3d_local_basic_coeff(3, a, inv_L)
-                var a4 = _beam3d_local_basic_coeff(4, a, inv_L)
-                var b0 = _beam3d_local_basic_coeff(0, b, inv_L)
-                var b1 = _beam3d_local_basic_coeff(1, b, inv_L)
-                var b2 = _beam3d_local_basic_coeff(2, b, inv_L)
-                var b3 = _beam3d_local_basic_coeff(3, b, inv_L)
-                var b4 = _beam3d_local_basic_coeff(4, b, inv_L)
-                for i in range(5):
-                    for j in range(5):
-                        var ai = a4
-                        if i == 0:
-                            ai = a0
-                        elif i == 1:
-                            ai = a1
-                        elif i == 2:
-                            ai = a2
-                        elif i == 3:
-                            ai = a3
-                        var bj = b4
-                        if j == 0:
-                            bj = b0
-                        elif j == 1:
-                            bj = b1
-                        elif j == 2:
-                            bj = b2
-                        elif j == 3:
-                            bj = b3
-                        scratch.k_local_flat[_mat12_index(a, b)] += (
-                            ai * scratch.k_basic_flat[_mat5_index(i, j)] * bj
-                        )
+    var torsion_k = 0.0
     if G > 0.0 and J > 0.0:
-        var torsion_k = G * J / L
-        if use_cached_basic_coeff:
-            var coeff = scratch.basic_coeff_cache[elem_index]
-            for a in range(12):
-                for b in range(12):
-                    scratch.k_local_flat[_mat12_index(a, b)] += (
-                        coeff[5 * 12 + a] * torsion_k * coeff[5 * 12 + b]
-                    )
-        else:
-            for a in range(12):
-                for b in range(12):
-                    scratch.k_local_flat[_mat12_index(a, b)] += (
-                        _beam3d_local_basic_coeff(5, a, inv_L)
-                        * torsion_k
-                        * _beam3d_local_basic_coeff(5, b, inv_L)
-                    )
+        torsion_k = G * J * inv_L
+    _beam3d_assemble_local_stiffness_from_basic(
+        scratch.k_basic_flat, inv_L, torsion_k, scratch.k_local_flat
+    )
 
     if geom_transf == "PDelta" or geom_transf == "Corotational":
-        scratch.k_local_flat[_mat12_index(1, 1)] += q0 / L
-        scratch.k_local_flat[_mat12_index(1, 7)] -= q0 / L
-        scratch.k_local_flat[_mat12_index(7, 1)] -= q0 / L
-        scratch.k_local_flat[_mat12_index(7, 7)] += q0 / L
-        scratch.k_local_flat[_mat12_index(2, 2)] += q0 / L
-        scratch.k_local_flat[_mat12_index(2, 8)] -= q0 / L
-        scratch.k_local_flat[_mat12_index(8, 2)] -= q0 / L
-        scratch.k_local_flat[_mat12_index(8, 8)] += q0 / L
+        _beam3d_add_axial_geometric_stiffness_flat(scratch.k_local_flat, q0, inv_L)
 
-    _zero_static_tuple(scratch.f_local)
-    var q_basic_5 = 0.0
-    if G > 0.0 and J > 0.0:
-        q_basic_5 = (G * J / L) * torsion_basic
-    if use_cached_basic_coeff:
-        var coeff = scratch.basic_coeff_cache[elem_index]
-        for a in range(12):
-            scratch.f_local[a] += coeff[0 * 12 + a] * q0
-            scratch.f_local[a] += coeff[1 * 12 + a] * q1
-            scratch.f_local[a] += coeff[2 * 12 + a] * q2
-            scratch.f_local[a] += coeff[3 * 12 + a] * q3
-            scratch.f_local[a] += coeff[4 * 12 + a] * q4
-            scratch.f_local[a] += coeff[5 * 12 + a] * q_basic_5
-    else:
-        for a in range(12):
-            scratch.f_local[a] += _beam3d_local_basic_coeff(0, a, inv_L) * q0
-            scratch.f_local[a] += _beam3d_local_basic_coeff(1, a, inv_L) * q1
-            scratch.f_local[a] += _beam3d_local_basic_coeff(2, a, inv_L) * q2
-            scratch.f_local[a] += _beam3d_local_basic_coeff(3, a, inv_L) * q3
-            scratch.f_local[a] += _beam3d_local_basic_coeff(4, a, inv_L) * q4
-            scratch.f_local[a] += _beam3d_local_basic_coeff(5, a, inv_L) * q_basic_5
-    scratch.f_local[0] += fixed_end[5]
-    scratch.f_local[1] += fixed_end[6]
-    scratch.f_local[2] += fixed_end[8]
-    scratch.f_local[7] += fixed_end[7]
-    scratch.f_local[8] += fixed_end[9]
+    var q_basic_5 = torsion_k * torsion_basic
+    _beam3d_assemble_local_force_from_basic(q0, q1, q2, q3, q4, q_basic_5, inv_L, scratch.f_local)
+    if has_elem_loads:
+        scratch.f_local[0] += fe5
+        scratch.f_local[1] += fe6
+        scratch.f_local[2] += fe8
+        scratch.f_local[7] += fe7
+        scratch.f_local[8] += fe9
+    if geom_transf == "PDelta" or geom_transf == "Corotational":
+        _beam3d_add_axial_geometric_force(scratch.f_local, scratch.u_local, q0, inv_L)
 
     _beam3d_transform_stiffness_local_to_global_flat(
         scratch.R, scratch.k_local_flat, scratch.k_work_flat, k_global_out
@@ -2983,7 +2774,7 @@ fn force_beam_column3d_fiber_section_response(
     z2: Float64,
     u_elem_global: List[Float64],
     geom_transf: String,
-    sec_def: FiberSection3dDef,
+    mut sec_def: FiberSection3dDef,
     fibers: List[FiberCell],
     uniaxial_defs: List[UniMaterialDef],
     mut uniaxial_states: List[UniMaterialState],
@@ -3045,7 +2836,7 @@ fn force_beam_column3d_fiber_section_response(
     vecxz_x: Float64,
     vecxz_y: Float64,
     vecxz_z: Float64,
-    sec_def: FiberSection3dDef,
+    mut sec_def: FiberSection3dDef,
     fibers: List[FiberCell],
     uniaxial_defs: List[UniMaterialDef],
     mut uniaxial_states: List[UniMaterialState],
@@ -3106,25 +2897,24 @@ fn force_beam_column3d_fiber_section_response(
     var eps0_offset = force_basic_q_offset + 5
     var ky_offset = eps0_offset + num_int_pts
     var kz_offset = ky_offset + num_int_pts
-    var u_local: List[Float64] = []
-    _beam3d_transform_u_global_to_local(
-        _element_rotation(
-            x1,
-            y1,
-            z1,
-            x2,
-            y2,
-            z2,
-            u_elem_global,
-            geom_transf,
-            has_vecxz,
-            vecxz_x,
-            vecxz_y,
-            vecxz_z,
-        ),
+    var R = Beam3dMat3(fill=0.0)
+    var u_local = Beam3dVec12(fill=0.0)
+    _element_rotation_into_static(
+        x1,
+        y1,
+        z1,
+        x2,
+        y2,
+        z2,
         u_elem_global,
-        u_local,
+        geom_transf,
+        has_vecxz,
+        vecxz_x,
+        vecxz_y,
+        vecxz_z,
+        R,
     )
+    _beam3d_transform_u_global_to_local_static(R, u_elem_global, u_local)
     var twist = (u_local[9] - u_local[3]) / sqrt(
         (x2 - x1) * (x2 - x1) + (y2 - y1) * (y2 - y1) + (z2 - z1) * (z2 - z1)
     )

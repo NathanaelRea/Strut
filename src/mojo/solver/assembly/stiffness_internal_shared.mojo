@@ -54,8 +54,12 @@ fn _assembly_filter_accepts_element(elem: ElementInput, filter_mode: Int) -> Boo
     if filter_mode == 0:
         return True
 
+    # Elements that take part in Rayleigh damping only when asked to: OpenSees
+    # defaults `-doRayleigh` to off for links and trusses.
     var is_link_like = (
-        elem.type_tag == ElementTypeTag.ZeroLength or elem.type_tag == ElementTypeTag.TwoNodeLink
+        elem.type_tag == ElementTypeTag.ZeroLength
+        or elem.type_tag == ElementTypeTag.TwoNodeLink
+        or elem.type_tag == ElementTypeTag.Truss
     )
     if filter_mode == 1:
         return is_link_like

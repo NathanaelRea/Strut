@@ -2,11 +2,8 @@ from algorithm import vectorize
 from collections import Dict, List
 from elements import (
     ForceBeamColumn2dScratch,
-    ForceBeamColumn3dScratch,
     invalidate_force_beam_column2d_load_cache,
-    invalidate_force_beam_column3d_load_cache,
     reset_force_beam_column2d_scratch,
-    reset_force_beam_column3d_scratch,
 )
 from math import sqrt
 from materials import (
@@ -18,33 +15,49 @@ from materials import (
 from os import abort
 from python import Python
 from sections import (
-    layered_shell_commit_all,
     FiberCell,
     FiberSection2dDef,
     FiberSection3dDef,
     LayeredShellSectionDef,
     fiber_section2d_commit_runtime_all,
     fiber_section2d_revert_trial_runtime_all,
+    fiber_section3d_commit_runtime_all,
+    fiber_section3d_revert_trial_runtime_all,
 )
 from sys import simd_width_of
 
+from solver.assembly.frame3d_scratch import (
+    Frame3dAssemblyScratch,
+    invalidate_frame3d_assembly_load_cache,
+    reset_frame3d_assembly_scratch,
+)
+from solver.assembly.shell_cache import ShellAssemblyCache
 from solver.run_case.linear_solver_backend import (
     LinearSolverBackend,
-    add_reduced_matrix,
     clear,
     factorize_loaded,
-    initialize_symbolic_from_element_dof_map,
+    initialize_symbolic_from_pattern,
     initialize_structure,
-    load_reduced_matrix,
     solve,
 )
 from solver.assembly import (
-    assemble_global_stiffness_and_internal_soa,
-    assemble_link_stiffness_typed,
+    assemble_global_stiffness_and_internal_native_soa,
+    assemble_link_stiffness_native,
     assemble_internal_forces_typed_soa,
-    assemble_zero_length_damping_trial_typed,
-    assemble_zero_length_damping_typed,
+    assemble_zero_length_damping_secstif_sparse,
+    assemble_zero_length_damping_sparse,
 )
+from solver.sparse_pattern import (
+    SparsePattern,
+    build_elem_free_pool,
+    build_reduced_mass_values,
+    build_sparse_assembler,
+    copy_values,
+    link_filtered_values,
+    sparse_values_any_nonzero,
+    zero_values,
+)
+from solver.run_case.analysis.transient_sparse import TransientSparseMatrices
 from solver.dof import node_dof_index, require_dof_in_range
 from solver.profile import (
     PROFILE_FRAME_UNIAXIAL_COPY_RESET,
@@ -87,10 +100,9 @@ from solver.time_series import TimeSeriesInput, eval_time_series_input, find_tim
 
 from solver.run_case.helpers import (
     _append_output_at_index,
-    _build_reduced_diagonal_matrix_by_mpc,
     _element_basic_force_for_recorder,
     _element_deformation_for_recorder,
-    _collapse_matrix_by_mpc,
+    _collapse_load_keeping_restrained,
     _collapse_vector_by_mpc,
     _element_force_global_for_recorder,
     _force_beam_column2d_force_global_from_basic_state,
@@ -125,6 +137,7 @@ fn _has_nonparticipating_link_for_rayleigh(elements: List[ElementInput]) -> Bool
         if (
             elem.type_tag == ElementTypeTag.ZeroLength
             or elem.type_tag == ElementTypeTag.TwoNodeLink
+            or elem.type_tag == ElementTypeTag.Truss
         ) and not elem.do_rayleigh:
             return True
     return False
@@ -260,9 +273,9 @@ fn _transient_residual(
     gamma: Float64,
     dt: Float64,
     P_ext_f: List[Float64],
-    M_ff: List[List[Float64]],
-    C_ff: List[List[Float64]],
-    has_effective_damping: Bool,
+    mut mats: TransientSparseMatrices,
+    elem_free_pool: List[Int],
+    mut k_flat_scratch: List[Float64],
     mut uniaxial_states: List[UniMaterialState],
     uniaxial_defs: List[UniMaterialDef],
     uniaxial_state_defs: List[Int],
@@ -275,16 +288,13 @@ fn _transient_residual(
     mut fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
-    fiber_section3d_defs: List[FiberSection3dDef],
+    mut fiber_section3d_defs: List[FiberSection3dDef],
     fiber_section3d_cells: List[FiberCell],
     fiber_section3d_index_by_id: List[Int],
-    mut layered_shell_section_defs: List[LayeredShellSectionDef],
-    layered_shell_section_index_by_id: List[Int],
-    layered_shell_section_uniaxial_offsets: List[Int],
-    layered_shell_section_uniaxial_counts: List[Int],
-    shell_elem_instance_offsets: List[Int],
+    layered_shell_section_defs: List[LayeredShellSectionDef],
+    mut shell_cache: ShellAssemblyCache,
     mut force_beam_column2d_scratch: ForceBeamColumn2dScratch,
-    mut force_beam_column3d_scratch: ForceBeamColumn3dScratch,
+    mut force_beam_column3d_scratch: Frame3dAssemblyScratch,
     has_transformation_mpc: Bool,
     mpc_row_offsets: List[Int],
     mpc_dof_pool: List[Int],
@@ -355,24 +365,17 @@ fn _transient_residual(
         fiber_section3d_cells,
         fiber_section3d_index_by_id,
         layered_shell_section_defs,
-        layered_shell_section_index_by_id,
-        layered_shell_section_uniaxial_offsets,
-        layered_shell_section_uniaxial_counts,
-        shell_elem_instance_offsets,
+        shell_cache,
         force_beam_column2d_scratch,
         force_beam_column3d_scratch,
     )
     if has_transformation_mpc:
         F_int = _collapse_vector_by_mpc(F_int, mpc_row_offsets, mpc_dof_pool, mpc_coeff_pool)
     if has_zero_length_dampers:
-        var K_zero_length_damp_global: List[List[Float64]] = []
         var F_zero_length_damp: List[Float64] = []
-        for _ in range(node_count * ndf):
-            var row_global: List[Float64] = []
-            row_global.resize(node_count * ndf, 0.0)
-            K_zero_length_damp_global.append(row_global^)
         F_zero_length_damp.resize(node_count * ndf, 0.0)
-        assemble_zero_length_damping_trial_typed(
+        # Only the force is needed here; the tangent is not assembled.
+        assemble_zero_length_damping_secstif_sparse(
             typed_nodes,
             typed_elements,
             dampings,
@@ -387,7 +390,12 @@ fn _transient_residual(
             elem_uniaxial_offsets,
             elem_uniaxial_counts,
             elem_uniaxial_state_ids,
-            K_zero_length_damp_global,
+            elem_dof_offsets,
+            elem_free_pool,
+            True,
+            False,
+            k_flat_scratch,
+            mats.assembler,
             F_zero_length_damp,
         )
         if has_transformation_mpc:
@@ -400,13 +408,31 @@ fn _transient_residual(
         for i in range(free_count):
             F_zero_length_damp_f[i] = 0.0
     _build_trial_state_newmark_simd(u_f, u_n, v_n, a_n, a0, a2, a3, gamma, dt, a_trial, v_trial)
-    for i in range(free_count):
-        var damping_force = 0.0
-        if has_effective_damping:
-            damping_force = dot_float64_contiguous(C_ff[i], v_trial, free_count)
-        var inertia_force = dot_float64_contiguous(M_ff[i], a_trial, free_count)
+    _assemble_transient_residual(
+        mats, P_ext_f, F_int, free, F_zero_length_damp_f, v_trial, a_trial, R_f
+    )
+
+
+fn _assemble_transient_residual(
+    mut mats: TransientSparseMatrices,
+    P_ext_f: List[Float64],
+    F_int: List[Float64],
+    free: List[Int],
+    F_zero_length_damp_f: List[Float64],
+    v_trial: List[Float64],
+    a_trial: List[Float64],
+    mut R_f: List[Float64],
+):
+    """R = P - F_int - F_damper - C v - M a over the free equations."""
+    mats.compute_damping_force(v_trial)
+    mats.compute_inertia_force(a_trial)
+    for i in range(len(free)):
         R_f[i] = (
-            P_ext_f[i] - F_int[free[i]] - F_zero_length_damp_f[i] - damping_force - inertia_force
+            P_ext_f[i]
+            - F_int[free[i]]
+            - F_zero_length_damp_f[i]
+            - mats.damping_force[i]
+            - mats.inertia_force[i]
         )
 
 
@@ -809,6 +835,73 @@ fn _collect_transient_solver_chain(
     )
 
 
+fn _assemble_link_filter_pair(
+    mut mats: TransientSparseMatrices,
+    typed_nodes: List[NodeInput],
+    typed_elements: List[ElementInput],
+    zero_length_elem_indices: List[Int],
+    two_node_link_elem_indices: List[Int],
+    ndf: Int,
+    ndm: Int,
+    u: List[Float64],
+    uniaxial_defs: List[UniMaterialDef],
+    uniaxial_state_defs: List[Int],
+    mut uniaxial_states: List[UniMaterialState],
+    elem_uniaxial_offsets: List[Int],
+    elem_uniaxial_counts: List[Int],
+    elem_uniaxial_state_ids: List[Int],
+    elem_dof_offsets: List[Int],
+    elem_free_pool: List[Int],
+    mut F_link_scratch: List[Float64],
+):
+    """Assemble all-link and Rayleigh-participating-link tangents into
+    `mats.k_link_all` / `mats.k_link_rayleigh` (assembler target restored)."""
+    swap(mats.assembler.values, mats.k_link_all)
+    assemble_link_stiffness_native(
+        typed_nodes,
+        typed_elements,
+        zero_length_elem_indices,
+        two_node_link_elem_indices,
+        ndf,
+        ndm,
+        u,
+        uniaxial_defs,
+        uniaxial_state_defs,
+        uniaxial_states,
+        elem_uniaxial_offsets,
+        elem_uniaxial_counts,
+        elem_uniaxial_state_ids,
+        elem_dof_offsets,
+        elem_free_pool,
+        False,
+        mats.assembler,
+        F_link_scratch,
+    )
+    swap(mats.assembler.values, mats.k_link_all)
+    swap(mats.assembler.values, mats.k_link_rayleigh)
+    assemble_link_stiffness_native(
+        typed_nodes,
+        typed_elements,
+        zero_length_elem_indices,
+        two_node_link_elem_indices,
+        ndf,
+        ndm,
+        u,
+        uniaxial_defs,
+        uniaxial_state_defs,
+        uniaxial_states,
+        elem_uniaxial_offsets,
+        elem_uniaxial_counts,
+        elem_uniaxial_state_ids,
+        elem_dof_offsets,
+        elem_free_pool,
+        True,
+        mats.assembler,
+        F_link_scratch,
+    )
+    swap(mats.assembler.values, mats.k_link_rayleigh)
+
+
 fn run_transient_nonlinear(
     analysis: AnalysisInput,
     steps: Int,
@@ -884,14 +977,11 @@ fn run_transient_nonlinear(
     mut fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
-    fiber_section3d_defs: List[FiberSection3dDef],
+    mut fiber_section3d_defs: List[FiberSection3dDef],
     fiber_section3d_cells: List[FiberCell],
     fiber_section3d_index_by_id: List[Int],
-    mut layered_shell_section_defs: List[LayeredShellSectionDef],
-    layered_shell_section_index_by_id: List[Int],
-    layered_shell_section_uniaxial_offsets: List[Int],
-    layered_shell_section_uniaxial_counts: List[Int],
-    shell_elem_instance_offsets: List[Int],
+    layered_shell_section_defs: List[LayeredShellSectionDef],
+    mut shell_cache: ShellAssemblyCache,
     mut transient_output_files: List[String],
     mut transient_output_buffers: List[String],
     progress_path: String,
@@ -936,7 +1026,7 @@ fn run_transient_nonlinear(
     var asm_dof_map12: List[Int] = []
     var asm_u_elem6: List[Float64] = []
     var force_beam_column2d_scratch = ForceBeamColumn2dScratch()
-    var force_beam_column3d_scratch = ForceBeamColumn3dScratch()
+    var force_beam_column3d_scratch = Frame3dAssemblyScratch()
 
     var dt = analysis.dt
     if dt <= 0.0:
@@ -1002,33 +1092,50 @@ fn run_transient_nonlinear(
     var free_count = len(free)
     var free_index: List[Int] = []
     free_index.resize(total_dofs, -1)
-    var has_mass = False
     for i in range(free_count):
         free_index[free[i]] = i
-    var M_ff = _build_reduced_diagonal_matrix_by_mpc(
+    var elem_free_pool = build_elem_free_pool(elem_dof_pool, free_index)
+    var k_flat_scratch: List[Float64] = []
+    var F_link_scratch: List[Float64] = []
+    F_link_scratch.resize(total_dofs, 0.0)
+    var M_rayleigh_for_pattern: List[Float64] = []
+    if rayleigh_alpha_m != 0.0:
+        M_rayleigh_for_pattern = M_rayleigh_total.copy()
+    var pattern = SparsePattern()
+    var assembler = build_sparse_assembler(
+        elem_dof_offsets,
+        elem_dof_pool,
+        free_index,
+        free_count,
+        has_transformation_mpc,
+        mpc_row_offsets,
+        mpc_dof_pool,
+        mpc_coeff_pool,
+        M_total,
+        M_rayleigh_for_pattern,
+        pattern,
+    )
+    var mats = TransientSparseMatrices(pattern^, assembler^)
+    mats.mass = build_reduced_mass_values(
+        mats.pattern,
         M_total,
         free_index,
+        has_transformation_mpc,
         mpc_row_offsets,
         mpc_dof_pool,
         mpc_coeff_pool,
     )
-    var M_rayleigh_ff: List[List[Float64]] = []
     if rayleigh_alpha_m != 0.0:
-        M_rayleigh_ff = _build_reduced_diagonal_matrix_by_mpc(
+        mats.mass_rayleigh = build_reduced_mass_values(
+            mats.pattern,
             M_rayleigh_total,
             free_index,
+            has_transformation_mpc,
             mpc_row_offsets,
             mpc_dof_pool,
             mpc_coeff_pool,
         )
-    for i in range(free_count):
-        for j in range(free_count):
-            if M_ff[i][j] != 0.0:
-                has_mass = True
-                break
-        if has_mass:
-            break
-    if not has_mass:
+    if not sparse_values_any_nonzero(mats.mass):
         abort("transient_nonlinear requires masses on free dofs")
 
     var a0 = 1.0 / (beta * dt * dt)
@@ -1061,75 +1168,38 @@ fn run_transient_nonlinear(
     var need_comm_damp_tangent = need_link_rayleigh_filter and rayleigh_beta_k_comm != 0.0
     var backend = LinearSolverBackend()
     initialize_structure(backend, analysis, free_count)
-    initialize_symbolic_from_element_dof_map(backend, elem_dof_offsets, elem_dof_pool, free_index)
+    initialize_symbolic_from_pattern(backend, mats.pattern)
 
-    var K: List[List[Float64]] = []
-    for _ in range(total_dofs):
-        var row: List[Float64] = []
-        row.resize(total_dofs, 0.0)
-        K.append(row^)
     var F_int: List[Float64] = []
     F_int.resize(total_dofs, 0.0)
-    var K_link_all: List[List[Float64]] = []
-    var K_link_rayleigh: List[List[Float64]] = []
+    mats.alpha_m = rayleigh_alpha_m
+    mats.beta_k = rayleigh_beta_k
+    mats.beta_k_init = rayleigh_beta_k_init
+    mats.beta_k_comm = rayleigh_beta_k_comm
+    mats.use_k_damp = need_current_damp_tangent
+    mats.use_k_init_damp = need_initial_damp_tangent
+    mats.use_k_comm_damp = need_comm_damp_tangent
+    mats.has_c_zero_length = has_zero_length_damp_mats
+    mats.has_effective_damping = has_effective_damping
+    zero_values(mats.k_tangent, mats.nnz())
     if need_link_rayleigh_filter:
-        for _ in range(total_dofs):
-            var row_all: List[Float64] = []
-            row_all.resize(total_dofs, 0.0)
-            K_link_all.append(row_all^)
-            var row_rayleigh: List[Float64] = []
-            row_rayleigh.resize(total_dofs, 0.0)
-            K_link_rayleigh.append(row_rayleigh^)
-
-    var K_ff: List[List[Float64]] = []
-    var K_damp_ff: List[List[Float64]] = []
-    var K_init_ff: List[List[Float64]] = []
-    var K_init_damp_ff: List[List[Float64]] = []
-    var K_comm_ff: List[List[Float64]] = []
-    var K_comm_damp_ff: List[List[Float64]] = []
-    var K_current_damp_ff: List[List[Float64]] = []
-    var C_ff: List[List[Float64]] = []
-    var C_zero_length_damp_ff: List[List[Float64]] = []
-    var K_zero_length_damp_ff: List[List[Float64]] = []
-    for _ in range(free_count):
-        var row_kff: List[Float64] = []
-        row_kff.resize(free_count, 0.0)
-        K_ff.append(row_kff^)
-        if need_current_damp_tangent:
-            var row_kdamp: List[Float64] = []
-            row_kdamp.resize(free_count, 0.0)
-            K_damp_ff.append(row_kdamp^)
-            var row_kcurrent_damp: List[Float64] = []
-            row_kcurrent_damp.resize(free_count, 0.0)
-            K_current_damp_ff.append(row_kcurrent_damp^)
-        if need_initial_tangent:
-            var row_kinit: List[Float64] = []
-            row_kinit.resize(free_count, 0.0)
-            K_init_ff.append(row_kinit^)
-        if need_initial_damp_tangent:
-            var row_kinit_damp: List[Float64] = []
-            row_kinit_damp.resize(free_count, 0.0)
-            K_init_damp_ff.append(row_kinit_damp^)
-        if need_comm_tangent:
-            var row_kcomm: List[Float64] = []
-            row_kcomm.resize(free_count, 0.0)
-            K_comm_ff.append(row_kcomm^)
-        if need_comm_damp_tangent:
-            var row_kcomm_damp: List[Float64] = []
-            row_kcomm_damp.resize(free_count, 0.0)
-            K_comm_damp_ff.append(row_kcomm_damp^)
-        if has_effective_damping:
-            var row_c: List[Float64] = []
-            row_c.resize(free_count, 0.0)
-            C_ff.append(row_c^)
-        if has_zero_length_damp_mats:
-            var row_zero_length_damp: List[Float64] = []
-            row_zero_length_damp.resize(free_count, 0.0)
-            C_zero_length_damp_ff.append(row_zero_length_damp^)
-        if has_zero_length_dampers:
-            var row_zero_length_damp_k: List[Float64] = []
-            row_zero_length_damp_k.resize(free_count, 0.0)
-            K_zero_length_damp_ff.append(row_zero_length_damp_k^)
+        zero_values(mats.k_link_all, mats.nnz())
+        zero_values(mats.k_link_rayleigh, mats.nnz())
+    if need_current_damp_tangent:
+        zero_values(mats.k_damp, mats.nnz())
+        zero_values(mats.k_current_damp, mats.nnz())
+    if need_initial_tangent:
+        zero_values(mats.k_init, mats.nnz())
+    if need_initial_damp_tangent:
+        zero_values(mats.k_init_damp, mats.nnz())
+    if need_comm_tangent:
+        zero_values(mats.k_comm, mats.nnz())
+    if need_comm_damp_tangent:
+        zero_values(mats.k_comm_damp, mats.nnz())
+    if has_zero_length_damp_mats:
+        zero_values(mats.c_zero_length, mats.nnz())
+    if has_zero_length_dampers:
+        zero_values(mats.k_zero_length_damp, mats.nnz())
     var F_zero_length_damp_f: List[Float64] = []
     F_zero_length_damp_f.resize(free_count, 0.0)
 
@@ -1169,7 +1239,7 @@ fn run_transient_nonlinear(
             (t_reset_start - t0) // 1000,
         )
     reset_force_beam_column2d_scratch(force_beam_column2d_scratch)
-    reset_force_beam_column3d_scratch(force_beam_column3d_scratch)
+    reset_frame3d_assembly_scratch(force_beam_column3d_scratch)
     if do_profile:
         var t_reset_end = Int(time.perf_counter_ns())
         _append_event(
@@ -1179,7 +1249,7 @@ fn run_transient_nonlinear(
             PROFILE_FRAME_UNIAXIAL_COPY_RESET,
             (t_reset_end - t0) // 1000,
         )
-    assemble_global_stiffness_and_internal_soa(
+    assemble_global_stiffness_and_internal_native_soa(
         typed_nodes,
         typed_elements,
         node_x,
@@ -1187,6 +1257,8 @@ fn run_transient_nonlinear(
         node_z,
         elem_dof_offsets,
         elem_dof_pool,
+        elem_dof_offsets,
+        elem_free_pool,
         elem_node_offsets,
         elem_node_pool,
         elem_primary_material_ids,
@@ -1232,16 +1304,13 @@ fn run_transient_nonlinear(
         fiber_section3d_cells,
         fiber_section3d_index_by_id,
         layered_shell_section_defs,
-        layered_shell_section_index_by_id,
-        layered_shell_section_uniaxial_offsets,
-        layered_shell_section_uniaxial_counts,
-        shell_elem_instance_offsets,
+        shell_cache,
         force_beam_column2d_scratch,
         force_beam_column3d_scratch,
         asm_dof_map6,
         asm_dof_map12,
         asm_u_elem6,
-        K,
+        mats.assembler,
         F_int,
         do_profile,
         t0,
@@ -1256,65 +1325,30 @@ fn run_transient_nonlinear(
         var asm_end_us = (t_asm_end - t0) // 1000
         _append_event(events, events_need_comma, "C", frame_assemble_stiffness, asm_end_us)
     if has_zero_length_damp_mats:
-        var C_zero_length_global: List[List[Float64]] = []
-        for _ in range(total_dofs):
-            var row_global: List[Float64] = []
-            row_global.resize(total_dofs, 0.0)
-            C_zero_length_global.append(row_global^)
-        assemble_zero_length_damping_typed(
+        swap(mats.assembler.values, mats.c_zero_length)
+        assemble_zero_length_damping_sparse(
             typed_nodes,
             typed_elements,
             typed_materials_by_id,
-            node_count,
             ndf,
             ndm,
-            C_zero_length_global,
+            elem_dof_offsets,
+            elem_free_pool,
+            k_flat_scratch,
+            mats.assembler,
         )
-        if has_transformation_mpc:
-            C_zero_length_global = _collapse_matrix_by_mpc(
-                C_zero_length_global, mpc_row_offsets, mpc_dof_pool, mpc_coeff_pool
-            )
-        for i in range(free_count):
-            for j in range(free_count):
-                C_zero_length_damp_ff[i][j] = C_zero_length_global[free[i]][free[j]]
-    if has_transformation_mpc:
-        if do_profile:
-            var t_constraints_start = Int(time.perf_counter_ns())
-            var constraints_start_us = (t_constraints_start - t0) // 1000
-            _append_event(
-                events,
-                events_need_comma,
-                "O",
-                frame_constraints,
-                constraints_start_us,
-            )
-        K = _collapse_matrix_by_mpc(K, mpc_row_offsets, mpc_dof_pool, mpc_coeff_pool)
-        if do_profile:
-            var t_constraints_end = Int(time.perf_counter_ns())
-            var constraints_end_us = (t_constraints_end - t0) // 1000
-            _append_event(
-                events,
-                events_need_comma,
-                "C",
-                frame_constraints,
-                constraints_end_us,
-            )
-    if need_initial_tangent or need_comm_tangent:
-        for i in range(free_count):
-            for j in range(free_count):
-                var k_value = K[free[i]][free[j]]
-                if need_initial_tangent:
-                    K_init_ff[i][j] = k_value
-                if need_comm_tangent:
-                    K_comm_ff[i][j] = k_value
+        swap(mats.assembler.values, mats.c_zero_length)
+    if need_initial_tangent:
+        copy_values(mats.k_init, mats.assembler.values)
+    if need_comm_tangent:
+        copy_values(mats.k_comm, mats.assembler.values)
     if need_link_rayleigh_filter:
-        assemble_link_stiffness_typed(
+        _assemble_link_filter_pair(
+            mats,
             typed_nodes,
             typed_elements,
-            typed_sections_by_id,
-            typed_materials_by_id,
-            id_to_index,
-            node_count,
+            zero_length_elem_indices,
+            two_node_link_elem_indices,
             ndf,
             ndm,
             u,
@@ -1324,94 +1358,29 @@ fn run_transient_nonlinear(
             elem_uniaxial_offsets,
             elem_uniaxial_counts,
             elem_uniaxial_state_ids,
-            force_basic_offsets,
-            force_basic_counts,
-            force_basic_q,
-            fiber_section_defs,
-            fiber_section_cells,
-            fiber_section_index_by_id,
-            fiber_section3d_defs,
-            fiber_section3d_cells,
-            fiber_section3d_index_by_id,
-            layered_shell_section_defs,
-            layered_shell_section_index_by_id,
-            layered_shell_section_uniaxial_offsets,
-            layered_shell_section_uniaxial_counts,
-            shell_elem_instance_offsets,
             elem_dof_offsets,
-            elem_dof_pool,
-            asm_dof_map6,
-            asm_dof_map12,
-            asm_u_elem6,
-            False,
-            K_link_all,
+            elem_free_pool,
+            F_link_scratch,
         )
-        assemble_link_stiffness_typed(
-            typed_nodes,
-            typed_elements,
-            typed_sections_by_id,
-            typed_materials_by_id,
-            id_to_index,
-            node_count,
-            ndf,
-            ndm,
-            u,
-            uniaxial_defs,
-            uniaxial_state_defs,
-            uniaxial_states,
-            elem_uniaxial_offsets,
-            elem_uniaxial_counts,
-            elem_uniaxial_state_ids,
-            force_basic_offsets,
-            force_basic_counts,
-            force_basic_q,
-            fiber_section_defs,
-            fiber_section_cells,
-            fiber_section_index_by_id,
-            fiber_section3d_defs,
-            fiber_section3d_cells,
-            fiber_section3d_index_by_id,
-            layered_shell_section_defs,
-            layered_shell_section_index_by_id,
-            layered_shell_section_uniaxial_offsets,
-            layered_shell_section_uniaxial_counts,
-            shell_elem_instance_offsets,
-            elem_dof_offsets,
-            elem_dof_pool,
-            asm_dof_map6,
-            asm_dof_map12,
-            asm_u_elem6,
-            True,
-            K_link_rayleigh,
-        )
-        if has_transformation_mpc:
-            K_link_all = _collapse_matrix_by_mpc(
-                K_link_all, mpc_row_offsets, mpc_dof_pool, mpc_coeff_pool
+        if need_initial_damp_tangent:
+            link_filtered_values(
+                mats.k_init_damp,
+                mats.assembler.values,
+                mats.k_link_all,
+                mats.k_link_rayleigh,
             )
-            K_link_rayleigh = _collapse_matrix_by_mpc(
-                K_link_rayleigh, mpc_row_offsets, mpc_dof_pool, mpc_coeff_pool
+        if need_comm_damp_tangent:
+            link_filtered_values(
+                mats.k_comm_damp,
+                mats.assembler.values,
+                mats.k_link_all,
+                mats.k_link_rayleigh,
             )
-        if need_initial_damp_tangent or need_comm_damp_tangent:
-            for i in range(free_count):
-                for j in range(free_count):
-                    var damp_value = (
-                        K[free[i]][free[j]]
-                        - K_link_all[free[i]][free[j]]
-                        + K_link_rayleigh[free[i]][free[j]]
-                    )
-                    if need_initial_damp_tangent:
-                        K_init_damp_ff[i][j] = damp_value
-                    if need_comm_damp_tangent:
-                        K_comm_damp_ff[i][j] = damp_value
     else:
-        if need_initial_damp_tangent or need_comm_damp_tangent:
-            for i in range(free_count):
-                for j in range(free_count):
-                    var damp_value = K[free[i]][free[j]]
-                    if need_initial_damp_tangent:
-                        K_init_damp_ff[i][j] = damp_value
-                    if need_comm_damp_tangent:
-                        K_comm_damp_ff[i][j] = damp_value
+        if need_initial_damp_tangent:
+            copy_values(mats.k_init_damp, mats.assembler.values)
+        if need_comm_damp_tangent:
+            copy_values(mats.k_comm_damp, mats.assembler.values)
     if do_profile:
         var t_revert_start = Int(time.perf_counter_ns())
         var revert_start_us = (t_revert_start - t0) // 1000
@@ -1424,6 +1393,7 @@ fn run_transient_nonlinear(
         )
     _uniaxial_revert_trial_active_states(uniaxial_states, elem_uniaxial_state_ids)
     fiber_section2d_revert_trial_runtime_all(fiber_section_defs)
+    fiber_section3d_revert_trial_runtime_all(fiber_section3d_defs)
     if do_profile:
         var t_revert_end = Int(time.perf_counter_ns())
         var revert_end_us = (t_revert_end - t0) // 1000
@@ -1795,7 +1765,7 @@ fn run_transient_nonlinear(
                 var dof_idx = uniform_excitation_dofs[i]
                 uniform_inertia_load[dof_idx] += -M_total[dof_idx] * ag
             if has_transformation_mpc:
-                uniform_inertia_load = _collapse_vector_by_mpc(
+                uniform_inertia_load = _collapse_load_keeping_restrained(
                     uniform_inertia_load,
                     mpc_row_offsets,
                     mpc_dof_pool,
@@ -1862,7 +1832,7 @@ fn run_transient_nonlinear(
                 )
         if refresh_step_element_load_cache:
             invalidate_force_beam_column2d_load_cache(force_beam_column2d_scratch)
-            invalidate_force_beam_column3d_load_cache(force_beam_column3d_scratch)
+            invalidate_frame3d_assembly_load_cache(force_beam_column3d_scratch)
         _gather_from_free_simd(free, F_ext_step, P_ext_f)
 
         var converged = False
@@ -1882,6 +1852,7 @@ fn run_transient_nonlinear(
                 force_basic_q = force_basic_q_base.copy()
                 uniaxial_states = uniaxial_states_base.copy()
                 fiber_section2d_revert_trial_runtime_all(fiber_section_defs)
+                fiber_section3d_revert_trial_runtime_all(fiber_section3d_defs)
                 attempt_algorithm_tag = retry_algorithm_tags[attempt]
                 attempt_algorithm_mode = retry_algorithm_modes[attempt]
                 attempt_line_search_eta = retry_line_search_etas[attempt]
@@ -1893,7 +1864,6 @@ fn run_transient_nonlinear(
                 reaction_internal_current = False
 
             var tangent_initialized = False
-            var damping_initialized = False
             var k_eff_initialized = False
             var k_eff_factored = False
             var broyden_history_s: List[List[Float64]] = []
@@ -1931,7 +1901,7 @@ fn run_transient_nonlinear(
                         frame_assemble_stiffness,
                         asm_start_us,
                     )
-                assemble_global_stiffness_and_internal_soa(
+                assemble_global_stiffness_and_internal_native_soa(
                     typed_nodes,
                     typed_elements,
                     node_x,
@@ -1939,6 +1909,8 @@ fn run_transient_nonlinear(
                     node_z,
                     elem_dof_offsets,
                     elem_dof_pool,
+                    elem_dof_offsets,
+                    elem_free_pool,
                     elem_node_offsets,
                     elem_node_pool,
                     elem_primary_material_ids,
@@ -1984,16 +1956,13 @@ fn run_transient_nonlinear(
                     fiber_section3d_cells,
                     fiber_section3d_index_by_id,
                     layered_shell_section_defs,
-                    layered_shell_section_index_by_id,
-                    layered_shell_section_uniaxial_offsets,
-                    layered_shell_section_uniaxial_counts,
-                    shell_elem_instance_offsets,
+                    shell_cache,
                     force_beam_column2d_scratch,
                     force_beam_column3d_scratch,
                     asm_dof_map6,
                     asm_dof_map12,
                     asm_u_elem6,
-                    K,
+                    mats.assembler,
                     F_int,
                     do_profile,
                     t0,
@@ -2052,10 +2021,6 @@ fn run_transient_nonlinear(
                             frame_constraints,
                             constraints_start_us,
                         )
-                    if need_tangent_matrix:
-                        K = _collapse_matrix_by_mpc(
-                            K, mpc_row_offsets, mpc_dof_pool, mpc_coeff_pool
-                        )
                     F_int = _collapse_vector_by_mpc(
                         F_int, mpc_row_offsets, mpc_dof_pool, mpc_coeff_pool
                     )
@@ -2071,13 +2036,12 @@ fn run_transient_nonlinear(
                         )
                 reaction_internal_current = True
                 if need_link_rayleigh_filter:
-                    assemble_link_stiffness_typed(
+                    _assemble_link_filter_pair(
+                        mats,
                         typed_nodes,
                         typed_elements,
-                        typed_sections_by_id,
-                        typed_materials_by_id,
-                        id_to_index,
-                        node_count,
+                        zero_length_elem_indices,
+                        two_node_link_elem_indices,
                         ndf,
                         ndm,
                         u,
@@ -2087,123 +2051,46 @@ fn run_transient_nonlinear(
                         elem_uniaxial_offsets,
                         elem_uniaxial_counts,
                         elem_uniaxial_state_ids,
-                        force_basic_offsets,
-                        force_basic_counts,
-                        force_basic_q,
-                        fiber_section_defs,
-                        fiber_section_cells,
-                        fiber_section_index_by_id,
-                        fiber_section3d_defs,
-                        fiber_section3d_cells,
-                        fiber_section3d_index_by_id,
-                        layered_shell_section_defs,
-                        layered_shell_section_index_by_id,
-                        layered_shell_section_uniaxial_offsets,
-                        layered_shell_section_uniaxial_counts,
-                        shell_elem_instance_offsets,
                         elem_dof_offsets,
-                        elem_dof_pool,
-                        asm_dof_map6,
-                        asm_dof_map12,
-                        asm_u_elem6,
-                        False,
-                        K_link_all,
+                        elem_free_pool,
+                        F_link_scratch,
                     )
-                    assemble_link_stiffness_typed(
-                        typed_nodes,
-                        typed_elements,
-                        typed_sections_by_id,
-                        typed_materials_by_id,
-                        id_to_index,
-                        node_count,
-                        ndf,
-                        ndm,
-                        u,
-                        uniaxial_defs,
-                        uniaxial_state_defs,
-                        uniaxial_states,
-                        elem_uniaxial_offsets,
-                        elem_uniaxial_counts,
-                        elem_uniaxial_state_ids,
-                        force_basic_offsets,
-                        force_basic_counts,
-                        force_basic_q,
-                        fiber_section_defs,
-                        fiber_section_cells,
-                        fiber_section_index_by_id,
-                        fiber_section3d_defs,
-                        fiber_section3d_cells,
-                        fiber_section3d_index_by_id,
-                        layered_shell_section_defs,
-                        layered_shell_section_index_by_id,
-                        layered_shell_section_uniaxial_offsets,
-                        layered_shell_section_uniaxial_counts,
-                        shell_elem_instance_offsets,
-                        elem_dof_offsets,
-                        elem_dof_pool,
-                        asm_dof_map6,
-                        asm_dof_map12,
-                        asm_u_elem6,
-                        True,
-                        K_link_rayleigh,
-                    )
-                    if has_transformation_mpc:
-                        K_link_all = _collapse_matrix_by_mpc(
-                            K_link_all, mpc_row_offsets, mpc_dof_pool, mpc_coeff_pool
-                        )
-                        K_link_rayleigh = _collapse_matrix_by_mpc(
-                            K_link_rayleigh,
-                            mpc_row_offsets,
-                            mpc_dof_pool,
-                            mpc_coeff_pool,
-                        )
                     if need_current_damp_tangent:
-                        for i in range(free_count):
-                            for j in range(free_count):
-                                K_current_damp_ff[i][j] = (
-                                    K[free[i]][free[j]]
-                                    - K_link_all[free[i]][free[j]]
-                                    + K_link_rayleigh[free[i]][free[j]]
-                                )
+                        link_filtered_values(
+                            mats.k_current_damp,
+                            mats.assembler.values,
+                            mats.k_link_all,
+                            mats.k_link_rayleigh,
+                        )
                 if attempt_algorithm_mode == NonlinearAlgorithmMode.Newton:
                     if need_tangent_matrix:
-                        for i in range(free_count):
-                            for j in range(free_count):
-                                K_ff[i][j] = K[free[i]][free[j]]
-                                if need_current_damp_tangent:
-                                    K_damp_ff[i][j] = K_current_damp_ff[i][j]
+                        copy_values(mats.k_tangent, mats.assembler.values)
+                        if need_current_damp_tangent:
+                            copy_values(mats.k_damp, mats.k_current_damp)
                         tangent_initialized = True
                         k_eff_factored = False
                 elif attempt_algorithm_mode == NonlinearAlgorithmMode.ModifiedNewton:
                     if not tangent_initialized:
-                        for i in range(free_count):
-                            for j in range(free_count):
-                                K_ff[i][j] = K[free[i]][free[j]]
-                                if need_current_damp_tangent:
-                                    K_damp_ff[i][j] = K_current_damp_ff[i][j]
+                        copy_values(mats.k_tangent, mats.assembler.values)
+                        if need_current_damp_tangent:
+                            copy_values(mats.k_damp, mats.k_current_damp)
                         tangent_initialized = True
                         k_eff_factored = False
                 else:
                     if not tangent_initialized:
                         if not need_initial_tangent:
                             abort("transient_nonlinear initial tangent storage was not allocated")
-                        for i in range(free_count):
-                            for j in range(free_count):
-                                K_ff[i][j] = K_init_ff[i][j]
-                                if need_current_damp_tangent:
-                                    K_damp_ff[i][j] = K_init_damp_ff[i][j]
+                        copy_values(mats.k_tangent, mats.k_init)
+                        if need_current_damp_tangent:
+                            copy_values(mats.k_damp, mats.k_init_damp)
                         tangent_initialized = True
                         k_eff_factored = False
 
                 if has_zero_length_dampers:
-                    var K_zero_length_damp_global: List[List[Float64]] = []
                     var F_zero_length_damp: List[Float64] = []
-                    for _ in range(total_dofs):
-                        var row_global: List[Float64] = []
-                        row_global.resize(total_dofs, 0.0)
-                        K_zero_length_damp_global.append(row_global^)
                     F_zero_length_damp.resize(total_dofs, 0.0)
-                    assemble_zero_length_damping_trial_typed(
+                    swap(mats.assembler.values, mats.k_zero_length_damp)
+                    assemble_zero_length_damping_secstif_sparse(
                         typed_nodes,
                         typed_elements,
                         dampings,
@@ -2218,16 +2105,16 @@ fn run_transient_nonlinear(
                         elem_uniaxial_offsets,
                         elem_uniaxial_counts,
                         elem_uniaxial_state_ids,
-                        K_zero_length_damp_global,
+                        elem_dof_offsets,
+                        elem_free_pool,
+                        True,
+                        True,
+                        k_flat_scratch,
+                        mats.assembler,
                         F_zero_length_damp,
                     )
+                    swap(mats.assembler.values, mats.k_zero_length_damp)
                     if has_transformation_mpc:
-                        K_zero_length_damp_global = _collapse_matrix_by_mpc(
-                            K_zero_length_damp_global,
-                            mpc_row_offsets,
-                            mpc_dof_pool,
-                            mpc_coeff_pool,
-                        )
                         F_zero_length_damp = _collapse_vector_by_mpc(
                             F_zero_length_damp,
                             mpc_row_offsets,
@@ -2236,69 +2123,24 @@ fn run_transient_nonlinear(
                         )
                     for i in range(free_count):
                         F_zero_length_damp_f[i] = F_zero_length_damp[free[i]]
-                        for j in range(free_count):
-                            K_zero_length_damp_ff[i][j] = K_zero_length_damp_global[free[i]][
-                                free[j]
-                            ]
                 else:
                     for i in range(free_count):
                         F_zero_length_damp_f[i] = 0.0
-                    if has_zero_length_dampers:
-                        for i in range(free_count):
-                            for j in range(free_count):
-                                K_zero_length_damp_ff[i][j] = 0.0
-
-                if has_effective_damping and (need_tangent_matrix or not damping_initialized):
-                    for i in range(free_count):
-                        for j in range(free_count):
-                            C_ff[i][j] = 0.0
-                    if rayleigh_alpha_m != 0.0:
-                        for i in range(free_count):
-                            for j in range(free_count):
-                                C_ff[i][j] = rayleigh_alpha_m * M_rayleigh_ff[i][j]
-                    if rayleigh_beta_k != 0.0:
-                        for i in range(free_count):
-                            for j in range(free_count):
-                                if need_current_damp_tangent:
-                                    C_ff[i][j] += rayleigh_beta_k * K_damp_ff[i][j]
-                                else:
-                                    C_ff[i][j] += rayleigh_beta_k * K_ff[i][j]
-                    if rayleigh_beta_k_init != 0.0:
-                        for i in range(free_count):
-                            for j in range(free_count):
-                                if need_initial_damp_tangent:
-                                    C_ff[i][j] += rayleigh_beta_k_init * K_init_damp_ff[i][j]
-                                else:
-                                    C_ff[i][j] += rayleigh_beta_k_init * K_init_ff[i][j]
-                    if rayleigh_beta_k_comm != 0.0:
-                        for i in range(free_count):
-                            for j in range(free_count):
-                                if need_comm_damp_tangent:
-                                    C_ff[i][j] += rayleigh_beta_k_comm * K_comm_damp_ff[i][j]
-                                else:
-                                    C_ff[i][j] += rayleigh_beta_k_comm * K_comm_ff[i][j]
-                    if has_zero_length_damp_mats:
-                        for i in range(free_count):
-                            for j in range(free_count):
-                                C_ff[i][j] += C_zero_length_damp_ff[i][j]
-                    damping_initialized = True
 
                 _build_trial_state_newmark_simd(
                     u_f, u_n, v_n, a_n, a0, a2, a3, gamma, dt, a_trial, v_trial
                 )
 
-                for i in range(free_count):
-                    var damping_force = 0.0
-                    if has_effective_damping:
-                        damping_force = dot_float64_contiguous(C_ff[i], v_trial, free_count)
-                    var inertia_force = dot_float64_contiguous(M_ff[i], a_trial, free_count)
-                    R_f[i] = (
-                        P_ext_f[i]
-                        - F_int[free[i]]
-                        - F_zero_length_damp_f[i]
-                        - damping_force
-                        - inertia_force
-                    )
+                _assemble_transient_residual(
+                    mats,
+                    P_ext_f,
+                    F_int,
+                    free,
+                    F_zero_length_damp_f,
+                    v_trial,
+                    a_trial,
+                    R_f,
+                )
                 if attempt_test_mode == 2:
                     var residual_norm = sqrt(sum_sq_float64_contiguous(R_f, free_count))
                     if residual_norm <= attempt_tol:
@@ -2342,12 +2184,7 @@ fn run_transient_nonlinear(
                             frame_factorize,
                             solve_start_us,
                         )
-                    load_reduced_matrix(backend, K_ff)
-                    if has_zero_length_dampers:
-                        add_reduced_matrix(backend, K_zero_length_damp_ff)
-                    if has_effective_damping:
-                        add_reduced_matrix(backend, C_ff, a1)
-                    add_reduced_matrix(backend, M_ff, a0)
+                    mats.load_effective(backend, a0, a1, has_zero_length_dampers)
                     factorize_loaded(backend, runtime_metrics)
                     k_eff_initialized = True
                     k_eff_factored = True
@@ -2378,12 +2215,7 @@ fn run_transient_nonlinear(
                         fac_start_us = (t_fac_start - t0) // 1000
                     var did_factor = effective_matrix_changed or not k_eff_factored
                     if did_factor:
-                        load_reduced_matrix(backend, K_ff)
-                        if has_zero_length_dampers:
-                            add_reduced_matrix(backend, K_zero_length_damp_ff)
-                        if has_effective_damping:
-                            add_reduced_matrix(backend, C_ff, a1)
-                        add_reduced_matrix(backend, M_ff, a0)
+                        mats.load_effective(backend, a0, a1, has_zero_length_dampers)
                         factorize_loaded(backend, runtime_metrics)
                         k_eff_initialized = True
                     if did_factor:
@@ -2566,9 +2398,9 @@ fn run_transient_nonlinear(
                             gamma,
                             dt,
                             P_ext_f,
-                            M_ff,
-                            C_ff,
-                            has_effective_damping,
+                            mats,
+                            elem_free_pool,
+                            k_flat_scratch,
                             uniaxial_states,
                             uniaxial_defs,
                             uniaxial_state_defs,
@@ -2585,10 +2417,7 @@ fn run_transient_nonlinear(
                             fiber_section3d_cells,
                             fiber_section3d_index_by_id,
                             layered_shell_section_defs,
-                            layered_shell_section_index_by_id,
-                            layered_shell_section_uniaxial_offsets,
-                            layered_shell_section_uniaxial_counts,
-                            shell_elem_instance_offsets,
+                            shell_cache,
                             force_beam_column2d_scratch,
                             force_beam_column3d_scratch,
                             has_transformation_mpc,
@@ -2677,9 +2506,9 @@ fn run_transient_nonlinear(
                                 gamma,
                                 dt,
                                 P_ext_f,
-                                M_ff,
-                                C_ff,
-                                has_effective_damping,
+                                mats,
+                                elem_free_pool,
+                                k_flat_scratch,
                                 uniaxial_states,
                                 uniaxial_defs,
                                 uniaxial_state_defs,
@@ -2696,10 +2525,7 @@ fn run_transient_nonlinear(
                                 fiber_section3d_cells,
                                 fiber_section3d_index_by_id,
                                 layered_shell_section_defs,
-                                layered_shell_section_index_by_id,
-                                layered_shell_section_uniaxial_offsets,
-                                layered_shell_section_uniaxial_counts,
-                                shell_elem_instance_offsets,
+                                shell_cache,
                                 force_beam_column2d_scratch,
                                 force_beam_column3d_scratch,
                                 has_transformation_mpc,
@@ -2801,7 +2627,7 @@ fn run_transient_nonlinear(
                     frame_assemble_stiffness,
                     asm_start_us,
                 )
-            assemble_global_stiffness_and_internal_soa(
+            assemble_global_stiffness_and_internal_native_soa(
                 typed_nodes,
                 typed_elements,
                 node_x,
@@ -2809,6 +2635,8 @@ fn run_transient_nonlinear(
                 node_z,
                 elem_dof_offsets,
                 elem_dof_pool,
+                elem_dof_offsets,
+                elem_free_pool,
                 elem_node_offsets,
                 elem_node_pool,
                 elem_primary_material_ids,
@@ -2854,16 +2682,13 @@ fn run_transient_nonlinear(
                 fiber_section3d_cells,
                 fiber_section3d_index_by_id,
                 layered_shell_section_defs,
-                layered_shell_section_index_by_id,
-                layered_shell_section_uniaxial_offsets,
-                layered_shell_section_uniaxial_counts,
-                shell_elem_instance_offsets,
+                shell_cache,
                 force_beam_column2d_scratch,
                 force_beam_column3d_scratch,
                 asm_dof_map6,
                 asm_dof_map12,
                 asm_u_elem6,
-                K,
+                mats.assembler,
                 F_int,
                 do_profile,
                 t0,
@@ -2883,41 +2708,16 @@ fn run_transient_nonlinear(
                     frame_assemble_stiffness,
                     asm_end_us,
                 )
-            if has_transformation_mpc:
-                if do_profile:
-                    var t_constraints_start = Int(time.perf_counter_ns())
-                    var constraints_start_us = (t_constraints_start - t0) // 1000
-                    _append_event(
-                        events,
-                        events_need_comma,
-                        "O",
-                        frame_constraints,
-                        constraints_start_us,
-                    )
-                K = _collapse_matrix_by_mpc(K, mpc_row_offsets, mpc_dof_pool, mpc_coeff_pool)
-                if do_profile:
-                    var t_constraints_end = Int(time.perf_counter_ns())
-                    var constraints_end_us = (t_constraints_end - t0) // 1000
-                    _append_event(
-                        events,
-                        events_need_comma,
-                        "C",
-                        frame_constraints,
-                        constraints_end_us,
-                    )
             reaction_internal_current = True
             if need_comm_tangent:
-                for i in range(free_count):
-                    for j in range(free_count):
-                        K_comm_ff[i][j] = K[free[i]][free[j]]
+                copy_values(mats.k_comm, mats.assembler.values)
             if need_link_rayleigh_filter:
-                assemble_link_stiffness_typed(
+                _assemble_link_filter_pair(
+                    mats,
                     typed_nodes,
                     typed_elements,
-                    typed_sections_by_id,
-                    typed_materials_by_id,
-                    id_to_index,
-                    node_count,
+                    zero_length_elem_indices,
+                    two_node_link_elem_indices,
                     ndf,
                     ndm,
                     u,
@@ -2927,86 +2727,20 @@ fn run_transient_nonlinear(
                     elem_uniaxial_offsets,
                     elem_uniaxial_counts,
                     elem_uniaxial_state_ids,
-                    force_basic_offsets,
-                    force_basic_counts,
-                    force_basic_q,
-                    fiber_section_defs,
-                    fiber_section_cells,
-                    fiber_section_index_by_id,
-                    fiber_section3d_defs,
-                    fiber_section3d_cells,
-                    fiber_section3d_index_by_id,
-                    layered_shell_section_defs,
-                    layered_shell_section_index_by_id,
-                    layered_shell_section_uniaxial_offsets,
-                    layered_shell_section_uniaxial_counts,
-                    shell_elem_instance_offsets,
                     elem_dof_offsets,
-                    elem_dof_pool,
-                    asm_dof_map6,
-                    asm_dof_map12,
-                    asm_u_elem6,
-                    False,
-                    K_link_all,
+                    elem_free_pool,
+                    F_link_scratch,
                 )
-                assemble_link_stiffness_typed(
-                    typed_nodes,
-                    typed_elements,
-                    typed_sections_by_id,
-                    typed_materials_by_id,
-                    id_to_index,
-                    node_count,
-                    ndf,
-                    ndm,
-                    u,
-                    uniaxial_defs,
-                    uniaxial_state_defs,
-                    uniaxial_states,
-                    elem_uniaxial_offsets,
-                    elem_uniaxial_counts,
-                    elem_uniaxial_state_ids,
-                    force_basic_offsets,
-                    force_basic_counts,
-                    force_basic_q,
-                    fiber_section_defs,
-                    fiber_section_cells,
-                    fiber_section_index_by_id,
-                    fiber_section3d_defs,
-                    fiber_section3d_cells,
-                    fiber_section3d_index_by_id,
-                    layered_shell_section_defs,
-                    layered_shell_section_index_by_id,
-                    layered_shell_section_uniaxial_offsets,
-                    layered_shell_section_uniaxial_counts,
-                    shell_elem_instance_offsets,
-                    elem_dof_offsets,
-                    elem_dof_pool,
-                    asm_dof_map6,
-                    asm_dof_map12,
-                    asm_u_elem6,
-                    True,
-                    K_link_rayleigh,
-                )
-                if has_transformation_mpc:
-                    K_link_all = _collapse_matrix_by_mpc(
-                        K_link_all, mpc_row_offsets, mpc_dof_pool, mpc_coeff_pool
-                    )
-                    K_link_rayleigh = _collapse_matrix_by_mpc(
-                        K_link_rayleigh, mpc_row_offsets, mpc_dof_pool, mpc_coeff_pool
-                    )
                 if need_comm_damp_tangent:
-                    for i in range(free_count):
-                        for j in range(free_count):
-                            K_comm_damp_ff[i][j] = (
-                                K_comm_ff[i][j]
-                                - K_link_all[free[i]][free[j]]
-                                + K_link_rayleigh[free[i]][free[j]]
-                            )
+                    link_filtered_values(
+                        mats.k_comm_damp,
+                        mats.k_comm,
+                        mats.k_link_all,
+                        mats.k_link_rayleigh,
+                    )
             else:
                 if need_comm_damp_tangent:
-                    for i in range(free_count):
-                        for j in range(free_count):
-                            K_comm_damp_ff[i][j] = K_comm_ff[i][j]
+                    copy_values(mats.k_comm_damp, mats.k_comm)
         if do_profile:
             var t_commit_start = Int(time.perf_counter_ns())
             var commit_start_us = (t_commit_start - t0) // 1000
@@ -3018,8 +2752,9 @@ fn run_transient_nonlinear(
                 commit_start_us,
             )
         _uniaxial_commit_active_states(uniaxial_states, elem_uniaxial_state_ids)
-        layered_shell_commit_all(layered_shell_section_defs)
+        shell_cache.commit_layered_states()
         fiber_section2d_commit_runtime_all(fiber_section_defs)
+        fiber_section3d_commit_runtime_all(fiber_section3d_defs)
         if do_profile:
             var t_commit_end = Int(time.perf_counter_ns())
             var commit_end_us = (t_commit_end - t0) // 1000
@@ -3153,10 +2888,7 @@ fn run_transient_nonlinear(
                     fiber_section3d_cells,
                     fiber_section3d_index_by_id,
                     layered_shell_section_defs,
-                    layered_shell_section_index_by_id,
-                    layered_shell_section_uniaxial_offsets,
-                    layered_shell_section_uniaxial_counts,
-                    shell_elem_instance_offsets,
+                    shell_cache,
                     force_beam_column2d_scratch,
                     force_beam_column3d_scratch,
                 )

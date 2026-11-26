@@ -1,143 +1,74 @@
 # 🔥 Strut 🔥
 
-Performance-first finite element analysis (FEA) engine written in Mojo. The project focuses on structural engineering transient analysis (Buildings/Earthquakes), and aims to be as fast as possible for large models. Benchmarks and tests are run against OpenSees.
+**Runs models up to 30x faster than OpenSees**
 
-Currently we beat the performance of OpenSees by about 2x in large examples that take several seconds to run. Check out the [current benchmarks](./docs/benchmark-opensees-examples.md).
+Strut is a finite element engine for buildings under earthquake loading, written in [Mojo](https://www.modular.com/mojo). It can read OpenSees Tcl scripts, and it's faster the larger the model is.
 
-## Warnings
+```mermaid
+---
+config:
+  xyChart:
+    height: 320
+  themeVariables:
+    xyChart:
+      plotColorPalette: '#1f77b4, #a8390f, #FF5A1F, #808080'
+---
+xychart-beta
+    title "Mega-tall building, 162,624 DOFs: 10 gravity + 30 earthquake steps"
+    x-axis ["opensees", "strut (12.5x faster)", "strut-8 (30.3x faster)"]
+    y-axis "Analysis time (s)" 0 --> 917
+    bar [833.530, 0, 0]
+    bar [0, 66.435, 0]
+    bar [0, 0, 27.474]
+    bar [0, 0, 0]
+```
 
-- We test/validate against the full OpenSees example suite, up through "Advanced Example 6". However, there are some tests we skip because I have not done a thorough validation pass. Please don't use this for anything important, as it's currently a work in progress and the test coverage is limited.
+| Model | opensees | strut (1 thread) | strut-8 (8 threads) |
+| --- | ---: | ---: | ---: |
+| Mega-tall building, 162,624 DOFs | 833.5 s | 66.4 s (**12.5x**) | 27.5 s (**30x**) |
+| 3D fiber frame, displacement-based with P-Delta, 1,728 DOFs | 5.52 s | 1.43 s (**3.8x**) | 0.88 s (**6.2x**) |
+| 3D fiber frame, force-based, 1,728 DOFs | 5.33 s | 2.12 s (**2.5x**) | 0.90 s (**5.9x**) |
 
-## Quick Start
+Analysis time against OpenSees 3.7.1 on the same machine (Ryzen 7 9800X3D). Every case is in the [full benchmarks](./docs/benchmark-opensees-examples.md).
 
-For building and running Strut
+- **Same answers.** Solved to a tight tolerance, every model above matches OpenSees to within 10 parts per million. See [how that is checked](./benchmark/README.md#do-the-large-models-match-opensees).
+- **More accurate on the mega-tall's own settings.** With the solver settings the model ships with, OpenSees stops 2.5% to 4.5% from its own converged answer. Strut stops about 0.1% from it.
+- **Fast on one core, faster on eight.** Most of the gain is single-threaded. Threading the element loops and the sparse factorization adds the rest.
+- **Tested against OpenSees on every run.** Over 90 comparisons, covering the OpenSees example suite through "Advanced Example 6" and slices cut from the mega-tall building.
 
-1. Fetch the dependencies `uv sync`
-2. Build `uv run mojo build src/mojo/strut.mojo`
-3. Run analysis against a json model (see validation tests for examples)
+> [!NOTE]
+> Strut is new and has not yet been used on a real design or research project. As with any structural analysis software, validate it for your own use before relying on it. What it has today is close agreement with OpenSees on everything in the test suite.
 
-For testing or benchmarking
+## Quick start
 
-1. Fetch the dependencies `uv sync`
-2. Run unit tests `uv run run_tests.py` or benchmarks `uv run scripts/run_benchmarks.py`
+```bash
+uv sync                                       # dependencies, including Mojo
+uv run python scripts/build_mojo_solver.py    # build the solver
 
-`run_tests.py` installs the pinned test data and [OpenSees reference binaries](#opensees-reference-binaries) on first use. To set up everything up front, including the agent reference sources, run [`scripts/setup.sh`](./scripts/setup.sh).
+# run a JSON model, or an OpenSees script with --input-tcl model.tcl
+uv run python scripts/run_strut_case.py --output out/ \
+    --input tests/validation/elastic_beam_cantilever/elastic_beam_cantilever.json
 
-## Reference Data
+uv run run_tests.py                                           # unit tests and OpenSees comparisons
+uv run scripts/run_benchmarks.py --cases 'opensees_example_*' # time Strut against OpenSees
+```
 
-`uv run scripts/setup_reference_data.py` installs everything from [`tests/fixtures/opensees/reference-data.lock.json`](./tests/fixtures/opensees/reference-data.lock.json). Each item downloads once per machine into `~/.cache/strut/reference/` and is checked against its pinned sha256 or commit.
+The tests and benchmarks install a pinned OpenSees 3.7.1 and the test data on first use, with no sudo. Details are in [docs/setup.md](./docs/setup.md). The model format is described in [docs/harness.md](./docs/harness.md).
 
-- **Test fixtures:** the OpenSees example Tcl is committed under [`tests/fixtures/opensees/`](./tests/fixtures/opensees/README.md). Ground motions are pinned downloads copied in next to it. `--fixtures-only` installs just these. Only the direct-Tcl parity cases need them: unit tests write synthetic ground motions instead. The mega-tall model is generated locally by [`scripts/megatall_recon/`](./scripts/megatall_recon/README.md), never downloaded.
-- **Synthetic ground motions:** [`scripts/synthetic_ground_motion.py`](./scripts/synthetic_ground_motion.py) writes seeded Clough-Penzien records in the `.AT2`/`.DT2`, `.acc` and `A10000.tcl` layouts the examples read. [`scripts/sweep_synthetic_parity.py`](./scripts/sweep_synthetic_parity.py) reruns a ground-motion parity case over many seeds and intensities and reports parity and each engine's convergence per run, e.g. `uv run scripts/sweep_synthetic_parity.py opensees_example_ex3_canti2d_analyze_dynamic_eq_uniform --seeds 1-5 --pga-scale 1,5`.
-- **Agent reference:** `docs/agent-reference/OpenSees` (v3.7.1, matching the binary) and `docs/agent-reference/modular` (the tag matching the Mojo version) are links to shared shallow clones.
+## What it supports
 
-## OpenSees Reference Binaries
+| | Supported |
+| --- | --- |
+| Elements | `elasticBeamColumn`, `forceBeamColumn`, `dispBeamColumn`, `truss`, `twoNodeLink`, `zeroLength` in 2D and 3D; `fourNodeQuad`; `ShellMITC4` |
+| Sections | elastic, fiber (2D and 3D), aggregator (2D), elastic membrane-plate, layered shell |
+| Uniaxial materials | `Elastic`, `Steel01`, `Steel02`, `Concrete01`, `Concrete02` |
+| nD materials | `ElasticIsotropic`, `ConcreteS`, `PlateFromPlaneStress`, `PlateRebar` |
+| Geometric transformations | `Linear`, `PDelta`, `Corotational` |
+| Analyses | static and transient, linear and nonlinear; staged; modal eigen |
+| Integrators | `LoadControl`, `DisplacementControl`, `Newmark` |
+| Algorithms | `Newton`, `ModifiedNewton` (also `-initial`), `NewtonLineSearch`, `Broyden`, `KrylovNewton` (static) |
+| Linear systems | `BandGeneral`, `BandSPD`, `ProfileSPD`, `SuperLU`, `UmfPack`, `FullGeneral`, `SparseSYM` |
+| Constraints | `Plain`, `Transformation`, `Lagrange`; `equalDOF`, `rigidDiaphragm` |
+| Numberers | `RCM`, `Plain` |
 
-`uv run scripts/setup_opensees.py` installs `OpenSees`, `OpenSeesMP`, `OpenSeesSP` and a matching `mpiexec` on linux-64. It needs no sudo, compilers or system Tcl/MPI, and takes about 20 seconds.
-
-- **Pinned:** the binaries come from the conda-forge `opensees` package (currently 3.7.1; 3.8.0 rejects the inline `Series` syntax the wiki examples use, see `scripts/setup_opensees.py`). [`scripts/opensees/opensees-linux-64.lock`](./scripts/opensees/opensees-linux-64.lock) pins every package by URL and sha256. A pinned, checksum-verified micromamba installs it.
-- **Shared across worktrees:** the environment installs once per lockfile into `~/.cache/strut/opensees/<lock-hash>/`. Override the location with `STRUT_CACHE_DIR` or `XDG_CACHE_HOME`. Every checkout with the same lock reuses it. A branch that changes the lock gets its own prefix. Re-running the script when the install already exists is a no-op. Concurrent runs are serialized with a file lock.
-- **Lookup order** in `scripts/run_opensees.sh` and `scripts/run_openseesmp.sh`:
-  1. `OPENSEES_BIN` / `OPENSEESMP_BIN`
-  2. A local source build at `.build/opensees-linux/` (from [scripts/build_opensees_linux.sh](./scripts/build_opensees_linux.sh))
-  3. The shared locked install
-
-  When the locked `OpenSeesMP` is selected, the locked install's `mpiexec` is used.
-- **Other commands:**
-  - `setup_opensees.py path [--binary OpenSeesMP|--prefix]` prints the installed path.
-  - `verify` re-runs the smoke tests.
-  - `lock` re-resolves the spec in the script and rewrites the lockfile. To upgrade OpenSees, edit `CONDA_SPECS` and then run `lock`.
-- **Cleanup:** delete stale prefixes under `~/.cache/strut/opensees/` once no branch uses their lock.
-
-## OpenSees Implementation Coverage
-
-| Element family     | 2D  | 3D  |
-| ------------------ | --- | --- |
-| beamWithHinges     | ❌  | ❌  |
-| dispBeamColumn     | ✅  | ✅  |
-| elasticBeamColumn  | ✅  | ✅  |
-| elastomericBearing | ❌  | ❌  |
-| forceBeamColumn    | ✅  | ✅  |
-| fourNodeQuad       | ✅  |     |
-| frictionBearing    | ❌  | ❌  |
-| shell              |     | ✅  |
-| truss              | ✅  | ✅  |
-| twoNodeLink        | ✅  | ✅  |
-| zeroLength         | ✅  | ✅  |
-
-### Uniaxial Materials (`uniaxialMaterial`)
-
-| Material       | Strut |
-| -------------- | ----- |
-| Concrete01     | ✅    |
-| Concrete02     | ✅    |
-| Damper         | ❌    |
-| DamperMaterial | ❌    |
-| Elastic        | ✅    |
-| Steel01        | ✅    |
-| Steel01Thermal | ❌    |
-| Steel02        | ✅    |
-| TensionOnly    | ❌    |
-
-### ND Materials (`nDMaterial`)
-
-| Material         | Strut |
-| ---------------- | ----- |
-| ElasticIsotropic | ✅    |
-
-### Analysis Type (`analysis.type`)
-
-| Type                | Strut |
-| ------------------- | ----- |
-| static_linear       | ✅    |
-| static_nonlinear    | ✅    |
-| transient_linear    | ✅    |
-| transient_nonlinear | ✅    |
-| staged              | ✅    |
-| modal_eigen         | ✅    |
-
-### Linear System (`analysis.system`)
-
-| System      | Strut |
-| ----------- | ----- |
-| BandGeneral | ✅    |
-| BandSPD     | ✅    |
-| ProfileSPD  | ✅    |
-| SuperLU     | ✅    |
-| UmfPack     | ✅    |
-| FullGeneral | ✅    |
-| SparseSYM   | ✅    |
-
-### Constraint Handler (`analysis.constraints`)
-
-| Constraints    | Strut |
-| -------------- | ----- |
-| Plain          | ✅    |
-| Transformation | ✅    |
-| Lagrange       | ✅    |
-
-### Numberer (`analysis.numberer`)
-
-| Numberer | Strut |
-| -------- | ----- |
-| RCM      | ✅    |
-| Plain    | ✅    |
-
-### Nonlinear Algorithm (`analysis.algorithm`)
-
-| Algorithm             | Strut |
-| --------------------- | ----- |
-| Newton                | ✅    |
-| ModifiedNewton        | ✅    |
-| ModifiedNewtonInitial | ✅    |
-| Broyden               | ✅    |
-| NewtonLineSearch      | ✅    |
-| KrylovNewton          | ❌    |
-
-### Integrator (`analysis.integrator.type`)
-
-| Integrator          | Strut |
-| ------------------- | ----- |
-| LoadControl         | ✅    |
-| DisplacementControl | ✅    |
-| Newmark             | ✅    |
+Not yet: `beamWithHinges`, bearing elements, damper materials, `Steel01Thermal`, `TensionOnly`.

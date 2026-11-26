@@ -1,23 +1,35 @@
 from collections import List
 from elements import (
     ForceBeamColumn2dScratch,
-    ForceBeamColumn3dScratch,
     reset_force_beam_column2d_scratch,
-    reset_force_beam_column3d_scratch,
 )
 from math import sqrt
 from materials import UniMaterialDef, UniMaterialState, uniaxial_commit, uniaxial_revert_trial
 from os import abort
 from python import Python
 
+from solver.assembly.frame3d_scratch import (
+    Frame3dAssemblyScratch,
+    reset_frame3d_assembly_scratch,
+)
+from solver.assembly.shell_cache import ShellAssemblyCache
 from solver.run_case.linear_solver_backend import (
     LinearSolverBackend,
     clear,
     initialize_symbolic_from_element_dof_map,
+    initialize_symbolic_from_pattern,
     initialize_structure,
+    refactor_from_pattern_if_needed,
     refactor_loaded_if_needed,
-    refactor_if_needed,
     solve,
+)
+from solver.sparse_pattern import (
+    ElementScatterMap,
+    SparseAssembler,
+    SparsePattern,
+    build_elem_free_pool,
+    build_sparse_assembler,
+    copy_values,
 )
 from solver.assembly import (
     assemble_global_stiffness_and_internal_native_soa,
@@ -44,13 +56,14 @@ from solver.run_case.input_types import (
 )
 from solver.time_series import TimeSeriesInput, eval_time_series_input, find_time_series_input
 from sections import (
-    layered_shell_commit_all,
     FiberCell,
     FiberSection2dDef,
     FiberSection3dDef,
     LayeredShellSectionDef,
     fiber_section2d_commit_runtime_all,
     fiber_section2d_revert_trial_runtime_all,
+    fiber_section3d_commit_runtime_all,
+    fiber_section3d_revert_trial_runtime_all,
 )
 from tag_types import (
     AnalysisAlgorithmTag,
@@ -65,7 +78,6 @@ from tag_types import (
 
 from solver.run_case.helpers import (
     _append_output,
-    _collapse_matrix_by_mpc,
     _collapse_vector_by_mpc,
     _drift_value,
     _element_basic_force_for_recorder,
@@ -167,97 +179,6 @@ fn _copy_vector(src: List[Float64], count: Int) -> List[Float64]:
 
 
 @always_inline
-fn _dense_flat_index(size: Int, row: Int, col: Int) -> Int:
-    return row * size + col
-
-
-fn _ensure_dense_flat_storage(mut values: List[Float64], size: Int):
-    var count = size * size
-    if len(values) != count:
-        values.resize(count, 0.0)
-
-
-fn _load_displacement_control_augmented_dense_flat(
-    mut matrix_flat: List[Float64],
-    K_ff: List[List[Float64]],
-    load_column_free: List[Float64],
-    control_free: Int,
-):
-    var free_count = len(load_column_free)
-    var aug_size = free_count + 1
-    _ensure_dense_flat_storage(matrix_flat, aug_size)
-    for i in range(aug_size * aug_size):
-        matrix_flat[i] = 0.0
-    for i in range(free_count):
-        for j in range(free_count):
-            matrix_flat[_dense_flat_index(aug_size, i, j)] = K_ff[i][j]
-        matrix_flat[_dense_flat_index(aug_size, i, free_count)] = load_column_free[i]
-    matrix_flat[_dense_flat_index(aug_size, free_count, control_free)] = 1.0
-
-
-fn _solve_linear_system_dense_flat(
-    matrix_flat: List[Float64],
-    rhs: List[Float64],
-    mut solution_out: List[Float64],
-    mut factor_work: List[Float64],
-    mut rhs_work: List[Float64],
-) -> Bool:
-    var n = len(rhs)
-    if len(matrix_flat) != n * n:
-        return False
-    solution_out.resize(n, 0.0)
-    _ensure_dense_flat_storage(factor_work, n)
-    rhs_work.resize(n, 0.0)
-    for i in range(n * n):
-        factor_work[i] = matrix_flat[i]
-    for i in range(n):
-        rhs_work[i] = rhs[i]
-
-    var eps = 1.0e-18
-    for i in range(n):
-        var pivot = i
-        var max_val = abs(factor_work[_dense_flat_index(n, i, i)])
-        for row in range(i + 1, n):
-            var candidate = abs(factor_work[_dense_flat_index(n, row, i)])
-            if candidate > max_val:
-                max_val = candidate
-                pivot = row
-        if max_val <= eps:
-            return False
-        if pivot != i:
-            var pivot_base = pivot * n
-            var row_base = i * n
-            for col in range(n):
-                var tmp = factor_work[row_base + col]
-                factor_work[row_base + col] = factor_work[pivot_base + col]
-                factor_work[pivot_base + col] = tmp
-            var rhs_tmp = rhs_work[i]
-            rhs_work[i] = rhs_work[pivot]
-            rhs_work[pivot] = rhs_tmp
-
-        var piv = factor_work[_dense_flat_index(n, i, i)]
-        for j in range(i, n):
-            factor_work[_dense_flat_index(n, i, j)] /= piv
-        rhs_work[i] /= piv
-
-        for row in range(i + 1, n):
-            var factor = factor_work[_dense_flat_index(n, row, i)]
-            if factor == 0.0:
-                continue
-            for col in range(i, n):
-                factor_work[_dense_flat_index(n, row, col)] -= (
-                    factor * factor_work[_dense_flat_index(n, i, col)]
-                )
-            rhs_work[row] -= factor * rhs_work[i]
-
-    for i in range(n - 1, -1, -1):
-        var sum = rhs_work[i]
-        for j in range(i + 1, n):
-            sum -= factor_work[_dense_flat_index(n, i, j)] * solution_out[j]
-        solution_out[i] = sum
-    return True
-
-
 fn _broyden_update_direction(
     mut du: List[Float64],
     history_s: List[List[Float64]],
@@ -365,16 +286,13 @@ fn _static_load_control_residual(
     mut fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
-    fiber_section3d_defs: List[FiberSection3dDef],
+    mut fiber_section3d_defs: List[FiberSection3dDef],
     fiber_section3d_cells: List[FiberCell],
     fiber_section3d_index_by_id: List[Int],
-    mut layered_shell_section_defs: List[LayeredShellSectionDef],
-    layered_shell_section_index_by_id: List[Int],
-    layered_shell_section_uniaxial_offsets: List[Int],
-    layered_shell_section_uniaxial_counts: List[Int],
-    shell_elem_instance_offsets: List[Int],
+    layered_shell_section_defs: List[LayeredShellSectionDef],
+    mut shell_cache: ShellAssemblyCache,
     mut force_beam_column2d_scratch: ForceBeamColumn2dScratch,
-    mut force_beam_column3d_scratch: ForceBeamColumn3dScratch,
+    mut force_beam_column3d_scratch: Frame3dAssemblyScratch,
     F_step: List[Float64],
     free: List[Int],
     free_count: Int,
@@ -437,10 +355,7 @@ fn _static_load_control_residual(
         fiber_section3d_cells,
         fiber_section3d_index_by_id,
         layered_shell_section_defs,
-        layered_shell_section_index_by_id,
-        layered_shell_section_uniaxial_offsets,
-        layered_shell_section_uniaxial_counts,
-        shell_elem_instance_offsets,
+        shell_cache,
         force_beam_column2d_scratch,
         force_beam_column3d_scratch,
     )
@@ -496,16 +411,13 @@ fn _static_displacement_control_residual(
     mut fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
-    fiber_section3d_defs: List[FiberSection3dDef],
+    mut fiber_section3d_defs: List[FiberSection3dDef],
     fiber_section3d_cells: List[FiberCell],
     fiber_section3d_index_by_id: List[Int],
-    mut layered_shell_section_defs: List[LayeredShellSectionDef],
-    layered_shell_section_index_by_id: List[Int],
-    layered_shell_section_uniaxial_offsets: List[Int],
-    layered_shell_section_uniaxial_counts: List[Int],
-    shell_elem_instance_offsets: List[Int],
+    layered_shell_section_defs: List[LayeredShellSectionDef],
+    mut shell_cache: ShellAssemblyCache,
     mut force_beam_column2d_scratch: ForceBeamColumn2dScratch,
-    mut force_beam_column3d_scratch: ForceBeamColumn3dScratch,
+    mut force_beam_column3d_scratch: Frame3dAssemblyScratch,
     free: List[Int],
     free_count: Int,
     has_transformation_mpc: Bool,
@@ -576,10 +488,7 @@ fn _static_displacement_control_residual(
         fiber_section3d_cells,
         fiber_section3d_index_by_id,
         layered_shell_section_defs,
-        layered_shell_section_index_by_id,
-        layered_shell_section_uniaxial_offsets,
-        layered_shell_section_uniaxial_counts,
-        shell_elem_instance_offsets,
+        shell_cache,
         force_beam_column2d_scratch,
         force_beam_column3d_scratch,
     )
@@ -846,14 +755,11 @@ fn run_static_nonlinear_load_control(
     mut fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
-    fiber_section3d_defs: List[FiberSection3dDef],
+    mut fiber_section3d_defs: List[FiberSection3dDef],
     fiber_section3d_cells: List[FiberCell],
     fiber_section3d_index_by_id: List[Int],
-    mut layered_shell_section_defs: List[LayeredShellSectionDef],
-    layered_shell_section_index_by_id: List[Int],
-    layered_shell_section_uniaxial_offsets: List[Int],
-    layered_shell_section_uniaxial_counts: List[Int],
-    shell_elem_instance_offsets: List[Int],
+    layered_shell_section_defs: List[LayeredShellSectionDef],
+    mut shell_cache: ShellAssemblyCache,
     total_dofs: Int,
     F_const: List[Float64],
     F_pattern: List[Float64],
@@ -905,7 +811,7 @@ fn run_static_nonlinear_load_control(
     var asm_dof_map12: List[Int] = []
     var asm_u_elem6: List[Float64] = []
     var force_beam_column2d_scratch = ForceBeamColumn2dScratch()
-    var force_beam_column3d_scratch = ForceBeamColumn3dScratch()
+    var force_beam_column3d_scratch = Frame3dAssemblyScratch()
     var has_force_beam_column2d = False
     for i in range(len(typed_elements)):
         if typed_elements[i].type_tag == ElementTypeTag.ForceBeamColumn2d:
@@ -980,8 +886,6 @@ fn run_static_nonlinear_load_control(
             runtime_metrics.active_bandwidth = bw_nl * 2 + 1
             runtime_metrics.active_nnz = 0
             runtime_metrics.active_profile_size = 0
-    var K_ff: List[List[Float64]] = []
-    var K_init_ff: List[List[Float64]] = []
     var backend = LinearSolverBackend()
     var native_direct_backend_available = (
         not has_transformation_mpc
@@ -996,38 +900,47 @@ fn run_static_nonlinear_load_control(
             or analysis.system_tag == AnalysisSystemTag.SparseSYM
         )
     )
-    var needs_dense_global_matrix = (
+    # Global tangent over the shared reduced sparse pattern (MPC-expanded) for
+    # every path that does not assemble straight into the backend.
+    var needs_sparse_global_matrix = (
         use_banded_loadcontrol
         or not native_direct_backend_available
         or chain_has_modified_newton_initial
     )
-    var K: List[List[Float64]] = []
-    if needs_dense_global_matrix:
-        for _ in range(total_dofs):
-            var row: List[Float64] = []
-            row.resize(total_dofs, 0.0)
-            K.append(row^)
+    var sparse_pattern = SparsePattern()
+    var sparse_assembler = SparseAssembler(ElementScatterMap(), 0)
+    var elem_free_pool_sparse: List[Int] = []
+    var K_ff_values: List[Float64] = []
+    var K_init_values: List[Float64] = []
+    if needs_sparse_global_matrix:
+        var no_mass: List[Float64] = []
+        sparse_assembler = build_sparse_assembler(
+            elem_dof_offsets,
+            elem_dof_pool,
+            free_index,
+            free_count,
+            has_transformation_mpc,
+            mpc_row_offsets,
+            mpc_dof_pool,
+            mpc_coeff_pool,
+            no_mass,
+            no_mass,
+            sparse_pattern,
+        )
+        elem_free_pool_sparse = build_elem_free_pool(elem_dof_pool, free_index)
     var elem_free_pool_native: List[Int] = []
     if native_direct_backend_available:
-        elem_free_pool_native.resize(len(elem_dof_pool), -1)
-        for i in range(len(elem_dof_pool)):
-            var dof = elem_dof_pool[i]
-            if dof >= 0 and dof < len(free_index):
-                elem_free_pool_native[i] = free_index[dof]
+        elem_free_pool_native = build_elem_free_pool(elem_dof_pool, free_index)
     var lu_rhs: List[Float64] = []
     var u_f_work: List[Float64] = []
     if not use_banded_loadcontrol:
         initialize_structure(backend, analysis, free_count)
-        initialize_symbolic_from_element_dof_map(
-            backend, elem_dof_offsets, elem_dof_pool, free_index
-        )
-        for _ in range(free_count):
-            var row_ff: List[Float64] = []
-            row_ff.resize(free_count, 0.0)
-            K_ff.append(row_ff^)
-            var row_kinit: List[Float64] = []
-            row_kinit.resize(free_count, 0.0)
-            K_init_ff.append(row_kinit^)
+        if needs_sparse_global_matrix:
+            initialize_symbolic_from_pattern(backend, sparse_pattern)
+        else:
+            initialize_symbolic_from_element_dof_map(
+                backend, elem_dof_offsets, elem_dof_pool, free_index
+            )
         lu_rhs.resize(free_count, 0.0)
         u_f_work.resize(free_count, 0.0)
     var K_ff_banded: List[List[Float64]] = []
@@ -1057,7 +970,7 @@ fn run_static_nonlinear_load_control(
                 (t_reset_start - t0) // 1000,
             )
         reset_force_beam_column2d_scratch(force_beam_column2d_scratch)
-        reset_force_beam_column3d_scratch(force_beam_column3d_scratch)
+        reset_frame3d_assembly_scratch(force_beam_column3d_scratch)
         if do_profile:
             var t_reset_end = Int(time.perf_counter_ns())
             _append_event(
@@ -1067,7 +980,7 @@ fn run_static_nonlinear_load_control(
                 PROFILE_FRAME_UNIAXIAL_COPY_RESET,
                 (t_reset_end - t0) // 1000,
             )
-        assemble_global_stiffness_and_internal_soa(
+        assemble_global_stiffness_and_internal_native_soa(
             typed_nodes,
             typed_elements,
             node_x,
@@ -1075,6 +988,8 @@ fn run_static_nonlinear_load_control(
             node_z,
             elem_dof_offsets,
             elem_dof_pool,
+            elem_dof_offsets,
+            elem_free_pool_sparse,
             elem_node_offsets,
             elem_node_pool,
             elem_primary_material_ids,
@@ -1120,16 +1035,13 @@ fn run_static_nonlinear_load_control(
             fiber_section3d_cells,
             fiber_section3d_index_by_id,
             layered_shell_section_defs,
-            layered_shell_section_index_by_id,
-            layered_shell_section_uniaxial_offsets,
-            layered_shell_section_uniaxial_counts,
-            shell_elem_instance_offsets,
+            shell_cache,
             force_beam_column2d_scratch,
             force_beam_column3d_scratch,
             asm_dof_map6,
             asm_dof_map12,
             asm_u_elem6,
-            K,
+            sparse_assembler,
             F_int,
             do_profile,
             t0,
@@ -1139,12 +1051,8 @@ fn run_static_nonlinear_load_control(
             frame_assemble_fiber,
             runtime_metrics,
         )
-        if has_transformation_mpc:
-            K = _collapse_matrix_by_mpc(K, mpc_row_offsets, mpc_dof_pool, mpc_coeff_pool)
         if not use_banded_loadcontrol:
-            for i in range(free_count):
-                for j in range(free_count):
-                    K_init_ff[i][j] = K[free[i]][free[j]]
+            copy_values(K_init_values, sparse_assembler.values)
         if do_profile:
             var t_revert_start = Int(time.perf_counter_ns())
             var revert_start_us = (t_revert_start - t0) // 1000
@@ -1157,6 +1065,7 @@ fn run_static_nonlinear_load_control(
             )
         _uniaxial_revert_trial_active_states(uniaxial_states, elem_uniaxial_state_ids)
         fiber_section2d_revert_trial_runtime_all(fiber_section_defs)
+        fiber_section3d_revert_trial_runtime_all(fiber_section3d_defs)
         if do_profile:
             var t_revert_end = Int(time.perf_counter_ns())
             var revert_end_us = (t_revert_end - t0) // 1000
@@ -1263,7 +1172,7 @@ fn run_static_nonlinear_load_control(
                 (t_reset_start - t0) // 1000,
             )
         reset_force_beam_column2d_scratch(force_beam_column2d_scratch)
-        reset_force_beam_column3d_scratch(force_beam_column3d_scratch)
+        reset_frame3d_assembly_scratch(force_beam_column3d_scratch)
         if do_profile:
             var t_reset_end = Int(time.perf_counter_ns())
             _append_event(
@@ -1293,6 +1202,7 @@ fn run_static_nonlinear_load_control(
                 force_basic_q = force_basic_q_base.copy()
                 uniaxial_states = uniaxial_states_base.copy()
                 fiber_section2d_revert_trial_runtime_all(fiber_section_defs)
+                fiber_section3d_revert_trial_runtime_all(fiber_section3d_defs)
                 attempt_algorithm_tag = retry_algorithm_tags[attempt]
                 attempt_algorithm_mode = retry_algorithm_modes[attempt]
                 attempt_line_search_eta = retry_line_search_etas[attempt]
@@ -1427,10 +1337,7 @@ fn run_static_nonlinear_load_control(
                         fiber_section3d_cells,
                         fiber_section3d_index_by_id,
                         layered_shell_section_defs,
-                        layered_shell_section_index_by_id,
-                        layered_shell_section_uniaxial_offsets,
-                        layered_shell_section_uniaxial_counts,
-                        shell_elem_instance_offsets,
+                        shell_cache,
                         force_beam_column2d_scratch,
                         force_beam_column3d_scratch,
                         asm_dof_map6,
@@ -1500,15 +1407,12 @@ fn run_static_nonlinear_load_control(
                         fiber_section3d_cells,
                         fiber_section3d_index_by_id,
                         layered_shell_section_defs,
-                        layered_shell_section_index_by_id,
-                        layered_shell_section_uniaxial_offsets,
-                        layered_shell_section_uniaxial_counts,
-                        shell_elem_instance_offsets,
+                        shell_cache,
                         force_beam_column2d_scratch,
                         force_beam_column3d_scratch,
                     )
                 else:
-                    assemble_global_stiffness_and_internal_soa(
+                    assemble_global_stiffness_and_internal_native_soa(
                         typed_nodes,
                         typed_elements,
                         node_x,
@@ -1516,6 +1420,8 @@ fn run_static_nonlinear_load_control(
                         node_z,
                         elem_dof_offsets,
                         elem_dof_pool,
+                        elem_dof_offsets,
+                        elem_free_pool_sparse,
                         elem_node_offsets,
                         elem_node_pool,
                         elem_primary_material_ids,
@@ -1561,16 +1467,13 @@ fn run_static_nonlinear_load_control(
                         fiber_section3d_cells,
                         fiber_section3d_index_by_id,
                         layered_shell_section_defs,
-                        layered_shell_section_index_by_id,
-                        layered_shell_section_uniaxial_offsets,
-                        layered_shell_section_uniaxial_counts,
-                        shell_elem_instance_offsets,
+                        shell_cache,
                         force_beam_column2d_scratch,
                         force_beam_column3d_scratch,
                         asm_dof_map6,
                         asm_dof_map12,
                         asm_u_elem6,
-                        K,
+                        sparse_assembler,
                         F_int,
                         do_profile,
                         t0,
@@ -1581,9 +1484,6 @@ fn run_static_nonlinear_load_control(
                         runtime_metrics,
                     )
                     if has_transformation_mpc:
-                        K = _collapse_matrix_by_mpc(
-                            K, mpc_row_offsets, mpc_dof_pool, mpc_coeff_pool
-                        )
                         F_int = _collapse_vector_by_mpc(
                             F_int, mpc_row_offsets, mpc_dof_pool, mpc_coeff_pool
                         )
@@ -1609,14 +1509,16 @@ fn run_static_nonlinear_load_control(
                                 K_ff_banded[i][j] = 0.0
                             var row_i = free[i]
                             F_f[i] = F_step[row_i] - F_int[row_i]
-                            var j0 = i - bw_nl
-                            if j0 < 0:
-                                j0 = 0
-                            var j1 = i + bw_nl
-                            if j1 > free_count - 1:
-                                j1 = free_count - 1
-                            for j in range(j0, j1 + 1):
-                                K_ff_banded[i][j - i + bw_nl] = K[row_i][free[j]]
+                            for slot in range(
+                                sparse_pattern.row_start[i], sparse_pattern.row_start[i + 1]
+                            ):
+                                var band_offset = sparse_pattern.col_index[slot] - i + bw_nl
+                                if band_offset < 0 or band_offset >= width:
+                                    abort(
+                                        "static_nonlinear banded tangent entry outside"
+                                        " the estimated bandwidth"
+                                    )
+                                K_ff_banded[i][band_offset] = sparse_assembler.values[slot]
                         tangent_initialized = True
                     else:
                         for i in range(free_count):
@@ -1627,9 +1529,8 @@ fn run_static_nonlinear_load_control(
                             for i in range(free_count):
                                 var row_i = free[i]
                                 F_f[i] = F_step[row_i] - F_int[row_i]
-                                if not use_native_direct_solve:
-                                    for j in range(free_count):
-                                        K_ff[i][j] = K[row_i][free[j]]
+                            if not use_native_direct_solve:
+                                copy_values(K_ff_values, sparse_assembler.values)
                             tangent_initialized = True
                             tangent_factored = False
                         else:
@@ -1640,9 +1541,8 @@ fn run_static_nonlinear_load_control(
                             for i in range(free_count):
                                 var row_i = free[i]
                                 F_f[i] = F_step[row_i] - F_int[row_i]
-                                if not use_native_direct_solve:
-                                    for j in range(free_count):
-                                        K_ff[i][j] = K[row_i][free[j]]
+                            if not use_native_direct_solve:
+                                copy_values(K_ff_values, sparse_assembler.values)
                             tangent_initialized = True
                             tangent_factored = False
                         else:
@@ -1650,9 +1550,7 @@ fn run_static_nonlinear_load_control(
                                 F_f[i] = F_step[free[i]] - F_int[free[i]]
                     else:
                         if not tangent_initialized:
-                            for i in range(free_count):
-                                for j in range(free_count):
-                                    K_ff[i][j] = K_init_ff[i][j]
+                            copy_values(K_ff_values, K_init_values)
                             tangent_initialized = True
                             tangent_factored = False
                         for i in range(free_count):
@@ -1712,8 +1610,13 @@ fn run_static_nonlinear_load_control(
                             backend, refresh_tangent, runtime_metrics, force_refactor
                         )
                     else:
-                        _ = refactor_if_needed(
-                            backend, K_ff, refresh_tangent, runtime_metrics, force_refactor
+                        _ = refactor_from_pattern_if_needed(
+                            backend,
+                            sparse_pattern,
+                            K_ff_values,
+                            refresh_tangent,
+                            runtime_metrics,
+                            force_refactor,
                         )
                     tangent_factored = True
                     for i in range(free_count):
@@ -1860,10 +1763,7 @@ fn run_static_nonlinear_load_control(
                             fiber_section3d_cells,
                             fiber_section3d_index_by_id,
                             layered_shell_section_defs,
-                            layered_shell_section_index_by_id,
-                            layered_shell_section_uniaxial_offsets,
-                            layered_shell_section_uniaxial_counts,
-                            shell_elem_instance_offsets,
+                            shell_cache,
                             force_beam_column2d_scratch,
                             force_beam_column3d_scratch,
                             F_step,
@@ -1949,10 +1849,7 @@ fn run_static_nonlinear_load_control(
                                 fiber_section3d_cells,
                                 fiber_section3d_index_by_id,
                                 layered_shell_section_defs,
-                                layered_shell_section_index_by_id,
-                                layered_shell_section_uniaxial_offsets,
-                                layered_shell_section_uniaxial_counts,
-                                shell_elem_instance_offsets,
+                                shell_cache,
                                 force_beam_column2d_scratch,
                                 force_beam_column3d_scratch,
                                 F_step,
@@ -2067,10 +1964,7 @@ fn run_static_nonlinear_load_control(
             fiber_section3d_cells,
             fiber_section3d_index_by_id,
             layered_shell_section_defs,
-            layered_shell_section_index_by_id,
-            layered_shell_section_uniaxial_offsets,
-            layered_shell_section_uniaxial_counts,
-            shell_elem_instance_offsets,
+            shell_cache,
             force_beam_column2d_scratch,
             force_beam_column3d_scratch,
         )
@@ -2085,8 +1979,9 @@ fn run_static_nonlinear_load_control(
                 commit_start_us,
             )
         _uniaxial_commit_active_states(uniaxial_states, elem_uniaxial_state_ids)
-        layered_shell_commit_all(layered_shell_section_defs)
+        shell_cache.commit_layered_states()
         fiber_section2d_commit_runtime_all(fiber_section_defs)
+        fiber_section3d_commit_runtime_all(fiber_section3d_defs)
         if do_profile:
             var t_commit_end = Int(time.perf_counter_ns())
             var commit_end_us = (t_commit_end - t0) // 1000
@@ -2564,14 +2459,11 @@ fn run_static_nonlinear_displacement_control(
     mut fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
-    fiber_section3d_defs: List[FiberSection3dDef],
+    mut fiber_section3d_defs: List[FiberSection3dDef],
     fiber_section3d_cells: List[FiberCell],
     fiber_section3d_index_by_id: List[Int],
-    mut layered_shell_section_defs: List[LayeredShellSectionDef],
-    layered_shell_section_index_by_id: List[Int],
-    layered_shell_section_uniaxial_offsets: List[Int],
-    layered_shell_section_uniaxial_counts: List[Int],
-    shell_elem_instance_offsets: List[Int],
+    layered_shell_section_defs: List[LayeredShellSectionDef],
+    mut shell_cache: ShellAssemblyCache,
     total_dofs: Int,
     F_const: List[Float64],
     F_pattern: List[Float64],
@@ -2622,7 +2514,7 @@ fn run_static_nonlinear_displacement_control(
     var asm_dof_map12: List[Int] = []
     var asm_u_elem6: List[Float64] = []
     var force_beam_column2d_scratch = ForceBeamColumn2dScratch()
-    var force_beam_column3d_scratch = ForceBeamColumn3dScratch()
+    var force_beam_column3d_scratch = Frame3dAssemblyScratch()
     var has_force_beam_column2d = False
     var has_fiber_beam_column2d = False
     for i in range(len(typed_elements)):
@@ -2693,15 +2585,6 @@ fn run_static_nonlinear_displacement_control(
     var F_int: List[Float64] = []
     F_int.resize(total_dofs, 0.0)
 
-    var K_ff: List[List[Float64]] = []
-    var K_init_ff: List[List[Float64]] = []
-    for _ in range(free_count):
-        var row_ff: List[Float64] = []
-        row_ff.resize(free_count, 0.0)
-        K_ff.append(row_ff^)
-        var row_kinit: List[Float64] = []
-        row_kinit.resize(free_count, 0.0)
-        K_init_ff.append(row_kinit^)
     var backend = LinearSolverBackend()
     var native_direct_backend_available = not has_transformation_mpc and (
         analysis.system_tag == AnalysisSystemTag.FullGeneral
@@ -2712,27 +2595,43 @@ fn run_static_nonlinear_displacement_control(
         or analysis.system_tag == AnalysisSystemTag.UmfPack
         or analysis.system_tag == AnalysisSystemTag.SparseSYM
     )
-    var needs_dense_global_matrix = (
+    # Global tangent over the shared reduced sparse pattern (MPC-expanded) for
+    # every path that does not assemble straight into the backend.
+    var needs_sparse_global_matrix = (
         not native_direct_backend_available or chain_has_modified_newton_initial
     )
-    var K: List[List[Float64]] = []
-    if needs_dense_global_matrix:
-        for _ in range(total_dofs):
-            var row: List[Float64] = []
-            row.resize(total_dofs, 0.0)
-            K.append(row^)
     var free_index_native: List[Int] = []
     free_index_native.resize(total_dofs, -1)
+    for i in range(free_count):
+        free_index_native[free[i]] = i
+    var sparse_pattern = SparsePattern()
+    var sparse_assembler = SparseAssembler(ElementScatterMap(), 0)
+    var elem_free_pool_sparse: List[Int] = []
+    var K_ff_values: List[Float64] = []
+    var K_init_values: List[Float64] = []
+    if needs_sparse_global_matrix:
+        var no_mass: List[Float64] = []
+        sparse_assembler = build_sparse_assembler(
+            elem_dof_offsets,
+            elem_dof_pool,
+            free_index_native,
+            free_count,
+            has_transformation_mpc,
+            mpc_row_offsets,
+            mpc_dof_pool,
+            mpc_coeff_pool,
+            no_mass,
+            no_mass,
+            sparse_pattern,
+        )
+        elem_free_pool_sparse = build_elem_free_pool(elem_dof_pool, free_index_native)
     var elem_free_pool_native: List[Int] = []
     if native_direct_backend_available:
-        for i in range(free_count):
-            free_index_native[free[i]] = i
-        elem_free_pool_native.resize(len(elem_dof_pool), -1)
-        for i in range(len(elem_dof_pool)):
-            var dof = elem_dof_pool[i]
-            if dof >= 0 and dof < total_dofs:
-                elem_free_pool_native[i] = free_index_native[dof]
-        initialize_structure(backend, analysis, free_count)
+        elem_free_pool_native = build_elem_free_pool(elem_dof_pool, free_index_native)
+    initialize_structure(backend, analysis, free_count)
+    if needs_sparse_global_matrix:
+        initialize_symbolic_from_pattern(backend, sparse_pattern)
+    else:
         initialize_symbolic_from_element_dof_map(
             backend, elem_dof_offsets, elem_dof_pool, free_index_native
         )
@@ -2835,14 +2734,8 @@ fn run_static_nonlinear_displacement_control(
     var R_f: List[Float64] = []
     R_f.resize(free_count, 0.0)
     var aug_size = free_count + 1
-    var K_aug_flat: List[Float64] = []
-    K_aug_flat.resize(aug_size * aug_size, 0.0)
-    var K_aug_factor_flat: List[Float64] = []
-    K_aug_factor_flat.resize(aug_size * aug_size, 0.0)
     var rhs_aug: List[Float64] = []
     rhs_aug.resize(aug_size, 0.0)
-    var rhs_aug_work: List[Float64] = []
-    rhs_aug_work.resize(aug_size, 0.0)
     var sol_aug: List[Float64] = []
     sol_aug.resize(aug_size, 0.0)
     var aug_load_column_free: List[Float64] = []
@@ -2878,7 +2771,7 @@ fn run_static_nonlinear_displacement_control(
                 (t_reset_start - t0) // 1000,
             )
         reset_force_beam_column2d_scratch(force_beam_column2d_scratch)
-        reset_force_beam_column3d_scratch(force_beam_column3d_scratch)
+        reset_frame3d_assembly_scratch(force_beam_column3d_scratch)
         if do_profile:
             var t_reset_end = Int(time.perf_counter_ns())
             _append_event(
@@ -2888,7 +2781,7 @@ fn run_static_nonlinear_displacement_control(
                 PROFILE_FRAME_UNIAXIAL_COPY_RESET,
                 (t_reset_end - t0) // 1000,
             )
-        assemble_global_stiffness_and_internal_soa(
+        assemble_global_stiffness_and_internal_native_soa(
             typed_nodes,
             typed_elements,
             node_x,
@@ -2896,6 +2789,8 @@ fn run_static_nonlinear_displacement_control(
             node_z,
             elem_dof_offsets,
             elem_dof_pool,
+            elem_dof_offsets,
+            elem_free_pool_sparse,
             elem_node_offsets,
             elem_node_pool,
             elem_primary_material_ids,
@@ -2941,16 +2836,13 @@ fn run_static_nonlinear_displacement_control(
             fiber_section3d_cells,
             fiber_section3d_index_by_id,
             layered_shell_section_defs,
-            layered_shell_section_index_by_id,
-            layered_shell_section_uniaxial_offsets,
-            layered_shell_section_uniaxial_counts,
-            shell_elem_instance_offsets,
+            shell_cache,
             force_beam_column2d_scratch,
             force_beam_column3d_scratch,
             asm_dof_map6,
             asm_dof_map12,
             asm_u_elem6,
-            K,
+            sparse_assembler,
             F_int,
             do_profile,
             t0,
@@ -2960,11 +2852,7 @@ fn run_static_nonlinear_displacement_control(
             frame_assemble_fiber,
             runtime_metrics,
         )
-        if has_transformation_mpc:
-            K = _collapse_matrix_by_mpc(K, mpc_row_offsets, mpc_dof_pool, mpc_coeff_pool)
-        for i in range(free_count):
-            for j in range(free_count):
-                K_init_ff[i][j] = K[free[i]][free[j]]
+        copy_values(K_init_values, sparse_assembler.values)
         if do_profile:
             var t_revert_start = Int(time.perf_counter_ns())
             var revert_start_us = (t_revert_start - t0) // 1000
@@ -2977,6 +2865,7 @@ fn run_static_nonlinear_displacement_control(
             )
         _uniaxial_revert_trial_active_states(uniaxial_states, elem_uniaxial_state_ids)
         fiber_section2d_revert_trial_runtime_all(fiber_section_defs)
+        fiber_section3d_revert_trial_runtime_all(fiber_section3d_defs)
         if do_profile:
             var t_revert_end = Int(time.perf_counter_ns())
             var revert_end_us = (t_revert_end - t0) // 1000
@@ -3067,6 +2956,7 @@ fn run_static_nonlinear_displacement_control(
                     force_basic_q = force_basic_q_base.copy()
                     uniaxial_states = uniaxial_states_base.copy()
                     fiber_section2d_revert_trial_runtime_all(fiber_section_defs)
+                    fiber_section3d_revert_trial_runtime_all(fiber_section3d_defs)
                     load_factor = lambda_base
                     if attempt > 0:
                         attempt_algorithm_tag = retry_algorithm_tags[attempt]
@@ -3175,7 +3065,7 @@ fn run_static_nonlinear_displacement_control(
                                 (t_reset_start - t0) // 1000,
                             )
                         reset_force_beam_column2d_scratch(force_beam_column2d_scratch)
-                        reset_force_beam_column3d_scratch(force_beam_column3d_scratch)
+                        reset_frame3d_assembly_scratch(force_beam_column3d_scratch)
                         if do_profile:
                             var t_reset_end = Int(time.perf_counter_ns())
                             _append_event(
@@ -3241,10 +3131,7 @@ fn run_static_nonlinear_displacement_control(
                                 fiber_section3d_cells,
                                 fiber_section3d_index_by_id,
                                 layered_shell_section_defs,
-                                layered_shell_section_index_by_id,
-                                layered_shell_section_uniaxial_offsets,
-                                layered_shell_section_uniaxial_counts,
-                                shell_elem_instance_offsets,
+                                shell_cache,
                                 force_beam_column2d_scratch,
                                 force_beam_column3d_scratch,
                                 asm_dof_map6,
@@ -3314,15 +3201,12 @@ fn run_static_nonlinear_displacement_control(
                                 fiber_section3d_cells,
                                 fiber_section3d_index_by_id,
                                 layered_shell_section_defs,
-                                layered_shell_section_index_by_id,
-                                layered_shell_section_uniaxial_offsets,
-                                layered_shell_section_uniaxial_counts,
-                                shell_elem_instance_offsets,
+                                shell_cache,
                                 force_beam_column2d_scratch,
                                 force_beam_column3d_scratch,
                             )
                         else:
-                            assemble_global_stiffness_and_internal_soa(
+                            assemble_global_stiffness_and_internal_native_soa(
                                 typed_nodes,
                                 typed_elements,
                                 node_x,
@@ -3330,6 +3214,8 @@ fn run_static_nonlinear_displacement_control(
                                 node_z,
                                 elem_dof_offsets,
                                 elem_dof_pool,
+                                elem_dof_offsets,
+                                elem_free_pool_sparse,
                                 elem_node_offsets,
                                 elem_node_pool,
                                 elem_primary_material_ids,
@@ -3375,16 +3261,13 @@ fn run_static_nonlinear_displacement_control(
                                 fiber_section3d_cells,
                                 fiber_section3d_index_by_id,
                                 layered_shell_section_defs,
-                                layered_shell_section_index_by_id,
-                                layered_shell_section_uniaxial_offsets,
-                                layered_shell_section_uniaxial_counts,
-                                shell_elem_instance_offsets,
+                                shell_cache,
                                 force_beam_column2d_scratch,
                                 force_beam_column3d_scratch,
                                 asm_dof_map6,
                                 asm_dof_map12,
                                 asm_u_elem6,
-                                K,
+                                sparse_assembler,
                                 F_int,
                                 do_profile,
                                 t0,
@@ -3395,9 +3278,6 @@ fn run_static_nonlinear_displacement_control(
                                 runtime_metrics,
                             )
                             if has_transformation_mpc:
-                                K = _collapse_matrix_by_mpc(
-                                    K, mpc_row_offsets, mpc_dof_pool, mpc_coeff_pool
-                                )
                                 F_int = _collapse_vector_by_mpc(
                                     F_int,
                                     mpc_row_offsets,
@@ -3435,9 +3315,8 @@ fn run_static_nonlinear_displacement_control(
                                         + load_ext_scale * F_pattern_free[i]
                                         - F_int[row_i]
                                     )
-                                    if not use_native_direct_solve:
-                                        for j in range(free_count):
-                                            K_ff[i][j] = K[row_i][free[j]]
+                                if not use_native_direct_solve:
+                                    copy_values(K_ff_values, sparse_assembler.values)
                                 tangent_initialized = True
                                 tangent_factored = False
                             else:
@@ -3456,9 +3335,8 @@ fn run_static_nonlinear_displacement_control(
                                         + load_ext_scale * F_pattern_free[i]
                                         - F_int[row_i]
                                     )
-                                    if not use_native_direct_solve:
-                                        for j in range(free_count):
-                                            K_ff[i][j] = K[row_i][free[j]]
+                                if not use_native_direct_solve:
+                                    copy_values(K_ff_values, sparse_assembler.values)
                                 tangent_initialized = True
                                 tangent_factored = False
                             else:
@@ -3471,9 +3349,7 @@ fn run_static_nonlinear_displacement_control(
                         else:
                             if not tangent_initialized:
                                 if not use_native_direct_solve:
-                                    for i in range(free_count):
-                                        for j in range(free_count):
-                                            K_ff[i][j] = K_init_ff[i][j]
+                                    copy_values(K_ff_values, K_init_values)
                                 tangent_initialized = True
                                 tangent_factored = False
                             for i in range(free_count):
@@ -3532,59 +3408,51 @@ fn run_static_nonlinear_displacement_control(
                                 solve_nl_start_us,
                             )
                         var solved: Bool
-                        if use_native_direct_solve:
-                            if (
-                                attempt_algorithm_mode
-                                == NonlinearAlgorithmMode.ModifiedNewtonInitial
-                            ):
-                                _ = refactor_if_needed(
-                                    backend,
-                                    K_init_ff,
-                                    not tangent_factored,
-                                    runtime_metrics,
-                                    False,
-                                )
-                            else:
-                                var direct_newton_solve = (
-                                    attempt_algorithm_mode == NonlinearAlgorithmMode.Newton
-                                    and attempt_algorithm_tag != AnalysisAlgorithmTag.Broyden
-                                    and attempt_algorithm_tag != AnalysisAlgorithmTag.KrylovNewton
-                                )
-                                var force_refactor = direct_newton_solve or not tangent_factored
+                        if attempt_algorithm_mode == NonlinearAlgorithmMode.ModifiedNewtonInitial:
+                            _ = refactor_from_pattern_if_needed(
+                                backend,
+                                sparse_pattern,
+                                K_init_values,
+                                not tangent_factored,
+                                runtime_metrics,
+                                False,
+                            )
+                        else:
+                            var direct_newton_solve = (
+                                attempt_algorithm_mode == NonlinearAlgorithmMode.Newton
+                                and attempt_algorithm_tag != AnalysisAlgorithmTag.Broyden
+                                and attempt_algorithm_tag != AnalysisAlgorithmTag.KrylovNewton
+                            )
+                            var force_refactor = direct_newton_solve or not tangent_factored
+                            if use_native_direct_solve:
                                 _ = refactor_loaded_if_needed(
                                     backend,
                                     refresh_tangent,
                                     runtime_metrics,
                                     force_refactor,
                                 )
-                            tangent_factored = True
-                            solved = _solve_displacement_control_augmented_from_factorized_backend(
-                                backend,
-                                R_f,
-                                aug_load_column_free,
-                                control_free,
-                                rhs_aug[free_count],
-                                sol_aug,
-                                aug_rhs_solve,
-                                aug_load_solve,
-                            )
-                        else:
-                            if refresh_tangent:
-                                _load_displacement_control_augmented_dense_flat(
-                                    K_aug_flat,
-                                    K_ff,
-                                    aug_load_column_free,
-                                    control_free,
+                            else:
+                                _ = refactor_from_pattern_if_needed(
+                                    backend,
+                                    sparse_pattern,
+                                    K_ff_values,
+                                    refresh_tangent,
+                                    runtime_metrics,
+                                    force_refactor,
                                 )
-                            solved = _solve_linear_system_dense_flat(
-                                K_aug_flat,
-                                rhs_aug,
-                                sol_aug,
-                                K_aug_factor_flat,
-                                rhs_aug_work,
-                            )
-                            if runtime_metrics.enabled:
-                                runtime_metrics.tangent_factorizations += 1
+                        tangent_factored = True
+                        # Bordered solve of the augmented DisplacementControl
+                        # system with the factorized reduced tangent.
+                        solved = _solve_displacement_control_augmented_from_factorized_backend(
+                            backend,
+                            R_f,
+                            aug_load_column_free,
+                            control_free,
+                            rhs_aug[free_count],
+                            sol_aug,
+                            aug_rhs_solve,
+                            aug_load_solve,
+                        )
                         if do_profile:
                             var t_solve_nl_end = Int(time.perf_counter_ns())
                             var solve_nl_end_us = (t_solve_nl_end - t0) // 1000
@@ -3626,9 +3494,8 @@ fn run_static_nonlinear_displacement_control(
                                     delta_residual_aug[i] = rhs_aug[i] - broyden_prev_residual[i]
                                 var z_aug: List[Float64] = []
                                 z_aug.resize(free_count + 1, 0.0)
-                                var z_ok: Bool
-                                if use_native_direct_solve:
-                                    z_ok = _solve_displacement_control_augmented_from_factorized_backend(
+                                var z_ok = (
+                                    _solve_displacement_control_augmented_from_factorized_backend(
                                         backend,
                                         delta_residual_aug,
                                         aug_load_column_free,
@@ -3638,21 +3505,7 @@ fn run_static_nonlinear_displacement_control(
                                         aug_rhs_solve,
                                         aug_load_solve,
                                     )
-                                else:
-                                    if refresh_tangent:
-                                        _load_displacement_control_augmented_dense_flat(
-                                            K_aug_flat,
-                                            K_ff,
-                                            aug_load_column_free,
-                                            control_free,
-                                        )
-                                    z_ok = _solve_linear_system_dense_flat(
-                                        K_aug_flat,
-                                        delta_residual_aug,
-                                        z_aug,
-                                        K_aug_factor_flat,
-                                        rhs_aug_work,
-                                    )
+                                )
                                 if z_ok:
                                     _broyden_update_direction(
                                         sol_aug,
@@ -3740,10 +3593,7 @@ fn run_static_nonlinear_displacement_control(
                                     fiber_section3d_cells,
                                     fiber_section3d_index_by_id,
                                     layered_shell_section_defs,
-                                    layered_shell_section_index_by_id,
-                                    layered_shell_section_uniaxial_offsets,
-                                    layered_shell_section_uniaxial_counts,
-                                    shell_elem_instance_offsets,
+                                    shell_cache,
                                     force_beam_column2d_scratch,
                                     force_beam_column3d_scratch,
                                     free,
@@ -3834,10 +3684,7 @@ fn run_static_nonlinear_displacement_control(
                                         fiber_section3d_cells,
                                         fiber_section3d_index_by_id,
                                         layered_shell_section_defs,
-                                        layered_shell_section_index_by_id,
-                                        layered_shell_section_uniaxial_offsets,
-                                        layered_shell_section_uniaxial_counts,
-                                        shell_elem_instance_offsets,
+                                        shell_cache,
                                         force_beam_column2d_scratch,
                                         force_beam_column3d_scratch,
                                         free,
@@ -3914,6 +3761,7 @@ fn run_static_nonlinear_displacement_control(
                     force_basic_q = force_basic_q_base.copy()
                     uniaxial_states = uniaxial_states_base.copy()
                     fiber_section2d_revert_trial_runtime_all(fiber_section_defs)
+                    fiber_section3d_revert_trial_runtime_all(fiber_section3d_defs)
                     load_factor = lambda_base
                     continue
                 abort("static_nonlinear did not converge (DisplacementControl)")
@@ -3981,10 +3829,7 @@ fn run_static_nonlinear_displacement_control(
                 fiber_section3d_cells,
                 fiber_section3d_index_by_id,
                 layered_shell_section_defs,
-                layered_shell_section_index_by_id,
-                layered_shell_section_uniaxial_offsets,
-                layered_shell_section_uniaxial_counts,
-                shell_elem_instance_offsets,
+                shell_cache,
                 force_beam_column2d_scratch,
                 force_beam_column3d_scratch,
             )
@@ -3999,8 +3844,9 @@ fn run_static_nonlinear_displacement_control(
                     commit_start_us,
                 )
             _uniaxial_commit_active_states(uniaxial_states, elem_uniaxial_state_ids)
-            layered_shell_commit_all(layered_shell_section_defs)
+            shell_cache.commit_layered_states()
             fiber_section2d_commit_runtime_all(fiber_section_defs)
+            fiber_section3d_commit_runtime_all(fiber_section3d_defs)
             if do_profile:
                 var t_commit_end = Int(time.perf_counter_ns())
                 var commit_end_us = (t_commit_end - t0) // 1000
@@ -4052,7 +3898,7 @@ fn run_static_nonlinear_displacement_control(
                 (t_reset_start - t0) // 1000,
             )
         reset_force_beam_column2d_scratch(force_beam_column2d_scratch)
-        reset_force_beam_column3d_scratch(force_beam_column3d_scratch)
+        reset_frame3d_assembly_scratch(force_beam_column3d_scratch)
         if do_profile:
             var t_reset_end = Int(time.perf_counter_ns())
             _append_event(
@@ -4121,10 +3967,7 @@ fn run_static_nonlinear_displacement_control(
                     fiber_section3d_cells,
                     fiber_section3d_index_by_id,
                     layered_shell_section_defs,
-                    layered_shell_section_index_by_id,
-                    layered_shell_section_uniaxial_offsets,
-                    layered_shell_section_uniaxial_counts,
-                    shell_elem_instance_offsets,
+                    shell_cache,
                     force_beam_column2d_scratch,
                     force_beam_column3d_scratch,
                 )

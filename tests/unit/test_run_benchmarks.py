@@ -618,7 +618,10 @@ def test_prepare_direct_tcl_wrappers_use_manifest_source_files_order(
     assert "set args [linsert $args 2 -GJ 1.0e-12]" in compat_text
     assert "rename nDMaterial" not in compat_text
     assert "rename mass __strut_builtin_mass" in compat_text
-    assert f"source {{{entry_wrapper.name}}}" in compat_text
+    assert (
+        f"source [file join [file dirname [info script]] {{{entry_wrapper.name}}}]"
+        in compat_text
+    )
     assert f"source {{{compat_wrapper.name}}}" in timed_text
     assert f"source {{{compute_compat.name}}}" in compute_text
     assert (

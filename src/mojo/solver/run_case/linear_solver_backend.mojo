@@ -1,14 +1,23 @@
+from algorithm import vectorize
 from collections import List
 from math import sqrt
-from os import abort
+from sys import simd_width_of
+from os import abort, getenv
 
 from solver.profile import RuntimeProfileMetrics
 from solver.reorder import min_degree_order, rcm_order
+from solver.sparse_ldlt import SparseLDLT
+from solver.threads import solver_thread_count
+from solver.sparse_pattern import (
+    ElementMatrixSink,
+    SparsePattern,
+    build_transpose_slots,
+)
 from solver.run_case.input_types import AnalysisInput
 from tag_types import AnalysisSystemTag
 
 
-struct LinearSolverBackend(Movable):
+struct LinearSolverBackend(ElementMatrixSink, Movable):
     var system_tag: Int
     var free_count: Int
     var initialized: Bool
@@ -42,12 +51,36 @@ struct LinearSolverBackend(Movable):
     var band_general_half_bandwidth: Int
     var band_general_values: List[Float64]
     var band_general_dense_fallback: Bool
+    # Banded LU with partial pivoting (used when the no-pivot band LU would
+    # need a row interchange): rows of width 3 * half_bw + 1 holding columns
+    # [i - kl, i + kl + ku], the step-k multipliers, and the pivot rows.
+    var band_general_pivoted: Bool
+    var band_lu_values: List[Float64]
+    var band_lu_lower: List[Float64]
+    var band_lu_pivots: List[Int]
     var band_spd_half_bandwidth: Int
     var band_spd_values: List[Float64]
+    # Sparse LDL^T for SparseSYM, and for SuperLU/UmfPack when the loaded matrix
+    # is numerically symmetric. state: 0 = not analyzed, 1 = ready, -1 = unusable
+    # for the current symbolic structure.
+    var sparse_ldlt: SparseLDLT
+    var sparse_ldlt_state: Int
+    var sparse_ldlt_active: Bool
+    var sparse_ldlt_col_start: List[Int]
+    var sparse_ldlt_rows: List[Int]
+    var sparse_ldlt_source: List[Int]
+    var sparse_ldlt_mirror: List[Int]
+    var sparse_ldlt_values: List[Float64]
     var profile_symbolic_ready: Bool
     var profile_col_start: List[Int]
     var profile_first_row: List[Int]
     var profile_values: List[Float64]
+    # Pattern-driven loading (see initialize_symbolic_from_pattern): storage
+    # index of every pattern slot (-1 for upper-triangle slots of symmetric
+    # storage) and the transpose slot used for symmetry checks.
+    var pattern_nnz: Int
+    var pattern_slot_map: List[Int]
+    var pattern_transpose: List[Int]
 
     fn __init__(out self):
         self.system_tag = AnalysisSystemTag.Unknown
@@ -83,12 +116,75 @@ struct LinearSolverBackend(Movable):
         self.band_general_half_bandwidth = 0
         self.band_general_values = []
         self.band_general_dense_fallback = False
+        self.band_general_pivoted = False
+        self.band_lu_values = []
+        self.band_lu_lower = []
+        self.band_lu_pivots = []
         self.band_spd_half_bandwidth = 0
         self.band_spd_values = []
+        self.sparse_ldlt = SparseLDLT(solver_thread_count())
+        self.sparse_ldlt_state = 0
+        self.sparse_ldlt_active = False
+        self.sparse_ldlt_col_start = []
+        self.sparse_ldlt_rows = []
+        self.sparse_ldlt_source = []
+        self.sparse_ldlt_mirror = []
+        self.sparse_ldlt_values = []
         self.profile_symbolic_ready = False
         self.profile_col_start = []
         self.profile_first_row = []
         self.profile_values = []
+        self.pattern_nnz = -1
+        self.pattern_slot_map = []
+        self.pattern_transpose = []
+
+    fn zero_matrix(mut self):
+        zero_loaded_matrix(self)
+
+    fn add_element_matrix(
+        mut self,
+        elem_index: Int,
+        elem_free_pool: List[Int],
+        free_offset: Int,
+        dof_count: Int,
+        k_elem: List[List[Float64]],
+    ):
+        add_element_matrix_from_pool(self, elem_free_pool, free_offset, dof_count, k_elem)
+
+    fn add_element_matrix_flat(
+        mut self,
+        elem_index: Int,
+        elem_free_pool: List[Int],
+        free_offset: Int,
+        dof_count: Int,
+        k_flat: List[Float64],
+        k_offset: Int = 0,
+    ):
+        add_element_matrix_flat_from_pool(
+            self, elem_free_pool, free_offset, dof_count, k_flat, k_offset=k_offset
+        )
+
+    fn accepts_element_matrices(self) -> Bool:
+        return True
+
+
+@always_inline
+fn _entries_asymmetric(
+    lower: Float64, upper: Float64, diag_row: Float64, diag_col: Float64
+) -> Bool:
+    """True when two mirrored entries differ by more than roundoff.
+
+    The tolerance scales with the entries and their diagonals: stiffness terms
+    are routinely 1e9 or larger, where an absolute test rejects ordinary
+    floating-point asymmetry from element transformations.
+    """
+    var scale = max(max(abs(lower), abs(upper)), max(abs(diag_row), abs(diag_col)))
+    return abs(lower - upper) > 1.0e-10 + 1.0e-9 * scale
+
+
+fn _reset_sparse_ldlt(mut backend: LinearSolverBackend):
+    backend.sparse_ldlt_state = 0
+    backend.sparse_ldlt_active = False
 
 
 fn _ensure_square_storage(mut mat: List[List[Float64]], n: Int):
@@ -648,10 +744,7 @@ fn _factorize_band_general_loaded(mut backend: LinearSolverBackend):
         if pivot_abs <= pivot_tol:
             abort("BandGeneral matrix is singular or near-singular")
         if pivot_row != k:
-            _copy_band_general_values_to_dense_flat(backend, original_values)
-            if not _try_factorize_dense_unsymmetric_loaded(backend):
-                abort("BandGeneral dense fallback matrix is singular or near-singular")
-            backend.band_general_dense_fallback = True
+            _factorize_band_general_pivoted(backend, original_values)
             return
         var diag_slot = _band_general_slot(half_bw, k, k)
         var diag = backend.band_general_values[diag_slot]
@@ -677,6 +770,174 @@ fn _factorize_band_general_loaded(mut backend: LinearSolverBackend):
                     factor * backend.band_general_values[kj_slot]
                 )
     backend.band_general_dense_fallback = False
+    backend.band_general_pivoted = False
+
+
+@always_inline
+fn _band_row_axpy(ptr: UnsafePointer[Float64], dst: Int, src: Int, factor: Float64, count: Int):
+    """ptr[dst + j] -= factor * ptr[src + j] for j < count (non-overlapping rows)."""
+    alias width = simd_width_of[DType.float64]()
+
+    @parameter
+    fn body[w: Int](j: Int):
+        var d = ptr.load[width=w](dst + j)
+        var s = ptr.load[width=w](src + j)
+        ptr.store(dst + j, d - SIMD[DType.float64, w](factor) * s)
+
+    vectorize[body, width](count)
+
+
+@always_inline
+fn _vector_axpy_from(
+    dst_ptr: UnsafePointer[Float64],
+    dst: Int,
+    src_ptr: UnsafePointer[Float64],
+    src: Int,
+    factor: Float64,
+    count: Int,
+):
+    """dst_ptr[dst + j] -= src_ptr[src + j] * factor for j < count."""
+    alias width = simd_width_of[DType.float64]()
+
+    @parameter
+    fn body[w: Int](j: Int):
+        var d = dst_ptr.load[width=w](dst + j)
+        var s = src_ptr.load[width=w](src + j)
+        dst_ptr.store(dst + j, d - s * SIMD[DType.float64, w](factor))
+
+    vectorize[body, width](count)
+
+
+@always_inline
+fn _vector_dot(
+    a_ptr: UnsafePointer[Float64], a: Int, b_ptr: UnsafePointer[Float64], b: Int, count: Int
+) -> Float64:
+    alias width = simd_width_of[DType.float64]()
+    var acc = SIMD[DType.float64, width](0.0)
+    var j = 0
+    while j + width <= count:
+        acc += a_ptr.load[width=width](a + j) * b_ptr.load[width=width](b + j)
+        j += width
+    var sum = acc.reduce_add()
+    while j < count:
+        sum += a_ptr[a + j] * b_ptr[b + j]
+        j += 1
+    return sum
+
+
+fn _factorize_band_general_pivoted(
+    mut backend: LinearSolverBackend, original_values: List[Float64]
+):
+    """Banded LU with partial pivoting (LAPACK dgbtrf scheme).
+
+    Pivots and arithmetic match a dense LU with partial pivoting of the same
+    matrix (rows outside the band are structurally zero), without dense storage.
+    """
+    var n = backend.free_count
+    var kl = backend.band_general_half_bandwidth
+    var ku = kl
+    var width = 2 * kl + ku + 1
+    var src_width = 2 * kl + 1
+    var size = n * width
+    if len(backend.band_lu_values) != size:
+        backend.band_lu_values.resize(size, 0.0)
+    for i in range(size):
+        backend.band_lu_values[i] = 0.0
+    if len(backend.band_lu_lower) != n * kl:
+        backend.band_lu_lower.resize(n * kl, 0.0)
+    if len(backend.band_lu_pivots) != n:
+        backend.band_lu_pivots.resize(n, 0)
+    # Row i stores column j at i * width + (j - i + kl).
+    for i in range(n):
+        for offset in range(src_width):
+            backend.band_lu_values[i * width + offset] = original_values[i * src_width + offset]
+    var eps = 1.0e-14
+    for k in range(n):
+        var i1 = k + kl
+        if i1 > n - 1:
+            i1 = n - 1
+        var pivot_row = k
+        var pivot_abs = abs(backend.band_lu_values[k * width + kl])
+        for row in range(k + 1, i1 + 1):
+            var candidate = abs(backend.band_lu_values[row * width + (k - row + kl)])
+            if candidate > pivot_abs:
+                pivot_abs = candidate
+                pivot_row = row
+        if pivot_abs <= eps:
+            abort("BandGeneral matrix is singular or near-singular")
+        var j_max = k + kl + ku
+        if j_max > n - 1:
+            j_max = n - 1
+        backend.band_lu_pivots[k] = pivot_row
+        if pivot_row != k:
+            for j in range(k, j_max + 1):
+                var slot_k = k * width + (j - k + kl)
+                var slot_p = pivot_row * width + (j - pivot_row + kl)
+                var tmp = backend.band_lu_values[slot_k]
+                backend.band_lu_values[slot_k] = backend.band_lu_values[slot_p]
+                backend.band_lu_values[slot_p] = tmp
+        var diag = backend.band_lu_values[k * width + kl]
+        if abs(diag) <= eps:
+            abort("BandGeneral matrix is singular or near-singular")
+        for i in range(k + 1, i1 + 1):
+            var ik_slot = i * width + (k - i + kl)
+            var factor = backend.band_lu_values[ik_slot] / diag
+            backend.band_lu_values[ik_slot] = factor
+            backend.band_lu_lower[k * kl + (i - k - 1)] = factor
+            if factor == 0.0:
+                continue
+            _band_row_axpy(
+                backend.band_lu_values.unsafe_ptr(),
+                i * width + (k + 1 - i + kl),
+                k * width + kl + 1,
+                factor,
+                j_max - k,
+            )
+    backend.band_general_dense_fallback = False
+    backend.band_general_pivoted = True
+
+
+fn _solve_band_general_pivoted(
+    mut backend: LinearSolverBackend, rhs: List[Float64], mut solution_out: List[Float64]
+):
+    var n = backend.free_count
+    var kl = backend.band_general_half_bandwidth
+    var ku = kl
+    var width = 2 * kl + ku + 1
+    if len(solution_out) != n:
+        solution_out.resize(n, 0.0)
+    _ensure_vector_storage(backend.solve_work, n)
+    for i in range(n):
+        backend.solve_work[i] = rhs[i]
+    for k in range(n):
+        var p = backend.band_lu_pivots[k]
+        if p != k:
+            var tmp = backend.solve_work[k]
+            backend.solve_work[k] = backend.solve_work[p]
+            backend.solve_work[p] = tmp
+        var yk = backend.solve_work[k]
+        var i1 = k + kl
+        if i1 > n - 1:
+            i1 = n - 1
+        if yk != 0.0 and i1 > k:
+            _vector_axpy_from(
+                backend.solve_work.unsafe_ptr(),
+                k + 1,
+                backend.band_lu_lower.unsafe_ptr(),
+                k * kl,
+                yk,
+                i1 - k,
+            )
+    var lu_ptr = backend.band_lu_values.unsafe_ptr()
+    var x_ptr = solution_out.unsafe_ptr()
+    for i in range(n - 1, -1, -1):
+        var j1 = i + kl + ku
+        if j1 > n - 1:
+            j1 = n - 1
+        var sum = backend.solve_work[i] - _vector_dot(
+            lu_ptr, i * width + kl + 1, x_ptr, i + 1, j1 - i
+        )
+        solution_out[i] = sum / backend.band_lu_values[i * width + kl]
 
 
 fn _factorize_band_general(mut backend: LinearSolverBackend, A: List[List[Float64]]):
@@ -995,14 +1256,15 @@ fn _build_sparse_sym_column_permutation(
     return _identity_permutation(n)
 
 
-fn _build_sparse_symbolic(mut backend: LinearSolverBackend, A: List[List[Float64]]):
-    if backend.system_tag == AnalysisSystemTag.SparseSYM:
-        _build_symmetric_csc_pattern_from_dense(
-            A, backend.sparse_col_start, backend.sparse_row_indices
-        )
-    else:
-        _build_csc_pattern_from_dense(A, backend.sparse_col_start, backend.sparse_row_indices)
+fn _ensure_sparse_col_permutation(mut backend: LinearSolverBackend):
+    """Build the fill-reducing column order for the elimination fallback.
+
+    Deferred to first use: the LDL^T path has its own ordering, and the
+    minimum-degree order here is costly on large systems.
+    """
     var n = backend.free_count
+    if len(backend.sparse_col_permutation) == n:
+        return
     if backend.system_tag == AnalysisSystemTag.SuperLU:
         backend.sparse_col_permutation = _build_superlu_column_permutation(
             backend, n, backend.sparse_col_start, backend.sparse_row_indices
@@ -1017,14 +1279,25 @@ fn _build_sparse_symbolic(mut backend: LinearSolverBackend, A: List[List[Float64
         )
     else:
         backend.sparse_col_permutation = _identity_permutation(n)
-
     if not _is_valid_permutation(backend.sparse_col_permutation, n):
         backend.sparse_col_permutation = _identity_permutation(n)
+
+
+fn _build_sparse_symbolic(mut backend: LinearSolverBackend, A: List[List[Float64]]):
+    if backend.system_tag == AnalysisSystemTag.SparseSYM:
+        _build_symmetric_csc_pattern_from_dense(
+            A, backend.sparse_col_start, backend.sparse_row_indices
+        )
+    else:
+        _build_csc_pattern_from_dense(A, backend.sparse_col_start, backend.sparse_row_indices)
+    var n = backend.free_count
+    backend.sparse_col_permutation.clear()
 
     backend.sparse_values.resize(len(backend.sparse_row_indices), 0.0)
     _ensure_vector_storage(backend.sparse_rhs_work, n)
     _ensure_vector_storage(backend.sparse_solution_work, n)
     backend.sparse_symbolic_ready = True
+    _reset_sparse_ldlt(backend)
 
 
 fn _ensure_sparse_symbolic(mut backend: LinearSolverBackend, A: List[List[Float64]]):
@@ -1051,13 +1324,12 @@ fn _update_sparse_values_from_dense(mut backend: LinearSolverBackend, A: List[Li
 
     backend.sparse_values.resize(len(backend.sparse_row_indices), 0.0)
     if backend.system_tag == AnalysisSystemTag.SparseSYM:
-        var symmetric_tol = 1.0e-10
         for col in range(n):
             for idx in range(backend.sparse_col_start[col], backend.sparse_col_start[col + 1]):
                 var row = backend.sparse_row_indices[idx]
                 var lower = A[row][col]
                 var upper = A[col][row]
-                if abs(lower - upper) > symmetric_tol:
+                if _entries_asymmetric(lower, upper, A[row][row], A[col][col]):
                     abort("SparseSYM matrix is not symmetric")
                 backend.sparse_values[idx] = lower
         return
@@ -1297,6 +1569,7 @@ fn _flatten_sparse_factor_rows(
 
 
 fn _factorize_sparse_unsymmetric_loaded(mut backend: LinearSolverBackend):
+    _ensure_sparse_col_permutation(backend)
     var row_cols_rows: List[List[Int]] = []
     var row_vals_rows: List[List[Float64]] = []
     _build_sparse_rows_from_csc(backend, row_cols_rows, row_vals_rows)
@@ -1345,6 +1618,7 @@ fn _factorize_sparse_unsymmetric(mut backend: LinearSolverBackend, A: List[List[
 
 
 fn _factorize_sparse_symmetric_loaded(mut backend: LinearSolverBackend):
+    _ensure_sparse_col_permutation(backend)
     var row_cols_rows: List[List[Int]] = []
     var row_vals_rows: List[List[Float64]] = []
     _build_sparse_rows_from_csc(backend, row_cols_rows, row_vals_rows)
@@ -1649,22 +1923,10 @@ fn initialize_symbolic_from_element_free_map(
             backend.sparse_col_start,
             backend.sparse_row_indices,
         )
-        if backend.system_tag == AnalysisSystemTag.SuperLU:
-            backend.sparse_col_permutation = _build_superlu_column_permutation(
-                backend, backend.free_count, backend.sparse_col_start, backend.sparse_row_indices
-            )
-        elif backend.system_tag == AnalysisSystemTag.UmfPack:
-            backend.sparse_col_permutation = _build_umfpack_column_permutation(
-                backend, backend.free_count, backend.sparse_col_start, backend.sparse_row_indices
-            )
-        else:
-            backend.sparse_col_permutation = _build_sparse_sym_column_permutation(
-                backend, backend.free_count, backend.sparse_col_start, backend.sparse_row_indices
-            )
-        if not _is_valid_permutation(backend.sparse_col_permutation, backend.free_count):
-            backend.sparse_col_permutation = _identity_permutation(backend.free_count)
+        backend.sparse_col_permutation.clear()
         backend.sparse_values.resize(len(backend.sparse_row_indices), 0.0)
         backend.sparse_symbolic_ready = True
+        _reset_sparse_ldlt(backend)
 
 
 fn initialize_symbolic_from_element_dof_map(
@@ -1713,10 +1975,11 @@ fn initialize_structure(mut backend: LinearSolverBackend, analysis: AnalysisInpu
     _ensure_vector_storage(backend.solve_work, free_count)
 
     backend.sparse_symbolic_ready = False
+    _reset_sparse_ldlt(backend)
     backend.sparse_col_start.clear()
     backend.sparse_row_indices.clear()
     backend.sparse_values.clear()
-    backend.sparse_col_permutation = _identity_permutation(free_count)
+    backend.sparse_col_permutation.clear()
     _ensure_vector_storage(backend.sparse_rhs_work, free_count)
     _ensure_vector_storage(backend.sparse_solution_work, free_count)
     backend.sparse_factor_row_start.clear()
@@ -1728,12 +1991,19 @@ fn initialize_structure(mut backend: LinearSolverBackend, analysis: AnalysisInpu
     backend.band_general_half_bandwidth = 0
     backend.band_general_values.clear()
     backend.band_general_dense_fallback = False
+    backend.band_general_pivoted = False
+    backend.band_lu_values.clear()
+    backend.band_lu_lower.clear()
+    backend.band_lu_pivots.clear()
     backend.band_spd_half_bandwidth = 0
     backend.band_spd_values.clear()
     backend.profile_symbolic_ready = False
     backend.profile_col_start.clear()
     backend.profile_first_row.clear()
     backend.profile_values.clear()
+    backend.pattern_nnz = -1
+    backend.pattern_slot_map.clear()
+    backend.pattern_transpose.clear()
 
 
 fn _extract_free_submatrix(K_full: List[List[Float64]], free: List[Int]) -> List[List[Float64]]:
@@ -2012,6 +2282,19 @@ fn zero_loaded_matrix(mut backend: LinearSolverBackend):
     backend.factorized = False
 
 
+@always_inline
+fn _element_entry[
+    flat: Bool
+](
+    k_elem: List[List[Float64]], k_flat: UnsafePointer[Float64], dof_count: Int, a: Int, b: Int
+) -> Float64:
+    @parameter
+    if flat:
+        return k_flat[a * dof_count + b]
+    else:
+        return k_elem[a][b]
+
+
 fn add_element_matrix_from_pool(
     mut backend: LinearSolverBackend,
     elem_free_pool: List[Int],
@@ -2020,19 +2303,57 @@ fn add_element_matrix_from_pool(
     k_elem: List[List[Float64]],
     scale: Float64 = 1.0,
 ):
-    if not backend.initialized:
-        abort("linear solver backend not initialized")
-    if scale == 0.0:
-        return
     if len(k_elem) != dof_count:
         abort("linear solver backend element matrix row count mismatch")
     for row in range(dof_count):
         if len(k_elem[row]) != dof_count:
             abort("linear solver backend element matrix column count mismatch")
+    _add_element_matrix_impl[False](
+        backend, elem_free_pool, offset, dof_count, k_elem, UnsafePointer[Float64](), scale
+    )
+
+
+fn add_element_matrix_flat_from_pool(
+    mut backend: LinearSolverBackend,
+    elem_free_pool: List[Int],
+    offset: Int,
+    dof_count: Int,
+    k_flat: List[Float64],
+    scale: Float64 = 1.0,
+    k_offset: Int = 0,
+):
+    if k_offset < 0 or len(k_flat) - k_offset < dof_count * dof_count:
+        abort("linear solver backend flat element matrix size mismatch")
+    var empty_rows: List[List[Float64]] = []
+    _add_element_matrix_impl[True](
+        backend,
+        elem_free_pool,
+        offset,
+        dof_count,
+        empty_rows,
+        k_flat.unsafe_ptr() + k_offset,
+        scale,
+    )
+
+
+fn _add_element_matrix_impl[
+    flat: Bool
+](
+    mut backend: LinearSolverBackend,
+    elem_free_pool: List[Int],
+    offset: Int,
+    dof_count: Int,
+    k_elem: List[List[Float64]],
+    k_flat: UnsafePointer[Float64],
+    scale: Float64,
+):
+    if not backend.initialized:
+        abort("linear solver backend not initialized")
+    if scale == 0.0:
+        return
     if offset < 0 or offset + dof_count > len(elem_free_pool):
         abort("linear solver backend element free map range out of bounds")
 
-    var symmetric_tol = 1.0e-10
     if backend.system_tag == AnalysisSystemTag.BandGeneral:
         var half_bw = backend.band_general_half_bandwidth
         for a in range(dof_count):
@@ -2044,8 +2365,11 @@ fn add_element_matrix_from_pool(
                 if col < 0:
                     continue
                 var slot = _band_general_slot(half_bw, row, col)
-                if slot >= 0:
-                    backend.band_general_values[slot] += scale * k_elem[a][b]
+                if slot < 0:
+                    abort("BandGeneral entry outside the symbolic band")
+                backend.band_general_values[slot] += scale * _element_entry[flat](
+                    k_elem, k_flat, dof_count, a, b
+                )
         backend.band_general_dense_fallback = False
     elif backend.system_tag == AnalysisSystemTag.BandSPD:
         var half_bw = backend.band_spd_half_bandwidth
@@ -2057,14 +2381,20 @@ fn add_element_matrix_from_pool(
                 var col = elem_free_pool[offset + b]
                 if col < 0:
                     continue
-                var value = k_elem[a][b]
+                var value = _element_entry[flat](k_elem, k_flat, dof_count, a, b)
                 if row < col:
-                    if abs(value - k_elem[b][a]) > symmetric_tol:
+                    if _entries_asymmetric(
+                        value,
+                        _element_entry[flat](k_elem, k_flat, dof_count, b, a),
+                        _element_entry[flat](k_elem, k_flat, dof_count, a, a),
+                        _element_entry[flat](k_elem, k_flat, dof_count, b, b),
+                    ):
                         abort("BandSPD matrix is not symmetric")
                     continue
                 var slot = _band_spd_slot(half_bw, row, col)
-                if slot >= 0:
-                    backend.band_spd_values[slot] += scale * value
+                if slot < 0:
+                    abort("BandSPD entry outside the symbolic band")
+                backend.band_spd_values[slot] += scale * value
         backend.band_general_dense_fallback = False
     elif backend.system_tag == AnalysisSystemTag.ProfileSPD:
         for a in range(dof_count):
@@ -2075,9 +2405,14 @@ fn add_element_matrix_from_pool(
                 var col = elem_free_pool[offset + b]
                 if col < 0:
                     continue
-                var value = k_elem[a][b]
+                var value = _element_entry[flat](k_elem, k_flat, dof_count, a, b)
                 if row < col:
-                    if abs(value - k_elem[b][a]) > symmetric_tol:
+                    if _entries_asymmetric(
+                        value,
+                        _element_entry[flat](k_elem, k_flat, dof_count, b, a),
+                        _element_entry[flat](k_elem, k_flat, dof_count, a, a),
+                        _element_entry[flat](k_elem, k_flat, dof_count, b, b),
+                    ):
                         abort("ProfileSPD matrix is not symmetric")
                     continue
                 var idx = _profile_value_index(
@@ -2098,7 +2433,9 @@ fn add_element_matrix_from_pool(
                 if col < 0:
                     continue
                 var idx = _sparse_value_index(backend, row, col)
-                backend.sparse_values[idx] += scale * k_elem[a][b]
+                backend.sparse_values[idx] += scale * _element_entry[flat](
+                    k_elem, k_flat, dof_count, a, b
+                )
         backend.band_general_dense_fallback = False
     elif backend.system_tag == AnalysisSystemTag.SparseSYM:
         for a in range(dof_count):
@@ -2109,9 +2446,14 @@ fn add_element_matrix_from_pool(
                 var col = elem_free_pool[offset + b]
                 if col < 0:
                     continue
-                var value = k_elem[a][b]
+                var value = _element_entry[flat](k_elem, k_flat, dof_count, a, b)
                 if row < col:
-                    if abs(value - k_elem[b][a]) > symmetric_tol:
+                    if _entries_asymmetric(
+                        value,
+                        _element_entry[flat](k_elem, k_flat, dof_count, b, a),
+                        _element_entry[flat](k_elem, k_flat, dof_count, a, a),
+                        _element_entry[flat](k_elem, k_flat, dof_count, b, b),
+                    ):
                         abort("SparseSYM matrix is not symmetric")
                     continue
                 var idx = _sparse_value_index(backend, row, col)
@@ -2128,7 +2470,9 @@ fn add_element_matrix_from_pool(
                 if col < 0:
                     continue
                 var slot = _dense_flat_index(n, row, col)
-                backend.dense_matrix_flat[slot] += scale * k_elem[a][b]
+                backend.dense_matrix_flat[slot] += scale * _element_entry[flat](
+                    k_elem, k_flat, dof_count, a, b
+                )
         backend.band_general_dense_fallback = False
     else:
         abort("unsupported analysis system tag")
@@ -2183,6 +2527,208 @@ fn add_diagonal(mut backend: LinearSolverBackend, diag: List[Float64], scale: Fl
     backend.factorized = False
 
 
+fn _dump_lower_csc_pattern(path: String, n: Int, col_start: List[Int], rows: List[Int]):
+    """Write a lower-triangular CSC pattern as text for offline ordering studies.
+
+    Format: one line `n nnz`, then n + 1 column pointers (one per line), then
+    nnz row indices (one per line). Enabled with STRUT_DUMP_SPARSE_PATTERN=<path>.
+    """
+    var text = String()
+    text += String(n) + " " + String(len(rows)) + "\n"
+    for j in range(n + 1):
+        text += String(col_start[j]) + "\n"
+    for p in range(len(rows)):
+        text += String(rows[p]) + "\n"
+    try:
+        with open(path, "w") as handle:
+            handle.write(text)
+    except:
+        print("warning: could not write sparse pattern to " + path)
+
+
+fn _report_sparse_ldlt(backend: LinearSolverBackend, lower_nnz: Int):
+    if getenv("STRUT_VERBOSE") != "1":
+        return
+    print(
+        "sparse LDLT analysis: n="
+        + String(backend.free_count)
+        + " nnz(A lower)="
+        + String(lower_nnz)
+        + " nnz(L)="
+        + String(backend.sparse_ldlt.factor_nnz())
+        + " supernodes="
+        + String(backend.sparse_ldlt.supernode_count())
+        + " largest_front="
+        + String(backend.sparse_ldlt.largest_front())
+        + " flops="
+        + String(backend.sparse_ldlt.factor_flops())
+    )
+
+
+fn _report_sparse_ldlt_rejection(
+    backend: LinearSolverBackend, lower_values: List[Float64], sparse_sym_layout: Bool
+):
+    """Explain why LDL^T declined a matrix (STRUT_VERBOSE=1): the fallback
+    elimination is far slower, so this is the first thing to check."""
+    if getenv("STRUT_VERBOSE") != "1":
+        return
+    var n = backend.free_count
+    var zero_diagonals = 0
+    var negative_diagonals = 0
+    var non_finite = 0
+    var first_zero = -1
+    var min_abs = 0.0
+    var max_abs = 0.0
+    for col in range(n):
+        var diag_index = backend.sparse_col_start[col]
+        if not sparse_sym_layout:
+            diag_index = backend.sparse_ldlt_col_start[col]
+        var diag = lower_values[diag_index]
+        if diag != diag or diag - diag != 0.0:
+            non_finite += 1
+            continue
+        var magnitude = abs(diag)
+        if col == 0 or magnitude < min_abs:
+            min_abs = magnitude
+        if magnitude > max_abs:
+            max_abs = magnitude
+        if diag == 0.0:
+            zero_diagonals += 1
+            if first_zero < 0:
+                first_zero = col
+        elif diag < 0.0:
+            negative_diagonals += 1
+    print(
+        "sparse LDLT rejected the matrix (zero, tiny, or non-finite pivot): n="
+        + String(n)
+        + " zero_diagonals="
+        + String(zero_diagonals)
+        + " first_zero_equation="
+        + String(first_zero)
+        + " negative_diagonals="
+        + String(negative_diagonals)
+        + " non_finite_diagonals="
+        + String(non_finite)
+        + " min|diag|="
+        + String(min_abs)
+        + " max|diag|="
+        + String(max_abs)
+        + "; falling back to sparse elimination"
+    )
+
+
+fn _analyze_sparse_ldlt(mut backend: LinearSolverBackend) -> Bool:
+    """Run the one-time symbolic phase for the current sparse structure."""
+    var n = backend.free_count
+    if backend.system_tag == AnalysisSystemTag.SparseSYM:
+        # SparseSYM storage already is the lower triangle in CSC.
+        var dump_path = getenv("STRUT_DUMP_SPARSE_PATTERN")
+        if dump_path != "":
+            _dump_lower_csc_pattern(
+                dump_path, n, backend.sparse_col_start, backend.sparse_row_indices
+            )
+        try:
+            backend.sparse_ldlt.analyze(n, backend.sparse_col_start, backend.sparse_row_indices)
+        except:
+            return False
+        _report_sparse_ldlt(backend, len(backend.sparse_row_indices))
+        return True
+
+    # General CSC: the lower triangle is the part of each column from its
+    # diagonal down. LDL^T needs every lower entry to have a stored mirror.
+    var nnz = len(backend.sparse_row_indices)
+    var has_transpose = backend.pattern_nnz == nnz and len(backend.pattern_transpose) == nnz
+    backend.sparse_ldlt_col_start.resize(n + 1, 0)
+    backend.sparse_ldlt_rows.clear()
+    backend.sparse_ldlt_source.clear()
+    backend.sparse_ldlt_mirror.clear()
+    backend.sparse_ldlt_col_start[0] = 0
+    for col in range(n):
+        var found_diagonal = False
+        for idx in range(backend.sparse_col_start[col], backend.sparse_col_start[col + 1]):
+            var row = backend.sparse_row_indices[idx]
+            if row < col:
+                continue
+            if row == col:
+                found_diagonal = True
+            var mirror = -1
+            if has_transpose:
+                mirror = backend.pattern_transpose[idx]
+            else:
+                for other in range(
+                    backend.sparse_col_start[row], backend.sparse_col_start[row + 1]
+                ):
+                    if backend.sparse_row_indices[other] == col:
+                        mirror = other
+                        break
+            if mirror < 0:
+                return False
+            backend.sparse_ldlt_rows.append(row)
+            backend.sparse_ldlt_source.append(idx)
+            backend.sparse_ldlt_mirror.append(mirror)
+        if not found_diagonal:
+            return False
+        backend.sparse_ldlt_col_start[col + 1] = len(backend.sparse_ldlt_rows)
+    backend.sparse_ldlt_values.resize(len(backend.sparse_ldlt_rows), 0.0)
+    var dump_path = getenv("STRUT_DUMP_SPARSE_PATTERN")
+    if dump_path != "":
+        _dump_lower_csc_pattern(
+            dump_path, n, backend.sparse_ldlt_col_start, backend.sparse_ldlt_rows
+        )
+    try:
+        backend.sparse_ldlt.analyze(n, backend.sparse_ldlt_col_start, backend.sparse_ldlt_rows)
+    except:
+        return False
+    _report_sparse_ldlt(backend, len(backend.sparse_ldlt_rows))
+    return True
+
+
+fn _try_factorize_sparse_ldlt(mut backend: LinearSolverBackend) -> Bool:
+    """Factor the loaded sparse matrix with supernodal LDL^T when it applies.
+
+    Returns False when the structure cannot be analyzed, the matrix is not
+    numerically symmetric, or a pivot is zero, tiny, or non-finite. The caller
+    then falls back to the general elimination path.
+    """
+    backend.sparse_ldlt_active = False
+    if backend.sparse_ldlt_state < 0 or not backend.sparse_symbolic_ready:
+        return False
+    if backend.sparse_ldlt_state == 0:
+        if not _analyze_sparse_ldlt(backend):
+            backend.sparse_ldlt_state = -1
+            return False
+        backend.sparse_ldlt_state = 1
+
+    if backend.system_tag == AnalysisSystemTag.SparseSYM:
+        backend.sparse_ldlt_active = backend.sparse_ldlt.factorize(backend.sparse_values)
+        if not backend.sparse_ldlt_active:
+            _report_sparse_ldlt_rejection(backend, backend.sparse_values, True)
+        return backend.sparse_ldlt_active
+
+    # SuperLU / UmfPack: only valid when the values are symmetric.
+    var n = backend.free_count
+    for col in range(n):
+        var diag_col = backend.sparse_values[
+            backend.sparse_ldlt_source[backend.sparse_ldlt_col_start[col]]
+        ]
+        for k in range(backend.sparse_ldlt_col_start[col], backend.sparse_ldlt_col_start[col + 1]):
+            var idx = backend.sparse_ldlt_source[k]
+            var lower = backend.sparse_values[idx]
+            var row = backend.sparse_ldlt_rows[k]
+            var diag_row = backend.sparse_values[
+                backend.sparse_ldlt_source[backend.sparse_ldlt_col_start[row]]
+            ]
+            if _entries_asymmetric(
+                lower, backend.sparse_values[backend.sparse_ldlt_mirror[k]], diag_row, diag_col
+            ):
+                return False
+            backend.sparse_ldlt_values[k] = lower
+    backend.sparse_ldlt_active = backend.sparse_ldlt.factorize(backend.sparse_ldlt_values)
+    if not backend.sparse_ldlt_active:
+        _report_sparse_ldlt_rejection(backend, backend.sparse_ldlt_values, False)
+    return backend.sparse_ldlt_active
+
+
 fn factorize_loaded(mut backend: LinearSolverBackend, mut metrics: RuntimeProfileMetrics):
     if not backend.initialized:
         abort("linear solver backend not initialized")
@@ -2194,11 +2740,14 @@ fn factorize_loaded(mut backend: LinearSolverBackend, mut metrics: RuntimeProfil
     elif backend.system_tag == AnalysisSystemTag.ProfileSPD:
         _factorize_profile_spd_loaded(backend)
     elif backend.system_tag == AnalysisSystemTag.SuperLU:
-        _factorize_sparse_unsymmetric_loaded(backend)
+        if not _try_factorize_sparse_ldlt(backend):
+            _factorize_sparse_unsymmetric_loaded(backend)
     elif backend.system_tag == AnalysisSystemTag.UmfPack:
-        _factorize_sparse_unsymmetric_loaded(backend)
+        if not _try_factorize_sparse_ldlt(backend):
+            _factorize_sparse_unsymmetric_loaded(backend)
     elif backend.system_tag == AnalysisSystemTag.SparseSYM:
-        _factorize_sparse_symmetric_loaded(backend)
+        if not _try_factorize_sparse_ldlt(backend):
+            _factorize_sparse_symmetric_loaded(backend)
     elif backend.system_tag == AnalysisSystemTag.FullGeneral:
         if not _try_factorize_dense_unsymmetric_loaded(backend):
             abort("FullGeneral matrix is singular or near-singular")
@@ -2297,12 +2846,21 @@ fn solve(mut backend: LinearSolverBackend, rhs: List[Float64], mut solution_out:
     if backend.system_tag == AnalysisSystemTag.BandGeneral:
         if backend.band_general_dense_fallback:
             _solve_dense_unsymmetric(backend, rhs, solution_out)
+        elif backend.band_general_pivoted:
+            _solve_band_general_pivoted(backend, rhs, solution_out)
         else:
             _solve_band_general(backend, rhs, solution_out)
     elif backend.system_tag == AnalysisSystemTag.BandSPD:
         _solve_band_spd(backend, rhs, solution_out)
     elif backend.system_tag == AnalysisSystemTag.ProfileSPD:
         _solve_profile_spd(backend, rhs, solution_out)
+    elif backend.sparse_ldlt_active and (
+        backend.system_tag == AnalysisSystemTag.SuperLU
+        or backend.system_tag == AnalysisSystemTag.UmfPack
+        or backend.system_tag == AnalysisSystemTag.SparseSYM
+    ):
+        _ensure_vector_storage(solution_out, backend.free_count)
+        backend.sparse_ldlt.solve(rhs, solution_out)
     elif backend.system_tag == AnalysisSystemTag.SuperLU:
         _solve_sparse_unsymmetric(backend, rhs, solution_out)
     elif backend.system_tag == AnalysisSystemTag.UmfPack:
@@ -2355,6 +2913,7 @@ fn clear(mut backend: LinearSolverBackend):
     backend.lu_pivots.clear()
     backend.solve_work.clear()
     backend.sparse_symbolic_ready = False
+    _reset_sparse_ldlt(backend)
     backend.sparse_col_start.clear()
     backend.sparse_row_indices.clear()
     backend.sparse_values.clear()
@@ -2369,9 +2928,256 @@ fn clear(mut backend: LinearSolverBackend):
     backend.band_general_half_bandwidth = 0
     backend.band_general_values.clear()
     backend.band_general_dense_fallback = False
+    backend.band_general_pivoted = False
+    backend.band_lu_values.clear()
+    backend.band_lu_lower.clear()
+    backend.band_lu_pivots.clear()
     backend.band_spd_half_bandwidth = 0
     backend.band_spd_values.clear()
     backend.profile_symbolic_ready = False
     backend.profile_col_start.clear()
     backend.profile_first_row.clear()
     backend.profile_values.clear()
+    backend.pattern_nnz = -1
+    backend.pattern_slot_map.clear()
+    backend.pattern_transpose.clear()
+
+
+fn _pattern_system_is_symmetric(system_tag: Int) -> Bool:
+    return (
+        system_tag == AnalysisSystemTag.BandSPD
+        or system_tag == AnalysisSystemTag.ProfileSPD
+        or system_tag == AnalysisSystemTag.SparseSYM
+    )
+
+
+fn initialize_symbolic_from_pattern(mut backend: LinearSolverBackend, pattern: SparsePattern):
+    """Build the backend's symbolic storage from the shared reduced pattern.
+
+    Every pattern slot gets a storage index in `pattern_slot_map` (computed
+    once), so `load_pattern_values` / `add_pattern_values` never search and
+    never drop entries: the band, profile, or CSC structure is sized from the
+    pattern itself (including MPC-expanded couplings).
+    """
+    if not backend.initialized:
+        abort("linear solver backend not initialized")
+    if pattern.n != backend.free_count:
+        abort("linear solver backend pattern size mismatch")
+    var n = pattern.n
+    var nnz = pattern.nnz()
+    backend.pattern_nnz = nnz
+    backend.pattern_slot_map.resize(nnz, -1)
+    var tag = backend.system_tag
+    if (
+        _pattern_system_is_symmetric(tag)
+        or tag == AnalysisSystemTag.SuperLU
+        or tag == AnalysisSystemTag.UmfPack
+    ):
+        backend.pattern_transpose = build_transpose_slots(pattern)
+    else:
+        backend.pattern_transpose.clear()
+
+    if tag == AnalysisSystemTag.BandGeneral:
+        var half_bw = 0
+        for i in range(n):
+            for s in range(pattern.row_start[i], pattern.row_start[i + 1]):
+                var diff = pattern.col_index[s] - i
+                if diff < 0:
+                    diff = -diff
+                if diff > half_bw:
+                    half_bw = diff
+        backend.band_general_half_bandwidth = half_bw
+        _ensure_banded_general_storage(backend, n, half_bw)
+        backend.band_general_dense_fallback = False
+        for i in range(n):
+            for s in range(pattern.row_start[i], pattern.row_start[i + 1]):
+                backend.pattern_slot_map[s] = _band_general_slot(half_bw, i, pattern.col_index[s])
+        return
+
+    if tag == AnalysisSystemTag.BandSPD:
+        var half_bw = 0
+        for i in range(n):
+            var diff = i - pattern.col_index[pattern.row_start[i]]
+            if diff > half_bw:
+                half_bw = diff
+        backend.band_spd_half_bandwidth = half_bw
+        _ensure_banded_spd_storage(backend, n, half_bw)
+        for i in range(n):
+            for s in range(pattern.row_start[i], pattern.row_start[i + 1]):
+                var col = pattern.col_index[s]
+                if col <= i:
+                    backend.pattern_slot_map[s] = _band_spd_slot(half_bw, i, col)
+        return
+
+    if tag == AnalysisSystemTag.ProfileSPD:
+        backend.profile_first_row.resize(n, 0)
+        backend.profile_col_start.resize(n + 1, 0)
+        backend.profile_col_start[0] = 0
+        for c in range(n):
+            var first = pattern.col_index[pattern.row_start[c]]
+            if first > c:
+                first = c
+            backend.profile_first_row[c] = first
+            backend.profile_col_start[c + 1] = backend.profile_col_start[c] + (c - first + 1)
+        backend.profile_values.resize(backend.profile_col_start[n], 0.0)
+        backend.profile_symbolic_ready = True
+        for i in range(n):
+            for s in range(pattern.row_start[i], pattern.row_start[i + 1]):
+                var col = pattern.col_index[s]
+                if col <= i:
+                    backend.pattern_slot_map[s] = backend.profile_col_start[i] + (
+                        col - backend.profile_first_row[i]
+                    )
+        return
+
+    if (
+        tag == AnalysisSystemTag.SuperLU
+        or tag == AnalysisSystemTag.UmfPack
+        or tag == AnalysisSystemTag.SparseSYM
+    ):
+        if tag == AnalysisSystemTag.SparseSYM:
+            backend.sparse_col_start.resize(n + 1, 0)
+            backend.sparse_col_start[0] = 0
+            for j in range(n):
+                backend.sparse_col_start[j + 1] = backend.sparse_col_start[j] + (
+                    pattern.row_start[j + 1] - pattern.diag_slot[j]
+                )
+            backend.sparse_row_indices.resize(backend.sparse_col_start[n], 0)
+            var write = 0
+            for j in range(n):
+                for s in range(pattern.diag_slot[j], pattern.row_start[j + 1]):
+                    backend.sparse_row_indices[write] = pattern.col_index[s]
+                    write += 1
+            for i in range(n):
+                for s in range(pattern.row_start[i], pattern.row_start[i + 1]):
+                    var col = pattern.col_index[s]
+                    if col <= i:
+                        backend.pattern_slot_map[s] = backend.sparse_col_start[col] + (
+                            backend.pattern_transpose[s] - pattern.diag_slot[col]
+                        )
+        else:
+            # Structural symmetry: CSC column j has the rows of CSR row j.
+            backend.sparse_col_start = pattern.row_start.copy()
+            backend.sparse_row_indices = pattern.col_index.copy()
+            for s in range(nnz):
+                backend.pattern_slot_map[s] = backend.pattern_transpose[s]
+        backend.sparse_col_permutation.clear()
+        backend.sparse_values.resize(len(backend.sparse_row_indices), 0.0)
+        _ensure_vector_storage(backend.sparse_rhs_work, n)
+        _ensure_vector_storage(backend.sparse_solution_work, n)
+        backend.sparse_symbolic_ready = True
+        _reset_sparse_ldlt(backend)
+        return
+
+    if tag == AnalysisSystemTag.FullGeneral:
+        _ensure_dense_flat_storage(backend.dense_matrix_flat, n)
+        for i in range(n):
+            for s in range(pattern.row_start[i], pattern.row_start[i + 1]):
+                backend.pattern_slot_map[s] = _dense_flat_index(n, i, pattern.col_index[s])
+        return
+
+    abort("unsupported analysis system tag")
+
+
+fn load_pattern_values(
+    mut backend: LinearSolverBackend,
+    pattern: SparsePattern,
+    values: List[Float64],
+    scale: Float64 = 1.0,
+):
+    """Replace the loaded matrix with `scale * values` (values over `pattern`)."""
+    zero_loaded_matrix(backend)
+    add_pattern_values(backend, pattern, values, scale)
+
+
+fn add_pattern_values(
+    mut backend: LinearSolverBackend,
+    pattern: SparsePattern,
+    values: List[Float64],
+    scale: Float64 = 1.0,
+):
+    """Accumulate `scale * values` (values over `pattern`) into the loaded matrix."""
+    if not backend.initialized:
+        abort("linear solver backend not initialized")
+    if backend.pattern_nnz != pattern.nnz() or len(values) != pattern.nnz():
+        abort("linear solver backend pattern values size mismatch")
+    if scale == 0.0:
+        return
+    var tag = backend.system_tag
+    if _pattern_system_is_symmetric(tag):
+        for i in range(pattern.n):
+            for s in range(pattern.row_start[i], pattern.row_start[i + 1]):
+                var col_s = pattern.col_index[s]
+                if col_s > i:
+                    if _entries_asymmetric(
+                        values[backend.pattern_transpose[s]],
+                        values[s],
+                        values[pattern.diag_slot[i]],
+                        values[pattern.diag_slot[col_s]],
+                    ):
+                        var where = (
+                            " matrix is not symmetric: entry ("
+                            + String(i)
+                            + ", "
+                            + String(col_s)
+                            + ") = "
+                            + String(values[s])
+                            + " but its mirror = "
+                            + String(values[backend.pattern_transpose[s]])
+                            + " (diagonals "
+                            + String(values[pattern.diag_slot[i]])
+                            + ", "
+                            + String(values[pattern.diag_slot[col_s]])
+                            + ")"
+                        )
+                        if tag == AnalysisSystemTag.BandSPD:
+                            abort("BandSPD" + where)
+                        elif tag == AnalysisSystemTag.ProfileSPD:
+                            abort("ProfileSPD" + where)
+                        else:
+                            abort("SparseSYM" + where)
+                    continue
+                var idx = backend.pattern_slot_map[s]
+                if idx < 0:
+                    abort("linear solver backend pattern slot has no storage")
+                if tag == AnalysisSystemTag.BandSPD:
+                    backend.band_spd_values[idx] += scale * values[s]
+                elif tag == AnalysisSystemTag.ProfileSPD:
+                    backend.profile_values[idx] += scale * values[s]
+                else:
+                    backend.sparse_values[idx] += scale * values[s]
+    elif tag == AnalysisSystemTag.BandGeneral:
+        for s in range(len(values)):
+            var idx = backend.pattern_slot_map[s]
+            if idx < 0:
+                abort("BandGeneral entry outside the symbolic band")
+            backend.band_general_values[idx] += scale * values[s]
+        backend.band_general_dense_fallback = False
+    elif tag == AnalysisSystemTag.SuperLU or tag == AnalysisSystemTag.UmfPack:
+        for s in range(len(values)):
+            backend.sparse_values[backend.pattern_slot_map[s]] += scale * values[s]
+    elif tag == AnalysisSystemTag.FullGeneral:
+        for s in range(len(values)):
+            backend.dense_matrix_flat[backend.pattern_slot_map[s]] += scale * values[s]
+    else:
+        abort("unsupported analysis system tag")
+    backend.factorized = False
+
+
+fn refactor_from_pattern_if_needed(
+    mut backend: LinearSolverBackend,
+    pattern: SparsePattern,
+    values: List[Float64],
+    matrix_changed: Bool,
+    mut metrics: RuntimeProfileMetrics,
+    force_refactor: Bool = False,
+) -> Bool:
+    """Pattern counterpart of `refactor_if_needed`: load `values` and factor
+    only when a refactorization is required."""
+    var needs_refactor = force_refactor or not backend.factorized or matrix_changed
+    if _force_refactor_every_solve(backend):
+        needs_refactor = True
+    if needs_refactor:
+        load_pattern_values(backend, pattern, values)
+        factorize_loaded(backend, metrics)
+    return needs_refactor

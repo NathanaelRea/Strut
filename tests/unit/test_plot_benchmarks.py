@@ -42,7 +42,9 @@ def _load_plot_pdf_benchmarks_module():
 plot_pdf_benchmarks = _load_plot_pdf_benchmarks_module()
 
 
-def test_write_opensees_examples_markdown_emits_per_example_charts(tmp_path: Path):
+def test_write_opensees_examples_markdown_groups_examples_by_opensees_time(
+    tmp_path: Path,
+):
     summary_path = tmp_path / "summary.json"
     output_path = tmp_path / "benchmark-large-cases.md"
     summary_path.write_text(
@@ -113,50 +115,44 @@ def test_write_opensees_examples_markdown_emits_per_example_charts(tmp_path: Pat
 
     assert result == output_path
     text = output_path.read_text(encoding="utf-8")
-    assert "# OpenSees Example Benchmarks" in text
-    assert "plotColorPalette" in text
-    assert 'title "Benchmark: Example 50"' in text
-    assert 'title "Benchmark: Example 60"' in text
-    assert 'title "Benchmark: Example 70"' in text
-    assert 'title "Benchmark: Example 80"' in text
-    assert "- Source:" not in text
-    assert "- Generated at:" not in text
-    assert "- Example groups:" not in text
-    assert "## ex50" in text
-    assert "## ex60" in text
-    assert "## ex70" in text
-    assert "## ex80" in text
-    assert '"1O", "1S", "1-", "2O", "2S"' in text
-    assert '"1O", "1S"' in text
-    assert '"cantilever_medium"' not in text
-    assert "- Unit:" not in text
-    assert "- Cases:" not in text
-    assert 'y-axis "Analysis time (s)" 0 --> 3.851' in text
-    assert 'y-axis "Analysis time (us)" 0 --> 8.250' in text
-    assert 'y-axis "Analysis time (ms)" 0 --> 2.750' in text
-    assert 'y-axis "Analysis time (ns)" 0 --> 7.701' in text
-    assert 'bar "mask" [0.0, 0.0, 0.0, 0.0, 0.0]' in text
-    assert 'bar "OS" [3.000, 0.0, 0.0, 3.500, 0.0]' in text
-    assert 'bar "OMP"' not in text
-    assert 'bar "STR" [0.0, 1.500, 0.0, 0.0, 2.000]' in text
-    assert 'bar "OS" [7.500, 0.0]' in text
-    assert 'bar "STR" [0.0, 5.250]' in text
-    assert 'bar "OS" [2.500, 0.0]' in text
-    assert 'bar "STR" [0.0, 1.750]' in text
-    assert 'bar "OS" [7.000, 0.0]' in text
-    assert 'bar "STR" [0.0, 4.000]' in text
-    assert "| # | Label | OpenSees (s) | Strut (s) |" in text
-    assert "| # | Label | OpenSees (us) | Strut (us) |" in text
-    assert "| # | Label | OpenSees (ms) | Strut (ms) |" in text
-    assert "| # | Label | OpenSees (ns) | Strut (ns) |" in text
-    assert "| 1 | `cycle` | 3.000 | 1.500 |" in text
-    assert "| 2 | `push` | 3.500 | 2.000 |" in text
+    assert "# Benchmarks: Strut and OpenSees" in text
+    # Only `opensees_example_*` cases are listed.
+    assert "cantilever_medium" not in text
+    assert "bench_ex5" not in text
+    assert "5 cases, slowest first. Strut is faster in 5 and slower in 0." in text
     assert (
-        "| 1 | `ex60_genericframe2d_analyze_dynamic_eq_uniform` | 7.500 | 5.250 |"
+        "| OpenSees examples, all 5 cases |  | 6.50 s | 3.50 s (**1.9x faster**) |"
         in text
     )
-    assert "| 1 | `ex70_microframe_run_fast` | 7.000 | 4.000 |" in text
-    assert "| 1 | `ex80_midframe_run_balanced` | 2.500 | 1.750 |" in text
+    # Cases are grouped by OpenSees time; a group with no cases has no heading.
+    assert "### Over one second" in text
+    assert "### 10 ms to one second" not in text
+    assert "### Under 10 ms" in text
+    assert 'title "OpenSees examples: over one second"' in text
+    assert 'title "OpenSees examples: under 10 ms"' not in text
+    hidden = plot_benchmarks.HIDDEN_LABEL_CHAR
+    assert f'x-axis ["{hidden}", "1", "{hidden * 2}", "{hidden * 3}", "2"]' in text
+    assert 'y-axis "Analysis time (s)" 0 --> 3.85' in text
+    assert 'bar "opensees" [3.500, 0, 0, 3.000, 0]' in text
+    assert 'bar "strut" [0, 2.000, 0, 0, 1.500]' in text
+    assert "bar [0, 0, 0, 0, 0]" in text
+    assert 'bar "openseesmp"' not in text
+    assert "| # | Case | opensees | strut | Strut is |" in text
+    assert (
+        "| 1 | `ex50_frame2d_analyze_static_push` | 3.50 s | 2.00 s | 1.8x faster |"
+        in text
+    )
+    assert (
+        "| 2 | `ex50_frame2d_analyze_static_cycle` | 3.00 s | 1.50 s | 2.0x faster |"
+        in text
+    )
+    assert (
+        "| 1 | `ex80_midframe_run_balanced` | 2.50 ms | 1.75 ms | 1.4x faster |" in text
+    )
+    assert (
+        "| 2 | `ex60_genericframe2d_analyze_dynamic_eq_uniform` | 8 µs | 5 µs | 1.4x faster |"
+        in text
+    )
 
 
 def test_write_opensees_examples_markdown_includes_mp_only_when_requested(
@@ -197,13 +193,14 @@ def test_write_opensees_examples_markdown_includes_mp_only_when_requested(
     )
 
     text = output_path.read_text(encoding="utf-8")
-    assert '"1O", "1M", "1S", "1-", "2O", "2M", "2S"' in text
-    assert 'bar "OS" [3.000, 0.0, 0.0, 0.0, 3.500, 0.0, 0.0]' in text
-    assert 'bar "OMP" [0.0, 2.250, 0.0, 0.0, 0.0, 2.750, 0.0]' in text
-    assert 'bar "STR" [0.0, 0.0, 1.500, 0.0, 0.0, 0.0, 2.000]' in text
-    assert "| # | Label | OpenSees (s) | OpenSeesMP (s) | Strut (s) |" in text
-    assert "| 1 | `cycle` | 3.000 | 2.250 | 1.500 |" in text
-    assert "| 2 | `push` | 3.500 | 2.750 | 2.000 |" in text
+    assert 'bar "opensees" [3.500, 0, 0, 0, 3.000, 0, 0]' in text
+    assert 'bar "openseesmp" [0, 2.750, 0, 0, 0, 2.250, 0]' in text
+    assert 'bar "strut" [0, 0, 2.000, 0, 0, 0, 1.500]' in text
+    assert "| # | Case | opensees | openseesmp | strut | Strut is |" in text
+    assert (
+        "| 2 | `ex50_frame2d_analyze_static_cycle` | 3.00 s | 2.25 s | 1.50 s | 2.0x faster |"
+        in text
+    )
 
 
 def test_write_plots_pdf_warns_when_summary_is_missing_openseesmp(
@@ -244,3 +241,121 @@ def test_write_plots_pdf_warns_when_summary_is_missing_openseesmp(
         f"warning: no openseesmp analysis timings in {results_path}; "
         "summary.json is missing those engine results"
     ) in captured.out
+
+
+def test_write_opensees_examples_markdown_adds_single_thread_bar_when_measured(
+    tmp_path: Path,
+):
+    summary_path = tmp_path / "summary.json"
+    output_path = tmp_path / "benchmarks.md"
+    summary_path.write_text(
+        json.dumps(
+            {
+                "generated_at": "2026-03-09T12:00:00Z",
+                "metadata": {
+                    "platform": {"cpu_model": "Test CPU", "physical_cores": 8},
+                    "runner": {
+                        "repeat": 3,
+                        "strut_threads": "performance cores",
+                        "strut_single_thread_pass": True,
+                    },
+                    "build": {"opensees_version": "3.7.1"},
+                },
+                "cases": [
+                    {
+                        "name": "opensees_example_ex50_frame2d_analyze_static_cycle",
+                        "opensees": {"analysis_us": 3_000_000},
+                        "strut_single_thread": {"analysis_us": 2_000_000},
+                        "strut": {"analysis_us": 1_500_000},
+                    },
+                    {
+                        "name": "opensees_example_ex50_frame2d_analyze_static_push",
+                        "opensees": {"analysis_us": 3_500_000},
+                        "strut_single_thread": {"analysis_us": 2_500_000},
+                        "strut": {"analysis_us": 2_000_000},
+                    },
+                ],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    plot_benchmarks.write_opensees_examples_markdown(
+        results_path=summary_path,
+        output_path=output_path,
+    )
+
+    text = output_path.read_text(encoding="utf-8")
+    assert "Measured 2026-03-09 on Test CPU (8 cores), OpenSees 3.7.1." in text
+    assert "Median of 3 runs per engine." in text
+    assert (
+        "`opensees` is OpenSees, `strut` is Strut on one thread, and "
+        "`strut-8` is Strut on 8 threads."
+    ) in text
+    assert 'bar "opensees" [3.500, 0, 0, 0, 3.000, 0, 0]' in text
+    assert 'bar "strut" [0, 2.500, 0, 0, 0, 2.000, 0]' in text
+    assert 'bar "strut-8" [0, 0, 2.000, 0, 0, 0, 1.500]' in text
+    assert "| # | Case | opensees | strut | strut-8 | Strut is |" in text
+    assert (
+        "| 2 | `ex50_frame2d_analyze_static_cycle` | 3.00 s | 2.00 s | 1.50 s | 2.0x faster |"
+        in text
+    )
+
+
+def test_write_opensees_examples_markdown_charts_each_large_model(tmp_path: Path):
+    summary_path = tmp_path / "summary.json"
+    large_path = tmp_path / "large.json"
+    output_path = tmp_path / "benchmarks.md"
+    summary_path.write_text(json.dumps({"cases": []}) + "\n", encoding="utf-8")
+    large_path.write_text(
+        json.dumps(
+            {
+                "metadata": {
+                    "runner": {
+                        "repeat": 1,
+                        "strut_threads": "4",
+                        "strut_single_thread_pass": True,
+                    }
+                },
+                "cases": [
+                    {
+                        "name": "tower",
+                        "dofs": 155130,
+                        "opensees": {"analysis_us": 100_000_000},
+                        "strut_single_thread": {"analysis_us": 20_000_000},
+                        "strut": {"analysis_us": 10_000_000},
+                    }
+                ],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    plot_benchmarks.write_opensees_examples_markdown(
+        results_path=summary_path,
+        output_path=output_path,
+        large_results_paths=(large_path,),
+        note="The machine was not idle.",
+    )
+
+    text = output_path.read_text(encoding="utf-8")
+    assert "\nThe machine was not idle.\n\n| Model | Free DOFs |" in text
+    assert "| Model | Free DOFs | opensees | strut | strut-4 |" in text
+    assert (
+        "| `tower` | 155,130 | 100.0 s | 20.0 s (**5.0x faster**) | 10.0 s (**10.0x faster**) |"
+        in text
+    )
+    assert "`strut-4` is Strut on 4 threads." in text
+    assert "## Large models" in text
+    assert "### `tower`" in text
+    assert "155,130 free DOFs. One run per engine." in text
+    assert (
+        'x-axis ["opensees", "strut (5.0x faster)", "strut-4 (10.0x faster)"]' in text
+    )
+    # One bar per engine, unnamed so no legend is drawn, then the mask.
+    assert (
+        "    bar [100.000, 0, 0]\n    bar [0, 20.000, 0]\n    bar [0, 0, 10.000]\n    bar [0, 0, 0]"
+        in text
+    )
