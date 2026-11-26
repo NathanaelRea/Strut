@@ -616,11 +616,7 @@ def test_prepare_direct_tcl_wrappers_use_manifest_source_files_order(
     instrumented_text = instrumented_fiber.read_text(encoding="utf-8")
     assert "rename section __strut_builtin_section" in compat_text
     assert "set args [linsert $args 2 -GJ 1.0e-12]" in compat_text
-    assert "rename nDMaterial __strut_builtin_nDMaterial" in compat_text
-    assert (
-        'if {[llength $args] == 4 && [lindex $args 0] eq "PlateFromPlaneStress"} {'
-        in compat_text
-    )
+    assert "rename nDMaterial" not in compat_text
     assert "rename mass __strut_builtin_mass" in compat_text
     assert f"source {{{entry_wrapper.name}}}" in compat_text
     assert f"source {{{compat_wrapper.name}}}" in timed_text

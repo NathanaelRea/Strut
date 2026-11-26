@@ -763,7 +763,6 @@ fn load_case_state_from_input(var input: CaseInput, progress_path: String) raise
     ref section_fibers = input.fibers
     ref shell_layers = input.shell_layers
     ref materials = input.materials
-    ref shell_material_props = input.shell_material_props
     ref typed_elements = input.elements
     ref element_loads = input.element_loads
     ref nodal_loads = input.loads
@@ -1096,6 +1095,7 @@ fn load_case_state_from_input(var input: CaseInput, progress_path: String) raise
         elif (
             mat_type == "ElasticIsotropic"
             or mat_type == "PlaneStressUserMaterial"
+            or mat_type == "ConcreteS"
             or mat_type == "PlateFromPlaneStress"
             or mat_type == "PlateRebar"
         ):
@@ -1159,7 +1159,6 @@ fn load_case_state_from_input(var input: CaseInput, progress_path: String) raise
                 shell_layers,
                 typed_materials_by_id,
                 uniaxial_def_by_id,
-                shell_material_props,
             )
             layered_shell_section_index_by_id[sid] = len(layered_shell_section_defs) - 1
 
@@ -1923,6 +1922,7 @@ fn load_case_state_from_input(var input: CaseInput, progress_path: String) raise
             abort("LayeredShellSection definition not found")
         shell_elem_instance_offsets[e] = layered_shell_instance_counts[sec_index]
         layered_shell_instance_counts[sec_index] += 4
+    var first_shell_rebar_state = len(uniaxial_states)
     if layered_shell_runtime_alloc_instances(
         layered_shell_section_defs,
         layered_shell_instance_counts,
@@ -1933,6 +1933,8 @@ fn load_case_state_from_input(var input: CaseInput, progress_path: String) raise
         layered_shell_section_uniaxial_counts,
     ):
         used_nonelastic_uniaxial = True
+    for state_id in range(first_shell_rebar_state, len(uniaxial_states)):
+        elem_uniaxial_state_ids.append(state_id)
 
     var total_dofs = node_count * ndf
     var F_total: List[Float64] = []
@@ -2189,9 +2191,7 @@ fn load_case_state_from_input(var input: CaseInput, progress_path: String) raise
         and analysis_type_tag != AnalysisTypeTag.Staged
         and used_nonelastic_uniaxial
     ):
-        abort(
-            "nonlinear uniaxial materials require static_nonlinear or transient_nonlinear analysis"
-        )
+        abort("nonlinear materials require static_nonlinear or transient_nonlinear analysis")
 
     var system_tag = analysis_input.system_tag
     if system_tag == AnalysisSystemTag.Unknown:

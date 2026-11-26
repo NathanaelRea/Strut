@@ -79,3 +79,68 @@ JSON cases in memory and writes temporary files under `build/material_curves/`
 before running OpenSees/Mojo through the same JSON -> Tcl -> solver path. Use
 `scripts/plot_materials.py` to generate plots and CSV outputs under
 `build/material_curves/`.
+
+## ConcreteS plane stress
+
+Use `nDMaterial ConcreteS tag E nu fc ft Es` in Tcl or a `ConcreteS` material
+with those five named parameters in JSON. In a `LayeredShell`, reference it
+through `PlateFromPlaneStress`. Each concrete layer at each shell integration
+point has its own trial and committed history. The plate wrapper supplies a
+constant elastic modulus for the two transverse shear components.
+
+The reference is Yuli Huang and Xinzheng Lu's 2012 *Simple Concrete Model,
+plane stress*. The implementation gives the full constitutive update and
+contains no paper citation. Jiang's 2016 thesis (§4.3.1, Fig. 4.10) documents
+the von Mises and Rankine formulation in the thermal model he derived from
+ConcreteS. [OpenSees 3.7.1 implementation](https://github.com/OpenSees/OpenSees/blob/v3.7.1/SRC/material/nD/ConcreteS.cpp),
+[Jiang's thesis](https://hdl.handle.net/1842/19563).
+
+- **Elastic prediction.** Start from the last committed effective stress
+  (before tensile damage) and add `C × (strain − committed strain)`. `C` is
+  isotropic plane-stress elasticity with engineering shear strain. Its normal
+  diagonal is `E/(1 − nu²)`, off-diagonal is `nu E/(1 − nu²)`, and shear
+  diagonal is `E/[2(1 + nu)]`.
+- **Compression and crushing.** Set `q = sqrt(σx² − σx σy + σy² + 3τxy²)`.
+  If `q > |fc|` and both predictor principal stresses are at most `ft`,
+  take one stress correction `−C × f × (q − |fc|)/(fᵀ C f)`, with
+  `f = ∂q/∂σ` at the predictor. Recompute the principal stresses and their
+  direction from the corrected tensor. With a positive major principal
+  stress, clip the minor principal stress at `−|fc|`. The other sign check
+  in the source is unreachable for ordered principal stresses. The
+  compression branch is a perfect-plastic yield approximation. There is
+  no separate crushing strain, compressive damage variable, or descending
+  compression envelope.
+- **Tension and cracking.** Let `c₀` be the committed scalar crack strain
+  and `Ep = 10E`. Each principal stress exceeding `ft + Ep c₀` is replaced
+  with `ft + Ep c`, where `c = c₀ + excess/(E + Ep)`. The crack strain
+  takes the larger tensile increment when both principal stresses cross the
+  limit. Transform the corrected stresses back to the original axes to get
+  the effective stress. Multiply the positive principal stresses by
+  `exp(−(Ep + 11|Es|)c/ft)`, then transform again to get the returned
+  stress. Compression is unaffected by the damage factor. The principal
+  axes follow the trial stress, and there is no fixed crack direction or
+  separate in-plane shear-retention factor.
+- **Meaning of `Es`.** For monotonic uniaxial tension with a traction-free
+  lateral direction, let `δ = ε − ft/E ≥ 0` and `A = 10E/11`. The
+  tensile envelope is `(ft + Aδ) exp(−(A + |Es|)δ/ft)`. Its right-hand
+  slope at cracking is `−|Es|`. The exponential tail has no finite
+  ultimate strain or residual stress floor.
+- **Cycling.** Commit retains total strain, effective stress, and scalar
+  crack strain. Unloading and reloading use the elastic predictor about
+  that committed point, with tensile damage applied on output. On
+  reversal into compression the factor stops acting on principal stresses
+  once they become nonpositive. There is no separate pinching or unloading
+  rule. OpenSees retains the previous *trial* crack strain when neither
+  principal stress exceeds the current limit. Its revert-to-last-commit is
+  a no-op. Strut preserves this behavior across iterations and retries.
+- **Tangent.** The returned tangent begins at `C`. The compression
+  correction subtracts `(C f)(C f)ᵀ/(fᵀ C f + 0.001 E)`. The principal
+  stress clipping and tensile softening do not modify the returned tangent,
+  so it is an approximate Newton tangent.
+
+The strain-path test queries OpenSees 3.7.1's `PlaneStressMaterialTest`
+for all three stress components and all nine tangent entries in tension,
+compression, shear, and mixed cycles, including multiple trial strains per
+commit. The 48-step [cyclic wall](../tests/validation/strut_concrete_s_cyclic_wall/direct_tcl_case.json)
+checks tip displacement and base reactions through the Tcl converter and
+Strut parity harness.

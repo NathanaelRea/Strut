@@ -19,11 +19,55 @@ uv run python -m scripts.megatall_recon.bundle --out-dir DIR      # anywhere els
 
 The original's `CuSPSolver.dll` is not reproduced.
 
+## Core-wall concrete
+
+All 16,616 core-wall and coupling-beam shells use Huang and Lu's ConcreteS
+as a stand-in for the unreleased PSUMAT. The generator emits
+`nDMaterial ConcreteS` with the original tags and retains the
+`PlateFromPlaneStress` wrappers, transverse shear moduli, and PlateRebar
+layers. The original PSUMAT inputs remain in `props.json` for comparison
+with the original archive. The generated 3D fiber sections also specify
+`-GJ 1.0e-12`, the torsion value the previous OpenSees compatibility
+wrapper supplied. [ConcreteS constitutive update](../../docs/materials.md#concretes-plane-stress).
+
+- Keep the original concrete compressive and tensile strengths, `fc` and
+  `ft`. The original final PSUMAT argument `stc = 0.12` controls shear
+  retention after cracking. Both former elastic surrogates used that
+  argument as Poisson's ratio, which was a bug. [Lu et al. (2015), §2.2 and Appendix A](https://research-repository.griffith.edu.au/bitstream/10072/141003/1/GuanPUB1437.pdf).
+- Set `nu = 0.20` and `E = 2 G (1 + nu)` using the given wrapper shear
+  modulus `G`. The benchmark authors specify the modulus adjustment
+  `2 fc / |epsc0|`, which independently gives 36, 37, and 38 GPa for tags
+  71, 72, and 73. Their ratios to the input shear moduli give `nu = 0.20`
+  within the rounding of the source values. [Benchmark authors' model notes](https://opensees.berkeley.edu/wiki/index.php/Mega-Tall_Building_Benchmark_Models).
+- Set `Es = ft / (epstu − ft/E)`, which gives 3.6, 3.7, and 3.8 GPa
+  respectively. This matches ConcreteS's initial descending tensile slope
+  to the PSUMAT line from the cracking strain `ft/E` to zero tension at
+  the supplied ultimate strain `epstu`. ConcreteS uses an exponential
+  tail and has no parameters for PSUMAT's `fcu`, `epsc0`, `epscu`, or
+  `stc`. [Stokley and Lowes (2024), Fig. 3.5 and Eq. 3.4](https://peer.berkeley.edu/sites/default/files/publications/peer_2024_11_final.pdf).
+
+### Full-model gravity in OpenSees 3.7.1
+
+Both runs completed all ten `LoadControl 0.1` steps with the entry
+script's solver and convergence settings. The base reaction is the sum
+of vertical reactions at the entry script's support recorder nodes. The
+roof result is the vertical displacement of node 17367 at load factor 1.
+
+| Result | Former elastic stand-in | ConcreteS |
+| --- | ---: | ---: |
+| Total base reaction (N) | 7,263,622,002.52 | 7,263,623,173.06 |
+| Roof vertical displacement (m) | -0.120774920 | -0.116622535 |
+
+The roof settled 4.15 mm less with ConcreteS (3.44%). The full-model
+verification covered gravity in OpenSees. The Strut smoke case and
+reinforced-wall parity test cover the ConcreteS layered-shell path on
+smaller models.
+
 ## How close it is
 
 All 27,220 nodes are within 3 mm of the original (p99 0.16 mm), and every element, connectivity, file order and diaphragm set matches exactly. 99.75% of the 220,729 property values computed from the generated geometry are within 1e-4 relative of the original, the worst is 1.5e-3, and none are unexplained. Most of the remaining difference is the original's float32 and 4-decimal printing.
 
-OpenSees 3.7.1 runs the same gravity analysis (the entry script's 10 `LoadControl` steps) and `eigen 10` on both bundles, using the repo's PSUMAT surrogate for both:
+Before the ConcreteS change, OpenSees 3.7.1 ran the entry script's ten gravity steps and `eigen 10` on both bundles using the former elastic stand-in:
 
 | Result | Original | Generated | Relative difference |
 | --- | ---: | ---: | ---: |

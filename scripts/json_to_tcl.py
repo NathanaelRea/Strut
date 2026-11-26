@@ -1034,6 +1034,11 @@ def main():
                 nu = params["nu"]
                 rho = params.get("rho", 0.0)
                 f.write(f"nDMaterial ElasticIsotropic {mat['id']} {E} {nu} {rho}\n")
+            elif mat["type"] == "ConcreteS":
+                values = " ".join(
+                    str(params[key]) for key in ("E", "nu", "fc", "ft", "Es")
+                )
+                f.write(f"nDMaterial ConcreteS {mat['id']} {values}\n")
             elif mat["type"] == "PlaneStressUserMaterial":
                 nstatevs = params["nstatevs"]
                 nprops = params["nprops"]

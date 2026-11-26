@@ -44,6 +44,7 @@ from solver.run_case.input_types import (
 )
 from solver.time_series import TimeSeriesInput, eval_time_series_input, find_time_series_input
 from sections import (
+    layered_shell_commit_all,
     FiberCell,
     FiberSection2dDef,
     FiberSection3dDef,
@@ -2084,6 +2085,7 @@ fn run_static_nonlinear_load_control(
                 commit_start_us,
             )
         _uniaxial_commit_active_states(uniaxial_states, elem_uniaxial_state_ids)
+        layered_shell_commit_all(layered_shell_section_defs)
         fiber_section2d_commit_runtime_all(fiber_section_defs)
         if do_profile:
             var t_commit_end = Int(time.perf_counter_ns())
@@ -3997,6 +3999,7 @@ fn run_static_nonlinear_displacement_control(
                     commit_start_us,
                 )
             _uniaxial_commit_active_states(uniaxial_states, elem_uniaxial_state_ids)
+            layered_shell_commit_all(layered_shell_section_defs)
             fiber_section2d_commit_runtime_all(fiber_section_defs)
             if do_profile:
                 var t_commit_end = Int(time.perf_counter_ns())

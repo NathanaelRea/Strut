@@ -362,7 +362,7 @@ fn shell4_mindlin_stiffness(
 
 
 fn shell4_layered_stiffness_and_residual(
-    sec_def: LayeredShellSectionDef,
+    mut sec_def: LayeredShellSectionDef,
     uniaxial_defs: List[UniMaterialDef],
     mut uniaxial_states: List[UniMaterialState],
     section_state_offset: Int,
@@ -529,7 +529,7 @@ fn shell4_layered_stiffness_and_residual(
     stress_gp.resize(8, 0.0)
     var dd_gp = _zero_matrix(8, 8)
 
-    var ktt = 0.0
+    var ktt = sec_def.drill_stiffness
 
     for gp in range(4):
         var ss = sg[gp]
@@ -683,10 +683,6 @@ fn shell4_layered_stiffness_and_residual(
             stress_gp,
             dd_gp,
         )
-        if gp == 0:
-            ktt = dd_gp[2][2]
-            if ktt <= 0.0:
-                ktt = 1.0
         var tau_drill = ktt * eps_drill * dvol
         for p in range(8):
             stress_gp[p] *= dvol
