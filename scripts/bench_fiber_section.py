@@ -90,7 +90,9 @@ def main() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     input_path = (repo_root / args.input).resolve()
     bench_input = _build_repeated_input(input_path, args.path_repetitions)
-    output_path = Path(tempfile.mkstemp(suffix=".csv", prefix="strut_fiber_microbench_")[1])
+    output_path = Path(
+        tempfile.mkstemp(suffix=".csv", prefix="strut_fiber_microbench_")[1]
+    )
 
     try:
         for _ in range(args.warmup):
@@ -113,13 +115,16 @@ def main() -> None:
             "median_us": statistics.median(samples_us),
             "mean_us": statistics.fmean(samples_us),
             "max_us": max(samples_us),
-            "median_us_per_step": statistics.median(samples_us) / float(deformation_steps),
+            "median_us_per_step": statistics.median(samples_us)
+            / float(deformation_steps),
         }
 
         if args.output_json:
             output_json = (repo_root / args.output_json).resolve()
             output_json.parent.mkdir(parents=True, exist_ok=True)
-            output_json.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+            output_json.write_text(
+                json.dumps(summary, indent=2) + "\n", encoding="utf-8"
+            )
 
         print(json.dumps(summary, indent=2))
     finally:

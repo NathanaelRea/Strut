@@ -23,7 +23,7 @@ from sections.fiber2d import FiberCell
 from strut_io import py_len
 
 
-struct FiberSection3dDef(Defaultable, Movable, ImplicitlyCopyable):
+struct FiberSection3dDef(Defaultable, ImplicitlyCopyable, Movable):
     var fiber_offset: Int
     var fiber_count: Int
     var y_bar: Float64
@@ -59,9 +59,7 @@ struct FiberSection3dDef(Defaultable, Movable, ImplicitlyCopyable):
         self.nonlinear_def_index = []
         self.nonlinear_mat_defs = []
 
-    fn __init__(
-        out self, fiber_offset: Int, fiber_count: Int, y_bar: Float64, z_bar: Float64
-    ):
+    fn __init__(out self, fiber_offset: Int, fiber_count: Int, y_bar: Float64, z_bar: Float64):
         self.fiber_offset = fiber_offset
         self.fiber_count = fiber_count
         self.y_bar = y_bar
@@ -98,7 +96,7 @@ struct FiberSection3dDef(Defaultable, Movable, ImplicitlyCopyable):
         self.nonlinear_mat_defs = existing.nonlinear_mat_defs.copy()
 
 
-struct FiberSection3dResponse(Defaultable, Movable, ImplicitlyCopyable):
+struct FiberSection3dResponse(Defaultable, ImplicitlyCopyable, Movable):
     var axial_force: Float64
     var moment_y: Float64
     var moment_z: Float64
@@ -143,9 +141,7 @@ struct FiberSection3dResponse(Defaultable, Movable, ImplicitlyCopyable):
         self.k33 = k33
 
 
-fn _resolve_uniaxial_def_index(
-    mat_id: Int, uniaxial_def_by_id: List[Int]
-) -> Int:
+fn _resolve_uniaxial_def_index(mat_id: Int, uniaxial_def_by_id: List[Int]) -> Int:
     if mat_id < 0:
         abort("FiberSection3d material id must be >= 0")
     if mat_id >= len(uniaxial_def_by_id) or uniaxial_def_by_id[mat_id] < 0:
@@ -188,7 +184,9 @@ fn _build_fiber_section3d_def(
 
 
 @always_inline
-fn _fiber_section3d_elastic_response_simd[width: Int](
+fn _fiber_section3d_elastic_response_simd[
+    width: Int
+](
     y_rel: List[Float64],
     z_rel: List[Float64],
     area: List[Float64],
@@ -197,17 +195,7 @@ fn _fiber_section3d_elastic_response_simd[width: Int](
     eps0: Float64,
     kappa_y: Float64,
     kappa_z: Float64,
-) -> (
-    Float64,
-    Float64,
-    Float64,
-    Float64,
-    Float64,
-    Float64,
-    Float64,
-    Float64,
-    Float64,
-):
+) -> (Float64, Float64, Float64, Float64, Float64, Float64, Float64, Float64, Float64,):
     var axial_force = 0.0
     var moment_y = 0.0
     var moment_z = 0.0
@@ -340,14 +328,54 @@ fn _append_quadr_patch_cells(
             var v1 = Float64(iz + 1) / Float64(nz)
             var vc = 0.5 * (v0 + v1)
 
-            var y00 = (1.0 - u0) * (1.0 - v0) * y_i + u0 * (1.0 - v0) * y_j + u0 * v0 * y_k + (1.0 - u0) * v0 * y_l
-            var z00 = (1.0 - u0) * (1.0 - v0) * z_i + u0 * (1.0 - v0) * z_j + u0 * v0 * z_k + (1.0 - u0) * v0 * z_l
-            var y10 = (1.0 - u1) * (1.0 - v0) * y_i + u1 * (1.0 - v0) * y_j + u1 * v0 * y_k + (1.0 - u1) * v0 * y_l
-            var z10 = (1.0 - u1) * (1.0 - v0) * z_i + u1 * (1.0 - v0) * z_j + u1 * v0 * z_k + (1.0 - u1) * v0 * z_l
-            var y11 = (1.0 - u1) * (1.0 - v1) * y_i + u1 * (1.0 - v1) * y_j + u1 * v1 * y_k + (1.0 - u1) * v1 * y_l
-            var z11 = (1.0 - u1) * (1.0 - v1) * z_i + u1 * (1.0 - v1) * z_j + u1 * v1 * z_k + (1.0 - u1) * v1 * z_l
-            var y01 = (1.0 - u0) * (1.0 - v1) * y_i + u0 * (1.0 - v1) * y_j + u0 * v1 * y_k + (1.0 - u0) * v1 * y_l
-            var z01 = (1.0 - u0) * (1.0 - v1) * z_i + u0 * (1.0 - v1) * z_j + u0 * v1 * z_k + (1.0 - u0) * v1 * z_l
+            var y00 = (
+                (1.0 - u0) * (1.0 - v0) * y_i
+                + u0 * (1.0 - v0) * y_j
+                + u0 * v0 * y_k
+                + (1.0 - u0) * v0 * y_l
+            )
+            var z00 = (
+                (1.0 - u0) * (1.0 - v0) * z_i
+                + u0 * (1.0 - v0) * z_j
+                + u0 * v0 * z_k
+                + (1.0 - u0) * v0 * z_l
+            )
+            var y10 = (
+                (1.0 - u1) * (1.0 - v0) * y_i
+                + u1 * (1.0 - v0) * y_j
+                + u1 * v0 * y_k
+                + (1.0 - u1) * v0 * y_l
+            )
+            var z10 = (
+                (1.0 - u1) * (1.0 - v0) * z_i
+                + u1 * (1.0 - v0) * z_j
+                + u1 * v0 * z_k
+                + (1.0 - u1) * v0 * z_l
+            )
+            var y11 = (
+                (1.0 - u1) * (1.0 - v1) * y_i
+                + u1 * (1.0 - v1) * y_j
+                + u1 * v1 * y_k
+                + (1.0 - u1) * v1 * y_l
+            )
+            var z11 = (
+                (1.0 - u1) * (1.0 - v1) * z_i
+                + u1 * (1.0 - v1) * z_j
+                + u1 * v1 * z_k
+                + (1.0 - u1) * v1 * z_l
+            )
+            var y01 = (
+                (1.0 - u0) * (1.0 - v1) * y_i
+                + u0 * (1.0 - v1) * y_j
+                + u0 * v1 * y_k
+                + (1.0 - u0) * v1 * y_l
+            )
+            var z01 = (
+                (1.0 - u0) * (1.0 - v1) * z_i
+                + u0 * (1.0 - v1) * z_j
+                + u0 * v1 * z_k
+                + (1.0 - u0) * v1 * z_l
+            )
 
             var twice_area = (
                 y00 * z10
@@ -363,8 +391,18 @@ fn _append_quadr_patch_cells(
             if area <= 0.0:
                 abort("FiberSection3d patch quadr generated zero-area cell")
 
-            var yc = (1.0 - uc) * (1.0 - vc) * y_i + uc * (1.0 - vc) * y_j + uc * vc * y_k + (1.0 - uc) * vc * y_l
-            var zc = (1.0 - uc) * (1.0 - vc) * z_i + uc * (1.0 - vc) * z_j + uc * vc * z_k + (1.0 - uc) * vc * z_l
+            var yc = (
+                (1.0 - uc) * (1.0 - vc) * y_i
+                + uc * (1.0 - vc) * y_j
+                + uc * vc * y_k
+                + (1.0 - uc) * vc * y_l
+            )
+            var zc = (
+                (1.0 - uc) * (1.0 - vc) * z_i
+                + uc * (1.0 - vc) * z_j
+                + uc * vc * z_k
+                + (1.0 - uc) * vc * z_l
+            )
             fibers.append(FiberCell(yc, zc, area, def_index))
             area_sum += area
             qy_sum += area * zc
@@ -439,13 +477,9 @@ fn append_fiber_section3d_from_json(
         if patch_type == "quad":
             patch_type = "quadr"
         if patch_type == "rect":
-            _append_rect_patch_cells(
-                patch, uniaxial_def_by_id, fibers, area_sum, qy_sum, qz_sum
-            )
+            _append_rect_patch_cells(patch, uniaxial_def_by_id, fibers, area_sum, qy_sum, qz_sum)
         elif patch_type == "quadr":
-            _append_quadr_patch_cells(
-                patch, uniaxial_def_by_id, fibers, area_sum, qy_sum, qz_sum
-            )
+            _append_quadr_patch_cells(patch, uniaxial_def_by_id, fibers, area_sum, qy_sum, qz_sum)
         else:
             abort("unsupported FiberSection3d patch type: " + patch_type)
 
@@ -468,9 +502,7 @@ fn append_fiber_section3d_from_json(
     var z_bar = qy_sum / area_sum
 
     defs.append(
-        _build_fiber_section3d_def(
-            fiber_offset, fiber_count, y_bar, z_bar, fibers, uniaxial_defs
-        )
+        _build_fiber_section3d_def(fiber_offset, fiber_count, y_bar, z_bar, fibers, uniaxial_defs)
     )
 
 
@@ -558,14 +590,54 @@ fn _append_quadr_patch_cells_input(
             var v1 = Float64(iz + 1) / Float64(nz)
             var vc = 0.5 * (v0 + v1)
 
-            var y00 = (1.0 - u0) * (1.0 - v0) * y_i + u0 * (1.0 - v0) * y_j + u0 * v0 * y_k + (1.0 - u0) * v0 * y_l
-            var z00 = (1.0 - u0) * (1.0 - v0) * z_i + u0 * (1.0 - v0) * z_j + u0 * v0 * z_k + (1.0 - u0) * v0 * z_l
-            var y10 = (1.0 - u1) * (1.0 - v0) * y_i + u1 * (1.0 - v0) * y_j + u1 * v0 * y_k + (1.0 - u1) * v0 * y_l
-            var z10 = (1.0 - u1) * (1.0 - v0) * z_i + u1 * (1.0 - v0) * z_j + u1 * v0 * z_k + (1.0 - u1) * v0 * z_l
-            var y11 = (1.0 - u1) * (1.0 - v1) * y_i + u1 * (1.0 - v1) * y_j + u1 * v1 * y_k + (1.0 - u1) * v1 * y_l
-            var z11 = (1.0 - u1) * (1.0 - v1) * z_i + u1 * (1.0 - v1) * z_j + u1 * v1 * z_k + (1.0 - u1) * v1 * z_l
-            var y01 = (1.0 - u0) * (1.0 - v1) * y_i + u0 * (1.0 - v1) * y_j + u0 * v1 * y_k + (1.0 - u0) * v1 * y_l
-            var z01 = (1.0 - u0) * (1.0 - v1) * z_i + u0 * (1.0 - v1) * z_j + u0 * v1 * z_k + (1.0 - u0) * v1 * z_l
+            var y00 = (
+                (1.0 - u0) * (1.0 - v0) * y_i
+                + u0 * (1.0 - v0) * y_j
+                + u0 * v0 * y_k
+                + (1.0 - u0) * v0 * y_l
+            )
+            var z00 = (
+                (1.0 - u0) * (1.0 - v0) * z_i
+                + u0 * (1.0 - v0) * z_j
+                + u0 * v0 * z_k
+                + (1.0 - u0) * v0 * z_l
+            )
+            var y10 = (
+                (1.0 - u1) * (1.0 - v0) * y_i
+                + u1 * (1.0 - v0) * y_j
+                + u1 * v0 * y_k
+                + (1.0 - u1) * v0 * y_l
+            )
+            var z10 = (
+                (1.0 - u1) * (1.0 - v0) * z_i
+                + u1 * (1.0 - v0) * z_j
+                + u1 * v0 * z_k
+                + (1.0 - u1) * v0 * z_l
+            )
+            var y11 = (
+                (1.0 - u1) * (1.0 - v1) * y_i
+                + u1 * (1.0 - v1) * y_j
+                + u1 * v1 * y_k
+                + (1.0 - u1) * v1 * y_l
+            )
+            var z11 = (
+                (1.0 - u1) * (1.0 - v1) * z_i
+                + u1 * (1.0 - v1) * z_j
+                + u1 * v1 * z_k
+                + (1.0 - u1) * v1 * z_l
+            )
+            var y01 = (
+                (1.0 - u0) * (1.0 - v1) * y_i
+                + u0 * (1.0 - v1) * y_j
+                + u0 * v1 * y_k
+                + (1.0 - u0) * v1 * y_l
+            )
+            var z01 = (
+                (1.0 - u0) * (1.0 - v1) * z_i
+                + u0 * (1.0 - v1) * z_j
+                + u0 * v1 * z_k
+                + (1.0 - u0) * v1 * z_l
+            )
 
             var twice_area = (
                 y00 * z10
@@ -581,8 +653,18 @@ fn _append_quadr_patch_cells_input(
             if area <= 0.0:
                 abort("FiberSection3d patch quadr generated zero-area cell")
 
-            var yc = (1.0 - uc) * (1.0 - vc) * y_i + uc * (1.0 - vc) * y_j + uc * vc * y_k + (1.0 - uc) * vc * y_l
-            var zc = (1.0 - uc) * (1.0 - vc) * z_i + uc * (1.0 - vc) * z_j + uc * vc * z_k + (1.0 - uc) * vc * z_l
+            var yc = (
+                (1.0 - uc) * (1.0 - vc) * y_i
+                + uc * (1.0 - vc) * y_j
+                + uc * vc * y_k
+                + (1.0 - uc) * vc * y_l
+            )
+            var zc = (
+                (1.0 - uc) * (1.0 - vc) * z_i
+                + uc * (1.0 - vc) * z_j
+                + uc * vc * z_k
+                + (1.0 - uc) * vc * z_l
+            )
             fibers.append(FiberCell(yc, zc, area, def_index))
             area_sum += area
             qy_sum += area * zc
@@ -713,9 +795,7 @@ fn append_fiber_section3d_from_input(
     var z_bar = qy_sum / area_sum
 
     defs.append(
-        _build_fiber_section3d_def(
-            fiber_offset, fiber_count, y_bar, z_bar, fibers, uniaxial_defs
-        )
+        _build_fiber_section3d_def(fiber_offset, fiber_count, y_bar, z_bar, fibers, uniaxial_defs)
     )
 
 
@@ -736,9 +816,7 @@ fn fiber_section3d_init_states(
         var sec_def = defs[s]
         section_uniaxial_offsets[s] = len(uniaxial_states)
         section_uniaxial_counts[s] = sec_def.fiber_count
-        if sec_def.fiber_offset < 0 or sec_def.fiber_offset + sec_def.fiber_count > len(
-            fibers
-        ):
+        if sec_def.fiber_offset < 0 or sec_def.fiber_offset + sec_def.fiber_count > len(fibers):
             abort("FiberSection3d fiber data out of range")
         for i in range(sec_def.elastic_count):
             var def_index = sec_def.elastic_def_index[i]
@@ -756,9 +834,7 @@ fn fiber_section3d_init_states(
             var state_index = len(uniaxial_states)
             uniaxial_states.append(UniMaterialState(mat_def))
             uniaxial_state_defs.append(def_index)
-            if state_index != (
-                section_uniaxial_offsets[s] + sec_def.elastic_count + i
-            ):
+            if state_index != (section_uniaxial_offsets[s] + sec_def.elastic_count + i):
                 abort("FiberSection3d nonlinear state layout must be contiguous")
             if not uni_mat_is_elastic(mat_def):
                 used_nonelastic = True
@@ -912,7 +988,9 @@ fn fiber_section3d_commit_all(
     mut uniaxial_states: List[UniMaterialState],
 ):
     for i in range(len(section_uniaxial_offsets)):
-        fiber_section3d_commit(i, section_uniaxial_offsets, section_uniaxial_counts, uniaxial_states)
+        fiber_section3d_commit(
+            i, section_uniaxial_offsets, section_uniaxial_counts, uniaxial_states
+        )
 
 
 fn fiber_section3d_revert_trial_all(

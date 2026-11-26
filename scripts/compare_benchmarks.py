@@ -47,13 +47,41 @@ def _metadata_mismatch(baseline: dict, candidate: dict) -> List[str]:
     baseline_meta = baseline.get("metadata", {})
     candidate_meta = candidate.get("metadata", {})
     checks = [
-        ("platform.system", baseline_meta.get("platform", {}).get("system"), candidate_meta.get("platform", {}).get("system")),
-        ("platform.release", baseline_meta.get("platform", {}).get("release"), candidate_meta.get("platform", {}).get("release")),
-        ("platform.machine", baseline_meta.get("platform", {}).get("machine"), candidate_meta.get("platform", {}).get("machine")),
-        ("platform.cpu_model", baseline_meta.get("platform", {}).get("cpu_model"), candidate_meta.get("platform", {}).get("cpu_model")),
-        ("build.mojo_version", baseline_meta.get("build", {}).get("mojo_version"), candidate_meta.get("build", {}).get("mojo_version")),
-        ("runner.engine", baseline_meta.get("runner", {}).get("engine"), candidate_meta.get("runner", {}).get("engine")),
-        ("runner.batch_mode", baseline_meta.get("runner", {}).get("batch_mode"), candidate_meta.get("runner", {}).get("batch_mode")),
+        (
+            "platform.system",
+            baseline_meta.get("platform", {}).get("system"),
+            candidate_meta.get("platform", {}).get("system"),
+        ),
+        (
+            "platform.release",
+            baseline_meta.get("platform", {}).get("release"),
+            candidate_meta.get("platform", {}).get("release"),
+        ),
+        (
+            "platform.machine",
+            baseline_meta.get("platform", {}).get("machine"),
+            candidate_meta.get("platform", {}).get("machine"),
+        ),
+        (
+            "platform.cpu_model",
+            baseline_meta.get("platform", {}).get("cpu_model"),
+            candidate_meta.get("platform", {}).get("cpu_model"),
+        ),
+        (
+            "build.mojo_version",
+            baseline_meta.get("build", {}).get("mojo_version"),
+            candidate_meta.get("build", {}).get("mojo_version"),
+        ),
+        (
+            "runner.engine",
+            baseline_meta.get("runner", {}).get("engine"),
+            candidate_meta.get("runner", {}).get("engine"),
+        ),
+        (
+            "runner.batch_mode",
+            baseline_meta.get("runner", {}).get("batch_mode"),
+            candidate_meta.get("runner", {}).get("batch_mode"),
+        ),
     ]
     for key, lhs, rhs in checks:
         if lhs != rhs:
@@ -115,13 +143,9 @@ def compare_summaries(
     missing_baseline = sorted(set(candidate_rows.keys()) - set(baseline_rows.keys()))
     missing_candidate = sorted(set(baseline_rows.keys()) - set(candidate_rows.keys()))
     if missing_baseline:
-        warnings.append(
-            "candidate-only cases ignored: " + ", ".join(missing_baseline)
-        )
+        warnings.append("candidate-only cases ignored: " + ", ".join(missing_baseline))
     if missing_candidate:
-        warnings.append(
-            "baseline-only cases ignored: " + ", ".join(missing_candidate)
-        )
+        warnings.append("baseline-only cases ignored: " + ", ".join(missing_candidate))
     if not shared_names:
         warnings.append("no shared benchmark cases with analysis_us were found")
     return rows, warnings
@@ -222,7 +246,10 @@ def main() -> int:
         print(f"warning: metadata mismatch {warning}")
     for row in rows:
         delta_us = row.candidate_us - row.baseline_us
-        if row.delta_pct > args.max_regression_pct and delta_us <= args.min_regression_us:
+        if (
+            row.delta_pct > args.max_regression_pct
+            and delta_us <= args.min_regression_us
+        ):
             print(
                 "warning: ignoring small regression for {name}: {delta_us:.0f} us <= {floor:.0f} us".format(
                     name=row.name,

@@ -6,9 +6,7 @@ from strut_io import CaseSourceInfo, load_json_cache, write_json_cache
 
 
 def test_json_cache_round_trips_document_and_source_info():
-    var doc = parse_json_native(
-        "{\"model\":{\"ndm\":2,\"ndf\":3},\"items\":[true,1.25,\"beam\"]}"
-    )
+    var doc = parse_json_native('{"model":{"ndm":2,"ndf":3},"items":[true,1.25,"beam"]}')
     var cache_path = "/tmp/strut_test_case_cache.bin"
     var source_info = CaseSourceInfo("/tmp/example_case.json", "/tmp")
 

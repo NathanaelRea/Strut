@@ -18,4 +18,3 @@ fn nonlinear_test_metric(
         abort(label + " test_type MaxDispIncr is not supported in OpenSees-parity mode")
     abort(label + " has unsupported test_type")
     return 0.0
-

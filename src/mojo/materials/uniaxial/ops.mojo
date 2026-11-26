@@ -7,6 +7,7 @@ from materials.uniaxial.core import _abs, _sign, UniMaterialDef, UniMaterialStat
 from materials.uniaxial.steel02 import _steel02_set_trial
 from tag_types import UniMaterialTypeTag
 
+
 fn uniaxial_set_trial_strain_elastic(
     mat_def: UniMaterialDef, mut state: UniMaterialState, eps: Float64
 ):
@@ -82,11 +83,7 @@ fn uniaxial_set_trial_strain_concrete01(
         state.eps_p_t = state.eps_p_c
         state.alpha_t = state.alpha_c
         return
-    var temp_stress = (
-        state.sig_c
-        + state.unload_slope_t * eps
-        - state.unload_slope_t * state.eps_c
-    )
+    var temp_stress = state.sig_c + state.unload_slope_t * eps - state.unload_slope_t * state.eps_c
     if eps <= state.eps_c:
         var reload = _concrete01_reload(
             fpc,
@@ -130,9 +127,7 @@ fn uniaxial_set_trial_strain_concrete02(
     _concrete02_set_trial(mat_def, state, eps)
 
 
-fn uniaxial_set_trial_strain(
-    mat_def: UniMaterialDef, mut state: UniMaterialState, eps: Float64
-):
+fn uniaxial_set_trial_strain(mat_def: UniMaterialDef, mut state: UniMaterialState, eps: Float64):
     if mat_def.mat_type == UniMaterialTypeTag.Elastic:
         uniaxial_set_trial_strain_elastic(mat_def, state, eps)
         return

@@ -244,9 +244,7 @@ fn assemble_global_stiffness_banded_frame2d_typed(
                         u_elem,
                     )
                 else:
-                    abort(
-                        "forceBeamColumn2d/dispBeamColumn2d supports geomTransf Linear or PDelta"
-                    )
+                    abort("forceBeamColumn2d/dispBeamColumn2d supports geomTransf Linear or PDelta")
             else:
                 var sec_index = fiber_section_index_by_id[elem.section]
                 ref sec_def = fiber_section_defs[sec_index]
@@ -590,18 +588,14 @@ fn assemble_global_stiffness_banded_frame2d_soa(
                     sec.E, sec.A, sec.I, x1, y1, x2, y2, u_elem
                 )
             else:
-                abort(
-                    "forceBeamColumn2d/dispBeamColumn2d supports geomTransf Linear or PDelta"
-                )
+                abort("forceBeamColumn2d/dispBeamColumn2d supports geomTransf Linear or PDelta")
         else:
             var sec_index = fiber_section_index_by_id[elem_section_ids[e]]
             ref sec_def = fiber_section_defs[sec_index]
             var elem_offset = elem_uniaxial_offsets[e]
             var elem_state_count = elem_uniaxial_counts[e]
             var geom_name = _geom_transf_name_from_tag(geom_tag)
-            var integration_name = _beam_integration_name_from_tag(
-                elem_integration_tags[e]
-            )
+            var integration_name = _beam_integration_name_from_tag(elem_integration_tags[e])
             if elem_type == ElementTypeTag.ForceBeamColumn2d:
                 force_beam_column2d_global_tangent_and_internal(
                     e,

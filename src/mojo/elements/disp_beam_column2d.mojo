@@ -31,9 +31,7 @@ fn _beam2d_axial_shape(idx: Int, inv_L: Float64) -> Float64:
 
 
 @always_inline
-fn _beam2d_curvature_shape(
-    idx: Int, inv_L: Float64, inv_L_sq: Float64, xi: Float64
-) -> Float64:
+fn _beam2d_curvature_shape(idx: Int, inv_L: Float64, inv_L_sq: Float64, xi: Float64) -> Float64:
     if idx == 1:
         return (-6.0 + 12.0 * xi) * inv_L_sq
     if idx == 2:

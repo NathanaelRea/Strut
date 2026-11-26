@@ -279,7 +279,9 @@ def copy_referenced_shared_files(
     for tcl_path in sorted(example_dir.glob("*.tcl")):
         text = tcl_path.read_text(encoding="utf-8", errors="replace")
         for reference in _iter_shared_file_reference_texts(text):
-            source, target = _resolve_shared_example_source(reference, example_dir, shared_root)
+            source, target = _resolve_shared_example_source(
+                reference, example_dir, shared_root
+            )
             if source is None:
                 continue
             target_resolved = target.resolve()
@@ -324,9 +326,7 @@ def rewrite_known_title(link: str) -> str:
             return parsed._replace(query=urlencode(params, doseq=True)).geturl()
 
     if parsed.path.startswith("/wiki/index.php/"):
-        return parsed._replace(
-            path=f"/wiki/index.php/{rewritten_title}"
-        ).geturl()
+        return parsed._replace(path=f"/wiki/index.php/{rewritten_title}").geturl()
     if parsed.path.startswith("/wiki/"):
         return parsed._replace(path=f"/wiki/{rewritten_title}").geturl()
     return link
@@ -434,7 +434,11 @@ def download_example(
     extracted_count = 0
 
     if zip_links:
-        zip_target_dir = spec.output_dir if spec.extract_zips_to_root else spec.output_dir / slugify(title)
+        zip_target_dir = (
+            spec.output_dir
+            if spec.extract_zips_to_root
+            else spec.output_dir / slugify(title)
+        )
         zip_target_dir.mkdir(parents=True, exist_ok=True)
         for zip_index, link in enumerate(zip_links, start=1):
             if logger is not None:
@@ -515,7 +519,9 @@ def write_provenance(root: Path) -> Path:
             "size": path.stat().st_size,
         }
     out = root / PROVENANCE_FILENAME
-    out.write_text(json.dumps(entries, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    out.write_text(
+        json.dumps(entries, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
     return out
 
 

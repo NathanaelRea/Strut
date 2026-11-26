@@ -6,7 +6,7 @@ from json_native import JsonValueTag, load_json_native, parse_json_native
 
 def test_parse_basic_object_and_array():
     var doc = parse_json_native(
-        "{\"flag\":true,\"count\":12,\"name\":\"beam\",\"items\":[null,false,1.25e3]}"
+        '{"flag":true,"count":12,"name":"beam","items":[null,false,1.25e3]}'
     )
 
     var root = doc.root_index
@@ -37,14 +37,14 @@ def test_parse_basic_object_and_array():
 
 def test_parse_string_escapes_and_unicode():
     var doc = parse_json_native(
-        "{\"text\":\"line\\nquote: \\\"x\\\" slash: \\\\ greek: \\u03B1 fire: \\uD83D\\uDD25\"}"
+        '{"text":"line\\nquote: \\"x\\" slash: \\\\ greek: \\u03B1 fire: \\uD83D\\uDD25"}'
     )
 
     var root = doc.root_index
     var text_index = doc.object_find(root, "text")
     assert_equal(
         doc.node_text(text_index),
-        "line\nquote: \"x\" slash: \\ greek: α fire: 🔥",
+        'line\nquote: "x" slash: \\ greek: α fire: 🔥',
     )
 
 
@@ -70,19 +70,19 @@ def test_parse_existing_case_file():
 
 def test_parse_error_reports_line_column_and_context():
     with assert_raises(contains="JSON parse error at line 2, column 18"):
-        _ = parse_json_native("{\n  \"items\": [1, 2,],\n  \"ok\": true\n}")
+        _ = parse_json_native('{\n  "items": [1, 2,],\n  "ok": true\n}')
 
     with assert_raises(contains="trailing comma in array"):
-        _ = parse_json_native("{\"items\":[1,2,]}")
+        _ = parse_json_native('{"items":[1,2,]}')
 
     with assert_raises(contains="numbers cannot have leading zeroes"):
-        _ = parse_json_native("{\"id\":01}")
+        _ = parse_json_native('{"id":01}')
 
     with assert_raises(contains="invalid escape sequence"):
-        _ = parse_json_native("{\"bad\":\"\\q\"}")
+        _ = parse_json_native('{"bad":"\\q"}')
 
     with assert_raises(contains="unexpected trailing content"):
-        _ = parse_json_native("{\"ok\":true} []")
+        _ = parse_json_native('{"ok":true} []')
 
 
 def main():

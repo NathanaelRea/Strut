@@ -16,9 +16,7 @@ from solver.run_case.linear_solver_backend import (
 from solver.run_case.input_types import ElementInput, NodeInput
 
 
-fn _zero_length_row(
-    dir: Int, ndm: Int, ndf: Int, trans: List[List[Float64]]
-) -> List[Float64]:
+fn _zero_length_row(dir: Int, ndm: Int, ndf: Int, trans: List[List[Float64]]) -> List[Float64]:
     var row: List[Float64] = []
     row.resize(2 * ndf, 0.0)
     if ndm == 2 and ndf == 2:
@@ -70,9 +68,7 @@ fn _zero_length_row(
     return row^
 
 
-fn _two_node_link_tgl(
-    ndm: Int, ndf: Int, trans: List[List[Float64]]
-) -> List[List[Float64]]:
+fn _two_node_link_tgl(ndm: Int, ndf: Int, trans: List[List[Float64]]) -> List[List[Float64]]:
     var num_dof = 2 * ndf
     var tgl: List[List[Float64]] = []
     for _ in range(num_dof):

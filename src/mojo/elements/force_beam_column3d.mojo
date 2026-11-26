@@ -349,9 +349,7 @@ fn _beam3d_transform_u_global_to_local_static(
         var g2 = u_global[offset + 2]
         for i in range(3):
             u_local[offset + i] = (
-                R[_mat3_index(i, 0)] * g0
-                + R[_mat3_index(i, 1)] * g1
-                + R[_mat3_index(i, 2)] * g2
+                R[_mat3_index(i, 0)] * g0 + R[_mat3_index(i, 1)] * g1 + R[_mat3_index(i, 2)] * g2
             )
 
 
@@ -379,9 +377,7 @@ fn _beam3d_transform_f_local_to_global_static(
         var l2 = f_local[offset + 2]
         for i in range(3):
             f_global[offset + i] = (
-                R[_mat3_index(0, i)] * l0
-                + R[_mat3_index(1, i)] * l1
-                + R[_mat3_index(2, i)] * l2
+                R[_mat3_index(0, i)] * l0 + R[_mat3_index(1, i)] * l1 + R[_mat3_index(2, i)] * l2
             )
 
 
@@ -612,9 +608,7 @@ fn _element_rotation_into_static(
             R,
         )
         return
-    _beam3d_rotation_into_static(
-        x1, y1, z1, x2, y2, z2, has_vecxz, vecxz_x, vecxz_y, vecxz_z, R
-    )
+    _beam3d_rotation_into_static(x1, y1, z1, x2, y2, z2, has_vecxz, vecxz_x, vecxz_y, vecxz_z, R)
 
 
 fn _element_rotation(
@@ -686,18 +680,7 @@ fn _invert_3x3_values(
     g: Float64,
     h: Float64,
     i: Float64,
-) -> (
-    Bool,
-    Float64,
-    Float64,
-    Float64,
-    Float64,
-    Float64,
-    Float64,
-    Float64,
-    Float64,
-    Float64,
-):
+) -> (Bool, Float64, Float64, Float64, Float64, Float64, Float64, Float64, Float64, Float64,):
     var co00 = e * i - f * h
     var co01 = -(d * i - f * g)
     var co02 = d * h - e * g
@@ -867,9 +850,7 @@ fn _beam3d_transform_stiffness_local_to_global_flat(
                 )
 
 
-fn _ensure_force_beam_column3d_cache_slot(
-    mut scratch: ForceBeamColumn3dScratch, elem_index: Int
-):
+fn _ensure_force_beam_column3d_cache_slot(mut scratch: ForceBeamColumn3dScratch, elem_index: Int):
     if elem_index < 0:
         return
     var needed = elem_index + 1
@@ -1091,7 +1072,7 @@ fn _fiber_section3d_solve_for_force(
 
 
 fn _fiber_section3d_response_flexibility(
-    resp: FiberSection3dResponse
+    resp: FiberSection3dResponse,
 ) -> (Bool, Float64, Float64, Float64, Float64, Float64, Float64):
     var inv_sec = _invert_3x3_values(
         resp.k11,
@@ -1402,12 +1383,8 @@ fn _force_beam_column3d_try_increment(
     for elem_iter in range(num_elem_iters):
         _zero_static_tuple(scratch.f_basic_flat)
         _zero_static_tuple(scratch.v_from)
-        var use_initial_flex = (
-            use_initial_section_flexibility == 1
-            or (
-                use_initial_section_flexibility == 2
-                and elem_iter == 0
-            )
+        var use_initial_flex = use_initial_section_flexibility == 1 or (
+            use_initial_section_flexibility == 2 and elem_iter == 0
         )
         for ip in range(num_int_pts):
             var xi = scratch.integration_cache.xis[ip]
@@ -1518,15 +1495,13 @@ fn _force_beam_column3d_try_increment(
                     var dEps = sec_flex[1] * Bb_n + sec_flex[2] * Bb_my + sec_flex[3] * Bb_mz
                     var dKy = sec_flex[2] * Bb_n + sec_flex[4] * Bb_my + sec_flex[5] * Bb_mz
                     var dKz = sec_flex[3] * Bb_n + sec_flex[5] * Bb_my + sec_flex[6] * Bb_mz
-                    scratch.f_basic_flat[_mat5_index(a, b)] += (
-                        wL * (Ba_n * dEps + Ba_my * dKy + Ba_mz * dKz)
+                    scratch.f_basic_flat[_mat5_index(a, b)] += wL * (
+                        Ba_n * dEps + Ba_my * dKy + Ba_mz * dKz
                     )
         _zero_static_tuple(scratch.f_basic_copy_flat)
         for i in range(25):
             scratch.f_basic_copy_flat[i] = scratch.f_basic_flat[i]
-        if not _invert_5x5_flat_into(
-            scratch.f_basic_copy_flat, scratch.k_basic_flat
-        ):
+        if not _invert_5x5_flat_into(scratch.f_basic_copy_flat, scratch.k_basic_flat):
             return (False, 0.0, 0.0, 0.0, 0.0, 0.0)
 
         var residual_0 = target_v0 - scratch.v_from[0]
@@ -2035,9 +2010,14 @@ fn force_beam_column3d_global_tangent_and_internal(
     var v_basic_3: Float64
     var v_basic_4: Float64
     var torsion_basic: Float64
-    (v_basic_0, v_basic_1, v_basic_2, v_basic_3, v_basic_4, torsion_basic) = (
-        _force_beam_column3d_basic_state(scratch.u_local, L)
-    )
+    (
+        v_basic_0,
+        v_basic_1,
+        v_basic_2,
+        v_basic_3,
+        v_basic_4,
+        torsion_basic,
+    ) = _force_beam_column3d_basic_state(scratch.u_local, L)
     var q_basic_0 = (E * A / L) * v_basic_0 + fixed_end[0]
     var q_basic_1 = (E * Iz / L) * (4.0 * v_basic_1 + 2.0 * v_basic_2) + fixed_end[1]
     var q_basic_2 = (E * Iz / L) * (2.0 * v_basic_1 + 4.0 * v_basic_2) + fixed_end[2]
@@ -2589,9 +2569,8 @@ fn force_beam_column3d_fiber_global_tangent_and_internal(
     var predictor_state_count = 5 + 3 * num_int_pts
     if force_basic_q_count < predictor_state_count:
         abort("forceBeamColumn3d basic force state count mismatch")
-    if (
-        force_basic_q_offset < 0
-        or force_basic_q_offset + predictor_state_count > len(force_basic_q_state)
+    if force_basic_q_offset < 0 or force_basic_q_offset + predictor_state_count > len(
+        force_basic_q_state
     ):
         abort("forceBeamColumn3d basic force state out of range")
 
@@ -2684,9 +2663,14 @@ fn force_beam_column3d_fiber_global_tangent_and_internal(
     var v_basic_3: Float64
     var v_basic_4: Float64
     var torsion_basic: Float64
-    (v_basic_0, v_basic_1, v_basic_2, v_basic_3, v_basic_4, torsion_basic) = (
-        _force_beam_column3d_basic_state(scratch.u_local, L)
-    )
+    (
+        v_basic_0,
+        v_basic_1,
+        v_basic_2,
+        v_basic_3,
+        v_basic_4,
+        torsion_basic,
+    ) = _force_beam_column3d_basic_state(scratch.u_local, L)
 
     var eps0_offset = force_basic_q_offset + 5
     var ky_offset = eps0_offset + num_int_pts

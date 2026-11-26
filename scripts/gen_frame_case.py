@@ -3,6 +3,7 @@ import argparse
 import json
 from pathlib import Path
 
+
 def build_frame_case(
     bays: int,
     stories: int,
@@ -148,7 +149,9 @@ def build_frame_case(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Generate a 2D elastic frame JSON case")
+    parser = argparse.ArgumentParser(
+        description="Generate a 2D elastic frame JSON case"
+    )
     parser.add_argument("--bays", type=int, required=True)
     parser.add_argument("--stories", type=int, required=True)
     parser.add_argument("--bay-width", type=float, default=4.0)

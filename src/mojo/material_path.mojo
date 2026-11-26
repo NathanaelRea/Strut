@@ -14,9 +14,7 @@ from strut_io import load_json_native
 from tag_types import UniMaterialTypeTag
 
 
-fn arg_value(
-    args: VariadicList[StringSlice[StaticConstantOrigin]], name: String
-) -> String:
+fn arg_value(args: VariadicList[StringSlice[StaticConstantOrigin]], name: String) -> String:
     for i in range(len(args) - 1):
         if String(args[i]) == name:
             return String(args[i + 1])
@@ -31,9 +29,7 @@ fn _json_key(doc: JsonDocument, object_index: Int, key: StringSlice) raises -> I
     return doc.object_find(object_index, key)
 
 
-fn _json_number_value(
-    doc: JsonDocument, node_index: Int, field: String
-) -> Float64:
+fn _json_number_value(doc: JsonDocument, node_index: Int, field: String) -> Float64:
     if doc.node_tag(node_index) != JsonValueTag.Number:
         abort(field + " must be a number")
     return doc.node_number(node_index)

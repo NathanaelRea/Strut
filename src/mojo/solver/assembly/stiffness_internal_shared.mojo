@@ -31,9 +31,7 @@ fn _profile_scope_open(
     if is_defined["STRUT_PROFILE"]():
         if do_profile:
             var start_us = Int(perf_counter_ns())
-            _append_event(
-                events, events_need_comma, "O", frame, (start_us - t0) // 1000
-            )
+            _append_event(events, events_need_comma, "O", frame, (start_us - t0) // 1000)
 
 
 @always_inline
@@ -48,9 +46,7 @@ fn _profile_scope_close(
     if is_defined["STRUT_PROFILE"]():
         if do_profile:
             var end_us = Int(perf_counter_ns())
-            _append_event(
-                events, events_need_comma, "C", frame, (end_us - t0) // 1000
-            )
+            _append_event(events, events_need_comma, "C", frame, (end_us - t0) // 1000)
 
 
 @always_inline
@@ -59,8 +55,7 @@ fn _assembly_filter_accepts_element(elem: ElementInput, filter_mode: Int) -> Boo
         return True
 
     var is_link_like = (
-        elem.type_tag == ElementTypeTag.ZeroLength
-        or elem.type_tag == ElementTypeTag.TwoNodeLink
+        elem.type_tag == ElementTypeTag.ZeroLength or elem.type_tag == ElementTypeTag.TwoNodeLink
     )
     if filter_mode == 1:
         return is_link_like
@@ -96,12 +91,9 @@ fn _beam_integration_name_from_tag(integration_tag: Int) -> String:
 
 
 @always_inline
-fn _scatter_add_row[count: Int](
-    mut K: List[List[Float64]],
-    row_index: Int,
-    k_row: List[Float64],
-    dof_map: List[Int],
-):
+fn _scatter_add_row[
+    count: Int
+](mut K: List[List[Float64]], row_index: Int, k_row: List[Float64], dof_map: List[Int],):
     @parameter
     for b in range(count):
         var bidx = dof_map[b]
@@ -109,7 +101,9 @@ fn _scatter_add_row[count: Int](
 
 
 @always_inline
-fn _scatter_add_and_dot_row_simd_impl[width: Int](
+fn _scatter_add_and_dot_row_simd_impl[
+    width: Int
+](
     mut K: List[List[Float64]],
     row_index: Int,
     k_row: List[Float64],
@@ -122,6 +116,7 @@ fn _scatter_add_and_dot_row_simd_impl[width: Int](
     while b + width <= count:
         var k_vec = SIMD[DType.float64, width](0.0)
         var u_vec = SIMD[DType.float64, width](0.0)
+
         @parameter
         for lane in range(width):
             var bidx = dof_map[b + lane]
@@ -155,14 +150,15 @@ fn _scatter_add_and_dot_row_simd(
 
 
 @always_inline
-fn _dot_row_simd_impl[width: Int](
-    k_row: List[Float64], dof_map: List[Int], u: List[Float64], count: Int
-) -> Float64:
+fn _dot_row_simd_impl[
+    width: Int
+](k_row: List[Float64], dof_map: List[Int], u: List[Float64], count: Int) -> Float64:
     var sum = 0.0
     var b = 0
     while b + width <= count:
         var k_vec = SIMD[DType.float64, width](0.0)
         var u_vec = SIMD[DType.float64, width](0.0)
+
         @parameter
         for lane in range(width):
             var bidx = dof_map[b + lane]
@@ -178,9 +174,7 @@ fn _dot_row_simd_impl[width: Int](
 
 @always_inline
 fn _dot_row_simd(k_row: List[Float64], dof_map: List[Int], u: List[Float64], count: Int) -> Float64:
-    return _dot_row_simd_impl[simd_width_of[DType.float64]()](
-        k_row, dof_map, u, count
-    )
+    return _dot_row_simd_impl[simd_width_of[DType.float64]()](k_row, dof_map, u, count)
 
 
 fn _elem_node(elem: ElementInput, idx: Int) -> Int:

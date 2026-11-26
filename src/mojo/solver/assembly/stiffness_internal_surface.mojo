@@ -60,8 +60,18 @@ fn _assemble_surface_native_soa_indices(
             t_elem_start = Int(perf_counter_ns())
         var node_offset = elem_node_offsets[e]
         var mat = materials_by_id[elem_primary_material_ids[e]]
-        var x = [node_x[elem_node_pool[node_offset]], node_x[elem_node_pool[node_offset + 1]], node_x[elem_node_pool[node_offset + 2]], node_x[elem_node_pool[node_offset + 3]]]
-        var y = [node_y[elem_node_pool[node_offset]], node_y[elem_node_pool[node_offset + 1]], node_y[elem_node_pool[node_offset + 2]], node_y[elem_node_pool[node_offset + 3]]]
+        var x = [
+            node_x[elem_node_pool[node_offset]],
+            node_x[elem_node_pool[node_offset + 1]],
+            node_x[elem_node_pool[node_offset + 2]],
+            node_x[elem_node_pool[node_offset + 3]],
+        ]
+        var y = [
+            node_y[elem_node_pool[node_offset]],
+            node_y[elem_node_pool[node_offset + 1]],
+            node_y[elem_node_pool[node_offset + 2]],
+            node_y[elem_node_pool[node_offset + 3]],
+        ]
         var k_global = quad4_plane_stress_stiffness(mat.E, mat.nu, elem_thickness[e], x, y)
         var dof_offset = elem_dof_offsets[e]
         var free_offset = elem_free_offsets[e]
@@ -92,9 +102,24 @@ fn _assemble_surface_native_soa_indices(
             t_elem_start = Int(perf_counter_ns())
         var node_offset = elem_node_offsets[e]
         var sec = sections_by_id[elem_section_ids[e]]
-        var x = [node_x[elem_node_pool[node_offset]], node_x[elem_node_pool[node_offset + 1]], node_x[elem_node_pool[node_offset + 2]], node_x[elem_node_pool[node_offset + 3]]]
-        var y = [node_y[elem_node_pool[node_offset]], node_y[elem_node_pool[node_offset + 1]], node_y[elem_node_pool[node_offset + 2]], node_y[elem_node_pool[node_offset + 3]]]
-        var z = [node_z[elem_node_pool[node_offset]], node_z[elem_node_pool[node_offset + 1]], node_z[elem_node_pool[node_offset + 2]], node_z[elem_node_pool[node_offset + 3]]]
+        var x = [
+            node_x[elem_node_pool[node_offset]],
+            node_x[elem_node_pool[node_offset + 1]],
+            node_x[elem_node_pool[node_offset + 2]],
+            node_x[elem_node_pool[node_offset + 3]],
+        ]
+        var y = [
+            node_y[elem_node_pool[node_offset]],
+            node_y[elem_node_pool[node_offset + 1]],
+            node_y[elem_node_pool[node_offset + 2]],
+            node_y[elem_node_pool[node_offset + 3]],
+        ]
+        var z = [
+            node_z[elem_node_pool[node_offset]],
+            node_z[elem_node_pool[node_offset + 1]],
+            node_z[elem_node_pool[node_offset + 2]],
+            node_z[elem_node_pool[node_offset + 3]],
+        ]
         var dof_offset = elem_dof_offsets[e]
         var free_offset = elem_free_offsets[e]
         var dof_map = [
@@ -211,8 +236,18 @@ fn _assemble_surface_soa_indices(
             t_elem_start = Int(perf_counter_ns())
         var node_offset = elem_node_offsets[e]
         var mat = materials_by_id[elem_primary_material_ids[e]]
-        var x = [node_x[elem_node_pool[node_offset]], node_x[elem_node_pool[node_offset + 1]], node_x[elem_node_pool[node_offset + 2]], node_x[elem_node_pool[node_offset + 3]]]
-        var y = [node_y[elem_node_pool[node_offset]], node_y[elem_node_pool[node_offset + 1]], node_y[elem_node_pool[node_offset + 2]], node_y[elem_node_pool[node_offset + 3]]]
+        var x = [
+            node_x[elem_node_pool[node_offset]],
+            node_x[elem_node_pool[node_offset + 1]],
+            node_x[elem_node_pool[node_offset + 2]],
+            node_x[elem_node_pool[node_offset + 3]],
+        ]
+        var y = [
+            node_y[elem_node_pool[node_offset]],
+            node_y[elem_node_pool[node_offset + 1]],
+            node_y[elem_node_pool[node_offset + 2]],
+            node_y[elem_node_pool[node_offset + 3]],
+        ]
         var k_global = quad4_plane_stress_stiffness(mat.E, mat.nu, elem_thickness[e], x, y)
         var dof_offset = elem_dof_offsets[e]
         var dof_map = [
@@ -242,9 +277,24 @@ fn _assemble_surface_soa_indices(
             t_elem_start = Int(perf_counter_ns())
         var node_offset = elem_node_offsets[e]
         var sec = sections_by_id[elem_section_ids[e]]
-        var x = [node_x[elem_node_pool[node_offset]], node_x[elem_node_pool[node_offset + 1]], node_x[elem_node_pool[node_offset + 2]], node_x[elem_node_pool[node_offset + 3]]]
-        var y = [node_y[elem_node_pool[node_offset]], node_y[elem_node_pool[node_offset + 1]], node_y[elem_node_pool[node_offset + 2]], node_y[elem_node_pool[node_offset + 3]]]
-        var z = [node_z[elem_node_pool[node_offset]], node_z[elem_node_pool[node_offset + 1]], node_z[elem_node_pool[node_offset + 2]], node_z[elem_node_pool[node_offset + 3]]]
+        var x = [
+            node_x[elem_node_pool[node_offset]],
+            node_x[elem_node_pool[node_offset + 1]],
+            node_x[elem_node_pool[node_offset + 2]],
+            node_x[elem_node_pool[node_offset + 3]],
+        ]
+        var y = [
+            node_y[elem_node_pool[node_offset]],
+            node_y[elem_node_pool[node_offset + 1]],
+            node_y[elem_node_pool[node_offset + 2]],
+            node_y[elem_node_pool[node_offset + 3]],
+        ]
+        var z = [
+            node_z[elem_node_pool[node_offset]],
+            node_z[elem_node_pool[node_offset + 1]],
+            node_z[elem_node_pool[node_offset + 2]],
+            node_z[elem_node_pool[node_offset + 3]],
+        ]
         var dof_offset = elem_dof_offsets[e]
         var dof_map = [
             elem_dof_pool[dof_offset],

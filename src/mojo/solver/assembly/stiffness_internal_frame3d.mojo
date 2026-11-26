@@ -219,9 +219,7 @@ fn _assemble_frame3d_native_soa_indices(
                 var sec_index = fiber_section3d_index_by_id[elem_section_ids[e]]
                 if sec_index < 0 or sec_index >= len(fiber_section3d_defs):
                     abort("fiber section not found")
-                var integration_name = _beam_integration_name_from_tag(
-                    elem_integration_tags[e]
-                )
+                var integration_name = _beam_integration_name_from_tag(elem_integration_tags[e])
                 _profile_scope_open(
                     do_profile,
                     events,
@@ -510,9 +508,7 @@ fn _assemble_frame3d_soa_indices(
                 var sec_index = fiber_section3d_index_by_id[elem_section_ids[e]]
                 if sec_index < 0 or sec_index >= len(fiber_section3d_defs):
                     abort("fiber section not found")
-                var integration_name = _beam_integration_name_from_tag(
-                    elem_integration_tags[e]
-                )
+                var integration_name = _beam_integration_name_from_tag(elem_integration_tags[e])
                 _profile_scope_open(
                     do_profile,
                     events,

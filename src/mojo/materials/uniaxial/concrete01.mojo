@@ -1,5 +1,6 @@
 from materials.uniaxial.core import EndStrainSlope, StressTangent
 
+
 fn _concrete01_envelope(
     fpc: Float64, epsc0: Float64, fpcu: Float64, epscu: Float64, strain: Float64
 ) -> StressTangent:
@@ -68,5 +69,3 @@ fn _concrete01_reload(
         return StressTangent(stress, tangent)
     else:
         return StressTangent(0.0, 0.0)
-
-

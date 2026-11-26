@@ -64,6 +64,7 @@ ELEMENT_RESPONSE_RECORDER_TYPES = (
     "element_deformation",
 )
 
+
 @dataclass(frozen=True)
 class CaseSpec:
     name: str
@@ -430,9 +431,7 @@ def _select_failure_line(text: str) -> str:
     return lines[-1]
 
 
-def _format_subprocess_failure(
-    label: str, exc: subprocess.CalledProcessError
-) -> str:
+def _format_subprocess_failure(label: str, exc: subprocess.CalledProcessError) -> str:
     parts = [f"{label} (exit {exc.returncode})"]
     cmd = exc.cmd
     if isinstance(cmd, list):
@@ -611,7 +610,9 @@ def _reference_output_path(reference_dir: Path, raw_path: str) -> Optional[Path]
             continue
         if not current.exists() or not current.is_dir():
             return None
-        matches = [child for child in current.iterdir() if child.name.lower() == part.lower()]
+        matches = [
+            child for child in current.iterdir() if child.name.lower() == part.lower()
+        ]
         if len(matches) != 1:
             return None
         current = matches[0]
@@ -642,7 +643,11 @@ def _normalized_recorder_outputs(recorder: dict) -> List[str]:
                 f"direct Tcl benchmark normalization requires single-element recorder: {recorder}"
             )
         return [f"{output}_ele{int(elements[0])}.out"]
-    if rec_type in ("element_local_force", "element_basic_force", "element_deformation"):
+    if rec_type in (
+        "element_local_force",
+        "element_basic_force",
+        "element_deformation",
+    ):
         elements = recorder.get("elements", [])
         if len(elements) != 1:
             raise SystemExit(
@@ -673,7 +678,9 @@ def _normalized_recorder_outputs(recorder: dict) -> List[str]:
         return [f"{output}_ele{int(elements[0])}_sec{int(section)}.out"]
     if rec_type == "drift":
         return [f"{output}_i{int(recorder['i_node'])}_j{int(recorder['j_node'])}.out"]
-    raise SystemExit(f"unsupported direct Tcl benchmark recorder normalization: {rec_type}")
+    raise SystemExit(
+        f"unsupported direct Tcl benchmark recorder normalization: {rec_type}"
+    )
 
 
 def _normalize_reference_outputs(
@@ -708,7 +715,11 @@ def _normalize_reference_outputs(
             if not line.strip():
                 continue
             parts = line.replace(",", " ").split()
-            if group_layout and group_layout.get("type", "").startswith("envelope_") and strip_time:
+            if (
+                group_layout
+                and group_layout.get("type", "").startswith("envelope_")
+                and strip_time
+            ):
                 normalized_rows.append(parts)
                 continue
             if strip_time and parts:
@@ -744,7 +755,9 @@ def _normalize_reference_outputs(
                             )
                         offset = 0
                         for idx, width in enumerate(widths):
-                            payloads[idx].append(" ".join(parts[offset : offset + width]))
+                            payloads[idx].append(
+                                " ".join(parts[offset : offset + width])
+                            )
                             offset += width
                         continue
                     if strip_time and len(parts) == 2 * expected:
@@ -895,7 +908,9 @@ def _validate_generated_tcl_matches_original(
         return
 
     if needs_original:
-        log(f"{case_root.name}: canonical OpenSees reference missing; running original Tcl.")
+        log(
+            f"{case_root.name}: canonical OpenSees reference missing; running original Tcl."
+        )
         ensure_clean_dir(original_reference_dir)
         run(
             [
@@ -962,18 +977,18 @@ def _write_direct_tcl_wrapper(
 ) -> Path:
     lines = [
         "set __strut_out_dir [pwd]",
-        'set __strut_wrapper_dir [file dirname [info script]]',
+        "set __strut_wrapper_dir [file dirname [info script]]",
         "set __strut_analysis_us 0",
         "cd $__strut_wrapper_dir",
-        'if {[llength [info commands exit]] > 0 && [llength [info commands __strut_orig_exit]] == 0} {',
+        "if {[llength [info commands exit]] > 0 && [llength [info commands __strut_orig_exit]] == 0} {",
         "  rename exit __strut_orig_exit",
         "  proc exit args { return {} }",
         "}",
-        'if {[llength [info commands quit]] > 0 && [llength [info commands __strut_orig_quit]] == 0} {',
+        "if {[llength [info commands quit]] > 0 && [llength [info commands __strut_orig_quit]] == 0} {",
         "  rename quit __strut_orig_quit",
         "  proc quit args { return {} }",
         "}",
-        'if {[llength [info commands analyze]] > 0 && [llength [info commands __strut_orig_analyze]] == 0} {',
+        "if {[llength [info commands analyze]] > 0 && [llength [info commands __strut_orig_analyze]] == 0} {",
         "  rename analyze __strut_orig_analyze",
         "  proc analyze args {",
         "    global __strut_analysis_us",
@@ -984,7 +999,7 @@ def _write_direct_tcl_wrapper(
         "    return -options $__strut_opts $__strut_result",
         "  }",
         "}",
-        'if {[llength [info commands eigen]] > 0 && [llength [info commands __strut_orig_eigen]] == 0} {',
+        "if {[llength [info commands eigen]] > 0 && [llength [info commands __strut_orig_eigen]] == 0} {",
         "  rename eigen __strut_orig_eigen",
         "  proc eigen args {",
         "    global __strut_analysis_us",
@@ -999,31 +1014,31 @@ def _write_direct_tcl_wrapper(
     if compute_only:
         lines.extend(
             [
-                'if {[llength [info commands source]] > 0 && [llength [info commands __strut_orig_source]] == 0} {',
+                "if {[llength [info commands source]] > 0 && [llength [info commands __strut_orig_source]] == 0} {",
                 "  rename source __strut_orig_source",
                 "  proc source {path} {",
                 "    set tail [file tail $path]",
                 '    if {$tail == "DisplayModel2D.tcl"} {',
-                '      proc DisplayModel2D args { return {} }',
+                "      proc DisplayModel2D args { return {} }",
                 "      return {}",
                 "    }",
                 '    if {$tail == "DisplayModel3D.tcl"} {',
-                '      proc DisplayModel3D args { return {} }',
+                "      proc DisplayModel3D args { return {} }",
                 "      return {}",
                 "    }",
                 '    if {$tail == "DisplayPlane.tcl"} {',
-                '      proc DisplayPlane args { return {} }',
+                "      proc DisplayPlane args { return {} }",
                 "      return {}",
                 "    }",
                 "    return [uplevel 1 [list __strut_orig_source $path]]",
                 "  }",
                 "}",
-                'if {[llength [info commands recorder]] > 0 && [llength [info commands __strut_orig_recorder]] == 0} {',
+                "if {[llength [info commands recorder]] > 0 && [llength [info commands __strut_orig_recorder]] == 0} {",
                 "  rename recorder __strut_orig_recorder",
                 "  proc recorder args { return {} }",
                 "}",
                 "foreach __strut_display_cmd {prp vup vpn viewWindow display} {",
-                '  if {[llength [info commands $__strut_display_cmd]] == 0} {',
+                "  if {[llength [info commands $__strut_display_cmd]] == 0} {",
                 "    proc $__strut_display_cmd args { return {} }",
                 "  }",
                 "}",
@@ -1031,11 +1046,11 @@ def _write_direct_tcl_wrapper(
         )
     lines.extend(
         [
-            f'set __strut_case_rc [catch {{source {{{original_script_name}}}}} __strut_case_msg __strut_case_opts]',
+            f"set __strut_case_rc [catch {{source {{{original_script_name}}}}} __strut_case_msg __strut_case_opts]",
             'set __strut_fp [open "analysis_time_us.txt" w]',
             "puts $__strut_fp $__strut_analysis_us",
             "close $__strut_fp",
-            'if {$__strut_out_dir ne $__strut_wrapper_dir} {',
+            "if {$__strut_out_dir ne $__strut_wrapper_dir} {",
             '  if {[file exists "analysis_time_us.txt"]} {',
             '    file copy -force "analysis_time_us.txt" $__strut_out_dir/',
             "  }",
@@ -1044,9 +1059,9 @@ def _write_direct_tcl_wrapper(
     for raw_path in raw_output_paths:
         lines.extend(
             [
-                f'  if {{[file exists {{{raw_path}}}]}} {{',
-                f'    file mkdir [file dirname [file join $__strut_out_dir {{{raw_path}}}]]',
-                f'    file copy -force {{{raw_path}}} [file join $__strut_out_dir {{{raw_path}}}]',
+                f"  if {{[file exists {{{raw_path}}}]}} {{",
+                f"    file mkdir [file dirname [file join $__strut_out_dir {{{raw_path}}}]]",
+                f"    file copy -force {{{raw_path}}} [file join $__strut_out_dir {{{raw_path}}}]",
                 "  }",
             ]
         )
@@ -1117,7 +1132,7 @@ def _prepare_opensees_compat_entry(entry_tcl: Path) -> Path:
                 "        return [uplevel 1 [linsert $args 0 __strut_builtin_nDMaterial]]",
                 "    }",
                 "}",
-                'if {[llength [info commands model]] > 0 && [llength [info commands __strut_builtin_model]] == 0} {',
+                "if {[llength [info commands model]] > 0 && [llength [info commands __strut_builtin_model]] == 0} {",
                 "    rename model __strut_builtin_model",
                 "    proc model {args} {",
                 "        global __strut_ndm __strut_ndf",
@@ -1137,7 +1152,7 @@ def _prepare_opensees_compat_entry(entry_tcl: Path) -> Path:
                 "}",
                 "__strut_install_section_compat",
                 "__strut_install_ndmaterial_compat",
-                'if {[llength [info commands mass]] > 0 && [llength [info commands __strut_builtin_mass]] == 0} {',
+                "if {[llength [info commands mass]] > 0 && [llength [info commands __strut_builtin_mass]] == 0} {",
                 "    rename mass __strut_builtin_mass",
                 "    proc mass {args} {",
                 "        global __strut_ndf",
@@ -1454,7 +1469,13 @@ def _absolutize_time_series_paths(case_data: dict, case_json_path: Path) -> None
         if raw_path.is_absolute():
             continue
         from_case_dir = next(
-            (candidate for candidate in _iter_relative_path_candidates(case_json_path.parent, raw_path) if candidate.exists()),
+            (
+                candidate
+                for candidate in _iter_relative_path_candidates(
+                    case_json_path.parent, raw_path
+                )
+                if candidate.exists()
+            ),
             None,
         )
         if from_case_dir is not None:
@@ -1740,7 +1761,9 @@ def collect_run_metadata(
             "benchmark_suite": args.benchmark_suite,
             "engine": args.engine,
             "engines": list(selected_engines),
-            "batch_mode": opensees_batch_mode or openseesmp_batch_mode or strut_batch_mode,
+            "batch_mode": opensees_batch_mode
+            or openseesmp_batch_mode
+            or strut_batch_mode,
             "opensees_batch_mode": opensees_batch_mode,
             "openseesmp_batch_mode": openseesmp_batch_mode,
             "strut_batch_mode": strut_batch_mode,
@@ -1956,9 +1979,7 @@ def log_phase_table(rows: List[dict]) -> None:
     log("Phase timing summary (mean, ms):")
     for phase in PHASE_COLUMNS:
         values = [
-            int(row[phase])
-            for row in rows
-            if isinstance(row.get(phase), (int, float))
+            int(row[phase]) for row in rows if isinstance(row.get(phase), (int, float))
         ]
         if not values:
             continue
@@ -2160,7 +2181,9 @@ def _compare_transient_rows(
             failures.extend([f"  {err}" for err in errors])
         return
     if len(ref_vals) != len(strut_vals):
-        failures.append(f"{label} step count mismatch: {len(ref_vals)} != {len(strut_vals)}")
+        failures.append(
+            f"{label} step count mismatch: {len(ref_vals)} != {len(strut_vals)}"
+        )
         return
     for step, (rvec, gvec) in enumerate(zip(ref_vals, strut_vals), start=1):
         ok, errors = _compare_vectors(rvec, gvec, rtol=rtol, atol=atol)
@@ -2477,7 +2500,9 @@ def _summarize_benchmark_failures(
         if detail.startswith("drift "):
             add(case_name, "drift mismatch", detail)
             continue
-        if detail.startswith("envelope element ") or detail.startswith("envelope node "):
+        if detail.startswith("envelope element ") or detail.startswith(
+            "envelope node "
+        ):
             add(case_name, "envelope mismatch", detail)
             continue
         if detail.startswith("modal "):
@@ -2515,9 +2540,7 @@ def _summarize_benchmark_failures(
         for category in category_order:
             details = case_categories.get(category)
             if details:
-                lines.append(
-                    f"  {label_by_category[category]}: {json.dumps(details)}"
-                )
+                lines.append(f"  {label_by_category[category]}: {json.dumps(details)}")
     return lines
 
 
@@ -2823,7 +2846,9 @@ def main() -> None:
         if case.json_path is not None:
             case_entry["json"] = str(_case_json_path(case))
         elif case.tcl_path is not None:
-            case_entry["json"] = str(_direct_case_root(case) / "generated" / "case.json")
+            case_entry["json"] = str(
+                _direct_case_root(case) / "generated" / "case.json"
+            )
         elif run_strut:
             case_entry["json"] = str(
                 _write_solver_input_json(
@@ -2849,13 +2874,13 @@ def main() -> None:
                 )
                 tcl_lines = generated_copy.read_text().splitlines()
                 compute_lines = [
-                    line for line in tcl_lines if not line.lstrip().startswith("recorder ")
+                    line
+                    for line in tcl_lines
+                    if not line.lstrip().startswith("recorder ")
                 ]
                 generated_compute.write_text(
                     "\n".join(
-                        _inject_opensees_timing(
-                            compute_lines, "analysis_time_us.txt"
-                        )
+                        _inject_opensees_timing(compute_lines, "analysis_time_us.txt")
                     )
                     + "\n",
                     encoding="utf-8",
@@ -3067,15 +3092,13 @@ def main() -> None:
             batch_analysis_hist,
             batch_total_hist,
             opensees_batch_had_abort,
-        ) = (
-            run_reference_batch_repeated(
-                batch_entries,
-                results_root / "opensees",
-                repeat=args.repeat,
-                warmup=args.warmup,
-                runner_path=repo_root / "scripts" / "run_opensees.sh",
-                label="OpenSees",
-            )
+        ) = run_reference_batch_repeated(
+            batch_entries,
+            results_root / "opensees",
+            repeat=args.repeat,
+            warmup=args.warmup,
+            runner_path=repo_root / "scripts" / "run_opensees.sh",
+            label="OpenSees",
         )
         if opensees_batch_had_abort:
             log_err("OpenSees batch compute-only aborted for one or more cases.")
@@ -3158,15 +3181,13 @@ def main() -> None:
             batch_analysis_hist,
             batch_total_hist,
             openseesmp_batch_had_abort,
-        ) = (
-            run_reference_batch_repeated(
-                batch_entries,
-                results_root / "openseesmp",
-                repeat=args.repeat,
-                warmup=args.warmup,
-                runner_path=repo_root / "scripts" / "run_openseesmp.sh",
-                label="OpenSeesMP",
-            )
+        ) = run_reference_batch_repeated(
+            batch_entries,
+            results_root / "openseesmp",
+            repeat=args.repeat,
+            warmup=args.warmup,
+            runner_path=repo_root / "scripts" / "run_openseesmp.sh",
+            label="OpenSeesMP",
         )
         if openseesmp_batch_had_abort:
             log_err("OpenSeesMP batch compute-only aborted for one or more cases.")
@@ -3330,7 +3351,9 @@ def main() -> None:
             except subprocess.CalledProcessError as exc:
                 _write_case_error(
                     results_root / "opensees" / case_name,
-                    _format_subprocess_failure("opensees compute-only pass aborted", exc),
+                    _format_subprocess_failure(
+                        "opensees compute-only pass aborted", exc
+                    ),
                 )
                 log_err(
                     f"[{case_name}] OpenSees compute-only pass aborted (exit {exc.returncode})."
@@ -3505,7 +3528,9 @@ def main() -> None:
     phase_rollup_csv = results_root / "phase_rollup.csv"
     summary_json.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
     write_summary_csv(summary_csv, csv_rows)
-    metadata_json.write_text(json.dumps(run_metadata, indent=2) + "\n", encoding="utf-8")
+    metadata_json.write_text(
+        json.dumps(run_metadata, indent=2) + "\n", encoding="utf-8"
+    )
     write_phase_summary_csv(phase_summary_csv, phase_rows)
     write_phase_rollup_csv(phase_rollup_csv, phase_rows)
     log_phase_table(phase_rows)
@@ -3534,7 +3559,9 @@ def main() -> None:
         results_root,
         engines=selected_engines,
     )
-    case_file_map = {entry["name"]: str(entry.get("case_file", "")) for entry in case_entries}
+    case_file_map = {
+        entry["name"]: str(entry.get("case_file", "")) for entry in case_entries
+    }
     if runtime_failures:
         log_err("BENCHMARK FAILED")
         for failure in _summarize_benchmark_failures(

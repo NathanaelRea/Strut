@@ -11,7 +11,13 @@ import tempfile
 from collections import defaultdict
 from pathlib import Path
 
-from common import DEFAULT_CASE, REPO_ROOT, build_mojo_binary, prepare_case_json, resolve_case_input
+from common import (
+    DEFAULT_CASE,
+    REPO_ROOT,
+    build_mojo_binary,
+    prepare_case_json,
+    resolve_case_input,
+)
 
 
 IMPLEMENTATIONS = {
@@ -162,7 +168,9 @@ def _summarize(rows: list[dict]) -> list[dict]:
         updates = int(row["updates"])
         elapsed_ns = int(row["elapsed_ns"])
         grouped[key].append(elapsed_ns / updates)
-        validation = validation_by_key[(row["compare"], row["scenario"], row["material_id"])]
+        validation = validation_by_key[
+            (row["compare"], row["scenario"], row["material_id"])
+        ]
         meta[key] = {
             **validation,
             "bench_impl": row["bench_impl"],
@@ -180,7 +188,12 @@ def _summarize(rows: list[dict]) -> list[dict]:
         summary.append(item)
 
     summary.sort(
-        key=lambda item: (item["compare"], item["material_id"], item["scenario"], item["bench_impl"])
+        key=lambda item: (
+            item["compare"],
+            item["material_id"],
+            item["scenario"],
+            item["bench_impl"],
+        )
     )
     return summary
 
@@ -217,7 +230,9 @@ def _print_summary(summary: list[dict]) -> None:
             left = by_impl[head["left_impl"]]["median_ns_per_update"]
             right = by_impl[head["right_impl"]]["median_ns_per_update"]
             if right > 0.0:
-                print(f"  speedup ({head['left_impl']} / {head['right_impl']}): {left / right:.3f}x")
+                print(
+                    f"  speedup ({head['left_impl']} / {head['right_impl']}): {left / right:.3f}x"
+                )
 
 
 def main() -> None:
@@ -275,8 +290,12 @@ def main() -> None:
         case_path = resolve_case_input(args.case)
         case_json, temp_roots = prepare_case_json(case_path)
     try:
-        bin_path = build_mojo_binary("material_compare_micro.mojo", "material_compare_micro")
-        rows = _run_binary(bin_path, case_json, compare, args.states, args.steps, args.samples)
+        bin_path = build_mojo_binary(
+            "material_compare_micro.mojo", "material_compare_micro"
+        )
+        rows = _run_binary(
+            bin_path, case_json, compare, args.states, args.steps, args.samples
+        )
         summary = _summarize(rows)
         _print_summary(summary)
 

@@ -307,9 +307,7 @@ def collect_archive_trend(
             if isinstance(git_rev, str) and git_rev.strip()
             else "unknown"
         )
-        per_hash_entries.setdefault(hash_key, []).append(
-            (timestamp, run_medians)
-        )
+        per_hash_entries.setdefault(hash_key, []).append((timestamp, run_medians))
 
     def _mean_std(values: List[float]) -> Tuple[float, float]:
         finite = [v for v in values if isinstance(v, (int, float)) and math.isfinite(v)]

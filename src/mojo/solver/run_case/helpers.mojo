@@ -234,9 +234,7 @@ fn _gather_element_u(dof_map: List[Int], u: List[Float64]) -> List[Float64]:
     return out^
 
 
-fn _zero_length_row(
-    dir: Int, ndm: Int, ndf: Int, trans: List[List[Float64]]
-) -> List[Float64]:
+fn _zero_length_row(dir: Int, ndm: Int, ndf: Int, trans: List[List[Float64]]) -> List[Float64]:
     var row: List[Float64] = []
     row.resize(2 * ndf, 0.0)
     if ndm == 2 and ndf == 2:
@@ -285,9 +283,7 @@ fn _zero_length_row(
     return row^
 
 
-fn _two_node_link_tgl(
-    ndm: Int, ndf: Int, trans: List[List[Float64]]
-) -> List[List[Float64]]:
+fn _two_node_link_tgl(ndm: Int, ndf: Int, trans: List[List[Float64]]) -> List[List[Float64]]:
     var num_dof = 2 * ndf
     var tgl: List[List[Float64]] = []
     for _ in range(num_dof):
@@ -331,7 +327,9 @@ fn _two_node_link_tgl(
     return tgl^
 
 
-fn _two_node_link_tlb(ndm: Int, ndf: Int, elem: ElementInput, length: Float64) -> List[List[Float64]]:
+fn _two_node_link_tlb(
+    ndm: Int, ndf: Int, elem: ElementInput, length: Float64
+) -> List[List[Float64]]:
     var tlb: List[List[Float64]] = []
     for _ in range(elem.dir_count):
         var row: List[Float64] = []
@@ -578,9 +576,7 @@ fn _beam_column3d_element_force_global(
         elem.type_tag == ElementTypeTag.ForceBeamColumn3d
         or elem.type_tag == ElementTypeTag.DispBeamColumn3d
     ):
-        beam_integration_validate_or_abort(
-            beam_col_type, elem.integration, elem.num_int_pts
-        )
+        beam_integration_validate_or_abort(beam_col_type, elem.integration, elem.num_int_pts)
 
     var i1 = elem.node_index_1
     var i2 = elem.node_index_2
@@ -822,9 +818,7 @@ fn _truss_element_force_global(
             node_dof_index(i2, 1, ndf),
             node_dof_index(i2, 2, ndf),
         ]
-        var du = (u[dof_map[2]] - u[dof_map[0]]) * c + (
-            u[dof_map[3]] - u[dof_map[1]]
-        ) * s
+        var du = (u[dof_map[2]] - u[dof_map[0]]) * c + (u[dof_map[3]] - u[dof_map[1]]) * s
         var eps = du / L
         uniaxial_set_trial_strain(mat_def, state, eps)
         var N = state.sig_t * A
@@ -847,9 +841,11 @@ fn _truss_element_force_global(
         node_dof_index(i2, 2, ndf),
         node_dof_index(i2, 3, ndf),
     ]
-    var du = (u[dof_map[3]] - u[dof_map[0]]) * l + (
-        u[dof_map[4]] - u[dof_map[1]]
-    ) * m + (u[dof_map[5]] - u[dof_map[2]]) * n
+    var du = (
+        (u[dof_map[3]] - u[dof_map[0]]) * l
+        + (u[dof_map[4]] - u[dof_map[1]]) * m
+        + (u[dof_map[5]] - u[dof_map[2]]) * n
+    )
     var eps = du / L
     uniaxial_set_trial_strain(mat_def, state, eps)
     var N = state.sig_t * A
@@ -1636,9 +1632,7 @@ fn _force_beam_column2d_force_global_from_basic_state(
         f_local[1] += fixed_end[4]
         f_local[4] += fixed_end[5]
     elif elem.geom_tag != GeomTransfTag.Linear:
-        abort(
-            elem.type + " supports geomTransf Linear, PDelta, or Corotational"
-        )
+        abort(elem.type + " supports geomTransf Linear, PDelta, or Corotational")
 
     _beam2d_transform_force_local_to_global_in_place(f_local, c, s)
     return f_local^
@@ -2238,9 +2232,7 @@ fn _beam_column3d_section_response(
                 elem_load_pool,
                 load_scale,
             )
-            var xi = _beam_integration_xi_for_section(
-                elem.integration, num_int_pts, section_no - 1
-            )
+            var xi = _beam_integration_xi_for_section(elem.integration, num_int_pts, section_no - 1)
             var q_offset = force_basic_offsets[elem_index]
             var q0 = force_basic_q[q_offset]
             var q1 = force_basic_q[q_offset + 1]
@@ -2312,9 +2304,8 @@ fn _beam_column3d_section_response(
             elem_load_pool,
             elem_index,
             load_scale,
-            _beam_integration_xi_for_section(
-                elem.integration, num_int_pts, section_no - 1
-            ) * sqrt(
+            _beam_integration_xi_for_section(elem.integration, num_int_pts, section_no - 1)
+            * sqrt(
                 (node2.x - node1.x) * (node2.x - node1.x)
                 + (node2.y - node1.y) * (node2.y - node1.y)
                 + (node2.z - node1.z) * (node2.z - node1.z)
@@ -2411,6 +2402,8 @@ fn _beam_column3d_section_response(
         -(sec.E * sec.Iy * kappa_y + load_response[1]),
         sec.G * sec.J * twist,
     ]
+
+
 fn _section_response_for_recorder(
     elem_index: Int,
     elem: ElementInput,
@@ -2516,9 +2509,7 @@ fn _section_response_for_recorder(
             force_basic_q,
             want_deformation,
         )
-    abort(
-        "section recorder supports forceBeamColumn2d/3d or dispBeamColumn2d/3d only"
-    )
+    abort("section recorder supports forceBeamColumn2d/3d or dispBeamColumn2d/3d only")
     return []
 
 
@@ -2563,9 +2554,7 @@ fn _append_output(
     buffers[index] += line
 
 
-fn _append_output_at_index(
-    mut buffers: List[String], file_index: Int, line: String
-) raises:
+fn _append_output_at_index(mut buffers: List[String], file_index: Int, line: String) raises:
     if file_index < 0 or file_index >= len(buffers):
         abort("output buffer index out of range")
     buffers[file_index] += line
@@ -3079,13 +3068,9 @@ fn _element_deformation_for_recorder(
     if ndf >= 6 or nodes[elem.node_index_1].has_z or nodes[elem.node_index_2].has_z:
         elem_ndm = 3
     if elem.type_tag == ElementTypeTag.ZeroLength:
-        return _zero_length_deformation_for_recorder(
-            elem_index, elem, nodes, ndf, elem_ndm, u
-        )
+        return _zero_length_deformation_for_recorder(elem_index, elem, nodes, ndf, elem_ndm, u)
     if elem.type_tag == ElementTypeTag.TwoNodeLink:
-        return _two_node_link_deformation_for_recorder(
-            elem, nodes, ndf, elem_ndm, u
-        )
+        return _two_node_link_deformation_for_recorder(elem, nodes, ndf, elem_ndm, u)
     if (
         elem.type_tag == ElementTypeTag.ElasticBeamColumn2d
         or elem.type_tag == ElementTypeTag.ForceBeamColumn2d
@@ -3336,9 +3321,7 @@ fn _build_reduced_diagonal_matrix_by_mpc(
                 var reduced_j = free_index_by_dof[dof_pool[term_j]]
                 if reduced_j < 0:
                     continue
-                out[reduced_i][reduced_j] += (
-                    mass * coeff_i * coeff_pool[term_j]
-                )
+                out[reduced_i][reduced_j] += mass * coeff_i * coeff_pool[term_j]
     return out^
 
 
@@ -3371,9 +3354,7 @@ fn _collapse_matrix_by_mpc(
                 var reduced_i = dof_pool[term_i]
                 var coeff_i = coeff_pool[term_i]
                 for term_j in range(row_j_start, row_j_end):
-                    out[reduced_i][dof_pool[term_j]] += (
-                        coeff_i * value * coeff_pool[term_j]
-                    )
+                    out[reduced_i][dof_pool[term_j]] += coeff_i * value * coeff_pool[term_j]
     return out^
 
 

@@ -151,7 +151,10 @@ def test_write_opensees_examples_markdown_emits_per_example_charts(tmp_path: Pat
     assert "| # | Label | OpenSees (ns) | Strut (ns) |" in text
     assert "| 1 | `cycle` | 3.000 | 1.500 |" in text
     assert "| 2 | `push` | 3.500 | 2.000 |" in text
-    assert "| 1 | `ex60_genericframe2d_analyze_dynamic_eq_uniform` | 7.500 | 5.250 |" in text
+    assert (
+        "| 1 | `ex60_genericframe2d_analyze_dynamic_eq_uniform` | 7.500 | 5.250 |"
+        in text
+    )
     assert "| 1 | `ex70_microframe_run_fast` | 7.000 | 4.000 |" in text
     assert "| 1 | `ex80_midframe_run_balanced` | 2.500 | 1.750 |" in text
 

@@ -28,7 +28,9 @@ def test_megatall_smoke_case_builds_and_runs_natively(tmp_path: Path):
     assert len(built_data["analysis"]["stages"]) == 2
     assert built_data["analysis"]["stages"][0]["analysis"]["type"] == "static_nonlinear"
     assert built_data["analysis"]["stages"][0]["analysis"]["steps"] == 2
-    assert built_data["analysis"]["stages"][1]["analysis"]["type"] == "transient_nonlinear"
+    assert (
+        built_data["analysis"]["stages"][1]["analysis"]["type"] == "transient_nonlinear"
+    )
     assert built_data["analysis"]["stages"][1]["analysis"]["steps"] == 5
     assert {element["type"] for element in built_data["elements"]} == {
         "elasticBeamColumn3d",
