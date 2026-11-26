@@ -2,7 +2,7 @@
 
 Performance-first finite element analysis (FEA) engine written in Mojo. The project focuses on structural engineering transient analysis (Buildings/Earthquakes), and aims to be as fast as possible for large models. Benchmarks and tests are run against OpenSees.
 
-Currently we beat the performance of OpenSees by about 2x in large examples that take several seconds to run. Check out the [current benchmarks](./docs/benchmark-opensees-examples.md).
+Against OpenSees 3.7.1 on the same machine, Strut runs the OpenSees examples that take a second or more about 7x faster, 3D fiber frames 2x to 3x faster on one thread and 5x on eight, and a 162,000-DOF tall building model about 15x faster on one thread and 33x on eight. The tall building's results are not yet at parity with OpenSees. Check out the [current benchmarks](./docs/benchmark-opensees-examples.md).
 
 ## Warnings
 

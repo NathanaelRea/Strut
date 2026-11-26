@@ -5,7 +5,6 @@ from time import perf_counter_ns
 
 from elements import (
     ForceBeamColumn2dScratch,
-    ForceBeamColumn3dScratch,
     truss_global_stiffness,
     truss3d_global_stiffness,
 )
@@ -15,6 +14,10 @@ from materials import (
     uni_mat_initial_tangent,
     uniaxial_set_trial_strain,
 )
+from solver.assembly.frame3d_scratch import (
+    Frame3dAssemblyScratch,
+)
+from solver.assembly.shell_cache import ShellAssemblyCache
 from solver.assembly.stiffness_internal_frame2d import (
     _assemble_frame2d_element,
     _assemble_frame2d_native_soa_indices,
@@ -61,11 +64,7 @@ from solver.profile import (
     _profile_metrics_note_element_timing,
 )
 from solver.run_case.helpers import aggregator_section2d_set_trial_from_offset
-from solver.run_case.linear_solver_backend import (
-    LinearSolverBackend,
-    add_element_matrix_from_pool,
-    zero_loaded_matrix,
-)
+from solver.sparse_pattern import ElementMatrixSink, NullMatrixSink
 from solver.run_case.input_types import (
     ElementInput,
     ElementLoadInput,
@@ -105,14 +104,11 @@ fn assemble_global_stiffness_typed(
     mut fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
-    fiber_section3d_defs: List[FiberSection3dDef],
+    mut fiber_section3d_defs: List[FiberSection3dDef],
     fiber_section3d_cells: List[FiberCell],
     fiber_section3d_index_by_id: List[Int],
-    mut layered_shell_section_defs: List[LayeredShellSectionDef],
-    layered_shell_section_index_by_id: List[Int],
-    layered_shell_section_uniaxial_offsets: List[Int],
-    layered_shell_section_uniaxial_counts: List[Int],
-    shell_elem_instance_offsets: List[Int],
+    layered_shell_section_defs: List[LayeredShellSectionDef],
+    mut shell_cache: ShellAssemblyCache,
 ) raises -> List[List[Float64]]:
     var empty_element_loads: List[ElementLoadInput] = []
     var empty_elem_load_offsets: List[Int] = []
@@ -147,10 +143,7 @@ fn assemble_global_stiffness_typed(
         fiber_section3d_cells,
         fiber_section3d_index_by_id,
         layered_shell_section_defs,
-        layered_shell_section_index_by_id,
-        layered_shell_section_uniaxial_offsets,
-        layered_shell_section_uniaxial_counts,
-        shell_elem_instance_offsets,
+        shell_cache,
     )
 
 
@@ -180,14 +173,11 @@ fn assemble_global_stiffness_typed(
     mut fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
-    fiber_section3d_defs: List[FiberSection3dDef],
+    mut fiber_section3d_defs: List[FiberSection3dDef],
     fiber_section3d_cells: List[FiberCell],
     fiber_section3d_index_by_id: List[Int],
-    mut layered_shell_section_defs: List[LayeredShellSectionDef],
-    layered_shell_section_index_by_id: List[Int],
-    layered_shell_section_uniaxial_offsets: List[Int],
-    layered_shell_section_uniaxial_counts: List[Int],
-    shell_elem_instance_offsets: List[Int],
+    layered_shell_section_defs: List[LayeredShellSectionDef],
+    mut shell_cache: ShellAssemblyCache,
 ) raises -> List[List[Float64]]:
     var total_dofs = node_count * ndf
     var K: List[List[Float64]] = []
@@ -227,10 +217,7 @@ fn assemble_global_stiffness_typed(
         fiber_section3d_cells,
         fiber_section3d_index_by_id,
         layered_shell_section_defs,
-        layered_shell_section_index_by_id,
-        layered_shell_section_uniaxial_offsets,
-        layered_shell_section_uniaxial_counts,
-        shell_elem_instance_offsets,
+        shell_cache,
         K,
         F_int,
     )
@@ -259,14 +246,11 @@ fn assemble_link_stiffness_typed(
     mut fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
-    fiber_section3d_defs: List[FiberSection3dDef],
+    mut fiber_section3d_defs: List[FiberSection3dDef],
     fiber_section3d_cells: List[FiberCell],
     fiber_section3d_index_by_id: List[Int],
-    mut layered_shell_section_defs: List[LayeredShellSectionDef],
-    layered_shell_section_index_by_id: List[Int],
-    layered_shell_section_uniaxial_offsets: List[Int],
-    layered_shell_section_uniaxial_counts: List[Int],
-    shell_elem_instance_offsets: List[Int],
+    layered_shell_section_defs: List[LayeredShellSectionDef],
+    mut shell_cache: ShellAssemblyCache,
     elem_dof_offsets: List[Int],
     elem_dof_pool: List[Int],
     mut dof_map6: List[Int],
@@ -314,10 +298,7 @@ fn assemble_link_stiffness_typed(
         fiber_section3d_cells,
         fiber_section3d_index_by_id,
         layered_shell_section_defs,
-        layered_shell_section_index_by_id,
-        layered_shell_section_uniaxial_offsets,
-        layered_shell_section_uniaxial_counts,
-        shell_elem_instance_offsets,
+        shell_cache,
         elem_dof_offsets,
         elem_dof_pool,
         dof_map6,
@@ -374,14 +355,11 @@ fn assemble_internal_forces_typed_soa(
     mut fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
-    fiber_section3d_defs: List[FiberSection3dDef],
+    mut fiber_section3d_defs: List[FiberSection3dDef],
     fiber_section3d_cells: List[FiberCell],
     fiber_section3d_index_by_id: List[Int],
-    mut layered_shell_section_defs: List[LayeredShellSectionDef],
-    layered_shell_section_index_by_id: List[Int],
-    layered_shell_section_uniaxial_offsets: List[Int],
-    layered_shell_section_uniaxial_counts: List[Int],
-    shell_elem_instance_offsets: List[Int],
+    layered_shell_section_defs: List[LayeredShellSectionDef],
+    mut shell_cache: ShellAssemblyCache,
 ) raises -> List[Float64]:
     var empty_element_loads: List[ElementLoadInput] = []
     var empty_elem_load_offsets: List[Int] = []
@@ -439,10 +417,7 @@ fn assemble_internal_forces_typed_soa(
         fiber_section3d_cells,
         fiber_section3d_index_by_id,
         layered_shell_section_defs,
-        layered_shell_section_index_by_id,
-        layered_shell_section_uniaxial_offsets,
-        layered_shell_section_uniaxial_counts,
-        shell_elem_instance_offsets,
+        shell_cache,
     )
 
 
@@ -495,17 +470,14 @@ fn assemble_internal_forces_typed_soa(
     mut fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
-    fiber_section3d_defs: List[FiberSection3dDef],
+    mut fiber_section3d_defs: List[FiberSection3dDef],
     fiber_section3d_cells: List[FiberCell],
     fiber_section3d_index_by_id: List[Int],
-    mut layered_shell_section_defs: List[LayeredShellSectionDef],
-    layered_shell_section_index_by_id: List[Int],
-    layered_shell_section_uniaxial_offsets: List[Int],
-    layered_shell_section_uniaxial_counts: List[Int],
-    shell_elem_instance_offsets: List[Int],
+    layered_shell_section_defs: List[LayeredShellSectionDef],
+    mut shell_cache: ShellAssemblyCache,
 ) raises -> List[Float64]:
     var force_beam_column2d_scratch = ForceBeamColumn2dScratch()
-    var force_beam_column3d_scratch = ForceBeamColumn3dScratch()
+    var force_beam_column3d_scratch = Frame3dAssemblyScratch()
     return assemble_internal_forces_typed_soa(
         nodes,
         elements,
@@ -559,10 +531,7 @@ fn assemble_internal_forces_typed_soa(
         fiber_section3d_cells,
         fiber_section3d_index_by_id,
         layered_shell_section_defs,
-        layered_shell_section_index_by_id,
-        layered_shell_section_uniaxial_offsets,
-        layered_shell_section_uniaxial_counts,
-        shell_elem_instance_offsets,
+        shell_cache,
         force_beam_column2d_scratch,
         force_beam_column3d_scratch,
     )
@@ -617,23 +586,18 @@ fn assemble_internal_forces_typed_soa(
     mut fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
-    fiber_section3d_defs: List[FiberSection3dDef],
+    mut fiber_section3d_defs: List[FiberSection3dDef],
     fiber_section3d_cells: List[FiberCell],
     fiber_section3d_index_by_id: List[Int],
-    mut layered_shell_section_defs: List[LayeredShellSectionDef],
-    layered_shell_section_index_by_id: List[Int],
-    layered_shell_section_uniaxial_offsets: List[Int],
-    layered_shell_section_uniaxial_counts: List[Int],
-    shell_elem_instance_offsets: List[Int],
+    layered_shell_section_defs: List[LayeredShellSectionDef],
+    mut shell_cache: ShellAssemblyCache,
     mut force_beam_column2d_scratch: ForceBeamColumn2dScratch,
-    mut force_beam_column3d_scratch: ForceBeamColumn3dScratch,
+    mut force_beam_column3d_scratch: Frame3dAssemblyScratch,
 ) raises -> List[Float64]:
     var total_dofs = node_count * ndf
-    var K_dummy: List[List[Float64]] = []
-    for _ in range(total_dofs):
-        var row: List[Float64] = []
-        row.resize(total_dofs, 0.0)
-        K_dummy.append(row^)
+    # No tangent is needed here, so element matrices go to a sink that drops
+    # them. The sink ignores the free-equation map; the DOF map stands in for it.
+    var matrix_sink = NullMatrixSink()
     var F_int: List[Float64] = []
     F_int.resize(total_dofs, 0.0)
     var dof_map6: List[Int] = []
@@ -642,12 +606,14 @@ fn assemble_internal_forces_typed_soa(
     var profile_events = String()
     var profile_events_need_comma = False
     var runtime_metrics = RuntimeProfileMetrics()
-    assemble_global_stiffness_and_internal_soa(
+    assemble_global_stiffness_and_internal_native_soa(
         nodes,
         elements,
         node_x,
         node_y,
         node_z,
+        elem_dof_offsets,
+        elem_dof_pool,
         elem_dof_offsets,
         elem_dof_pool,
         elem_node_offsets,
@@ -695,16 +661,13 @@ fn assemble_internal_forces_typed_soa(
         fiber_section3d_cells,
         fiber_section3d_index_by_id,
         layered_shell_section_defs,
-        layered_shell_section_index_by_id,
-        layered_shell_section_uniaxial_offsets,
-        layered_shell_section_uniaxial_counts,
-        shell_elem_instance_offsets,
+        shell_cache,
         force_beam_column2d_scratch,
         force_beam_column3d_scratch,
         dof_map6,
         dof_map12,
         u_elem6,
-        K_dummy,
+        matrix_sink,
         F_int,
         False,
         0,
@@ -739,14 +702,11 @@ fn assemble_internal_forces_typed(
     mut fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
-    fiber_section3d_defs: List[FiberSection3dDef],
+    mut fiber_section3d_defs: List[FiberSection3dDef],
     fiber_section3d_cells: List[FiberCell],
     fiber_section3d_index_by_id: List[Int],
-    mut layered_shell_section_defs: List[LayeredShellSectionDef],
-    layered_shell_section_index_by_id: List[Int],
-    layered_shell_section_uniaxial_offsets: List[Int],
-    layered_shell_section_uniaxial_counts: List[Int],
-    shell_elem_instance_offsets: List[Int],
+    layered_shell_section_defs: List[LayeredShellSectionDef],
+    mut shell_cache: ShellAssemblyCache,
 ) raises -> List[Float64]:
     var empty_element_loads: List[ElementLoadInput] = []
     var empty_elem_load_offsets: List[Int] = []
@@ -781,10 +741,7 @@ fn assemble_internal_forces_typed(
         fiber_section3d_cells,
         fiber_section3d_index_by_id,
         layered_shell_section_defs,
-        layered_shell_section_index_by_id,
-        layered_shell_section_uniaxial_offsets,
-        layered_shell_section_uniaxial_counts,
-        shell_elem_instance_offsets,
+        shell_cache,
     )
 
 
@@ -814,14 +771,11 @@ fn assemble_internal_forces_typed(
     mut fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
-    fiber_section3d_defs: List[FiberSection3dDef],
+    mut fiber_section3d_defs: List[FiberSection3dDef],
     fiber_section3d_cells: List[FiberCell],
     fiber_section3d_index_by_id: List[Int],
-    mut layered_shell_section_defs: List[LayeredShellSectionDef],
-    layered_shell_section_index_by_id: List[Int],
-    layered_shell_section_uniaxial_offsets: List[Int],
-    layered_shell_section_uniaxial_counts: List[Int],
-    shell_elem_instance_offsets: List[Int],
+    layered_shell_section_defs: List[LayeredShellSectionDef],
+    mut shell_cache: ShellAssemblyCache,
 ) raises -> List[Float64]:
     var total_dofs = node_count * ndf
     var K_dummy: List[List[Float64]] = []
@@ -861,10 +815,7 @@ fn assemble_internal_forces_typed(
         fiber_section3d_cells,
         fiber_section3d_index_by_id,
         layered_shell_section_defs,
-        layered_shell_section_index_by_id,
-        layered_shell_section_uniaxial_offsets,
-        layered_shell_section_uniaxial_counts,
-        shell_elem_instance_offsets,
+        shell_cache,
         K_dummy,
         F_int,
     )
@@ -920,17 +871,14 @@ fn assemble_global_stiffness_typed_soa(
     mut fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
-    fiber_section3d_defs: List[FiberSection3dDef],
+    mut fiber_section3d_defs: List[FiberSection3dDef],
     fiber_section3d_cells: List[FiberCell],
     fiber_section3d_index_by_id: List[Int],
-    mut layered_shell_section_defs: List[LayeredShellSectionDef],
-    layered_shell_section_index_by_id: List[Int],
-    layered_shell_section_uniaxial_offsets: List[Int],
-    layered_shell_section_uniaxial_counts: List[Int],
-    shell_elem_instance_offsets: List[Int],
+    layered_shell_section_defs: List[LayeredShellSectionDef],
+    mut shell_cache: ShellAssemblyCache,
 ) raises -> List[List[Float64]]:
     var force_beam_column2d_scratch = ForceBeamColumn2dScratch()
-    var force_beam_column3d_scratch = ForceBeamColumn3dScratch()
+    var force_beam_column3d_scratch = Frame3dAssemblyScratch()
     var runtime_metrics = RuntimeProfileMetrics()
     return assemble_global_stiffness_typed_soa(
         nodes,
@@ -985,10 +933,7 @@ fn assemble_global_stiffness_typed_soa(
         fiber_section3d_cells,
         fiber_section3d_index_by_id,
         layered_shell_section_defs,
-        layered_shell_section_index_by_id,
-        layered_shell_section_uniaxial_offsets,
-        layered_shell_section_uniaxial_counts,
-        shell_elem_instance_offsets,
+        shell_cache,
         force_beam_column2d_scratch,
         force_beam_column3d_scratch,
         runtime_metrics,
@@ -1044,16 +989,13 @@ fn assemble_global_stiffness_typed_soa(
     mut fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
-    fiber_section3d_defs: List[FiberSection3dDef],
+    mut fiber_section3d_defs: List[FiberSection3dDef],
     fiber_section3d_cells: List[FiberCell],
     fiber_section3d_index_by_id: List[Int],
-    mut layered_shell_section_defs: List[LayeredShellSectionDef],
-    layered_shell_section_index_by_id: List[Int],
-    layered_shell_section_uniaxial_offsets: List[Int],
-    layered_shell_section_uniaxial_counts: List[Int],
-    shell_elem_instance_offsets: List[Int],
+    layered_shell_section_defs: List[LayeredShellSectionDef],
+    mut shell_cache: ShellAssemblyCache,
     mut force_beam_column2d_scratch: ForceBeamColumn2dScratch,
-    mut force_beam_column3d_scratch: ForceBeamColumn3dScratch,
+    mut force_beam_column3d_scratch: Frame3dAssemblyScratch,
     mut runtime_metrics: RuntimeProfileMetrics,
 ) raises -> List[List[Float64]]:
     var total_dofs = node_count * ndf
@@ -1122,10 +1064,7 @@ fn assemble_global_stiffness_typed_soa(
         fiber_section3d_cells,
         fiber_section3d_index_by_id,
         layered_shell_section_defs,
-        layered_shell_section_index_by_id,
-        layered_shell_section_uniaxial_offsets,
-        layered_shell_section_uniaxial_counts,
-        shell_elem_instance_offsets,
+        shell_cache,
         force_beam_column2d_scratch,
         force_beam_column3d_scratch,
         dof_map6,
@@ -1193,14 +1132,11 @@ fn assemble_global_stiffness_and_internal_soa(
     mut fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
-    fiber_section3d_defs: List[FiberSection3dDef],
+    mut fiber_section3d_defs: List[FiberSection3dDef],
     fiber_section3d_cells: List[FiberCell],
     fiber_section3d_index_by_id: List[Int],
-    mut layered_shell_section_defs: List[LayeredShellSectionDef],
-    layered_shell_section_index_by_id: List[Int],
-    layered_shell_section_uniaxial_offsets: List[Int],
-    layered_shell_section_uniaxial_counts: List[Int],
-    shell_elem_instance_offsets: List[Int],
+    layered_shell_section_defs: List[LayeredShellSectionDef],
+    mut shell_cache: ShellAssemblyCache,
     mut dof_map6: List[Int],
     mut dof_map12: List[Int],
     mut u_elem6: List[Float64],
@@ -1214,7 +1150,7 @@ fn assemble_global_stiffness_and_internal_soa(
     frame_assemble_fiber: Int,
 ) raises:
     var force_beam_column2d_scratch = ForceBeamColumn2dScratch()
-    var force_beam_column3d_scratch = ForceBeamColumn3dScratch()
+    var force_beam_column3d_scratch = Frame3dAssemblyScratch()
     var runtime_metrics = RuntimeProfileMetrics()
     assemble_global_stiffness_and_internal_soa(
         nodes,
@@ -1269,10 +1205,7 @@ fn assemble_global_stiffness_and_internal_soa(
         fiber_section3d_cells,
         fiber_section3d_index_by_id,
         layered_shell_section_defs,
-        layered_shell_section_index_by_id,
-        layered_shell_section_uniaxial_offsets,
-        layered_shell_section_uniaxial_counts,
-        shell_elem_instance_offsets,
+        shell_cache,
         force_beam_column2d_scratch,
         force_beam_column3d_scratch,
         dof_map6,
@@ -1339,16 +1272,13 @@ fn assemble_global_stiffness_and_internal_soa(
     mut fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
-    fiber_section3d_defs: List[FiberSection3dDef],
+    mut fiber_section3d_defs: List[FiberSection3dDef],
     fiber_section3d_cells: List[FiberCell],
     fiber_section3d_index_by_id: List[Int],
-    mut layered_shell_section_defs: List[LayeredShellSectionDef],
-    layered_shell_section_index_by_id: List[Int],
-    layered_shell_section_uniaxial_offsets: List[Int],
-    layered_shell_section_uniaxial_counts: List[Int],
-    shell_elem_instance_offsets: List[Int],
+    layered_shell_section_defs: List[LayeredShellSectionDef],
+    mut shell_cache: ShellAssemblyCache,
     mut force_beam_column2d_scratch: ForceBeamColumn2dScratch,
-    mut force_beam_column3d_scratch: ForceBeamColumn3dScratch,
+    mut force_beam_column3d_scratch: Frame3dAssemblyScratch,
     mut dof_map6: List[Int],
     mut dof_map12: List[Int],
     mut u_elem6: List[Float64],
@@ -1893,20 +1823,14 @@ fn assemble_global_stiffness_and_internal_soa(
         shell_elem_indices,
         node_x,
         node_y,
-        node_z,
         elem_dof_offsets,
         elem_dof_pool,
         elem_node_offsets,
         elem_node_pool,
         elem_primary_material_ids,
-        elem_section_ids,
-        shell_elem_instance_offsets,
-        layered_shell_section_index_by_id,
-        layered_shell_section_uniaxial_offsets,
-        layered_shell_section_uniaxial_counts,
+        shell_cache,
         elem_thickness,
         materials_by_id,
-        sections_by_id,
         layered_shell_section_defs,
         uniaxial_defs,
         uniaxial_states,
@@ -1917,7 +1841,32 @@ fn assemble_global_stiffness_and_internal_soa(
     )
 
 
-fn assemble_global_stiffness_and_internal_native_soa(
+@always_inline
+fn _truss_flat_stiffness[dim: Int](
+    k: Float64, cosines: SIMD[DType.float64, 4], mut k_flat: List[Float64]
+):
+    """Truss global stiffness into `k_flat` (row-major, 2*dim square).
+
+    Entry (a, b) is `+-k * u[min] * u[max]` with `u` the direction cosines of
+    the local DOFs, evaluated in the same order as the list-literal form.
+    """
+    alias count = 2 * dim
+    for a in range(count):
+        var ia = a % dim
+        for b in range(count):
+            var ib = b % dim
+            var lo = ia
+            var hi = ib
+            if lo > hi:
+                lo = ib
+                hi = ia
+            var value = k * cosines[lo] * cosines[hi]
+            if (a < dim) != (b < dim):
+                value = -value
+            k_flat[a * count + b] = value
+
+
+fn assemble_global_stiffness_and_internal_native_soa[S: ElementMatrixSink](
     nodes: List[NodeInput],
     elements: List[ElementInput],
     node_x: List[Float64],
@@ -1968,20 +1917,17 @@ fn assemble_global_stiffness_and_internal_native_soa(
     mut fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
-    fiber_section3d_defs: List[FiberSection3dDef],
+    mut fiber_section3d_defs: List[FiberSection3dDef],
     fiber_section3d_cells: List[FiberCell],
     fiber_section3d_index_by_id: List[Int],
-    mut layered_shell_section_defs: List[LayeredShellSectionDef],
-    layered_shell_section_index_by_id: List[Int],
-    layered_shell_section_uniaxial_offsets: List[Int],
-    layered_shell_section_uniaxial_counts: List[Int],
-    shell_elem_instance_offsets: List[Int],
+    layered_shell_section_defs: List[LayeredShellSectionDef],
+    mut shell_cache: ShellAssemblyCache,
     mut force_beam_column2d_scratch: ForceBeamColumn2dScratch,
-    mut force_beam_column3d_scratch: ForceBeamColumn3dScratch,
+    mut force_beam_column3d_scratch: Frame3dAssemblyScratch,
     mut dof_map6: List[Int],
     mut dof_map12: List[Int],
     mut u_elem6: List[Float64],
-    mut backend: LinearSolverBackend,
+    mut backend: S,
     mut F_int: List[Float64],
     do_profile: Bool,
     t0: Int,
@@ -1992,7 +1938,7 @@ fn assemble_global_stiffness_and_internal_native_soa(
     mut runtime_metrics: RuntimeProfileMetrics,
 ) raises:
     _zero_vector(F_int)
-    zero_loaded_matrix(backend)
+    backend.zero_matrix()
 
     var elem_count = len(elements)
     if len(elem_dof_offsets) != elem_count + 1:
@@ -2009,6 +1955,9 @@ fn assemble_global_stiffness_and_internal_native_soa(
         dof_map12.resize(12, 0)
     if len(u_elem6) != 6:
         u_elem6.resize(6, 0.0)
+    # Flat element-matrix scratch reused by the truss and zeroLengthSection loops.
+    var k_flat: List[Float64] = []
+    k_flat.resize(36, 0.0)
 
     _assemble_frame2d_native_soa_indices(
         frame2d_elem_indices,
@@ -2090,7 +2039,6 @@ fn assemble_global_stiffness_and_internal_native_soa(
         fiber_section3d_cells,
         fiber_section3d_index_by_id,
         force_beam_column3d_scratch,
-        dof_map12,
         backend,
         F_int,
         do_profile,
@@ -2161,13 +2109,8 @@ fn assemble_global_stiffness_and_internal_native_soa(
             )
             var N = state.sig_t * A
             var k = state.tangent_t * A / L
-            var k_global = [
-                [k * c * c, k * c * s, -k * c * c, -k * c * s],
-                [k * c * s, k * s * s, -k * c * s, -k * s * s],
-                [-k * c * c, -k * c * s, k * c * c, k * c * s],
-                [-k * c * s, -k * s * s, k * c * s, k * s * s],
-            ]
-            add_element_matrix_from_pool(backend, elem_free_pool, free_offset, 4, k_global)
+            _truss_flat_stiffness[2](k, SIMD[DType.float64, 4](c, s, 0.0, 0.0), k_flat)
+            backend.add_element_matrix_flat(e, elem_free_pool, free_offset, 4, k_flat)
             F_int[d0] -= N * c
             F_int[d1] -= N * s
             F_int[d2] += N * c
@@ -2207,15 +2150,8 @@ fn assemble_global_stiffness_and_internal_native_soa(
             )
             var N = state.sig_t * A
             var k = state.tangent_t * A / L
-            var k_global = [
-                [k * l * l, k * l * m, k * l * n, -k * l * l, -k * l * m, -k * l * n],
-                [k * l * m, k * m * m, k * m * n, -k * l * m, -k * m * m, -k * m * n],
-                [k * l * n, k * m * n, k * n * n, -k * l * n, -k * m * n, -k * n * n],
-                [-k * l * l, -k * l * m, -k * l * n, k * l * l, k * l * m, k * l * n],
-                [-k * l * m, -k * m * m, -k * m * n, k * l * m, k * m * m, k * m * n],
-                [-k * l * n, -k * m * n, -k * n * n, k * l * n, k * m * n, k * n * n],
-            ]
-            add_element_matrix_from_pool(backend, elem_free_pool, free_offset, 6, k_global)
+            _truss_flat_stiffness[3](k, SIMD[DType.float64, 4](l, m, n, 0.0), k_flat)
+            backend.add_element_matrix_flat(e, elem_free_pool, free_offset, 6, k_flat)
             F_int[d0] -= N * l
             F_int[d1] -= N * m
             F_int[d2] -= N * n
@@ -2470,14 +2406,15 @@ fn assemble_global_stiffness_and_internal_native_soa(
             abort(
                 "zeroLengthSection requires FiberSection2d, ElasticSection2d, or AggregatorSection2d"
             )
-        var k_global = [
-            [k11, 0.0, k12, -k11, 0.0, -k12],
-            [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-            [k12, 0.0, k22, -k12, 0.0, -k22],
-            [-k11, 0.0, -k12, k11, 0.0, k12],
-            [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-            [-k12, 0.0, -k22, k12, 0.0, k22],
-        ]
+        var zls_row0 = SIMD[DType.float64, 8](k11, 0.0, k12, -k11, 0.0, -k12, 0.0, 0.0)
+        var zls_row2 = SIMD[DType.float64, 8](k12, 0.0, k22, -k12, 0.0, -k22, 0.0, 0.0)
+        for b in range(6):
+            k_flat[0 * 6 + b] = zls_row0[b]
+            k_flat[1 * 6 + b] = 0.0
+            k_flat[2 * 6 + b] = zls_row2[b]
+            k_flat[3 * 6 + b] = -zls_row0[b]
+            k_flat[4 * 6 + b] = 0.0
+            k_flat[5 * 6 + b] = -zls_row2[b]
         _profile_scope_open(
             do_profile,
             events,
@@ -2485,7 +2422,7 @@ fn assemble_global_stiffness_and_internal_native_soa(
             PROFILE_FRAME_ASSEMBLE_FIBER_MATRIX_SCATTER,
             t0,
         )
-        add_element_matrix_from_pool(backend, elem_free_pool, free_offset, 6, k_global)
+        backend.add_element_matrix_flat(e, elem_free_pool, free_offset, 6, k_flat)
         _profile_scope_close(
             do_profile,
             events,
@@ -2523,7 +2460,6 @@ fn assemble_global_stiffness_and_internal_native_soa(
         shell_elem_indices,
         node_x,
         node_y,
-        node_z,
         elem_dof_offsets,
         elem_dof_pool,
         elem_free_offsets,
@@ -2531,14 +2467,9 @@ fn assemble_global_stiffness_and_internal_native_soa(
         elem_node_offsets,
         elem_node_pool,
         elem_primary_material_ids,
-        elem_section_ids,
-        shell_elem_instance_offsets,
-        layered_shell_section_index_by_id,
-        layered_shell_section_uniaxial_offsets,
-        layered_shell_section_uniaxial_counts,
+        shell_cache,
         elem_thickness,
         materials_by_id,
-        sections_by_id,
         layered_shell_section_defs,
         uniaxial_defs,
         uniaxial_states,
@@ -2571,14 +2502,11 @@ fn assemble_global_stiffness_and_internal(
     mut fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
-    fiber_section3d_defs: List[FiberSection3dDef],
+    mut fiber_section3d_defs: List[FiberSection3dDef],
     fiber_section3d_cells: List[FiberCell],
     fiber_section3d_index_by_id: List[Int],
-    mut layered_shell_section_defs: List[LayeredShellSectionDef],
-    layered_shell_section_index_by_id: List[Int],
-    layered_shell_section_uniaxial_offsets: List[Int],
-    layered_shell_section_uniaxial_counts: List[Int],
-    shell_elem_instance_offsets: List[Int],
+    layered_shell_section_defs: List[LayeredShellSectionDef],
+    mut shell_cache: ShellAssemblyCache,
     mut K: List[List[Float64]],
     mut F_int: List[Float64],
 ) raises:
@@ -2615,10 +2543,7 @@ fn assemble_global_stiffness_and_internal(
         fiber_section3d_cells,
         fiber_section3d_index_by_id,
         layered_shell_section_defs,
-        layered_shell_section_index_by_id,
-        layered_shell_section_uniaxial_offsets,
-        layered_shell_section_uniaxial_counts,
-        shell_elem_instance_offsets,
+        shell_cache,
         K,
         F_int,
     )
@@ -2650,14 +2575,11 @@ fn assemble_global_stiffness_and_internal(
     mut fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
-    fiber_section3d_defs: List[FiberSection3dDef],
+    mut fiber_section3d_defs: List[FiberSection3dDef],
     fiber_section3d_cells: List[FiberCell],
     fiber_section3d_index_by_id: List[Int],
-    mut layered_shell_section_defs: List[LayeredShellSectionDef],
-    layered_shell_section_index_by_id: List[Int],
-    layered_shell_section_uniaxial_offsets: List[Int],
-    layered_shell_section_uniaxial_counts: List[Int],
-    shell_elem_instance_offsets: List[Int],
+    layered_shell_section_defs: List[LayeredShellSectionDef],
+    mut shell_cache: ShellAssemblyCache,
     mut K: List[List[Float64]],
     mut F_int: List[Float64],
 ) raises:
@@ -2697,10 +2619,7 @@ fn assemble_global_stiffness_and_internal(
         fiber_section3d_cells,
         fiber_section3d_index_by_id,
         layered_shell_section_defs,
-        layered_shell_section_index_by_id,
-        layered_shell_section_uniaxial_offsets,
-        layered_shell_section_uniaxial_counts,
-        shell_elem_instance_offsets,
+        shell_cache,
         elem_dof_offsets,
         elem_dof_pool,
         dof_map6,
@@ -2733,14 +2652,11 @@ fn assemble_global_stiffness_and_internal(
     mut fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
-    fiber_section3d_defs: List[FiberSection3dDef],
+    mut fiber_section3d_defs: List[FiberSection3dDef],
     fiber_section3d_cells: List[FiberCell],
     fiber_section3d_index_by_id: List[Int],
-    mut layered_shell_section_defs: List[LayeredShellSectionDef],
-    layered_shell_section_index_by_id: List[Int],
-    layered_shell_section_uniaxial_offsets: List[Int],
-    layered_shell_section_uniaxial_counts: List[Int],
-    shell_elem_instance_offsets: List[Int],
+    layered_shell_section_defs: List[LayeredShellSectionDef],
+    mut shell_cache: ShellAssemblyCache,
     elem_dof_offsets: List[Int],
     elem_dof_pool: List[Int],
     mut dof_map6: List[Int],
@@ -2782,10 +2698,7 @@ fn assemble_global_stiffness_and_internal(
         fiber_section3d_cells,
         fiber_section3d_index_by_id,
         layered_shell_section_defs,
-        layered_shell_section_index_by_id,
-        layered_shell_section_uniaxial_offsets,
-        layered_shell_section_uniaxial_counts,
-        shell_elem_instance_offsets,
+        shell_cache,
         elem_dof_offsets,
         elem_dof_pool,
         dof_map6,
@@ -2822,14 +2735,11 @@ fn assemble_global_stiffness_and_internal(
     mut fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
-    fiber_section3d_defs: List[FiberSection3dDef],
+    mut fiber_section3d_defs: List[FiberSection3dDef],
     fiber_section3d_cells: List[FiberCell],
     fiber_section3d_index_by_id: List[Int],
-    mut layered_shell_section_defs: List[LayeredShellSectionDef],
-    layered_shell_section_index_by_id: List[Int],
-    layered_shell_section_uniaxial_offsets: List[Int],
-    layered_shell_section_uniaxial_counts: List[Int],
-    shell_elem_instance_offsets: List[Int],
+    layered_shell_section_defs: List[LayeredShellSectionDef],
+    mut shell_cache: ShellAssemblyCache,
     elem_dof_offsets: List[Int],
     elem_dof_pool: List[Int],
     mut dof_map6: List[Int],
@@ -2868,10 +2778,7 @@ fn assemble_global_stiffness_and_internal(
         fiber_section3d_cells,
         fiber_section3d_index_by_id,
         layered_shell_section_defs,
-        layered_shell_section_index_by_id,
-        layered_shell_section_uniaxial_offsets,
-        layered_shell_section_uniaxial_counts,
-        shell_elem_instance_offsets,
+        shell_cache,
         elem_dof_offsets,
         elem_dof_pool,
         dof_map6,
@@ -2909,14 +2816,11 @@ fn _assemble_global_stiffness_and_internal_filtered(
     mut fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
-    fiber_section3d_defs: List[FiberSection3dDef],
+    mut fiber_section3d_defs: List[FiberSection3dDef],
     fiber_section3d_cells: List[FiberCell],
     fiber_section3d_index_by_id: List[Int],
-    mut layered_shell_section_defs: List[LayeredShellSectionDef],
-    layered_shell_section_index_by_id: List[Int],
-    layered_shell_section_uniaxial_offsets: List[Int],
-    layered_shell_section_uniaxial_counts: List[Int],
-    shell_elem_instance_offsets: List[Int],
+    layered_shell_section_defs: List[LayeredShellSectionDef],
+    mut shell_cache: ShellAssemblyCache,
     elem_dof_offsets: List[Int],
     elem_dof_pool: List[Int],
     mut dof_map6: List[Int],
@@ -2941,7 +2845,7 @@ fn _assemble_global_stiffness_and_internal_filtered(
     if len(u_elem6) != 6:
         u_elem6.resize(6, 0.0)
     var force_beam_column2d_scratch = ForceBeamColumn2dScratch()
-    var force_beam_column3d_scratch = ForceBeamColumn3dScratch()
+    var force_beam_column3d_scratch = Frame3dAssemblyScratch()
 
     for e in range(elem_count):
         var elem = elements[e]
@@ -3244,14 +3148,11 @@ fn _assemble_global_stiffness_and_internal_filtered(
             or elem_type == ElementTypeTag.Shell
         ):
             _assemble_surface_element(
+                e,
                 elem,
                 nodes,
                 materials_by_id,
-                sections_by_id,
-                shell_elem_instance_offsets[e],
-                layered_shell_section_index_by_id,
-                layered_shell_section_uniaxial_offsets,
-                layered_shell_section_uniaxial_counts,
+                shell_cache,
                 layered_shell_section_defs,
                 uniaxial_defs,
                 uniaxial_states,
@@ -3261,3 +3162,80 @@ fn _assemble_global_stiffness_and_internal_filtered(
             )
         else:
             abort("unsupported element type tag")
+
+
+fn assemble_link_stiffness_native[S: ElementMatrixSink](
+    nodes: List[NodeInput],
+    elements: List[ElementInput],
+    zero_length_elem_indices: List[Int],
+    two_node_link_elem_indices: List[Int],
+    ndf: Int,
+    ndm: Int,
+    u: List[Float64],
+    uniaxial_defs: List[UniMaterialDef],
+    uniaxial_state_defs: List[Int],
+    mut uniaxial_states: List[UniMaterialState],
+    elem_uniaxial_offsets: List[Int],
+    elem_uniaxial_counts: List[Int],
+    elem_uniaxial_state_ids: List[Int],
+    elem_free_offsets: List[Int],
+    elem_free_pool: List[Int],
+    only_rayleigh_participating: Bool,
+    mut sink: S,
+    mut F_scratch: List[Float64],
+):
+    """Link-element (zeroLength, twoNodeLink) tangent scattered into `sink`.
+
+    Sparse counterpart of `assemble_link_stiffness_typed`: filter mode 1
+    (all links) or 2 (links with `do_rayleigh`). Internal forces go to
+    `F_scratch`, which callers discard.
+    """
+    var filter_mode = 1
+    if only_rayleigh_participating:
+        filter_mode = 2
+    sink.zero_matrix()
+    _zero_vector(F_scratch)
+    for idx in range(len(zero_length_elem_indices)):
+        var e = zero_length_elem_indices[idx]
+        if not _assembly_filter_accepts_element(elements[e], filter_mode):
+            continue
+        _assemble_zero_length_element_native(
+            e,
+            elements[e],
+            nodes,
+            ndf,
+            ndm,
+            u,
+            uniaxial_defs,
+            uniaxial_state_defs,
+            uniaxial_states,
+            elem_uniaxial_offsets,
+            elem_uniaxial_counts,
+            elem_uniaxial_state_ids,
+            elem_free_offsets,
+            elem_free_pool,
+            sink,
+            F_scratch,
+        )
+    for idx in range(len(two_node_link_elem_indices)):
+        var e = two_node_link_elem_indices[idx]
+        if not _assembly_filter_accepts_element(elements[e], filter_mode):
+            continue
+        _assemble_two_node_link_element_native(
+            e,
+            elements[e],
+            nodes,
+            ndf,
+            ndm,
+            u,
+            uniaxial_defs,
+            uniaxial_state_defs,
+            uniaxial_states,
+            elem_uniaxial_offsets,
+            elem_uniaxial_counts,
+            elem_uniaxial_state_ids,
+            elem_free_offsets,
+            elem_free_pool,
+            sink,
+            F_scratch,
+        )

@@ -294,14 +294,7 @@ def run_case_input(
     ref fiber_section3d_cells = state.fiber_section3d_cells
     ref fiber_section3d_index_by_id = state.fiber_section3d_index_by_id
     ref layered_shell_section_defs = state.layered_shell_section_defs
-    ref layered_shell_section_index_by_id = state.layered_shell_section_index_by_id
-    ref layered_shell_section_uniaxial_offsets = (
-        state.layered_shell_section_uniaxial_offsets
-    )
-    ref layered_shell_section_uniaxial_counts = (
-        state.layered_shell_section_uniaxial_counts
-    )
-    ref shell_elem_instance_offsets = state.shell_elem_instance_offsets
+    ref shell_cache = state.shell_cache
     ref elem_id_to_index = state.elem_id_to_index
     ref pattern_element_loads = state.element_loads
     ref node_x = state.node_x
@@ -428,11 +421,8 @@ def run_case_input(
             fiber_section3d_defs,
             fiber_section3d_cells,
             fiber_section3d_index_by_id,
-        layered_shell_section_defs,
-        layered_shell_section_index_by_id,
-        layered_shell_section_uniaxial_offsets,
-        layered_shell_section_uniaxial_counts,
-        shell_elem_instance_offsets,
+            layered_shell_section_defs,
+            shell_cache,
             analysis,
             free_index,
             free,
@@ -522,11 +512,8 @@ def run_case_input(
                 fiber_section3d_defs,
                 fiber_section3d_cells,
                 fiber_section3d_index_by_id,
-        layered_shell_section_defs,
-        layered_shell_section_index_by_id,
-        layered_shell_section_uniaxial_offsets,
-        layered_shell_section_uniaxial_counts,
-        shell_elem_instance_offsets,
+                layered_shell_section_defs,
+                shell_cache,
                 total_dofs,
                 F_const,
                 F_pattern,
@@ -621,11 +608,8 @@ def run_case_input(
                 fiber_section3d_defs,
                 fiber_section3d_cells,
                 fiber_section3d_index_by_id,
-        layered_shell_section_defs,
-        layered_shell_section_index_by_id,
-        layered_shell_section_uniaxial_offsets,
-        layered_shell_section_uniaxial_counts,
-        shell_elem_instance_offsets,
+                layered_shell_section_defs,
+                shell_cache,
                 total_dofs,
                 F_const,
                 F_pattern,
@@ -748,11 +732,8 @@ def run_case_input(
             fiber_section3d_defs,
             fiber_section3d_cells,
             fiber_section3d_index_by_id,
-        layered_shell_section_defs,
-        layered_shell_section_index_by_id,
-        layered_shell_section_uniaxial_offsets,
-        layered_shell_section_uniaxial_counts,
-        shell_elem_instance_offsets,
+            layered_shell_section_defs,
+            shell_cache,
             transient_output_files,
             transient_output_buffers,
             has_transformation_mpc,
@@ -854,11 +835,8 @@ def run_case_input(
             fiber_section3d_defs,
             fiber_section3d_cells,
             fiber_section3d_index_by_id,
-        layered_shell_section_defs,
-        layered_shell_section_index_by_id,
-        layered_shell_section_uniaxial_offsets,
-        layered_shell_section_uniaxial_counts,
-        shell_elem_instance_offsets,
+            layered_shell_section_defs,
+            shell_cache,
             transient_output_files,
             transient_output_buffers,
             progress_path,
@@ -1088,11 +1066,8 @@ def run_case_input(
                     fiber_section3d_defs,
                     fiber_section3d_cells,
                     fiber_section3d_index_by_id,
-        layered_shell_section_defs,
-        layered_shell_section_index_by_id,
-        layered_shell_section_uniaxial_offsets,
-        layered_shell_section_uniaxial_counts,
-        shell_elem_instance_offsets,
+                    layered_shell_section_defs,
+                    shell_cache,
                     stage_analysis,
                     free_index,
                     free,
@@ -1190,11 +1165,8 @@ def run_case_input(
                         fiber_section3d_defs,
                         fiber_section3d_cells,
                         fiber_section3d_index_by_id,
-        layered_shell_section_defs,
-        layered_shell_section_index_by_id,
-        layered_shell_section_uniaxial_offsets,
-        layered_shell_section_uniaxial_counts,
-        shell_elem_instance_offsets,
+                        layered_shell_section_defs,
+                        shell_cache,
                         total_dofs,
                         F_const,
                         stage_F,
@@ -1298,11 +1270,8 @@ def run_case_input(
                         fiber_section3d_defs,
                         fiber_section3d_cells,
                         fiber_section3d_index_by_id,
-        layered_shell_section_defs,
-        layered_shell_section_index_by_id,
-        layered_shell_section_uniaxial_offsets,
-        layered_shell_section_uniaxial_counts,
-        shell_elem_instance_offsets,
+                        layered_shell_section_defs,
+                        shell_cache,
                         total_dofs,
                         F_const,
                         stage_F,
@@ -1428,11 +1397,8 @@ def run_case_input(
                     fiber_section3d_defs,
                     fiber_section3d_cells,
                     fiber_section3d_index_by_id,
-        layered_shell_section_defs,
-        layered_shell_section_index_by_id,
-        layered_shell_section_uniaxial_offsets,
-        layered_shell_section_uniaxial_counts,
-        shell_elem_instance_offsets,
+                    layered_shell_section_defs,
+                    shell_cache,
                     transient_output_files,
                     transient_output_buffers,
                     has_transformation_mpc,
@@ -1543,11 +1509,8 @@ def run_case_input(
                     fiber_section3d_defs,
                     fiber_section3d_cells,
                     fiber_section3d_index_by_id,
-        layered_shell_section_defs,
-        layered_shell_section_index_by_id,
-        layered_shell_section_uniaxial_offsets,
-        layered_shell_section_uniaxial_counts,
-        shell_elem_instance_offsets,
+                    layered_shell_section_defs,
+                    shell_cache,
                     transient_output_files,
                     transient_output_buffers,
                     progress_path,
@@ -1617,11 +1580,8 @@ def run_case_input(
                     fiber_section3d_defs,
                     fiber_section3d_cells,
                     fiber_section3d_index_by_id,
-        layered_shell_section_defs,
-        layered_shell_section_index_by_id,
-        layered_shell_section_uniaxial_offsets,
-        layered_shell_section_uniaxial_counts,
-        shell_elem_instance_offsets,
+                    layered_shell_section_defs,
+                    shell_cache,
                     M_total,
                     constrained,
                     free,
@@ -1685,11 +1645,8 @@ def run_case_input(
             fiber_section3d_defs,
             fiber_section3d_cells,
             fiber_section3d_index_by_id,
-        layered_shell_section_defs,
-        layered_shell_section_index_by_id,
-        layered_shell_section_uniaxial_offsets,
-        layered_shell_section_uniaxial_counts,
-        shell_elem_instance_offsets,
+            layered_shell_section_defs,
+            shell_cache,
             M_total,
             constrained,
             free,
@@ -1817,11 +1774,8 @@ def run_case_input(
                 fiber_section3d_defs,
                 fiber_section3d_cells,
                 fiber_section3d_index_by_id,
-        layered_shell_section_defs,
-        layered_shell_section_index_by_id,
-        layered_shell_section_uniaxial_offsets,
-        layered_shell_section_uniaxial_counts,
-        shell_elem_instance_offsets,
+                layered_shell_section_defs,
+                shell_cache,
             )
             F_ext_reaction = final_F.copy()
         var envelope_files: List[String] = []
@@ -2244,6 +2198,13 @@ def run_case_input(
     )
     phase_json += "  \"output_write_us\": " + String(output_write_us) + ",\n"
     phase_json += "  \"total_case_us\": " + String(total_us) + ",\n"
+    if runtime_metrics.enabled:
+        phase_json += (
+            "  \"shell_compute_us\": " + String(runtime_metrics.shell_compute_ns // 1000) + ",\n"
+        )
+        phase_json += (
+            "  \"shell_scatter_us\": " + String(runtime_metrics.shell_scatter_ns // 1000) + ",\n"
+        )
     phase_json += "  \"element_type_timing_us\": {\n"
     var need_elem_comma = False
     for element_type in range(len(runtime_metrics.element_type_total_ns)):

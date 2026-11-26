@@ -9,10 +9,7 @@ from solver.assembly.stiffness_internal_shared import (
     _elem_dof_map,
     _gather_element_u,
 )
-from solver.run_case.linear_solver_backend import (
-    LinearSolverBackend,
-    add_element_matrix_from_pool,
-)
+from solver.sparse_pattern import ElementMatrixSink
 from solver.run_case.input_types import ElementInput, NodeInput
 
 
@@ -355,7 +352,7 @@ fn _assemble_zero_length_element(
                     K[dof_map[i]][dof_map[j]] += ri * tangent * rj
 
 
-fn _assemble_zero_length_element_native(
+fn _assemble_zero_length_element_native[S: ElementMatrixSink](
     e: Int,
     elem: ElementInput,
     nodes: List[NodeInput],
@@ -370,7 +367,7 @@ fn _assemble_zero_length_element_native(
     elem_uniaxial_state_ids: List[Int],
     elem_free_offsets: List[Int],
     elem_free_pool: List[Int],
-    mut backend: LinearSolverBackend,
+    mut backend: S,
     mut F_int: List[Float64],
 ):
     var node1 = nodes[elem.node_index_1]
@@ -423,8 +420,8 @@ fn _assemble_zero_length_element_native(
                 var rj = row[j]
                 if rj != 0.0:
                     k_global[i][j] += ri * tangent * rj
-    add_element_matrix_from_pool(
-        backend,
+    backend.add_element_matrix(
+        e,
         elem_free_pool,
         elem_free_offsets[e],
         elem.dof_count,
@@ -542,7 +539,7 @@ fn _assemble_two_node_link_element(
             K[dof_map[i]][dof_map[j]] += kij
 
 
-fn _assemble_two_node_link_element_native(
+fn _assemble_two_node_link_element_native[S: ElementMatrixSink](
     e: Int,
     elem: ElementInput,
     nodes: List[NodeInput],
@@ -557,7 +554,7 @@ fn _assemble_two_node_link_element_native(
     elem_uniaxial_state_ids: List[Int],
     elem_free_offsets: List[Int],
     elem_free_pool: List[Int],
-    mut backend: LinearSolverBackend,
+    mut backend: S,
     mut F_int: List[Float64],
 ):
     var node1 = nodes[elem.node_index_1]
@@ -655,8 +652,8 @@ fn _assemble_two_node_link_element_native(
             k_global[i][j] = kij
     for i in range(elem.dof_count):
         F_int[dof_map[i]] += p_global[i]
-    add_element_matrix_from_pool(
-        backend,
+    backend.add_element_matrix(
+        e,
         elem_free_pool,
         elem_free_offsets[e],
         elem.dof_count,

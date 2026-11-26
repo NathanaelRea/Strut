@@ -1,5 +1,6 @@
 from collections import List
 from os import abort
+from simd_math import pow_nonneg
 from tag_types import UniMaterialTypeTag
 
 
@@ -16,7 +17,7 @@ fn _sign(x: Float64) -> Float64:
 
 
 fn _pow_abs(x: Float64, p: Float64) -> Float64:
-    return _abs(x) ** p
+    return pow_nonneg(_abs(x), p)
 
 
 struct StressTangent(Defaultable, Movable, ImplicitlyCopyable):

@@ -1,10 +1,13 @@
 from collections import List
 from elements import (
     ForceBeamColumn2dScratch,
-    ForceBeamColumn3dScratch,
     reset_force_beam_column2d_scratch,
-    reset_force_beam_column3d_scratch,
 )
+from solver.assembly.frame3d_scratch import (
+    Frame3dAssemblyScratch,
+    reset_frame3d_assembly_scratch,
+)
+from solver.assembly.shell_cache import ShellAssemblyCache
 from solver.run_case.input_types import ElementLoadInput
 from materials import UniMaterialDef, UniMaterialState
 from python import Python
@@ -101,14 +104,11 @@ fn run_static_linear(
     mut fiber_section_defs: List[FiberSection2dDef],
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
-    fiber_section3d_defs: List[FiberSection3dDef],
+    mut fiber_section3d_defs: List[FiberSection3dDef],
     fiber_section3d_cells: List[FiberCell],
     fiber_section3d_index_by_id: List[Int],
-    mut layered_shell_section_defs: List[LayeredShellSectionDef],
-    layered_shell_section_index_by_id: List[Int],
-    layered_shell_section_uniaxial_offsets: List[Int],
-    layered_shell_section_uniaxial_counts: List[Int],
-    shell_elem_instance_offsets: List[Int],
+    layered_shell_section_defs: List[LayeredShellSectionDef],
+    mut shell_cache: ShellAssemblyCache,
     analysis: AnalysisInput,
     free_index: List[Int],
     free: List[Int],
@@ -140,7 +140,7 @@ fn run_static_linear(
     var asm_dof_map12: List[Int] = []
     var asm_u_elem6: List[Float64] = []
     var force_beam_column2d_scratch = ForceBeamColumn2dScratch()
-    var force_beam_column3d_scratch = ForceBeamColumn3dScratch()
+    var force_beam_column3d_scratch = Frame3dAssemblyScratch()
     var asm_free_map6: List[Int] = []
     var asm_f_dummy: List[Float64] = []
     var load_scale = 1.0
@@ -168,7 +168,7 @@ fn run_static_linear(
             (t_reset_start - t0) // 1000,
         )
     reset_force_beam_column2d_scratch(force_beam_column2d_scratch)
-    reset_force_beam_column3d_scratch(force_beam_column3d_scratch)
+    reset_frame3d_assembly_scratch(force_beam_column3d_scratch)
     if do_profile:
         var t_reset_end = Int(time.perf_counter_ns())
         _append_event(
@@ -325,11 +325,8 @@ fn run_static_linear(
             fiber_section3d_defs,
             fiber_section3d_cells,
             fiber_section3d_index_by_id,
-        layered_shell_section_defs,
-        layered_shell_section_index_by_id,
-        layered_shell_section_uniaxial_offsets,
-        layered_shell_section_uniaxial_counts,
-        shell_elem_instance_offsets,
+            layered_shell_section_defs,
+            shell_cache,
             force_beam_column2d_scratch,
             force_beam_column3d_scratch,
             asm_dof_map6,
@@ -403,11 +400,8 @@ fn run_static_linear(
             fiber_section3d_defs,
             fiber_section3d_cells,
             fiber_section3d_index_by_id,
-        layered_shell_section_defs,
-        layered_shell_section_index_by_id,
-        layered_shell_section_uniaxial_offsets,
-        layered_shell_section_uniaxial_counts,
-        shell_elem_instance_offsets,
+            layered_shell_section_defs,
+            shell_cache,
             force_beam_column2d_scratch,
             force_beam_column3d_scratch,
             asm_dof_map6,

@@ -550,6 +550,7 @@ def run_section_path():
             )
             fiber_section3d_commit(
                 0,
+                defs3d,
                 section_uniaxial_offsets3d,
                 section_uniaxial_counts3d,
                 uniaxial_states3d,

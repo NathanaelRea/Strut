@@ -1,4 +1,5 @@
 from materials.uniaxial.core import _abs, _pow_abs, UniMaterialDef, UniMaterialState
+from simd_math import pow_nonneg
 
 fn _steel02_set_trial(
     mat_def: UniMaterialDef, mut state: UniMaterialState, trial_eps: Float64
@@ -71,7 +72,7 @@ fn _steel02_set_trial(
         if state.eps_c < epsmin:
             epsmin = state.eps_c
         var d1 = (epsmax - epsmin) / (2.0 * (a4 * epsy))
-        var shft = 1.0 + a3 * (d1 ** 0.8)
+        var shft = 1.0 + a3 * pow_nonneg(d1, 0.8)
         epss0 = (Fy * shft - Esh * epsy * shft - sigr + E0 * epsr) / (E0 - Esh)
         sigs0 = Fy * shft + Esh * (epss0 - epsy * shft)
         epspl = epsmax
@@ -82,7 +83,7 @@ fn _steel02_set_trial(
         if state.eps_c > epsmax:
             epsmax = state.eps_c
         var d1 = (epsmax - epsmin) / (2.0 * (a2 * epsy))
-        var shft = 1.0 + a1 * (d1 ** 0.8)
+        var shft = 1.0 + a1 * pow_nonneg(d1, 0.8)
         epss0 = (-Fy * shft + Esh * epsy * shft - sigr + E0 * epsr) / (E0 - Esh)
         sigs0 = -Fy * shft + Esh * (epss0 + epsy * shft)
         epspl = epsmin
@@ -91,7 +92,7 @@ fn _steel02_set_trial(
     var R = R0 * (1.0 - (cR1 * xi) / (cR2 + xi))
     var epsrat = (eps - epsr) / (epss0 - epsr)
     var dum1 = 1.0 + _pow_abs(epsrat, R)
-    var dum2 = dum1 ** (1.0 / R)
+    var dum2 = pow_nonneg(dum1, 1.0 / R)
 
     var sig = b * epsrat + (1.0 - b) * epsrat / dum2
     sig = sig * (sigs0 - sigr) + sigr

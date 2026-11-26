@@ -4,6 +4,7 @@ import csv
 import importlib
 import json
 import os
+import re
 import platform
 import shutil
 import subprocess
@@ -189,6 +190,9 @@ PHASE_FRAME_MAP = {
 }
 
 ENGINE_ORDER = ("opensees", "openseesmp", "strut")
+# Strut's worker-thread knob, and where the extra STRUT_THREADS=1 pass is stored.
+STRUT_THREADS_ENV = "STRUT_THREADS"
+STRUT_SINGLE_THREAD_KEY = "strut_single_thread"
 ENGINE_LABELS = {
     "opensees": "OpenSees",
     "openseesmp": "OpenSeesMP",
@@ -338,6 +342,14 @@ def build_argument_parser() -> argparse.ArgumentParser:
         "--no-batch",
         action="store_true",
         help="Disable OpenSees batch mode and run OpenSees cases in separate processes. OpenSeesMP and Strut run per case.",
+    )
+    parser.add_argument(
+        "--strut-single-thread",
+        action="store_true",
+        help=(
+            "Also time Strut with STRUT_THREADS=1 and record it as "
+            "strut_single_thread. The normal Strut pass keeps its default threads."
+        ),
     )
     parser.add_argument(
         "--warmup",
@@ -819,6 +831,16 @@ def _canonical_reference_ready(case_data: dict, reference_dir: Path) -> bool:
 
 
 def _load_direct_tcl_case_data(case: CaseSpec, repo_root: Path) -> dict:
+    return _load_direct_tcl_case(case, repo_root)[0]
+
+
+def _load_direct_tcl_case(case: CaseSpec, repo_root: Path) -> tuple[dict, Path]:
+    """Return the converted case and the mirrored entry Tcl it was read from.
+
+    Converting can write files the case then depends on (ReadSMDFile turns a
+    ground motion into a `.g3` next to the scripts), so callers must reuse this
+    mirror rather than preparing a fresh one over it.
+    """
     import tcl_to_strut
 
     if case.tcl_path is None:
@@ -839,7 +861,7 @@ def _load_direct_tcl_case_data(case: CaseSpec, repo_root: Path) -> dict:
     ):
         if key in metadata:
             case_data[key] = metadata[key]
-    return case_data
+    return case_data, parser_entry
 
 
 def _write_generated_direct_tcl_case(case_data: dict, case_root: Path) -> Path:
@@ -1168,7 +1190,8 @@ def _prepare_opensees_compat_entry(entry_tcl: Path) -> Path:
                 "        return -options $opts $result",
                 "    }",
                 "}",
-                f"source {{{entry_tcl.name}}}",
+                # Batch runs source this from each case's output directory.
+                f"source [file join [file dirname [info script]] {{{entry_tcl.name}}}]",
                 "",
             ]
         ),
@@ -1295,7 +1318,7 @@ def _ensure_direct_tcl_case_artifacts(
 
     case_root = _direct_case_root(case)
     case_root.mkdir(parents=True, exist_ok=True)
-    case_data = _load_direct_tcl_case_data(case, repo_root)
+    case_data, validation_entry = _load_direct_tcl_case(case, repo_root)
     _write_generated_direct_tcl_case(case_data, case_root)
     if not require_parser_check:
         return case_data
@@ -1307,12 +1330,6 @@ def _ensure_direct_tcl_case_artifacts(
             env,
             verbose,
             capture_on_error=True,
-        )
-        source_files = _resolve_direct_tcl_source_files(case)
-        validation_entry = _prepare_direct_tcl_entry(
-            case.tcl_path.resolve(),
-            case_root / "generated" / "_direct_tcl_context",
-            source_files=source_files,
         )
         original_reference_tcl = _prepare_opensees_compat_entry(validation_entry)
         _validate_generated_tcl_matches_original(
@@ -1710,6 +1727,32 @@ def _safe_check_output(cmd: List[str], cwd: Optional[Path] = None) -> Optional[s
     return text or None
 
 
+def _opensees_version(repo_root: Path) -> Optional[str]:
+    """Version from the banner of the binary scripts/run_opensees.sh would use."""
+    try:
+        binary = subprocess.check_output(
+            [
+                "bash",
+                "-c",
+                'source "$1" && strut_resolve_opensees_binary OpenSees "${OPENSEES_BIN:-}"',
+                "bash",
+                str(repo_root / "scripts" / "opensees_env.sh"),
+            ],
+            text=True,
+        ).strip()
+        result = subprocess.run(
+            [binary],
+            input='puts "ok"\n',
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    match = re.search(r"Version\s+(\d+(?:\.\d+)+)", result.stdout + result.stderr)
+    return match.group(1) if match else None
+
+
 def collect_run_metadata(
     repo_root: Path,
     args: argparse.Namespace,
@@ -1746,6 +1789,10 @@ def collect_run_metadata(
             "strut_batch_mode": strut_batch_mode,
             "repeat": args.repeat,
             "warmup": args.warmup,
+            "strut_threads": os.getenv(STRUT_THREADS_ENV) or "performance cores",
+            "strut_single_thread_pass": bool(
+                getattr(args, "strut_single_thread", False)
+            ),
             "profile_enabled": bool(args.profile),
             "results_root": str(results_root),
             "profile_root": str(profile_root) if profile_root is not None else None,
@@ -1754,6 +1801,11 @@ def collect_run_metadata(
         "build": {
             "strut_solver": str(strut_solver) if strut_solver is not None else None,
             "opensees_runner": str(repo_root / "scripts" / "run_opensees.sh"),
+            "opensees_version": (
+                _opensees_version(repo_root)
+                if "opensees" in selected_engines
+                else None
+            ),
             "openseesmp_runner": str(repo_root / "scripts" / "run_openseesmp.sh"),
             "openseesmp_procs": int(
                 os.getenv("OPENSEESMP_PROCS", str(_default_openseesmp_procs()))
@@ -2700,7 +2752,8 @@ def main() -> None:
         args.no_archive = True
 
     if args.output_root:
-        results_root = Path(args.output_root)
+        # Batch Tcl sources case scripts by path after changing directory.
+        results_root = Path(args.output_root).resolve()
     elif args.profile:
         results_root = repo_root / "benchmark" / "results-profile"
     else:
@@ -2719,6 +2772,7 @@ def main() -> None:
         "opensees",
         "openseesmp",
         "strut",
+        STRUT_SINGLE_THREAD_KEY,
         "tcl",
         ".tmp",
     ):
@@ -2820,6 +2874,10 @@ def main() -> None:
             "dofs": _case_free_dofs(case_data),
             "case_file": str(_case_metadata_path(case)),
         }
+        # Caveats a generated case carries, shown next to its results.
+        notes = (case_data.get("metadata") or {}).get("notes")
+        if isinstance(notes, str) and notes:
+            case_entry["notes"] = notes
         if case.json_path is not None:
             case_entry["json"] = str(_case_json_path(case))
         elif case.tcl_path is not None:
@@ -3269,12 +3327,17 @@ def main() -> None:
             if not last_run:
                 shutil.rmtree(target_dir, ignore_errors=True)
 
-        def strut_cmd(output_dir: Path, last_run: bool) -> None:
+        def strut_cmd(
+            output_dir: Path,
+            last_run: bool,
+            run_env: dict,
+            analysis_hist: List[float],
+        ) -> None:
             if last_run:
                 ensure_clean_dir(output_dir)
                 target_dir = output_dir
             else:
-                tmp_dir = results_root / ".tmp" / "strut" / case_name
+                tmp_dir = results_root / ".tmp" / output_dir.parent.name / case_name
                 ensure_clean_dir(tmp_dir)
                 target_dir = tmp_dir
             if strut_solver is None:
@@ -3287,12 +3350,66 @@ def main() -> None:
                 cmd += ["--profile", str(profile_path)]
             run(
                 cmd,
-                env=env,
+                env=run_env,
                 verbose=verbose,
                 capture_on_error=True,
             )
+            analysis_us = _read_analysis_us(target_dir / "analysis_time_us.txt")
+            if analysis_us is not None:
+                analysis_hist.append(analysis_us)
             if not last_run:
                 shutil.rmtree(target_dir, ignore_errors=True)
+
+        def run_strut_pass(engine_key: str, label: str, run_env: dict) -> None:
+            log(f"[{case_name}] {label} compute-only pass...")
+            analysis_hist: List[float] = []
+            try:
+                strut_times = run_engine(
+                    lambda out, last_run: strut_cmd(
+                        out / case_name, last_run, run_env, analysis_hist
+                    ),
+                    results_root / engine_key,
+                    args.repeat,
+                    args.warmup,
+                )
+            except subprocess.CalledProcessError as exc:
+                _write_case_error(
+                    results_root / engine_key / case_name,
+                    _format_subprocess_failure(
+                        f"{label.lower()} compute-only pass aborted", exc
+                    ),
+                )
+                log_err(
+                    f"[{case_name}] {label} compute-only pass aborted (exit {exc.returncode})."
+                )
+                return
+            log_ok(f"[{case_name}] {label} compute-only pass OK.")
+            # Warmup runs are timed by the solver too; keep only the repeats.
+            timed_hist = analysis_hist[-args.repeat :]
+            stats = {
+                "times_s": strut_times,
+                "mean_s": mean(strut_times),
+                "median_s": median(strut_times),
+                "min_s": min(strut_times),
+                "analysis_us": median(timed_hist) if timed_hist else None,
+                "analysis_min_us": min(timed_hist) if timed_hist else None,
+                "repeats": len(timed_hist),
+            }
+            case_entry[engine_key] = stats
+            csv_rows.append(
+                {
+                    "case": case_name,
+                    "dofs": case_entry.get("dofs", ""),
+                    "engine": engine_key,
+                    "mode": "compute_only",
+                    "repeat": args.repeat,
+                    "warmup": args.warmup,
+                    "mean_s": f"{stats['mean_s']:.6f}",
+                    "median_s": f"{stats['median_s']:.6f}",
+                    "min_s": f"{stats['min_s']:.6f}",
+                    "analysis_us": stats["analysis_us"],
+                }
+            )
 
         def openseesmp_cmd(output_dir: Path, last_run: bool) -> None:
             tcl_compute = Path(case_entry["tcl_compute"])
@@ -3336,7 +3453,6 @@ def main() -> None:
                     f"[{case_name}] OpenSees compute-only pass aborted (exit {exc.returncode})."
                 )
             else:
-                log_ok(f"[{case_name}] OpenSees compute-only pass OK.")
                 stats = {
                     "times_s": opensees_times,
                     "mean_s": mean(opensees_times),
@@ -3356,6 +3472,17 @@ def main() -> None:
                         case_entry["opensees"]["analysis_us"] = None
                 else:
                     case_entry["opensees"]["analysis_us"] = None
+                if case_entry["opensees"]["analysis_us"] is None:
+                    # run_opensees.sh hides the exit status; the timing file is
+                    # written last, so its absence means the script stopped early.
+                    _write_case_error(
+                        results_root / "opensees" / case_name,
+                        "OpenSees wrote no analysis time: the script stopped before "
+                        "finishing (for example an analysis that did not converge).",
+                    )
+                    log_err(f"[{case_name}] OpenSees compute-only pass did not finish.")
+                else:
+                    log_ok(f"[{case_name}] OpenSees compute-only pass OK.")
                 csv_rows.append(
                     {
                         "case": case_name,
@@ -3372,48 +3499,12 @@ def main() -> None:
                 )
 
         if run_strut_per_case:
-            log(f"[{case_name}] Strut compute-only pass...")
-            try:
-                strut_times = run_engine(
-                    lambda out, last_run: strut_cmd(out / case_name, last_run),
-                    results_root / "strut",
-                    args.repeat,
-                    args.warmup,
-                )
-            except subprocess.CalledProcessError as exc:
-                _write_case_error(
-                    results_root / "strut" / case_name,
-                    _format_subprocess_failure("strut compute-only pass aborted", exc),
-                )
-                log_err(
-                    f"[{case_name}] Strut compute-only pass aborted (exit {exc.returncode})."
-                )
-            else:
-                log_ok(f"[{case_name}] Strut compute-only pass OK.")
-                stats = {
-                    "times_s": strut_times,
-                    "mean_s": mean(strut_times),
-                    "median_s": median(strut_times),
-                    "min_s": min(strut_times),
-                }
-                analysis_file = (
-                    results_root / "strut" / case_name / "analysis_time_us.txt"
-                )
-                stats["analysis_us"] = _read_analysis_us(analysis_file)
-                case_entry["strut"] = stats
-                csv_rows.append(
-                    {
-                        "case": case_name,
-                        "dofs": case_entry.get("dofs", ""),
-                        "engine": "strut",
-                        "mode": "compute_only",
-                        "repeat": args.repeat,
-                        "warmup": args.warmup,
-                        "mean_s": f"{stats['mean_s']:.6f}",
-                        "median_s": f"{stats['median_s']:.6f}",
-                        "min_s": f"{stats['min_s']:.6f}",
-                        "analysis_us": stats["analysis_us"],
-                    }
+            run_strut_pass("strut", "Strut", env)
+            if args.strut_single_thread:
+                run_strut_pass(
+                    STRUT_SINGLE_THREAD_KEY,
+                    "Strut single-thread",
+                    {**env, STRUT_THREADS_ENV: "1"},
                 )
 
         if run_openseesmp_per_case:
@@ -3529,10 +3620,13 @@ def main() -> None:
     print(f"Wrote {plots_pdf}")
     for line in _strut_slower_than_opensees_lines(case_entries):
         print(line)
+    failure_engines = list(selected_engines)
+    if run_strut and args.strut_single_thread:
+        failure_engines.append(STRUT_SINGLE_THREAD_KEY)
     runtime_failures = setup_failures + _read_runtime_failures(
         case_entries,
         results_root,
-        engines=selected_engines,
+        engines=failure_engines,
     )
     case_file_map = {entry["name"]: str(entry.get("case_file", "")) for entry in case_entries}
     if runtime_failures:

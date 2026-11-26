@@ -260,14 +260,22 @@ fn _build_material_maps(
     if doc.node_tag(materials_index) != JsonValueTag.Array:
         return
 
+    # Size the id tables once. Ids are sparse and can reach tens of millions;
+    # growing by one id at a time moves the whole table on every new material.
+    var max_material_id = -1
+    for i in range(doc.node_len(materials_index)):
+        var scanned_id = _json_int_key(doc, doc.array_item(materials_index, i), "id", -1)
+        if scanned_id > max_material_id:
+            max_material_id = scanned_id
+    if max_material_id >= len(material_types_by_id):
+        material_types_by_id.resize(max_material_id + 1, "")
+        material_base_by_id.resize(max_material_id + 1, -1)
+
     for i in range(doc.node_len(materials_index)):
         var material_index = doc.array_item(materials_index, i)
         var material_id = _json_int_key(doc, material_index, "id", -1)
         if material_id < 0:
             continue
-        if material_id >= len(material_types_by_id):
-            material_types_by_id.resize(material_id + 1, "")
-            material_base_by_id.resize(material_id + 1, -1)
         var material_type = _json_string_key(doc, material_index, "type", "")
         material_types_by_id[material_id] = material_type
         var params_index = _json_key(doc, material_index, "params")

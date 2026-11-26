@@ -14,6 +14,7 @@ from materials import (
     uni_mat_initial_tangent,
     uni_mat_is_elastic,
 )
+from solver.assembly.shell_cache import ShellAssemblyCache
 from solver.dof import node_dof_index, require_dof_in_range
 from solver.reorder import build_node_adjacency_typed, min_degree_order, rcm_order
 from solver.run_case.helpers import (
@@ -44,6 +45,8 @@ from sections import (
     append_fiber_section2d_from_input,
     append_fiber_section3d_from_input,
     fiber_section2d_runtime_alloc_instances,
+    fiber_section3d_runtime_alloc_instances,
+    fiber_section3d_runtime_reserve_instances,
     LayeredShellSectionDef,
     append_layered_shell_section_from_input,
     layered_shell_runtime_alloc_instances,
@@ -93,9 +96,6 @@ struct RunCaseState(Movable):
     var fiber_section3d_cells: List[FiberCell]
     var fiber_section3d_index_by_id: List[Int]
     var layered_shell_section_defs: List[LayeredShellSectionDef]
-    var layered_shell_section_index_by_id: List[Int]
-    var layered_shell_section_uniaxial_offsets: List[Int]
-    var layered_shell_section_uniaxial_counts: List[Int]
 
     var typed_elements: List[ElementInput]
     var elem_count: Int
@@ -115,7 +115,7 @@ struct RunCaseState(Movable):
     var elem_type_tags: List[Int]
     var elem_geom_tags: List[Int]
     var elem_section_ids: List[Int]
-    var shell_elem_instance_offsets: List[Int]
+    var shell_cache: ShellAssemblyCache
     var elem_integration_tags: List[Int]
     var elem_num_int_pts: List[Int]
     var elem_dof_counts: List[Int]
@@ -210,9 +210,6 @@ struct RunCaseState(Movable):
         self.fiber_section3d_cells = []
         self.fiber_section3d_index_by_id = []
         self.layered_shell_section_defs = []
-        self.layered_shell_section_index_by_id = []
-        self.layered_shell_section_uniaxial_offsets = []
-        self.layered_shell_section_uniaxial_counts = []
         self.typed_elements = []
         self.elem_count = 0
         self.elem_id_to_index = []
@@ -231,7 +228,7 @@ struct RunCaseState(Movable):
         self.elem_type_tags = []
         self.elem_geom_tags = []
         self.elem_section_ids = []
-        self.shell_elem_instance_offsets = []
+        self.shell_cache = ShellAssemblyCache()
         self.elem_integration_tags = []
         self.elem_num_int_pts = []
         self.elem_dof_counts = []
@@ -755,6 +752,22 @@ fn _elem_dir(elem: ElementInput, idx: Int) -> Int:
     return elem.dir_6
 
 
+fn _ensure_id_slot(mut table: List[Int], raw_id: Int):
+    """Make `table[raw_id]` addressable, filling new slots with -1.
+
+    Model ids are sparse and can run into the tens of millions. Growing the
+    table to exactly `raw_id + 1` for every new id copies the whole table each
+    time; growing geometrically keeps the total copy work linear in its size.
+    """
+    var size = len(table)
+    if raw_id < size:
+        return
+    var grown = size + size // 2
+    if grown < raw_id + 1:
+        grown = raw_id + 1
+    table.resize(grown, -1)
+
+
 fn load_case_state_from_input(
     var input: CaseInput, progress_path: String
 ) raises -> RunCaseState:
@@ -801,16 +814,14 @@ fn load_case_state_from_input(
     id_to_index.resize(10000, -1)
     for i in range(node_count):
         var nid = node_ids[i]
-        if nid >= len(id_to_index):
-            id_to_index.resize(nid + 1, -1)
+        _ensure_id_slot(id_to_index, nid)
         id_to_index[nid] = i
 
     var material_index_by_raw_id: List[Int] = []
     material_index_by_raw_id.resize(10000, -1)
     for i in range(len(materials)):
         var raw_id = materials[i].id
-        if raw_id >= len(material_index_by_raw_id):
-            material_index_by_raw_id.resize(raw_id + 1, -1)
+        _ensure_id_slot(material_index_by_raw_id, raw_id)
         material_index_by_raw_id[raw_id] = i
     for i in range(len(materials)):
         var mat = materials[i]
@@ -853,8 +864,7 @@ fn load_case_state_from_input(
     section_index_by_raw_id.resize(10000, -1)
     for i in range(len(sections)):
         var raw_id = sections[i].id
-        if raw_id >= len(section_index_by_raw_id):
-            section_index_by_raw_id.resize(raw_id + 1, -1)
+        _ensure_id_slot(section_index_by_raw_id, raw_id)
         section_index_by_raw_id[raw_id] = i
     for i in range(len(sections)):
         var sec = sections[i]
@@ -911,8 +921,7 @@ fn load_case_state_from_input(
     for i in range(len(materials)):
         var mat = materials[i]
         var mid = mat.id
-        if mid >= len(uniaxial_def_by_id):
-            uniaxial_def_by_id.resize(mid + 1, -1)
+        _ensure_id_slot(uniaxial_def_by_id, mid)
         var mat_type = mat.type
         if mat_type == "Elastic":
             var E = mat.E
@@ -1121,15 +1130,13 @@ fn load_case_state_from_input(
     var layered_shell_section_defs: List[LayeredShellSectionDef] = []
     var layered_shell_section_index_by_id: List[Int] = []
     var layered_shell_section_uniaxial_offsets: List[Int] = []
-    var layered_shell_section_uniaxial_counts: List[Int] = []
     layered_shell_section_index_by_id.resize(len(typed_sections_by_id), -1)
     for i in range(len(sections)):
         var sec = sections[i]
         var sec_type = sec.type
         var sid = sec.id
         if sec_type == "FiberSection2d":
-            if sid >= len(fiber_section_index_by_id):
-                fiber_section_index_by_id.resize(sid + 1, -1)
+            _ensure_id_slot(fiber_section_index_by_id, sid)
             append_fiber_section2d_from_input(
                 sec,
                 fiber_patches,
@@ -1142,8 +1149,7 @@ fn load_case_state_from_input(
             )
             fiber_section_index_by_id[sid] = len(fiber_section_defs) - 1
         elif sec_type == "FiberSection3d":
-            if sid >= len(fiber_section3d_index_by_id):
-                fiber_section3d_index_by_id.resize(sid + 1, -1)
+            _ensure_id_slot(fiber_section3d_index_by_id, sid)
             append_fiber_section3d_from_input(
                 sec,
                 fiber_patches,
@@ -1156,8 +1162,7 @@ fn load_case_state_from_input(
             )
             fiber_section3d_index_by_id[sid] = len(fiber_section3d_defs) - 1
         elif sec_type == "LayeredShellSection":
-            if sid >= len(layered_shell_section_index_by_id):
-                layered_shell_section_index_by_id.resize(sid + 1, -1)
+            _ensure_id_slot(layered_shell_section_index_by_id, sid)
             append_layered_shell_section_from_input(
                 layered_shell_section_defs,
                 sec,
@@ -1178,8 +1183,7 @@ fn load_case_state_from_input(
     for i in range(elem_count):
         var eid = typed_elements[i].id
         elem_ids[i] = eid
-        if eid >= len(elem_id_to_index):
-            elem_id_to_index.resize(eid + 1, -1)
+        _ensure_id_slot(elem_id_to_index, eid)
         elem_id_to_index[eid] = i
 
     for i in range(elem_count):
@@ -1704,6 +1708,28 @@ fn load_case_state_from_input(
     elem_uniaxial_counts.resize(elem_count, 0)
     force_basic_offsets.resize(elem_count, 0)
     force_basic_counts.resize(elem_count, 0)
+    var fiber3d_instance_counts: List[Int] = []
+    if len(fiber_section3d_defs) > 0:
+        fiber3d_instance_counts.resize(len(fiber_section3d_defs), 0)
+        for e in range(elem_count):
+            ref elem = typed_elements[e]
+            if (
+                elem.type_tag == ElementTypeTag.ForceBeamColumn3d
+                or elem.type_tag == ElementTypeTag.DispBeamColumn3d
+            ):
+                var sec_id = elem.section
+                if sec_id >= 0 and sec_id < len(typed_sections_by_id):
+                    ref sec = typed_sections_by_id[sec_id]
+                    if sec.type == "FiberSection3d":
+                        var sec_index = fiber_section3d_index_by_id[sec_id]
+                        if sec_index >= 0 and sec_index < len(fiber_section3d_defs):
+                            fiber3d_instance_counts[sec_index] += elem.num_int_pts
+        for s in range(len(fiber_section3d_defs)):
+            if fiber3d_instance_counts[s] > 0:
+                fiber_section3d_runtime_reserve_instances(
+                    fiber_section3d_defs[s], fiber3d_instance_counts[s]
+                )
+
     var used_nonelastic_uniaxial = False
     var force_beam_has_nonelastic = False
     for e in range(elem_count):
@@ -1832,37 +1858,21 @@ fn load_case_state_from_input(
                 var sec_index = fiber_section3d_index_by_id[sec_id]
                 if sec_index < 0 or sec_index >= len(fiber_section3d_defs):
                     abort(beam_col_type + " fiber section not found")
-                var sec_def = fiber_section3d_defs[sec_index]
+                ref sec_def = fiber_section3d_defs[sec_index]
                 var num_int_pts = elem.num_int_pts
                 var state_count = num_int_pts * sec_def.fiber_count
                 if elem.type_tag == ElementTypeTag.ForceBeamColumn3d:
                     force_basic_counts[e] = 5 + 3 * num_int_pts
                     for _ in range(force_basic_counts[e]):
                         force_basic_q.append(0.0)
+                elem_uniaxial_offsets[e] = fiber_section3d_runtime_alloc_instances(
+                    sec_def, num_int_pts
+                )
                 elem_uniaxial_counts[e] = state_count
-                for _ in range(num_int_pts):
-                    for i in range(sec_def.elastic_count):
-                        var def_index = sec_def.elastic_def_index[i]
-                        if def_index < 0 or def_index >= len(uniaxial_defs):
-                            abort(beam_col_type + " fiber material definition out of range")
-                        var mat_def = uniaxial_defs[def_index]
-                        var state_index = len(uniaxial_states)
-                        uniaxial_states.append(UniMaterialState(mat_def))
-                        uniaxial_state_defs.append(def_index)
-                        elem_uniaxial_state_ids.append(state_index)
-                    for i in range(sec_def.nonlinear_count):
-                        var def_index = sec_def.nonlinear_def_index[i]
-                        if def_index < 0 or def_index >= len(uniaxial_defs):
-                            abort(beam_col_type + " fiber material definition out of range")
-                        var mat_def = uniaxial_defs[def_index]
-                        var state_index = len(uniaxial_states)
-                        uniaxial_states.append(UniMaterialState(mat_def))
-                        uniaxial_state_defs.append(def_index)
-                        elem_uniaxial_state_ids.append(state_index)
-                        if not uni_mat_is_elastic(mat_def):
-                            used_nonelastic_uniaxial = True
-                            if elem.type_tag == ElementTypeTag.ForceBeamColumn3d:
-                                force_beam_has_nonelastic = True
+                if sec_def.has_nonelastic:
+                    used_nonelastic_uniaxial = True
+                    if elem.type_tag == ElementTypeTag.ForceBeamColumn3d:
+                        force_beam_has_nonelastic = True
             elif sec.type == "ElasticSection3d":
                 elem_uniaxial_counts[e] = 0
             else:
@@ -1954,9 +1964,20 @@ fn load_case_state_from_input(
         uniaxial_states,
         uniaxial_state_defs,
         layered_shell_section_uniaxial_offsets,
-        layered_shell_section_uniaxial_counts,
     ):
         used_nonelastic_uniaxial = True
+
+    var shell_cache = ShellAssemblyCache()
+    shell_cache.prepare(
+        shell_elem_indices,
+        typed_elements,
+        typed_nodes,
+        typed_sections_by_id,
+        layered_shell_section_defs,
+        layered_shell_section_index_by_id,
+        layered_shell_section_uniaxial_offsets,
+        shell_elem_instance_offsets,
+    )
 
     var total_dofs = node_count * ndf
     var F_total: List[Float64] = []
@@ -2560,13 +2581,6 @@ fn load_case_state_from_input(
     state.fiber_section3d_cells = fiber_section3d_cells^
     state.fiber_section3d_index_by_id = fiber_section3d_index_by_id^
     state.layered_shell_section_defs = layered_shell_section_defs^
-    state.layered_shell_section_index_by_id = layered_shell_section_index_by_id^
-    state.layered_shell_section_uniaxial_offsets = (
-        layered_shell_section_uniaxial_offsets^
-    )
-    state.layered_shell_section_uniaxial_counts = (
-        layered_shell_section_uniaxial_counts^
-    )
     swap(state.typed_elements, input.elements)
     state.elem_count = elem_count
     swap(state.element_loads, input.element_loads)
@@ -2585,7 +2599,7 @@ fn load_case_state_from_input(
     state.elem_type_tags = elem_type_tags^
     state.elem_geom_tags = elem_geom_tags^
     state.elem_section_ids = elem_section_ids^
-    state.shell_elem_instance_offsets = shell_elem_instance_offsets^
+    state.shell_cache = shell_cache^
     state.elem_integration_tags = elem_integration_tags^
     state.elem_num_int_pts = elem_num_int_pts^
     state.elem_dof_counts = elem_dof_counts^

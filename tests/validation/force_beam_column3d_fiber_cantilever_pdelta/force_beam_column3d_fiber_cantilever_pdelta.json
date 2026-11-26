@@ -1,0 +1,166 @@
+{
+  "schema_version": "1.0",
+  "enabled": true,
+  "benchmark_size": "small",
+  "metadata": {
+    "name": "force_beam_column3d_fiber_cantilever_pdelta",
+    "units": "SI"
+  },
+  "notes": "3D forceBeamColumn fiber column under axial compression near 40% of its weak-axis buckling load plus lateral loads on both axes, with geomTransf PDelta. The lateral response is amplified by P-Delta, so it catches a transformation that puts the geometric term in the tangent but not in the resisting force.",
+  "model": {
+    "ndm": 3,
+    "ndf": 6
+  },
+  "nodes": [
+    {
+      "id": 1,
+      "x": 0.0,
+      "y": 0.0,
+      "z": 0.0,
+      "constraints": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6
+      ]
+    },
+    {
+      "id": 2,
+      "x": 0.0,
+      "y": 0.0,
+      "z": 1.0
+    },
+    {
+      "id": 3,
+      "x": 0.0,
+      "y": 0.0,
+      "z": 2.0
+    },
+    {
+      "id": 4,
+      "x": 0.0,
+      "y": 0.0,
+      "z": 3.0
+    }
+  ],
+  "materials": [
+    {
+      "id": 1,
+      "type": "Elastic",
+      "params": {
+        "E": 30000000000.0
+      }
+    }
+  ],
+  "sections": [
+    {
+      "id": 1,
+      "type": "FiberSection3d",
+      "params": {
+        "G": 12000000000.0,
+        "J": 0.0002,
+        "patches": [
+          {
+            "type": "rect",
+            "material": 1,
+            "num_subdiv_y": 8,
+            "num_subdiv_z": 8,
+            "y_i": -0.2,
+            "z_i": -0.1,
+            "y_j": 0.2,
+            "z_j": 0.1
+          }
+        ],
+        "layers": []
+      }
+    }
+  ],
+  "elements": [
+    {
+      "id": 1,
+      "type": "forceBeamColumn3d",
+      "nodes": [
+        1,
+        2
+      ],
+      "section": 1,
+      "geomTransf": "PDelta",
+      "integration": "Lobatto",
+      "num_int_pts": 5
+    },
+    {
+      "id": 2,
+      "type": "forceBeamColumn3d",
+      "nodes": [
+        2,
+        3
+      ],
+      "section": 1,
+      "geomTransf": "PDelta",
+      "integration": "Lobatto",
+      "num_int_pts": 5
+    },
+    {
+      "id": 3,
+      "type": "forceBeamColumn3d",
+      "nodes": [
+        3,
+        4
+      ],
+      "section": 1,
+      "geomTransf": "PDelta",
+      "integration": "Lobatto",
+      "num_int_pts": 5
+    }
+  ],
+  "loads": [
+    {
+      "node": 4,
+      "dof": 3,
+      "value": -800000.0
+    },
+    {
+      "node": 4,
+      "dof": 1,
+      "value": 50000.0
+    },
+    {
+      "node": 4,
+      "dof": 2,
+      "value": 20000.0
+    }
+  ],
+  "analysis": {
+    "type": "static_nonlinear",
+    "steps": 10,
+    "max_iters": 50,
+    "tol": 1e-06
+  },
+  "recorders": [
+    {
+      "type": "node_displacement",
+      "nodes": [
+        2,
+        4
+      ],
+      "dofs": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6
+      ],
+      "output": "node_disp"
+    },
+    {
+      "type": "element_force",
+      "elements": [
+        1
+      ],
+      "output": "element_force"
+    }
+  ]
+}

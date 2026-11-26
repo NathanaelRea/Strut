@@ -423,6 +423,101 @@ def test_fiber_section_mixed_material_order_is_response_invariant():
             )
 
 
+def test_fiber_section2d_condenses_same_y_fibers_without_changing_response():
+    """A 2D section merges same-material fibers that share a y coordinate.
+
+    The z-refined section must respond exactly like a section that lists one
+    fiber per (material, y) with the summed area, through a cyclic nonlinear
+    path. Steel bars sit at the same y as concrete fibers, so merging across
+    materials would show up as a different response.
+    """
+    base = _mixed_family_section_case([])
+    materials = base["materials"]
+    deformation_path = base["deformation_path"]
+    half_depth = 0.3
+    half_width = 0.2
+    rows_y = 8
+    refined_params = {
+        "patches": [
+            {
+                "type": "rect",
+                "material": 1,
+                "num_subdiv_y": rows_y,
+                "num_subdiv_z": 12,
+                "y_i": -half_depth,
+                "z_i": -half_width,
+                "y_j": half_depth,
+                "z_j": half_width,
+            }
+        ],
+        "layers": [
+            # Bars spread along z at one y: these collapse to a single fiber.
+            {
+                "type": "straight",
+                "material": 3,
+                "num_bars": 4,
+                "bar_area": 0.0004,
+                "y_start": -0.2625,
+                "z_start": -0.15,
+                "y_end": -0.2625,
+                "z_end": 0.15,
+            },
+            {
+                "type": "straight",
+                "material": 3,
+                "num_bars": 3,
+                "bar_area": 0.0004,
+                "y_start": 0.2625,
+                "z_start": -0.15,
+                "y_end": 0.2625,
+                "z_end": 0.15,
+            },
+        ],
+    }
+    row_height = 2.0 * half_depth / rows_y
+    condensed_fibers = [
+        {
+            "y": -half_depth + (i + 0.5) * row_height,
+            "z": 0.0,
+            "area": row_height * 2.0 * half_width,
+            "material": 1,
+        }
+        for i in range(rows_y)
+    ]
+    # -0.2625 and 0.2625 are also concrete row centroids (first and last row).
+    condensed_fibers.append({"y": -0.2625, "z": 0.0, "area": 4 * 0.0004, "material": 3})
+    condensed_fibers.append({"y": 0.2625, "z": 0.0, "area": 3 * 0.0004, "material": 3})
+
+    refined_rows = _run_section_path(
+        {
+            "materials": materials,
+            "section": {"id": 1, "type": "FiberSection2d", "params": refined_params},
+            "deformation_path": deformation_path,
+        }
+    )
+    condensed_rows = _run_section_path(
+        {
+            "materials": materials,
+            "section": {
+                "id": 1,
+                "type": "FiberSection2d",
+                "params": {"patches": [], "layers": [], "fibers": condensed_fibers},
+            },
+            "deformation_path": deformation_path,
+        }
+    )
+
+    assert len(refined_rows) == len(condensed_rows) == len(deformation_path)
+    for refined_row, condensed_row in zip(refined_rows, condensed_rows):
+        for key in refined_row:
+            assert math.isclose(
+                refined_row[key],
+                condensed_row[key],
+                rel_tol=1e-10,
+                abs_tol=1e-8,
+            ), key
+
+
 def _expected_elastic_response_3d(case_data, eps0, ky, kz):
     e_by_mat = {
         m["id"]: m["params"]["E"]

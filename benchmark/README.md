@@ -14,6 +14,66 @@ uv run python benchmark/micro/run_material_compare.py
 uv run python benchmark/micro/run_material_compare.py --compare steel02_uniaxial,steel02_fiber_scalar
 ```
 
+## Synthetic cases
+
+`scripts/gen_synthetic_case.py` generates models that scale along one axis each, so a
+single cost center can be measured apart from the others. The OpenSees example suite
+tops out at 40 DOFs, which hides anything that grows with model size.
+
+| Family | Stresses | Scale with |
+| --- | --- | --- |
+| `rc_frame2d` | 2D fiber section state determination | `--bays`, `--stories`, `--fiber-subdiv` |
+| `rc_frame3d` | biaxial fiber sections, multi-point constraints | `--bays`, `--bays-z`, `--stories` |
+| `elastic_frame2d` | global assembly and the linear solve only | `--bays`, `--stories` |
+| `shell_wall` | sparse storage and factorization (24 DOF elements) | `--bays`, `--stories` |
+
+```bash
+uv run python scripts/gen_synthetic_case.py rc_frame2d --bays 6 --stories 12 --steps 100 --output .tmp/synthetic/rc2d_6x12.json
+uv run python scripts/gen_synthetic_case.py rc_frame3d --bays 3 --bays-z 3 --stories 6 --steps 50 --output .tmp/synthetic/rc3d_3x3x6.json
+uv run python scripts/gen_synthetic_case.py elastic_frame2d --bays 30 --stories 30 --steps 50 --output .tmp/synthetic/el_30.json
+uv run python scripts/gen_synthetic_case.py elastic_frame2d --bays 30 --stories 30 --steps 50 --nonlinear-driver --output .tmp/synthetic/el_nl_30.json
+uv run python scripts/gen_synthetic_case.py shell_wall --bays 20 --stories 20 --steps 20 --output .tmp/synthetic/shell_20.json
+```
+
+`--rigid-diaphragm` ties each floor with multi-point constraints (equalDOF in 2D,
+rigidDiaphragm in 3D) and switches the constraint handler to Transformation.
+`--system` and `--algorithm` select the linear system and nonlinear algorithm.
+
+## A/B comparing two solver builds
+
+`scripts/ab_compare.py` runs a baseline and a candidate solver binary on identical
+inputs, compares every recorder output numerically, and reports solve time for both.
+It needs no OpenSees binary, so it is the fast loop for refactors: "did results
+change, and how much faster is it?"
+
+```bash
+cp build/strut/strut build/baseline/strut   # before the change
+uv run scripts/ab_compare.py --baseline build/baseline/strut --candidate build/strut/strut
+uv run scripts/ab_compare.py --baseline build/baseline/strut --candidate build/strut/strut --cases opensees_example_ex5_frame2d_eq_uniform_rc_fiber --repeat 3
+uv run scripts/ab_compare.py --baseline build/baseline/strut --candidate build/strut/strut --no-validation-cases --extra-json .tmp/synthetic/*.json
+```
+
+- Runs keep recorders on, so times include output formatting; use `--min-ms` to hide tiny cases.
+- `DIFF` means an output differs beyond `--rtol`/`--atol`. Changes that reorder floating-point
+  sums can move results by the nonlinear convergence tolerance (about 1e-6 relative in
+  forces); rerun the case with a tighter `tol` to tell that apart from a real change.
+- This checks Strut against Strut. Parity against OpenSees is still `uv run run_tests.py`.
+
+## Sampling profiler
+
+`scripts/profile_sample.py` gives a source-line profile without `perf` or root. It
+builds a line-table solver (`build/strut/strut_g1`) and a small `perf_event_open`
+sampler (`scripts/profiling/usample.c`), then attributes samples through inlining.
+`--profile` (speedscope) answers "which phase"; this answers "which code".
+
+```bash
+uv run scripts/profile_sample.py --case opensees_example_ex5_frame2d_eq_uniform_rc_fiber
+uv run scripts/profile_sample.py --input .tmp/synthetic/rc3d_3x3x6.json --top 40
+```
+
+It samples the main thread only. In a threaded phase that is one worker's share of
+the work, so compare phases by wall time, not by sample counts.
+
 ## Runner
 
 Use `scripts/run_benchmarks.py` to run the default enabled validation cases on
@@ -29,6 +89,7 @@ uv run scripts/run_benchmarks.py --cases tests/validation/elastic_frame_two_stor
 uv run scripts/run_benchmarks.py --engine strut
 uv run scripts/run_benchmarks.py --engine all
 uv run scripts/run_benchmarks.py --no-batch
+uv run scripts/run_benchmarks.py --engine both --strut-single-thread --repeat 3
 uv run scripts/run_benchmarks.py --gen-frame-bays 18 --gen-frame-stories 17 --gen-frame-element forceBeamColumn2d --cases force_beam_column2d_fiber_frame_18bay_17story --no-archive
 uv run scripts/run_benchmarks.py --benchmark-suite root_cause_v1
 uv run scripts/run_benchmarks.py --benchmark-suite opt_fast_v1 --engine strut --profile benchmark/speedscope --no-archive
@@ -38,6 +99,64 @@ uv run scripts/run_benchmarks.py --engine strut --cases opensees_example_rc_fram
 uv run scripts/run_benchmarks.py --engine strut --cases force_beam_column3d_portal_benchmark,nonlinear_beam_column3d_portal_benchmark,disp_beam_column3d_portal_benchmark --no-archive
 uv run scripts/compare_benchmarks.py benchmark/results-profile/summary.json /tmp/phase7results_after/summary.json --max-regression-pct 5 --min-regression-us 50 --require-improvement opensees_example_rc_frame_earthquake=10
 ```
+
+`--strut-single-thread` adds a second Strut pass with `STRUT_THREADS=1`, stored as
+`strut_single_thread` next to the default-threads `strut` result. Use it when the
+question is how much of a speedup is threading and how much is the code.
+
+### Large models
+
+The example suite tops out under 200 DOFs, so none of it reaches the threaded
+code. Two kinds of larger input fill that gap. Both are
+generated, so build them first; they are timed separately from the examples
+because OpenSees needs minutes on them.
+
+**Mega-tall building.** The full model runs 10 gravity and 2000 transient steps,
+which takes hours in OpenSees. `scripts/build_megatall_benchmark_case.py` writes the
+same model with the transient stage cut to 30 steps, as one input every engine runs:
+
+```bash
+uv run scripts/build_megatall_benchmark_case.py
+uv run scripts/run_benchmarks.py --engine both --no-batch --strut-single-thread --no-archive \
+    --cases benchmark/.tmp/megatall_model1_40steps/megatall_model1_40steps.json \
+    --output-root benchmark/results-megatall
+```
+
+Expect about 15 minutes, nearly all of it OpenSees.
+
+**Synthetic 3D frames.** Fiber beam-column frames big enough to thread:
+
+```bash
+uv run python scripts/gen_synthetic_case.py rc_frame3d --bays 5 --bays-z 5 --stories 8 --steps 40 \
+    --system SparseSYM --gravity nodal --name rc_frame3d_force_5x5x8 \
+    --output benchmark/.tmp/rc_frame3d_force_5x5x8/rc_frame3d_force_5x5x8.json
+uv run python scripts/gen_synthetic_case.py rc_frame3d --bays 5 --bays-z 5 --stories 8 --steps 40 \
+    --system SparseSYM --gravity nodal --element dispBeamColumn3d --geom-transf PDelta \
+    --name rc_frame3d_disp_pdelta_5x5x8 \
+    --output benchmark/.tmp/rc_frame3d_disp_pdelta_5x5x8/rc_frame3d_disp_pdelta_5x5x8.json
+uv run scripts/run_benchmarks.py --engine both --no-batch --strut-single-thread --no-archive --repeat 3 \
+    --cases benchmark/.tmp/rc_frame3d_force_5x5x8/rc_frame3d_force_5x5x8.json,benchmark/.tmp/rc_frame3d_disp_pdelta_5x5x8/rc_frame3d_disp_pdelta_5x5x8.json \
+    --output-root benchmark/results-synthetic
+```
+
+The runner takes a generated case only as `<name>/<name>.json`.
+
+How far these agree with OpenSees, measured with recorders on:
+
+- **Synthetic frames:** roof displacement within 0.13% of its peak over the run, for
+  both elements, with and without P-Delta.
+- **Mega-tall:** not at parity. Every base reaction is within 0.6% of the peak
+  reaction, but lateral story displacements differ: under gravity Strut sways about
+  100 times more than OpenSees' (very small) value, and at step 40 the peak story
+  displacement is about 10% lower. The same holds against OpenSees solved with
+  `UmfPack` to `1e-7`, so it is a modelling difference. A four-by-two wall of the
+  model's layered shell section does not match OpenSees `ShellMITC4` either, and no
+  parity case covers layered shells. Read the mega-tall timing as the same input
+  and step count, not the same answer.
+- **Not comparable:** synthetic frames with `--rigid-diaphragm` and `SparseSYM`.
+  OpenSees' `SparseSYM` stalls on rigid-diaphragm systems: on a linear elastic frame
+  it never reaches `1e-8`, while its `UmfPack` converges and agrees with Strut to six
+  digits.
 
 Optimization loop suites:
 
@@ -94,10 +213,15 @@ The plot helper requires matplotlib:
 uv run scripts/plot_benchmarks.py --output benchmark/results/plots.pdf
 uv run scripts/plot_markdown_benchmarks.py --output docs/benchmark-opensees-examples.md
 uv run scripts/plot_markdown_benchmarks.py --mp --output docs/benchmark-opensees-examples.md
+uv run scripts/plot_markdown_benchmarks.py --large-results benchmark/results-megatall/summary.json \
+    --large-results benchmark/results-synthetic/summary.json
 ```
 
 Benchmark PDFs use a log-scale y-axis for both recent-case and archive charts.
 The Markdown mode writes separate Mermaid charts plus tables for enabled `opensees_example_*` cases, split by `ex1`, `ex2`, and so on. By default it plots OpenSees and Strut; pass `--mp` to include OpenSeesMP as well.
+When the summary came from a `--strut-single-thread` run, every chart gets a third bar for Strut on one thread.
+`--large-results` takes the summary of a separate run and gives each of its cases its own chart under "Large models".
+`--note "..."` prints a sentence under the header; use it to say what else the machine was doing during the run.
 
 Group and order cases in the bar chart (default is prefix grouping, disable with `--group-by none`):
 
@@ -105,3 +229,14 @@ Group and order cases in the bar chart (default is prefix grouping, disable with
 uv run scripts/plot_benchmarks.py --group-by prefix
 uv run scripts/plot_benchmarks.py --group-by config --group-config benchmark/groups.json
 ```
+
+## Runtime knobs
+
+| Variable | Effect |
+| --- | --- |
+| `STRUT_THREADS=N` | Worker threads for element state determination (layered shells, 3D beam-columns) and sparse factorization. Default: performance cores. `1` runs the whole solve on one thread. |
+| `STRUT_VERBOSE=1` | Print sparse LDLT statistics (ordering, factor size, flops) or why the solver fell back. |
+| `STRUT_DUMP_SPARSE_PATTERN=path` | Write the lower-triangular CSC pattern of the first sparse system, for `build/strut/sparse_ldlt_bench --pattern path`. |
+
+Threaded element sweeps compute in parallel and scatter serially in element order, so
+results are bit-identical for any thread count.

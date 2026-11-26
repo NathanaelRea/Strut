@@ -17,6 +17,7 @@ from solver.run_case.input_types import (
     MaterialInput,
     NodeInput,
 )
+from solver.sparse_pattern import ElementMatrixSink
 from solver.time_series import TimeSeriesInput, eval_time_series_input
 from tag_types import ElementTypeTag
 
@@ -288,3 +289,178 @@ fn assemble_zero_length_damping_trial_typed(
                     var rj = row[j]
                     if rj != 0.0:
                         K_damp[dof_map[i]][dof_map[j]] += ri * tangent * rj
+
+
+fn _zero_flat_prefix(mut values: List[Float64], count: Int):
+    if len(values) < count:
+        values.resize(count, 0.0)
+    for i in range(count):
+        values[i] = 0.0
+
+
+fn assemble_zero_length_damping_sparse[S: ElementMatrixSink](
+    nodes: List[NodeInput],
+    elements: List[ElementInput],
+    materials_by_id: List[MaterialInput],
+    ndf: Int,
+    ndm: Int,
+    elem_free_offsets: List[Int],
+    elem_free_pool: List[Int],
+    mut k_flat: List[Float64],
+    mut sink: S,
+):
+    """Zero-length `-dampMats` viscous matrix scattered into `sink`."""
+    sink.zero_matrix()
+    for e in range(len(elements)):
+        var elem = elements[e]
+        if elem.type_tag != ElementTypeTag.ZeroLength:
+            continue
+        if elem.damp_material_count <= 0:
+            continue
+        var node1 = nodes[elem.node_index_1]
+        var node2 = nodes[elem.node_index_2]
+        var trans = link_orientation_matrix(
+            ndm,
+            node1.x,
+            node1.y,
+            node1.z,
+            node2.x,
+            node2.y,
+            node2.z,
+            elem.has_orient_x,
+            elem.orient_x_1,
+            elem.orient_x_2,
+            elem.orient_x_3,
+            elem.has_orient_y,
+            elem.orient_y_1,
+            elem.orient_y_2,
+            elem.orient_y_3,
+            False,
+        )
+        var n = elem.dof_count
+        _zero_flat_prefix(k_flat, n * n)
+        for m in range(elem.damp_material_count):
+            var row = _zero_length_row(_elem_dir(elem, m), ndm, ndf, trans)
+            var damp_mat_id = _elem_damp_material(elem, m)
+            if damp_mat_id < 0 or damp_mat_id >= len(materials_by_id):
+                abort("zeroLength damp material not found")
+            var damp_mat = materials_by_id[damp_mat_id]
+            if damp_mat.id < 0:
+                abort("zeroLength damp material not found")
+            var eta = damp_mat.E
+            for i in range(n):
+                var ri = row[i]
+                if ri == 0.0:
+                    continue
+                for j in range(n):
+                    var rj = row[j]
+                    if rj != 0.0:
+                        k_flat[i * n + j] += ri * eta * rj
+        sink.add_element_matrix_flat(e, elem_free_pool, elem_free_offsets[e], n, k_flat)
+
+
+fn assemble_zero_length_damping_secstif_sparse[S: ElementMatrixSink](
+    nodes: List[NodeInput],
+    elements: List[ElementInput],
+    dampings: List[DampingInput],
+    time_series: List[TimeSeriesInput],
+    time_series_values: List[Float64],
+    time_series_times: List[Float64],
+    ndf: Int,
+    ndm: Int,
+    time: Float64,
+    dt: Float64,
+    uniaxial_states: List[UniMaterialState],
+    elem_uniaxial_offsets: List[Int],
+    elem_uniaxial_counts: List[Int],
+    elem_uniaxial_state_ids: List[Int],
+    elem_free_offsets: List[Int],
+    elem_free_pool: List[Int],
+    use_trial_state: Bool,
+    assemble_matrix: Bool,
+    mut k_flat: List[Float64],
+    mut sink: S,
+    mut F_damp: List[Float64],
+) raises:
+    """SecStif zero-length damper force and tangent.
+
+    `use_trial_state=False` reproduces `assemble_zero_length_damping_committed_typed`
+    (force from committed stress, committed tangent); `True` reproduces
+    `assemble_zero_length_damping_trial_typed` (incremental trial force, trial
+    tangent). The matrix goes to `sink` only when `assemble_matrix` is set.
+    """
+    if assemble_matrix:
+        sink.zero_matrix()
+    _zero_vector(F_damp)
+    for e in range(len(elements)):
+        var elem = elements[e]
+        if elem.type_tag != ElementTypeTag.ZeroLength or elem.damping_tag < 0:
+            continue
+        var damping_index = _find_damping_input(dampings, elem.damping_tag)
+        if damping_index < 0:
+            abort("zeroLength damping not found")
+        var damping = dampings[damping_index]
+        if damping.type != "SecStif":
+            abort("unsupported zeroLength damping type")
+        var factor = _zero_length_secstif_active(
+            damping,
+            time,
+            dt,
+            time_series,
+            time_series_values,
+            time_series_times,
+        )
+        if factor == 0.0:
+            continue
+        var km = damping.beta / dt
+        var node1 = nodes[elem.node_index_1]
+        var node2 = nodes[elem.node_index_2]
+        var trans = link_orientation_matrix(
+            ndm,
+            node1.x,
+            node1.y,
+            node1.z,
+            node2.x,
+            node2.y,
+            node2.z,
+            elem.has_orient_x,
+            elem.orient_x_1,
+            elem.orient_x_2,
+            elem.orient_x_3,
+            elem.has_orient_y,
+            elem.orient_y_1,
+            elem.orient_y_2,
+            elem.orient_y_3,
+            False,
+        )
+        var dof_map = _elem_dof_map(elem)
+        var n = elem.dof_count
+        if assemble_matrix:
+            _zero_flat_prefix(k_flat, n * n)
+        var offset = elem_uniaxial_offsets[e]
+        var count = elem_uniaxial_counts[e]
+        for m in range(count):
+            var row = _zero_length_row(_elem_dir(elem, m), ndm, ndf, trans)
+            var state_index = elem_uniaxial_state_ids[offset + m]
+            ref state = uniaxial_states[state_index]
+            var force: Float64
+            var tangent: Float64
+            if use_trial_state:
+                force = factor * km * (state.sig_t - state.sig_c)
+                tangent = km * state.tangent_t
+            else:
+                force = factor * km * state.sig_c
+                tangent = km * state.tangent_c
+            for i in range(n):
+                var ri = row[i]
+                if ri == 0.0:
+                    continue
+                F_damp[dof_map[i]] += ri * force
+                if not assemble_matrix:
+                    continue
+                for j in range(n):
+                    var rj = row[j]
+                    if rj != 0.0:
+                        k_flat[i * n + j] += ri * tangent * rj
+        if assemble_matrix:
+            sink.add_element_matrix_flat(e, elem_free_pool, elem_free_offsets[e], n, k_flat)

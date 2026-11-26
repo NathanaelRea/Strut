@@ -587,7 +587,10 @@ def test_prepare_direct_tcl_wrappers_use_manifest_source_files_order(
     assert "rename nDMaterial __strut_builtin_nDMaterial" in compat_text
     assert 'if {[llength $args] == 4 && [lindex $args 0] eq "PlateFromPlaneStress"} {' in compat_text
     assert "rename mass __strut_builtin_mass" in compat_text
-    assert f"source {{{entry_wrapper.name}}}" in compat_text
+    assert (
+        f"source [file join [file dirname [info script]] {{{entry_wrapper.name}}}]"
+        in compat_text
+    )
     assert f"source {{{compat_wrapper.name}}}" in timed_text
     assert f"source {{{compute_compat.name}}}" in compute_text
     assert "source {Ex3.Canti2D.build.InelasticFiberSection__strut_compute.tcl}" in compute_entry_text

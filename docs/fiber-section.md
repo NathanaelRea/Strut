@@ -12,10 +12,35 @@ Current implementation status:
   - 2D: axial force `N`, bending moment `Mz`, tangent terms `k11`, `k12`, `k22`
   - 3D: axial force `N`, bending moments `My`,`Mz`, tangent terms `k11`, `k12`, `k13`, `k22`, `k23`, `k33`
 
+Fiber condensation (2D only):
+
+- A `FiberSection2d` stores one fiber per (material, y). Its fiber strain is `eps0 - y * kappa`, so same-material fibers at one y share a strain history and are merged into one fiber with the summed area when the section is built (`_condense_fiber_cells_by_y`).
+- A rectangular patch with `ny x nz` subdivisions therefore costs `ny` fibers, and bars spread along z at one depth cost one. The example RC sections drop from 582 fibers to 67.
+- Area and first moment are preserved exactly; results differ from the unmerged section only by floating-point summation order.
+- `FiberSection3d` is not condensed: under biaxial bending the strain depends on both y and z.
+- A future per-fiber recorder would need a map from input fibers to merged fibers.
+
+3D runtime layout:
+
+- A `FiberSection3dDef` owns the state of all its instances (one per element integration point) as
+  structure-of-arrays, grouped by material family (Steel02, Concrete02, Concrete01, Steel01) and padded
+  to the SIMD width. Linear-elastic fibers are folded into constant section stiffness terms; any other
+  material uses a scalar fallback. `fiber_section3d_set_trial_instance` evaluates one instance.
+- 3D fibers are not stored in the global `uniaxial_states` list, so step retries do not copy them;
+  drivers call `fiber_section3d_commit_runtime_all` / `fiber_section3d_revert_trial_runtime_all` next
+  to the 2D calls.
+- An element writes only its own instances, which is what lets the 3D beam-column loop run on several
+  threads (`solver/assembly/frame3d_scratch.mojo`).
+- The Steel02 kernels live in `sections/fiber_kernels.mojo` and are shared by the 2D and 3D sections.
+  Their powers use `simd_math.simd_pow_nonneg` (scalar paths use `pow_nonneg`), because the builtin
+  float64 `**` is only accurate to about 1e-8 relative and is evaluated one lane at a time.
+
 Key files:
 
 - `src/mojo/sections/fiber2d.mojo`
 - `src/mojo/sections/fiber3d.mojo`
+- `src/mojo/sections/fiber_kernels.mojo`
+- `src/mojo/simd_math.mojo`
 - `src/mojo/section_path.mojo`
 - `scripts/run_strut_section_path.py`
 

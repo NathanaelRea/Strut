@@ -1008,3 +1008,52 @@ def test_json_to_tcl_emits_zero_length_section():
     proc, text = _run_json_to_tcl(case_data)
     assert proc.returncode == 0, proc.stderr
     assert "element zeroLengthSection 6 1 2 9\n" in text
+
+
+def test_json_to_tcl_emits_each_3d_beam_with_its_own_vecxz():
+    case_data = _base_case()
+    case_data["model"] = {"ndm": 3, "ndf": 6}
+    case_data["nodes"] = [
+        {"id": 1, "x": 0.0, "y": 0.0, "z": 0.0},
+        {"id": 2, "x": 1.0, "y": 0.0, "z": 0.0},
+        {"id": 3, "x": 2.0, "y": 0.0, "z": 0.0},
+    ]
+    case_data["materials"] = [{"id": 1, "type": "Elastic", "params": {"E": 30000000000.0}}]
+    case_data["sections"] = [
+        {
+            "id": 7,
+            "type": "FiberSection3d",
+            "params": {
+                "fibers": [{"y": 0.0, "z": 0.0, "area": 0.01, "material": 1}],
+                "patches": [],
+                "layers": [],
+            },
+        }
+    ]
+    # Both members run along x. The first names its own orientation; the second
+    # leaves it to the default, which for an x-axis member is the global y axis.
+    case_data["elements"] = [
+        {
+            "id": 4,
+            "type": "elasticBeamColumn3d",
+            "nodes": [1, 2],
+            "section": 7,
+            "geomTransf": "Linear",
+            "vecxz": [0.0, 0.0, 1.0],
+        },
+        {
+            "id": 5,
+            "type": "elasticBeamColumn3d",
+            "nodes": [2, 3],
+            "section": 7,
+            "geomTransf": "Linear",
+        },
+    ]
+
+    proc, text = _run_json_to_tcl(case_data)
+
+    assert proc.returncode == 0, proc.stderr
+    assert "geomTransf Linear 1 0.0 0.0 1.0\n" in text
+    assert "geomTransf Linear 2 0.0 1.0 0.0\n" in text
+    assert "element elasticBeamColumn 4 1 2 7 1\n" in text
+    assert "element elasticBeamColumn 5 2 3 7 2\n" in text

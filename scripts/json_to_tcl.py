@@ -54,6 +54,21 @@ def _choose_vecxz(n1, n2):
     return (1.0, 0.0, 0.0)
 
 
+def _element_vecxz(elem, node_by_id):
+    """The element's own `vecxz` when it has one, else the solver's default.
+
+    Strut honors `vecxz`, so OpenSees must get the same vector or it models the
+    member rotated about its axis.
+    """
+    vecxz = elem.get("vecxz")
+    if vecxz is not None:
+        if len(vecxz) != 3:
+            raise ValueError(f"element {elem.get('id')}: vecxz needs three components")
+        return tuple(float(value) for value in vecxz)
+    n1, n2 = elem["nodes"]
+    return _choose_vecxz(node_by_id[n1], node_by_id[n2])
+
+
 def _choose_ref_y_from_x(xvec):
     ax, ay, az = xvec
     candidates = ((0.0, 1.0, 0.0), (1.0, 0.0, 0.0), (0.0, 0.0, 1.0))
@@ -1216,8 +1231,7 @@ def main():
                 "forceBeamColumn3d",
                 "dispBeamColumn3d",
             ):
-                n1_id, n2_id = elem["nodes"]
-                vecxz = _choose_vecxz(node_by_id[n1_id], node_by_id[n2_id])
+                vecxz = _element_vecxz(elem, node_by_id)
                 key = (name, vecxz)
             else:
                 key = (name, None)
@@ -1333,7 +1347,7 @@ def main():
                     raise ValueError(f"{elem_type} integration definition missing")
                 n1, n2 = elem["nodes"]
                 if is_3d:
-                    vecxz = _choose_vecxz(node_by_id[n1], node_by_id[n2])
+                    vecxz = _element_vecxz(elem, node_by_id)
                     transf_tag = transf_tags[(elem.get("geomTransf", "Linear"), vecxz)]
                 else:
                     transf_tag = transf_tags[(elem.get("geomTransf", "Linear"), None)]
@@ -1347,7 +1361,7 @@ def main():
             elif elem["type"] == "elasticBeamColumn3d":
                 sec = sections[elem["section"]]
                 n1, n2 = elem["nodes"]
-                vecxz = _choose_vecxz(node_by_id[n1], node_by_id[n2])
+                vecxz = _element_vecxz(elem, node_by_id)
                 transf_tag = transf_tags[(elem.get("geomTransf", "Linear"), vecxz)]
                 if sec["type"] == "ElasticSection3d":
                     params = sec["params"]

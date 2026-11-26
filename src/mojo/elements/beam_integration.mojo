@@ -3,7 +3,7 @@ from math import cos
 from os import abort
 
 
-struct BeamIntegrationCache(Movable):
+struct BeamIntegrationCache(Copyable, Movable):
     var integration: String
     var num_int_pts: Int
     var is_valid: Bool
