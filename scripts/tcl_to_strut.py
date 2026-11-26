@@ -2159,6 +2159,14 @@ class TclStrutBuilder:
                 {"id": tag, "type": "ElasticIsotropic", "params": params}
             )
             return ""
+        if material_type == "ConcreteS":
+            if len(args) != 7:
+                raise self._error(
+                    "ConcreteS expects `tag E nu fc ft Es`", "nDMaterial", args
+                )
+            params = dict(zip(("E", "nu", "fc", "ft", "Es"), map(float, args[2:])))
+            self._upsert_material({"id": tag, "type": "ConcreteS", "params": params})
+            return ""
         if material_type == "PlaneStressUserMaterial":
             if len(args) < 5:
                 raise self._error(

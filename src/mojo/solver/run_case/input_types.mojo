@@ -259,14 +259,13 @@ struct MaterialInput(ImplicitlyCopyable, Movable):
     var rat: Float64
     var ft: Float64
     var Ets: Float64
+    var fc: Float64
+    var Es: Float64
     var nu: Float64
     var rho: Float64
     var base_material: Int
     var angle: Float64
     var gmod: Float64
-    var nstatevs: Int
-    var props_offset: Int
-    var props_count: Int
 
     var has_r0: Bool
     var has_cr1: Bool
@@ -302,14 +301,13 @@ struct MaterialInput(ImplicitlyCopyable, Movable):
         self.rat = 0.0
         self.ft = 0.0
         self.Ets = 0.0
+        self.fc = 0.0
+        self.Es = 0.0
         self.nu = 0.0
         self.rho = 0.0
         self.base_material = -1
         self.angle = 0.0
         self.gmod = 0.0
-        self.nstatevs = 0
-        self.props_offset = 0
-        self.props_count = 0
         self.has_r0 = False
         self.has_cr1 = False
         self.has_cr2 = False
@@ -981,7 +979,6 @@ struct CaseInput(Movable):
     var fibers: List[FiberInput]
     var shell_layers: List[ShellLayerInput]
     var materials: List[MaterialInput]
-    var shell_material_props: List[Float64]
     var elements: List[ElementInput]
     var element_loads: List[ElementLoadInput]
     var loads: List[NodalLoadInput]
@@ -1013,7 +1010,6 @@ struct CaseInput(Movable):
         self.fibers = []
         self.shell_layers = []
         self.materials = []
-        self.shell_material_props = []
         self.elements = []
         self.element_loads = []
         self.loads = []
@@ -2392,6 +2388,24 @@ fn parse_case_input_native_from_source(
             var parsed = MaterialInput()
             parsed.id = _json_get_int(doc, mat, "id", -1)
             parsed.type = _json_get_string(doc, mat, "type", "")
+            if parsed.type == "ConcreteS":
+                parsed.E = _json_number_value(
+                    doc, _json_require_key(doc, params, "E"), "ConcreteS E"
+                )
+                parsed.nu = _json_number_value(
+                    doc, _json_require_key(doc, params, "nu"), "ConcreteS nu"
+                )
+                parsed.fc = _json_number_value(
+                    doc, _json_require_key(doc, params, "fc"), "ConcreteS fc"
+                )
+                parsed.ft = _json_number_value(
+                    doc, _json_require_key(doc, params, "ft"), "ConcreteS ft"
+                )
+                parsed.Es = _json_number_value(
+                    doc, _json_require_key(doc, params, "Es"), "ConcreteS Es"
+                )
+                case_input.materials.append(parsed^)
+                continue
             if _json_has_key(doc, params, "E"):
                 parsed.E = _json_get_float(doc, params, "E", 0.0)
             if _json_has_key(doc, params, "Fy"):
@@ -2451,16 +2465,6 @@ fn parse_case_input_native_from_source(
                 parsed.angle = _json_get_float(doc, params, "angle", 0.0)
             if _json_has_key(doc, params, "gmod"):
                 parsed.gmod = _json_get_float(doc, params, "gmod", 0.0)
-            if _json_has_key(doc, params, "nstatevs"):
-                parsed.nstatevs = _json_get_int(doc, params, "nstatevs", 0)
-            var props_raw = _json_key(doc, params, "props")
-            if _json_has_value(doc, props_raw):
-                parsed.props_offset = len(case_input.shell_material_props)
-                parsed.props_count = _json_expect_array_len(doc, props_raw, "material props")
-                for j in range(parsed.props_count):
-                    case_input.shell_material_props.append(
-                        _json_number_value(doc, doc.array_item(props_raw, j), "material props")
-                    )
             case_input.materials.append(parsed^)
 
     var elements_raw = _json_require_key(doc, root, "elements")

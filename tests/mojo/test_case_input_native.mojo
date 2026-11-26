@@ -43,9 +43,9 @@ def test_native_decode_loads_inline_path_time_series_case():
     assert_equal(native_case.analysis.type, "static_linear")
 
 
-def test_native_precheck_allows_layered_shell_surrogate_material_path():
+def test_native_precheck_allows_layered_shell_concrete_s_material():
     var doc = parse_json_native(
-        '{"model":{"ndm":3,"ndf":6},"nodes":[],"materials":[{"id":1,"type":"PlaneStressUserMaterial","params":{"rho":1.0,"props":[1.0,0.3]}},{"id":2,"type":"PlateFromPlaneStress","params":{"material":1,"gmod":1.0}}],"sections":[{"id":10,"type":"LayeredShellSection","params":{"layers":[{"material":2,"thickness":0.5}]}}],"elements":[],"analysis":{"type":"static_linear"}}'
+        '{"model":{"ndm":3,"ndf":6},"nodes":[],"materials":[{"id":1,"type":"ConcreteS","params":{"E":36e9,"nu":0.2,"fc":38.5e6,"ft":2.85e6,"Es":3.6e9}},{"id":2,"type":"PlateFromPlaneStress","params":{"material":1,"gmod":1.0}}],"sections":[{"id":10,"type":"LayeredShellSection","params":{"layers":[{"material":2,"thickness":0.5}]}}],"elements":[],"analysis":{"type":"static_linear"}}'
     )
 
     precheck_case_input_native(doc, True)

@@ -13,6 +13,7 @@ import argparse
 import collections
 import json
 import math
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -1041,6 +1042,29 @@ def generate_layershell(
     }
 
 
+def _concrete_s_shell_materials(
+    materials: list[tuple[str, str, int, list[float]]],
+) -> Iterator[tuple[str, str, int, Sequence[float]]]:
+    # The three wrappers use G = {36, 37, 38} GPa / (2 * 1.2).
+    # These E values also match the source data's 2*fc/abs(epsc0).
+    shear_by_base = {
+        int(values[0]): values[1]
+        for _, kind, _, values in materials
+        if kind == "PlateFromPlaneStress"
+    }
+    for cmd, kind, tag, values in materials:
+        if kind == "PlaneStressUserMaterial":
+            _, _, fc, ft, _, _, _, epstu, _ = values
+            nu = 0.2
+            E = 2.0 * shear_by_base[tag] * (1.0 + nu)
+            # Match ConcreteS's initial descending tensile slope to the
+            # straight-line slope from cracking to the PSUMAT endpoint.
+            Es = ft / (epstu - ft / E)
+            yield cmd, "ConcreteS", tag, (E, nu, fc, ft, Es)
+        else:
+            yield cmd, kind, tag, values
+
+
 def generate_dynamiccpu(geom: Geometry, props: dict[str, Any]) -> str:
     dp = props["dynamiccpu"]
     base_nodes = sorted(n for n, p in geom.nodes.items() if abs(p[2]) < 1e-6)
@@ -1208,7 +1232,7 @@ def format_tcl_files(geom: Geometry, gen: dict[str, Any]) -> dict[str, str]:
         vstr = " ".join(f"{v:.10g}" for v in vals)
         lines.append(f"uniaxialMaterial {mtype} {tag} {vstr}")
     for sid, fibs in sorted(os_d["fiber_secs"].items()):
-        lines.append(f"section Fiber {sid} {{")
+        lines.append(f"section Fiber {sid} -GJ 1.0e-12 {{")
         for y, z, a, m in fibs:
             lines.append(f"  fiber {y:.5g} {z:.5g} {a:.5f} {m}")
         lines.append("}")
@@ -1255,7 +1279,7 @@ def format_tcl_files(geom: Geometry, gen: dict[str, Any]) -> dict[str, str]:
         fsec = 1200 + sidx
         el_tag = 1000 * sidx
         agg_tag = 10000 * sidx
-        lines.append(f"section Fiber {fsec} {{")
+        lines.append(f"section Fiber {fsec} -GJ 1.0e-12 {{")
         for m, ny, nz, y1, z1, y2, z2 in hb_d["fiber_secs"][fsec]:
             lines.append(
                 f"  patch rect {m} {ny} {nz} {y1:.7g} {z1:.7g} {y2:.7g} {z2:.7g}"
@@ -1278,7 +1302,7 @@ def format_tcl_files(geom: Geometry, gen: dict[str, Any]) -> dict[str, str]:
     # 5. layershell.tcl
     ls_d = gen["layershell"]
     lines = []
-    for cmd, mtype, tag, vals in ls_d["mats"]:
+    for cmd, mtype, tag, vals in _concrete_s_shell_materials(ls_d["mats"]):
         vstr = " ".join(f"{v:.10g}" for v in vals)
         lines.append(f"{cmd} {mtype} {tag} {vstr}")
     for stag, lays in sorted(ls_d["secs"].items()):
