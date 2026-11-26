@@ -4,7 +4,15 @@
 For a direct-Tcl parity case that reads ground motions, every pinned motion
 file the case can see is replaced by a seeded synthetic record from
 ``synthetic_ground_motion.py`` (same file name, format, dt and length; PGA is
-the real record's PGA times ``--pga-scale``). Each seed/intensity runs the
+the real record's PGA times ``--pga-scale``). ``--model`` picks the generator:
+``clough-penzien`` (stationary spectrum, the default) or ``rdk2008``
+(Rezaeian & Der Kiureghian, time-varying spectrum). For ``rdk2008`` each
+motion's six physical parameters are drawn from the Rezaeian & Der Kiureghian
+(2010) predictive model for the ``--fault/--magnitude/--rrup/--vs30``
+scenario (default: reverse, M6.5, 15 km, 600 m/s, whose median 95% Arias time
+of about 10 s matches the 10 s the nonlinear examples analyze), redrawn until
+the 99% Arias time fits in the record, and the record is then scaled to the
+target PGA. Each seed/intensity runs the
 normal harness, ``scripts/run_case.py``, against a scratch copy of the
 example bundle. OpenSees and Strut both run, and ``compare_case.py``'s
 tolerance machinery judges the result.
@@ -85,6 +93,37 @@ class MotionInfo:
     target_pga: float
     measured_pga: float
     referenced: bool
+    model: str = sgm.DEFAULT_MODEL
+    rdk: dict | None = None
+
+
+@dataclass(frozen=True)
+class MotionModel:
+    """Generator choice: Clough-Penzien overrides, or an RDK scenario."""
+
+    name: str = sgm.DEFAULT_MODEL
+    overrides: dict = field(default_factory=dict)
+    scenario: sgm.RDKScenario | None = None
+
+
+DEFAULT_RDK_SCENARIO = sgm.RDKScenario("reverse", 6.5, 15.0, 600.0)
+
+
+def draw_rdk_params(
+    scenario: sgm.RDKScenario, motion_seed: int, duration: float
+) -> sgm.RDKParams:
+    """Predictive-model parameters for one motion, redrawn from the seeded
+    stream until the 99% Arias time fits in the record."""
+    rng = sgm.rdk2010_params_rng(motion_seed)
+    for _ in range(1000):
+        rdk = sgm.rdk2010_sample_params(scenario, rng)
+        modulation = sgm.gamma_modulation(rdk.arias_intensity, rdk.d5_95, rdk.t_mid)
+        if modulation.arias_time(0.99) <= duration:
+            return rdk
+    raise SystemExit(
+        f"no RDK draw for {scenario} fits a {duration:g} s record; use a smaller "
+        "magnitude or distance"
+    )
 
 
 @dataclass
@@ -208,7 +247,7 @@ def write_synthetic_motions(
     groups: dict[str, list[str]],
     seed: int,
     pga_scale: float,
-    overrides: dict,
+    motion_model: MotionModel,
     referenced: set[str],
 ) -> list[MotionInfo]:
     infos = []
@@ -219,12 +258,19 @@ def write_synthetic_motions(
                 f"no dt/npts/PGA known for pinned motion {stem!r}; add it to "
                 "REAL_RECORDS in scripts/sweep_synthetic_parity.py"
             )
+        motion_seed = _motion_seed(seed, stem)
+        rdk = None
+        if motion_model.name == "rdk2008":
+            scenario = motion_model.scenario or DEFAULT_RDK_SCENARIO
+            rdk = draw_rdk_params(scenario, motion_seed, (shape.npts - 1) * shape.dt)
         params = sgm.MotionParams(
-            seed=_motion_seed(seed, stem),
+            seed=motion_seed,
             dt=shape.dt,
             npts=shape.npts,
             pga=shape.pga * pga_scale,
-            **overrides,
+            model=motion_model.name,
+            rdk=rdk,
+            **motion_model.overrides,
         )
         acc = sgm.generate_acceleration(params)
         files = sorted(groups[stem])
@@ -243,6 +289,8 @@ def write_synthetic_motions(
                 target_pga=params.pga,
                 measured_pga=measured,
                 referenced=stem in referenced,
+                model=motion_model.name,
+                rdk=None if rdk is None else asdict(rdk),
             )
         )
     return infos
@@ -345,7 +393,7 @@ def run_one(
     work_root: Path,
     seed: int,
     pga_scale: float,
-    overrides: dict,
+    motion_model: MotionModel,
     opensees_binary: Path,
     timeout: float,
     memory_limit_kb: int | None,
@@ -369,7 +417,7 @@ def run_one(
     copy_bundle(entry, source_files, bundle_copy)
     referenced = referenced_stems(entry, source_files, sorted(groups))
     motions = write_synthetic_motions(
-        bundle_copy, groups, seed, pga_scale, overrides, referenced
+        bundle_copy, groups, seed, pga_scale, motion_model, referenced
     )
 
     case_root = run_dir / "case"
@@ -534,7 +582,17 @@ def parse_floats(text: str) -> list[float]:
 
 def _pga_text(motions: list[MotionInfo]) -> str:
     shown = [m for m in motions if m.referenced] or motions
-    return ", ".join(f"{Path(m.files[0]).stem}={m.measured_pga:.4g}" for m in shown)
+    parts = []
+    for m in shown:
+        text = f"{Path(m.files[0]).stem}={m.measured_pga:.4g}"
+        if m.rdk is not None:
+            text += (
+                f" (D5-95={m.rdk['d5_95']:.1f}s, t_mid={m.rdk['t_mid']:.1f}s,"
+                f" f_mid={m.rdk['f_mid_hz']:.2f}Hz, f'={m.rdk['f_rate_hz_per_s']:.3f}Hz/s,"
+                f" zeta={m.rdk['zeta_f']:.2f})"
+            )
+        parts.append(text)
+    return ", ".join(parts)
 
 
 def markdown_table(results: list[RunResult]) -> str:
@@ -570,6 +628,30 @@ def build_parser() -> argparse.ArgumentParser:
         type=parse_floats,
         default=[1.0],
         help="comma-separated multiples of each real record's PGA (default 1)",
+    )
+    parser.add_argument(
+        "--model",
+        choices=sgm.MODELS,
+        default=sgm.DEFAULT_MODEL,
+        help="synthetic motion generator (default %(default)s)",
+    )
+    parser.add_argument(
+        "--fault",
+        choices=tuple(sgm.FAULT_TYPES),
+        default=DEFAULT_RDK_SCENARIO.fault,
+        help="rdk2008 scenario fault type",
+    )
+    parser.add_argument(
+        "--magnitude", type=float, default=DEFAULT_RDK_SCENARIO.magnitude
+    )
+    parser.add_argument(
+        "--rrup",
+        type=float,
+        default=DEFAULT_RDK_SCENARIO.r_rup_km,
+        help="rdk2008 scenario distance to rupture, km",
+    )
+    parser.add_argument(
+        "--vs30", type=float, default=DEFAULT_RDK_SCENARIO.vs30, help="m/s"
     )
     parser.add_argument("--site-freq-hz", type=float)
     parser.add_argument("--site-damping", type=float)
@@ -612,6 +694,17 @@ def main(argv: list[str] | None = None) -> int:
     if args.envelope is not None:
         overrides["envelope"] = args.envelope
 
+    scenario = sgm.RDKScenario(args.fault, args.magnitude, args.rrup, args.vs30)
+    if args.model == "rdk2008":
+        if overrides:
+            raise SystemExit(
+                "--site-freq-hz/--site-damping/--envelope apply to clough-penzien only"
+            )
+        scenario.validate()
+        for note in scenario.outside_data_range():
+            print(f"warning: rdk2008 scenario {note}", file=sys.stderr)
+    motion_model = MotionModel(args.model, overrides, scenario)
+
     manifests = [resolve_manifest(case) for case in args.cases]
     opensees_binary = resolve_opensees_binary()
     results: list[RunResult] = []
@@ -623,7 +716,7 @@ def main(argv: list[str] | None = None) -> int:
                     work_root,
                     seed,
                     pga_scale,
-                    overrides,
+                    motion_model,
                     opensees_binary,
                     args.timeout,
                     args.memory_limit_kb,
