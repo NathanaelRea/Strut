@@ -27,7 +27,8 @@ For testing or benchmarking
 
 `uv run scripts/setup_reference_data.py` installs everything from [`tests/fixtures/opensees/reference-data.lock.json`](./tests/fixtures/opensees/reference-data.lock.json). Each item downloads once per machine into `~/.cache/strut/reference/` and is checked against its pinned sha256 or commit.
 
-- **Test fixtures:** the OpenSees example Tcl is committed under [`tests/fixtures/opensees/`](./tests/fixtures/opensees/README.md). Ground motions and the mega-tall model are pinned downloads copied in next to it. `--fixtures-only` installs just these.
+- **Test fixtures:** the OpenSees example Tcl is committed under [`tests/fixtures/opensees/`](./tests/fixtures/opensees/README.md). Ground motions and the mega-tall model are pinned downloads copied in next to it. `--fixtures-only` installs just these. Only the direct-Tcl parity cases need them: unit tests write synthetic ground motions instead, and tests that need the mega-tall model skip when it is missing.
+- **Synthetic ground motions:** [`scripts/synthetic_ground_motion.py`](./scripts/synthetic_ground_motion.py) writes seeded Clough-Penzien records in the `.AT2`/`.DT2`, `.acc` and `A10000.tcl` layouts the examples read. [`scripts/sweep_synthetic_parity.py`](./scripts/sweep_synthetic_parity.py) reruns a ground-motion parity case over many seeds and intensities and reports parity and each engine's convergence per run, e.g. `uv run scripts/sweep_synthetic_parity.py opensees_example_ex3_canti2d_analyze_dynamic_eq_uniform --seeds 1-5 --pga-scale 1,5`.
 - **Agent reference:** `docs/agent-reference/OpenSees` (v3.7.1, matching the binary) and `docs/agent-reference/modular` (the tag matching the Mojo version) are links to shared shallow clones.
 
 ## OpenSees Reference Binaries

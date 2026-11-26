@@ -88,7 +88,37 @@ def _selected_case_paths():
     return selected
 
 
-@pytest.mark.parametrize("case_path", _selected_case_paths())
+def _fixture_bundle(case_path: Path):
+    """The fixture bundle a direct-Tcl case mirrors, relative to the fixture root.
+
+    The harness copies the entry script's parent directory, so every pinned
+    download under it (ground motions, the mega-tall model) is an input.
+    """
+    if case_path.name != "direct_tcl_case.json" or not case_path.exists():
+        return None
+    raw_entry = _load_case_data(case_path).get("entry_tcl")
+    if not isinstance(raw_entry, str) or not raw_entry:
+        return None
+    entry = Path(raw_entry)
+    if not entry.is_absolute():
+        entry = _repo_root() / entry
+    fixture_root = (_repo_root() / "tests" / "fixtures" / "opensees").resolve()
+    try:
+        return entry.resolve().parent.parent.relative_to(fixture_root).as_posix()
+    except ValueError:
+        return None
+
+
+def _case_params():
+    params = []
+    for case_path in _selected_case_paths():
+        bundle = _fixture_bundle(case_path)
+        marks = [] if bundle is None else [pytest.mark.requires_pinned_fixtures(bundle)]
+        params.append(pytest.param(case_path, marks=marks))
+    return params
+
+
+@pytest.mark.parametrize("case_path", _case_params())
 def test_parity_case(case_path: Path):
     if not case_path.exists():
         pytest.fail(f"missing parity case: {case_path}")

@@ -1,4 +1,6 @@
 import importlib.util
+import json
+import shutil
 import sys
 from pathlib import Path
 
@@ -8,6 +10,8 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TCL_TO_STRUT_PATH = REPO_ROOT / "scripts" / "tcl_to_strut.py"
 RUN_CASE_PATH = REPO_ROOT / "scripts" / "run_case.py"
+SYNTHETIC_GM_PATH = REPO_ROOT / "scripts" / "synthetic_ground_motion.py"
+FIXTURE_ROOT = REPO_ROOT / "tests" / "fixtures" / "opensees"
 
 
 def _load_tcl_to_strut_module():
@@ -30,6 +34,53 @@ assert run_case_spec.loader is not None
 run_case = importlib.util.module_from_spec(run_case_spec)
 sys.modules["strut_run_case_test_module"] = run_case
 run_case_spec.loader.exec_module(run_case)
+
+
+synthetic_gm_spec = importlib.util.spec_from_file_location(
+    "strut_synthetic_ground_motion_test_module", SYNTHETIC_GM_PATH
+)
+assert synthetic_gm_spec is not None
+assert synthetic_gm_spec.loader is not None
+synthetic_gm = importlib.util.module_from_spec(synthetic_gm_spec)
+sys.modules["strut_synthetic_ground_motion_test_module"] = synthetic_gm
+synthetic_gm_spec.loader.exec_module(synthetic_gm)
+
+EX1A_BASIC_DIR = (
+    "OpenSeesExamplesBasic/time_history_analysis_of_a_2d_elastic_cantilever_column"
+)
+EX2A_DIR = "OpenSeesExamplesAdvanced/opensees_example_2a_elastic_cantilever_column_with_variables"
+EX5_DIR = (
+    "OpenSeesExamplesAdvanced/"
+    "opensees_example_5_2d_frame_3_story_3_bay_reinforced_concrete_section_steel_w_section"
+)
+
+
+def _copy_committed_example(rel_dir: str, root: Path) -> Path:
+    """Copy one committed example directory to ``root/rel_dir``.
+
+    Pinned downloads (real ground motions) that may be installed next to the
+    committed Tcl are left out, so tests only see the synthetic motions they
+    write themselves.
+    """
+    pinned = {
+        entry["path"]
+        for entry in json.loads(
+            (FIXTURE_ROOT / "reference-data.lock.json").read_text(encoding="utf-8")
+        )["files"]
+    }
+    source = FIXTURE_ROOT / rel_dir
+    target = root / rel_dir
+    target.mkdir(parents=True, exist_ok=True)
+    for path in sorted(source.iterdir()):
+        if path.is_file() and f"{rel_dir}/{path.name}" not in pinned:
+            shutil.copy2(path, target / path.name)
+    return target
+
+
+def _write_synthetic_motion(path: Path, seed: int, dt: float, npts: int) -> None:
+    synthetic_gm.write_motion(
+        path, synthetic_gm.MotionParams(seed=seed, dt=dt, npts=npts, pga=0.3)
+    )
 
 
 def _convert_direct_tcl_manifest(case_name: str) -> dict:
@@ -129,15 +180,12 @@ def test_resolve_json_case_root_keeps_generated_case_json_in_canonical_case_dir(
     assert resolved_case_json == generated_case_json.resolve()
 
 
-def test_convert_ex1a_builds_staged_case():
-    entry = (
-        REPO_ROOT
-        / "tests/fixtures/opensees/OpenSeesExamplesBasic"
-        / "time_history_analysis_of_a_2d_elastic_cantilever_column"
-        / "Ex1a.Canti2D.EQ.modif.tcl"
-    )
+def test_convert_ex1a_builds_staged_case(tmp_path: Path):
+    example_dir = _copy_committed_example(EX1A_BASIC_DIR, tmp_path)
+    _write_synthetic_motion(example_dir / "A10000.tcl", seed=1, dt=0.005, npts=7990)
+    entry = example_dir / "Ex1a.Canti2D.EQ.modif.tcl"
 
-    case = tcl_to_strut.convert_tcl_to_case(entry, REPO_ROOT)
+    case = tcl_to_strut.convert_tcl_to_case(entry, tmp_path)
 
     assert case["analysis"]["type"] == "staged"
     assert len(case["analysis"]["stages"]) == 2
@@ -470,23 +518,22 @@ def test_convert_displacement_control_zero_increment_is_noop(tmp_path: Path):
     assert stage["integrator"]["du"] == pytest.approx(0.1)
 
 
-def test_convert_ex2a_eq_resolves_ground_motion_from_example_root_when_available():
-    entry = (
-        REPO_ROOT
-        / "tests/fixtures/opensees/OpenSeesExamplesAdvanced"
-        / "opensees_example_2a_elastic_cantilever_column_with_variables"
-        / "Ex2a.Canti2D.ElasticElement.EQ.tcl"
+def test_convert_ex2a_eq_resolves_ground_motion_from_example_root_when_available(
+    tmp_path: Path,
+):
+    # Same layout as the pinned fixtures: one copy of the motion in the bundle
+    # root and one next to the example. The example's own copy wins.
+    example_dir = _copy_committed_example(EX2A_DIR, tmp_path)
+    _write_synthetic_motion(example_dir / "BM68elc.acc", seed=2, dt=0.01, npts=4000)
+    _write_synthetic_motion(
+        example_dir.parent / "BM68elc.acc", seed=3, dt=0.01, npts=4000
     )
+    entry = example_dir / "Ex2a.Canti2D.ElasticElement.EQ.tcl"
 
-    case = tcl_to_strut.convert_tcl_to_case(entry, REPO_ROOT)
+    case = tcl_to_strut.convert_tcl_to_case(entry, tmp_path)
 
     assert case["time_series"][1]["values_path"] == str(
-        (
-            REPO_ROOT
-            / "tests/fixtures/opensees/OpenSeesExamplesAdvanced"
-            / "opensees_example_2a_elastic_cantilever_column_with_variables"
-            / "BM68elc.acc"
-        ).resolve()
+        (example_dir / "BM68elc.acc").resolve()
     )
 
 
@@ -503,15 +550,12 @@ def test_convert_reports_unknown_command_with_location(tmp_path: Path):
     assert "line 2" in message
 
 
-def test_convert_typed_case_returns_dataclass_model():
-    entry = (
-        REPO_ROOT
-        / "tests/fixtures/opensees/OpenSeesExamplesBasic"
-        / "time_history_analysis_of_a_2d_elastic_cantilever_column"
-        / "Ex1a.Canti2D.EQ.modif.tcl"
-    )
+def test_convert_typed_case_returns_dataclass_model(tmp_path: Path):
+    example_dir = _copy_committed_example(EX1A_BASIC_DIR, tmp_path)
+    _write_synthetic_motion(example_dir / "A10000.tcl", seed=4, dt=0.005, npts=7990)
+    entry = example_dir / "Ex1a.Canti2D.EQ.modif.tcl"
 
-    case = tcl_to_strut.convert_tcl_to_typed_case(entry, REPO_ROOT)
+    case = tcl_to_strut.convert_tcl_to_typed_case(entry, tmp_path)
 
     assert case.model.ndm == 2
     assert case.model.ndf == 3
@@ -521,13 +565,48 @@ def test_convert_typed_case_returns_dataclass_model():
     )
 
 
-def test_convert_ex5_disables_transient_force_beam_local_force_parity():
+def test_convert_ex5_disables_transient_force_beam_local_force_parity(tmp_path: Path):
     # Originally read Ex5.Frame2D.complete.Dynamic.EQ.Uniform.tcl from the wiki's
-    # Ex5Fram2DEQ.zip, which no longer exists. This manifest sources the same
-    # build + EQ-uniform analysis scripts.
-    case = _convert_direct_tcl_manifest(
-        "opensees_example_ex5_frame2d_eq_uniform_rc_fiber"
+    # Ex5Fram2DEQ.zip, which no longer exists. The manifest sources the same
+    # build + EQ-uniform analysis scripts. The Tcl's ReadSMDFile proc opens
+    # ../GMfiles/H-e12140.at2 and takes DT from the PEER header, so a synthetic
+    # record goes there. It is named like the wiki zip member (H-E12140.AT2),
+    # which only resolves through the converter's case-insensitive lookup.
+    example_dir = _copy_committed_example(EX5_DIR, tmp_path)
+    gm_dt = 0.004
+    gm_npts = 2500
+    _write_synthetic_motion(
+        example_dir.parent / "GMfiles" / "H-E12140.AT2",
+        seed=5,
+        dt=gm_dt,
+        npts=gm_npts,
     )
+    manifest_data = json.loads(
+        (
+            REPO_ROOT
+            / "tests/validation/opensees_example_ex5_frame2d_eq_uniform_rc_fiber"
+            / "direct_tcl_case.json"
+        ).read_text(encoding="utf-8")
+    )
+    entry = example_dir / Path(manifest_data["entry_tcl"]).name
+    manifest_data["entry_tcl"] = str(entry)
+    case_root = tmp_path / "validation" / manifest_data["name"]
+    case_root.mkdir(parents=True)
+    manifest = case_root / "direct_tcl_case.json"
+    manifest.write_text(json.dumps(manifest_data), encoding="utf-8")
+    source_files = run_case._resolve_direct_tcl_source_files(entry, manifest)
+    runtime_entry, _ = run_case._prepare_direct_tcl_entry(
+        entry, case_root, source_files
+    )
+
+    case = tcl_to_strut.convert_tcl_to_case(runtime_entry, tmp_path)
+
+    accel_series = [ts for ts in case["time_series"] if ts["type"] == "Path"]
+    assert len(accel_series) == 1
+    assert accel_series[0]["dt"] == pytest.approx(gm_dt)
+    converted_values = Path(accel_series[0]["values_path"])
+    assert converted_values.name.lower() == "h-e12140.g3"
+    assert len(converted_values.read_text(encoding="ascii").split()) == gm_npts
 
     recorders = {}
     for recorder in case["recorders"]:
@@ -782,6 +861,7 @@ def test_convert_rigid_diaphragm_preserves_opensees_small_rotation_mapping(
     ]
 
 
+@pytest.mark.requires_pinned_fixtures("OpenSeesExamples/MegaTallBuildingBenchmark")
 def test_convert_megatall_direct_tcl_completes_full_bundle_import():
     case = _convert_direct_tcl_manifest("opensees_megatall_building_model1_dynamiccpu")
 

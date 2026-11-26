@@ -27,6 +27,16 @@ def _load_run_benchmarks_module():
 
 run_benchmarks = _load_run_benchmarks_module()
 
+synthetic_gm_spec = importlib.util.spec_from_file_location(
+    "strut_synthetic_ground_motion_benchmarks_test_module",
+    REPO_ROOT / "scripts" / "synthetic_ground_motion.py",
+)
+assert synthetic_gm_spec is not None
+assert synthetic_gm_spec.loader is not None
+synthetic_gm = importlib.util.module_from_spec(synthetic_gm_spec)
+sys.modules[synthetic_gm_spec.name] = synthetic_gm
+synthetic_gm_spec.loader.exec_module(synthetic_gm)
+
 
 def _load_compare_case_module():
     module_name = "strut_compare_case_test_module"
@@ -1059,8 +1069,19 @@ def test_absolutize_time_series_paths_resolves_relative_values_path(tmp_path: Pa
 
 
 def test_absolutize_time_series_paths_resolves_from_repo_root_when_needed(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
+    # The repo root comes from the module's own location. Point it at a scratch
+    # repo holding a synthetic motion so the real fixture tree is not needed.
+    repo_root = tmp_path / "repo"
+    motion_rel = "tests/fixtures/opensees/OpenSeesExamplesBasic/time_history_analysis_of_a_2d_elastic_cantilever_column/A10000.tcl"
+    synthetic_gm.write_motion(
+        repo_root / motion_rel,
+        synthetic_gm.MotionParams(seed=11, dt=0.005, npts=400, pga=0.1),
+    )
+    monkeypatch.setattr(
+        run_benchmarks, "__file__", str(repo_root / "scripts" / "run_benchmarks.py")
+    )
     case_json = tmp_path / "validation" / "case_b" / "case_b.json"
     case_json.parent.mkdir(parents=True, exist_ok=True)
     case_data = {
@@ -1068,7 +1089,7 @@ def test_absolutize_time_series_paths_resolves_from_repo_root_when_needed(
             {
                 "type": "Path",
                 "tag": 1,
-                "values_path": "tests/fixtures/opensees/OpenSeesExamplesBasic/time_history_analysis_of_a_2d_elastic_cantilever_column/A10000.tcl",
+                "values_path": motion_rel,
             }
         ]
     }
@@ -1076,10 +1097,7 @@ def test_absolutize_time_series_paths_resolves_from_repo_root_when_needed(
     run_benchmarks._absolutize_time_series_paths(case_data, case_json)
 
     resolved = Path(case_data["time_series"][0]["values_path"])
-    expected = (
-        REPO_ROOT
-        / "tests/fixtures/opensees/OpenSeesExamplesBasic/time_history_analysis_of_a_2d_elastic_cantilever_column/A10000.tcl"
-    ).resolve()
+    expected = (repo_root / motion_rel).resolve()
     assert resolved.is_absolute()
     assert resolved == expected
 
