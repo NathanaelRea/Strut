@@ -14,7 +14,7 @@ uv run python -m scripts.megatall_recon.bundle --out-dir DIR      # anywhere els
 | Elevations, core grids, façade setbacks, inclined mega-column rails, belt-truss floors | [geometry.py](geometry.py), [params.json](params.json) | 3 KB + 2 KB track table | Rules |
 | Original node and element IDs, file order, irregular element stencils | [legacy.bin](legacy.bin) | 44 KB | Stored (LZMA). Only needed to reproduce the original numbering. |
 | Materials, sections, section assignment, masses, loads, entry script | [properties.py](properties.py), [props.json](props.json) | 45 KB | Formulas over geometry plus tables. Hbeam section assignment (18 KB) and slab-panel templates (16 KB) are the largest tables. |
-| `geomTransf` definitions and each beam's tag | [bundle.py](bundle.py), [transf.bin](transf.bin) | 3.5 KB | Stored |
+| `geomTransf` definitions and each beam's tag | [transf.py](transf.py) | under 1 KB inline | Rules: mega-columns by zone and octant, horizontal and inclined beams `(0,0,1)`, vertical beams by section orientation, plus 10 geometric exception rules covering 96 vertical beams |
 | `GMX.txt` | [bundle.py](bundle.py) via `scripts/synthetic_ground_motion.py` | 0 | Synthetic. Rezaeian & Der Kiureghian record for a reverse-fault M7, 20 km, Vs30 = 600 m/s scenario with a fixed seed, in the original's layout (4,000 points, dt = 0.01 s, PGA 1.0). It is not the original record. |
 
 The original's `CuSPSolver.dll` is not reproduced.
@@ -36,7 +36,7 @@ OpenSees 3.7.1 runs the same gravity analysis (the entry script's 10 `LoadContro
 
 Modes 1–4 are negative in both after the P-Delta gravity step, so these periods compare the two bundles and are not the building's design periods.
 
-The generated `elasticBeamColumn` rigid links omit a bare trailing `.10000E+01` that the original prints after the transformation tag. OpenSees ignores that token. Strut's converter used to read it as `rho = 1.0`.
+The generated `elasticBeamColumn` rigid links omit a bare trailing `.10000E+01` that the original prints after the transformation tag. OpenSees ignores that token, but Strut's converter reads it as `rho = 1.0` on the original files. That converter bug is not fixed here.
 
 ## Checking against the original
 

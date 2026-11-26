@@ -398,7 +398,7 @@ def verify_against_real(
     use_generated_geometry: bool = True,
 ) -> bool:
     """Compare generated geomTransf definitions and per-beam tags against Model1."""
-    real = prop.load_real_geometry(model_dir)
+    real = prop.load_real_geometry(prop.require_real_model(model_dir))
     if use_generated_geometry:
         g = geo.generate()
     else:
