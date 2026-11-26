@@ -242,8 +242,8 @@ uv run scripts/plot_markdown_benchmarks.py --large-results benchmark/results-meg
 ```
 
 Benchmark PDFs use a log-scale y-axis for both recent-case and archive charts.
-The Markdown mode writes separate Mermaid charts plus tables for enabled `opensees_example_*` cases, split by `ex1`, `ex2`, and so on. By default it plots OpenSees and Strut; pass `--mp` to include OpenSeesMP as well.
-When the summary came from a `--strut-single-thread` run, every chart gets a third bar for Strut on one thread.
+The Markdown mode writes a summary table, one Mermaid chart per large model, and the enabled `opensees_example_*` cases grouped by how long OpenSees takes (over one second, 10 ms to one second, under 10 ms), so each chart has one time scale. The smallest group gets a table only. By default it plots OpenSees and Strut; pass `--mp` to include OpenSeesMP as well.
+When the summary came from a `--strut-single-thread` run, the charts show `opensees`, `strut` (one thread) and `strut-<threads>`.
 `--large-results` takes the summary of a separate run and gives each of its cases its own chart under "Large models".
 `--note "..."` prints a sentence under the header; use it to say what else the machine was doing during the run.
 

@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
+"""Write docs/benchmark-opensees-examples.md from benchmark summaries.
+
+The page has a summary table, one chart per large model, and the OpenSees
+examples grouped by how long OpenSees takes, so every chart has one time scale.
+"""
+
 import argparse
+import json
 import math
-import re
-from collections import OrderedDict
 from pathlib import Path
 
 import plot_benchmarks
@@ -14,197 +19,215 @@ from plot_constants import (
 )
 
 SINGLE_THREAD_KEY = "strut_single_thread"
-# (chart series name, summary key, x-axis slot suffix, color)
-OPENSEES_SERIES = ("OS", "opensees", "O", OPENSEES_BLUE)
-OPENSEESMP_SERIES = ("OMP", "openseesmp", "M", OPENSEESMP_GREEN)
-STRUT_SINGLE_SERIES = ("STR1", SINGLE_THREAD_KEY, "S1", MOJO_ORANGE_SINGLE_THREAD)
-STRUT_SERIES = ("STR", "strut", "S", MOJO_ORANGE)
+ENGINE_KEYS = ("opensees", "openseesmp", SINGLE_THREAD_KEY, "strut")
+ENGINE_COLORS = {
+    "opensees": OPENSEES_BLUE,
+    "openseesmp": OPENSEESMP_GREEN,
+    SINGLE_THREAD_KEY: MOJO_ORANGE_SINGLE_THREAD,
+    "strut": MOJO_ORANGE,
+}
+EXAMPLE_PREFIX = "opensees_example_"
+# Mermaid draws a short stub for a zero bar. A last, unnamed series in this
+# color covers the stubs, and an unnamed series is left out of the legend.
+MASK_COLOR = "#808080"
+# Mermaid needs every x label to be unique. Bars that carry no label get a
+# run of zero-width spaces: unique, and invisible in the chart.
+HIDDEN_LABEL_CHAR = chr(0x200B)
+# (heading, lower bound on the OpenSees time in seconds, has a chart)
+EXAMPLE_GROUPS = (
+    ("Over one second", 1.0, True),
+    ("10 ms to one second", 0.010, True),
+    ("Under 10 ms", 0.0, False),
+)
 
 
-def _format_scaled(value_us: float, unit_divisor_us: float) -> str:
-    if isinstance(value_us, (int, float)) and math.isfinite(value_us):
-        return f"{float(value_us) / unit_divisor_us:.3f}"
-    return "n/a"
+def _is_time(value) -> bool:
+    return isinstance(value, (int, float)) and math.isfinite(value) and value > 0
 
 
-def _mermaid_scaled_value(value_us: float, unit_divisor_us: float) -> str:
-    if isinstance(value_us, (int, float)) and math.isfinite(value_us):
-        return f"{float(value_us) / unit_divisor_us:.3f}"
-    return "0.0"
+def _case_times(case: dict) -> dict[str, float]:
+    """Analysis seconds per engine, for the engines this case was run on."""
+    times = {}
+    for key in ENGINE_KEYS:
+        seconds = plot_benchmarks._case_time_seconds(case, key)
+        if _is_time(seconds):
+            times[key] = seconds
+    return times
 
 
-def _plot_unit(engines: dict[str, list[float]]) -> tuple[str, float, float]:
-    max_us = 0.0
-    for engine in ("opensees", "openseesmp", SINGLE_THREAD_KEY, "strut"):
-        for value in engines.get(engine, []):
-            if isinstance(value, (int, float)) and math.isfinite(value):
-                max_us = max(max_us, float(value))
-    max_ns = max_us * 1_000.0
-    if max_ns < 1_000.0:
-        return "ns", 0.001, max_ns
-    if max_ns < 1_000_000.0:
-        return "us", 1.0, max_us
-    if max_ns < 1_000_000_000.0:
-        return "ms", 1_000.0, max_us / 1_000.0
-    return "s", 1_000_000.0, max_us / 1_000_000.0
+TIME_UNITS = (("s", 1.0), ("ms", 1e-3), ("µs", 1e-6), ("ns", 1e-9))
 
 
-def _mermaid_label(name: str, max_len: int = 24) -> str:
-    return plot_benchmarks.json.dumps(_display_label(name))
+def _time_unit(seconds: float) -> tuple[str, float]:
+    """The largest unit in which `seconds` is at least 1."""
+    for unit, scale in TIME_UNITS:
+        if seconds >= scale:
+            return unit, scale
+    return TIME_UNITS[-1]
 
 
-def _display_label(name: str) -> str:
-    match = re.search(r"(ex[0-9]+[a-z]?_.+)$", name)
-    return match.group(1) if match else name
+def _format_time(seconds, unit_of=None) -> str:
+    """About three significant figures, in the unit that suits `unit_of`
+    (default: the value itself). A table row passes its largest time, so
+    the whole row reads in one unit."""
+    if not _is_time(seconds):
+        return "n/a"
+    unit, scale = _time_unit(unit_of if _is_time(unit_of) else seconds)
+    value = seconds / scale
+    if unit in ("µs", "ns"):
+        decimals = 0  # the summaries store whole microseconds
+    elif value >= 100:
+        decimals = 1 if unit == "s" else 0
+    else:
+        decimals = 1 if value >= 10 else 2 if value >= 1 else 3
+    return f"{value:.{decimals}f} {unit}"
 
 
-def _shared_prefix(labels: list[str]) -> str:
-    if len(labels) < 2:
+def _ratio(base, value) -> str:
+    """`7.4x faster`, `1.6x slower`, or `same` within 5%: `value` against `base`."""
+    if not (_is_time(base) and _is_time(value)):
+        return "n/a"
+    if max(base, value) / min(base, value) < 1.05:
+        return "same"
+    if value < base:
+        return f"{base / value:.1f}x faster"
+    return f"{value / base:.1f}x slower"
+
+
+def _strut_threads(summary: dict) -> str:
+    metadata = summary.get("metadata") or {}
+    threads = (metadata.get("runner") or {}).get("strut_threads")
+    if isinstance(threads, str) and threads.isdigit():
+        return threads
+    cores = (metadata.get("platform") or {}).get("physical_cores")
+    return str(cores) if cores else ""
+
+
+def _engine_names(summary: dict, keys: list[str]) -> dict[str, str]:
+    """Chart and table names. The threaded pass is `strut-<threads>` when a
+    single-thread pass was measured beside it, and plain `strut` otherwise."""
+    names = {"opensees": "opensees", "openseesmp": "openseesmp", "strut": "strut"}
+    if SINGLE_THREAD_KEY in keys:
+        names[SINGLE_THREAD_KEY] = "strut"
+        names["strut"] = f"strut-{_strut_threads(summary) or 'mt'}"
+    return names
+
+
+def _engine_key_sentence(summary: dict, keys: list[str]) -> str:
+    if SINGLE_THREAD_KEY not in keys:
         return ""
-    prefix = labels[0]
-    for label in labels[1:]:
-        limit = min(len(prefix), len(label))
-        idx = 0
-        while idx < limit and prefix[idx] == label[idx]:
-            idx += 1
-        prefix = prefix[:idx]
-        if not prefix:
-            return ""
-    if "_" not in prefix:
-        return ""
-    return prefix[: prefix.rfind("_") + 1]
+    threads = _strut_threads(summary)
+    names = _engine_names(summary, keys)
+    threaded = f"on {threads} threads" if threads else "on all cores"
+    return (
+        f"`opensees` is OpenSees, `strut` is Strut on one thread, and "
+        f"`{names['strut']}` is Strut {threaded}."
+    )
 
 
-def _relative_labels(names: list[str]) -> list[str]:
-    labels = [_display_label(name) for name in names]
-    prefix = _shared_prefix(labels)
-    if not prefix:
-        return labels
-    trimmed = [label[len(prefix) :] for label in labels]
-    if any(not label for label in trimmed):
-        return labels
-    return trimmed
-
-
-def _example_group_key(name: str) -> tuple[int, str] | None:
-    if not name.startswith("opensees_example_"):
-        return None
-    match = re.search(r"ex(\d+)[a-z]?(?:_|$)", name)
-    if match is None:
-        return None
-    example_num = int(match.group(1))
-    return example_num, f"ex{example_num}"
-
-
-def _active_series(
-    engines: dict[str, list[float]], *, include_mp: bool
-) -> list[tuple[str, str, str, str]]:
-    series = [OPENSEES_SERIES]
-    if include_mp:
-        series.append(OPENSEESMP_SERIES)
-    if _has_values(engines.get(SINGLE_THREAD_KEY, [])):
-        series.append(STRUT_SINGLE_SERIES)
-    series.append(STRUT_SERIES)
-    return series
-
-
-def _has_values(values: list[float]) -> bool:
-    return any(isinstance(v, (int, float)) and math.isfinite(v) for v in values)
-
-
-def _single_thread_values(cases: list[dict]) -> list[float]:
-    return [
-        plot_benchmarks._case_time_seconds(case, SINGLE_THREAD_KEY) * 1e6
-        for case in cases
-    ]
+def _axis_setup(max_seconds: float) -> tuple[str, float, str]:
+    """Unit label, seconds per unit, and the y-axis upper bound as text."""
+    unit, scale = _time_unit(max_seconds)
+    top = max_seconds / scale * 1.1
+    digits = max(0, 2 - int(math.floor(math.log10(top)))) if top > 0 else 0
+    return unit, scale, f"{top:.{digits}f}"
 
 
 def _mermaid_chart(
+    *,
     title: str,
     x_labels: list[str],
-    series_values: list[tuple[str, list[str]]],
-    palette: list[str],
-    unit_label: str,
-    axis_max: float,
+    series: list[tuple[str, str, list[float]]],
+    unit: str,
+    axis_top: str,
+    height: int,
 ) -> list[str]:
-    return [
+    """`series` is (legend name or "", color, values). The mask goes last."""
+    palette = [color for _, color, _ in series] + [MASK_COLOR]
+    lines = [
         "```mermaid",
         "---",
         "config:",
+        "  xyChart:",
+        f"    height: {height}",
         "  themeVariables:",
         "    xyChart:",
         f"      plotColorPalette: '{', '.join(palette)}'",
         "---",
         "xychart-beta",
-        f'    title "{title}"',
-        f"    x-axis [{', '.join(x_labels)}]",
-        f'    y-axis "Analysis time ({unit_label})" 0 --> {axis_max:.3f}',
-        *[f'    bar "{name}" [{", ".join(values)}]' for name, values in series_values],
-        "```",
+        f"    title {json.dumps(title, ensure_ascii=False)}",
+        "    x-axis ["
+        + ", ".join(json.dumps(label, ensure_ascii=False) for label in x_labels)
+        + "]",
+        f'    y-axis "Analysis time ({unit})" 0 --> {axis_top}',
     ]
+    for name, _, values in series:
+        title_part = f"{json.dumps(name)} " if name else ""
+        formatted = ", ".join(f"{v:.3f}" if v else "0" for v in values)
+        lines.append(f"    bar {title_part}[{formatted}]")
+    lines.append(f"    bar [{', '.join('0' for _ in x_labels)}]")
+    lines.append("```")
+    return lines
 
 
-def _build_chart_lines(
-    example_label: str,
-    names: list[str],
-    engines: dict[str, list[float]],
-    *,
-    include_mp: bool,
-) -> list[str]:
-    base_labels = _relative_labels(names)
-    unit_label, unit_divisor_us, max_value = _plot_unit(engines)
-    axis_max = max(1.0, math.ceil(max_value * 1.1 * 1000.0) / 1000.0)
-    example_title = example_label.replace("ex", "Example ", 1)
-    active = _active_series(engines, include_mp=include_mp)
-    x_labels: list[str] = []
-    mask_slots: list[str] = []
-    slots: dict[str, list[str]] = {key: [] for _, key, _, _ in active}
-    # Each engine owns one x slot per case and is zero in the others, so every
-    # bar takes its engine's color; a spacer slot separates the cases.
-    for idx, _label in enumerate(base_labels):
-        case_num = idx + 1
-        for _, key, suffix, _ in active:
-            x_labels.append(_mermaid_label(f"{case_num}{suffix}"))
-            mask_slots.append("0.0")
-            for _, other_key, _, _ in active:
-                slots[other_key].append(
-                    _mermaid_scaled_value(engines[key][idx], unit_divisor_us)
-                    if other_key == key
-                    else "0.0"
-                )
-        if idx < len(base_labels) - 1:
-            x_labels.append(_mermaid_label(f"{case_num}-"))
-            mask_slots.append("0.0")
-            for key in slots:
-                slots[key].append("0.0")
+def _single_case_chart(title: str, times: dict[str, float], names: dict) -> list[str]:
+    """One bar per engine, labelled with the engine and its speedup."""
+    keys = [key for key in ENGINE_KEYS if key in times]
+    unit, scale, axis_top = _axis_setup(max(times.values()))
+    x_labels = []
+    for key in keys:
+        label = names[key]
+        if key != "opensees" and "opensees" in times:
+            label += f" ({_ratio(times['opensees'], times[key])})"
+        x_labels.append(label)
+    series = [
+        (
+            "",
+            ENGINE_COLORS[key],
+            [times[key] / scale if other == key else 0.0 for other in keys],
+        )
+        for key in keys
+    ]
     return _mermaid_chart(
-        f"Benchmark: {example_title}",
-        x_labels,
-        [(name, slots[key]) for name, key, _, _ in active] + [("mask", mask_slots)],
-        [color for _, _, _, color in active] + ["#d0d0d0"],
-        unit_label,
-        axis_max,
+        title=title,
+        x_labels=x_labels,
+        series=series,
+        unit=unit,
+        axis_top=axis_top,
+        height=320,
     )
 
 
-SERIES_TITLES = {
-    "opensees": "OpenSees",
-    "openseesmp": "OpenSeesMP",
-    SINGLE_THREAD_KEY: "Strut, 1 thread",
-    "strut": "Strut",
-}
-
-
-def _strut_title(summary: dict) -> str:
-    """Name the default Strut pass by its thread count when the run recorded it."""
-    metadata = summary.get("metadata") or {}
-    runner = metadata.get("runner") or {}
-    if not runner.get("strut_single_thread_pass"):
-        return "Strut"
-    threads = runner.get("strut_threads")
-    if not (isinstance(threads, str) and threads.isdigit()):
-        threads = (metadata.get("platform") or {}).get("physical_cores")
-    return f"Strut, {threads} threads" if threads else "Strut, all cores"
+def _group_chart(
+    title: str, rows: list[dict[str, float]], keys: list[str], names: dict
+) -> list[str]:
+    """Every case gets one slot per engine, then a gap. The case number sits
+    under the middle slot. A legend names the engines."""
+    peak = max(max(times.get(key, 0.0) for key in keys) for times in rows)
+    unit, scale, axis_top = _axis_setup(peak)
+    x_labels: list[str] = []
+    values: dict[str, list[float]] = {key: [] for key in keys}
+    hidden = 0
+    label_slot = len(keys) // 2
+    for index, times in enumerate(rows):
+        slots = len(keys) + (1 if index < len(rows) - 1 else 0)
+        for slot in range(slots):
+            if slot == label_slot:
+                x_labels.append(str(index + 1))
+            else:
+                hidden += 1
+                x_labels.append(HIDDEN_LABEL_CHAR * hidden)
+            for key in keys:
+                on = slot < len(keys) and keys[slot] == key
+                values[key].append(times.get(key, 0.0) / scale if on else 0.0)
+    return _mermaid_chart(
+        title=title,
+        x_labels=x_labels,
+        series=[(names[key], ENGINE_COLORS[key], values[key]) for key in keys],
+        unit=unit,
+        axis_top=axis_top,
+        height=380,
+    )
 
 
 def _environment_lines(summary: dict) -> list[str]:
@@ -239,99 +262,173 @@ def _runs_phrase(summary: dict) -> str:
     )
 
 
-def _key_lines(
-    series: list[tuple[str, str, str, str]], strut_title: str, runs: str
-) -> list[str]:
-    names = {**SERIES_TITLES, "strut": strut_title}
-    key = " · ".join(f"**{suffix}** {names[k]}" for _, k, suffix, _ in series)
-    lines = [f"Bar labels are case number plus engine: {key}."]
-    if runs:
-        lines.append(runs)
-    lines.append(
-        "A case too small to reach the threaded code shows the same time for both Strut bars."
-    )
-    return [*lines, ""]
+def _table(headers: list[str], rows: list[list[str]], left: int = 1) -> list[str]:
+    """Markdown table; the first `left` columns are left-aligned."""
+    align = ["---" if i < left else "---:" for i in range(len(headers))]
+    return [
+        f"| {' | '.join(headers)} |",
+        f"| {' | '.join(align)} |",
+        *[f"| {' | '.join(row)} |" for row in rows],
+        "",
+    ]
 
 
-def _speedup(base_us: float, value_us: float) -> str:
-    if all(
-        isinstance(v, (int, float)) and math.isfinite(v) and v > 0
-        for v in (base_us, value_us)
-    ):
-        return f"{base_us / value_us:.1f}x"
-    return "n/a"
+def _time_cells(times: dict[str, float], keys: list[str], ratios: bool) -> list[str]:
+    """One cell per engine, all in the unit of the row's largest time. With
+    `ratios`, the Strut cells also carry their speedup over OpenSees."""
+    cells = []
+    row_max = max(times.values(), default=None)
+    for key in keys:
+        text = _format_time(times.get(key), row_max)
+        if ratios and key in (SINGLE_THREAD_KEY, "strut") and "opensees" in times:
+            ratio = _ratio(times["opensees"], times.get(key))
+            text += f" (**{ratio}**)" if ratio.endswith("faster") else f" ({ratio})"
+        cells.append(text)
+    return cells
+
+
+def _large_cases(summary: dict) -> list[tuple[dict, dict[str, float]]]:
+    return [
+        (case, times)
+        for case in summary.get("cases", [])
+        if (times := _case_times(case))
+    ]
 
 
 def _large_model_lines(summary: dict) -> list[str]:
-    """One chart and table per case: every case has its own time scale."""
-    cases = summary.get("cases", [])
-    strut_title = _strut_title(summary)
-    titles = {**SERIES_TITLES, "strut": strut_title}
+    """One chart per case: every large model has its own time scale."""
     runs = _runs_phrase(summary)
     lines: list[str] = []
-    for case in cases:
-        engines = {
-            key: [plot_benchmarks._case_time_seconds(case, key) * 1e6]
-            for key in ("opensees", "openseesmp", SINGLE_THREAD_KEY, "strut")
-        }
-        series = [
-            spec
-            for spec in (
-                OPENSEES_SERIES,
-                OPENSEESMP_SERIES,
-                STRUT_SINGLE_SERIES,
-                STRUT_SERIES,
-            )
-            if _has_values(engines[spec[1]])
-        ]
-        if not series:
-            continue
-        unit_label, unit_divisor_us, max_value = _plot_unit(engines)
-        axis_max = max(1.0, math.ceil(max_value * 1.1 * 1000.0) / 1000.0)
-        slots = {
-            key: [
-                _mermaid_scaled_value(engines[key][0], unit_divisor_us)
-                if key == other
-                else "0.0"
-                for _, other, _, _ in series
-            ]
-            for _, key, _, _ in series
-        }
+    for case, times in _large_cases(summary):
         name = str(case.get("name"))
+        names = _engine_names(summary, list(times))
         dofs = case.get("dofs")
-        lines.extend([f"### `{name}`", ""])
         facts = [f"{dofs:,} free DOFs."] if isinstance(dofs, int) else []
         if runs:
             facts.append(runs)
-        if facts:
-            lines.extend([" ".join(facts), ""])
         notes = case.get("notes")
         if isinstance(notes, str) and notes:
-            lines.extend([notes, ""])
-        lines.extend(
-            _mermaid_chart(
-                name,
-                [plot_benchmarks.json.dumps(titles[key]) for _, key, _, _ in series],
-                [(chart_name, slots[key]) for chart_name, key, _, _ in series],
-                [color for _, _, _, color in series],
-                unit_label,
-                axis_max,
-            )
-        )
-        lines.extend(
-            [
-                "",
-                f"| Engine | Analysis time ({unit_label}) | vs OpenSees |",
-                "| --- | ---: | ---: |",
-            ]
-        )
-        for _, key, _, _ in series:
-            lines.append(
-                f"| {titles[key]} | {_format_scaled(engines[key][0], unit_divisor_us)} | "
-                f"{_speedup(engines['opensees'][0], engines[key][0])} |"
-            )
-        lines.append("")
+            facts.append(notes)
+        lines.extend([f"### `{name}`", ""])
+        if facts:
+            lines.extend([" ".join(facts), ""])
+        lines.extend([*_single_case_chart(name, times, names), ""])
     return lines
+
+
+def _example_cases(summary: dict) -> list[tuple[str, dict[str, float], object]]:
+    """(label, times, dofs) for the enabled OpenSees example cases, slowest first."""
+    rows = []
+    for case in plot_benchmarks._filter_enabled_cases(summary.get("cases", [])):
+        name = case.get("name")
+        if not (isinstance(name, str) and name.startswith(EXAMPLE_PREFIX)):
+            continue
+        times = _case_times(case)
+        if "opensees" in times and "strut" in times:
+            rows.append((name[len(EXAMPLE_PREFIX) :], times, case.get("dofs")))
+    return sorted(rows, key=lambda row: -row[1]["opensees"])
+
+
+def _example_lines(summary: dict, *, include_mp: bool) -> list[str]:
+    rows = _example_cases(summary)
+    if not rows:
+        return ["No enabled `opensees_example_*` benchmark cases were found.", ""]
+    keys = [
+        key
+        for key in ENGINE_KEYS
+        if any(key in times for _, times, _ in rows)
+        and (include_mp or key != "openseesmp")
+    ]
+    names = _engine_names(summary, keys)
+    verdicts = [_ratio(times["opensees"], times["strut"]) for _, times, _ in rows]
+    faster = sum(1 for verdict in verdicts if verdict.endswith("faster"))
+    slower = sum(1 for verdict in verdicts if verdict.endswith("slower"))
+    intro = [f"{len(rows)} cases, slowest first."]
+    if runs := _runs_phrase(summary):
+        intro.append(runs)
+    intro.append(f"Strut is faster in {faster} and slower in {slower}.")
+    if SINGLE_THREAD_KEY in keys:
+        intro.append(
+            f"None is large enough to reach the threaded code, so `strut` and "
+            f"`{names['strut']}` take the same time."
+        )
+    lines = ["## OpenSees examples", "", " ".join(intro), ""]
+    headers = ["#", "Case", *[names[key] for key in keys], "Strut is"]
+    upper = math.inf
+    for heading, lower, has_chart in EXAMPLE_GROUPS:
+        group = [row for row in rows if lower <= row[1]["opensees"] < upper]
+        upper = lower
+        if not group:
+            continue
+        lines.extend([f"### {heading}", ""])
+        if has_chart:
+            title = f"OpenSees examples: {heading[0].lower()}{heading[1:]}"
+            lines.extend(
+                [*_group_chart(title, [row[1] for row in group], keys, names), ""]
+            )
+        lines.extend(
+            _table(
+                headers,
+                [
+                    [
+                        str(index + 1),
+                        f"`{label}`",
+                        *_time_cells(times, keys, False),
+                        _ratio(times["opensees"], times["strut"]),
+                    ]
+                    for index, (label, times, _) in enumerate(group)
+                ],
+                left=2,
+            )
+        )
+    return lines
+
+
+def _summary_lines(
+    summary: dict, large_summaries: list[dict], *, include_mp: bool
+) -> list[str]:
+    """Headline table: every large model, then the example suite as one row."""
+    entries: list[tuple[str, str, dict[str, float]]] = []
+    for large in large_summaries:
+        for case, times in _large_cases(large):
+            dofs = case.get("dofs")
+            entries.append(
+                (
+                    f"`{case.get('name')}`",
+                    f"{dofs:,}" if isinstance(dofs, int) else "",
+                    times,
+                )
+            )
+    examples = _example_cases(summary)
+    if examples:
+        totals: dict[str, float] = {}
+        for key in ENGINE_KEYS:
+            if all(key in times for _, times, _ in examples):
+                totals[key] = sum(times[key] for _, times, _ in examples)
+        sizes = [dofs for _, _, dofs in examples if isinstance(dofs, int)]
+        entries.append(
+            (
+                f"OpenSees examples, all {len(examples)} cases",
+                f"up to {max(sizes):,}" if sizes else "",
+                totals,
+            )
+        )
+    if not entries:
+        return []
+    keys = [
+        key
+        for key in ENGINE_KEYS
+        if any(key in times for _, _, times in entries)
+        and (include_mp or key != "openseesmp")
+    ]
+    names = _engine_names(summary if examples else large_summaries[0], keys)
+    return _table(
+        ["Model", "Free DOFs", *[names[key] for key in keys]],
+        [
+            [model, dofs, *_time_cells(times, keys, True)]
+            for model, dofs, times in entries
+        ],
+    )
 
 
 def write_opensees_examples_markdown(
@@ -349,38 +446,28 @@ def write_opensees_examples_markdown(
             raise SystemExit(f"Missing results summary: {path}")
 
     summary = plot_benchmarks.load_summary(results_path)
-    cases = plot_benchmarks._filter_enabled_cases(summary.get("cases", []))
-    filtered_summary = dict(summary)
-    filtered_summary["cases"] = cases
-    grouped_pairs: list[tuple[int, str, int]] = []
-    for idx, case in enumerate(cases):
-        name = case.get("name")
-        if not isinstance(name, str):
-            continue
-        group_key = _example_group_key(name)
-        if group_key is None:
-            continue
-        example_num, label = group_key
-        grouped_pairs.append((example_num, label, idx))
-
-    grouped_indices: OrderedDict[str, list[int]] = OrderedDict()
-    for _, label, idx in sorted(grouped_pairs):
-        grouped_indices.setdefault(label, []).append(idx)
+    large_summaries = [plot_benchmarks.load_summary(p) for p in large_results_paths]
 
     lines = [
-        "# OpenSees Example Benchmarks",
+        "# Benchmarks: Strut and OpenSees",
         "",
         "<!-- Auto-generated by scripts/plot_markdown_benchmarks.py -->",
         "",
     ]
     environment = _environment_lines(summary)
     lines.extend(environment)
+    # The engine names come from the first summary that timed both Strut passes.
+    for source in (summary, *large_summaries):
+        keys = {key for case in source.get("cases", []) for key in _case_times(case)}
+        if key_sentence := _engine_key_sentence(source, sorted(keys)):
+            lines.extend([key_sentence, ""])
+            break
     if note:
         lines.extend([note, ""])
+    lines.extend(_summary_lines(summary, large_summaries, include_mp=include_mp))
 
     large_lines: list[str] = []
-    for path in large_results_paths:
-        large_summary = plot_benchmarks.load_summary(path)
+    for large_summary in large_summaries:
         large_environment = _environment_lines(large_summary)
         # Only worth repeating when the large run used another machine or build.
         if large_environment[:1] != environment[:1]:
@@ -389,59 +476,7 @@ def write_opensees_examples_markdown(
     if large_lines:
         lines.extend(["## Large models", "", *large_lines])
 
-    strut_title = _strut_title(summary)
-    key_written = False
-    if grouped_indices:
-        for group_label, indices in grouped_indices.items():
-            names, engines, _ = plot_benchmarks.collect_recent_cases(
-                filtered_summary, indices
-            )
-            engines[SINGLE_THREAD_KEY] = _single_thread_values(
-                [cases[i] for i in indices]
-            )
-            series = _active_series(engines, include_mp=include_mp)
-            has_single = STRUT_SINGLE_SERIES in series
-            if has_single and not key_written:
-                lines.extend(_key_lines(series, strut_title, _runs_phrase(summary)))
-                key_written = True
-            unit_label, unit_divisor_us, _ = _plot_unit(engines)
-            lines.extend(
-                [
-                    f"## {group_label}",
-                    "",
-                ]
-            )
-            lines.extend(
-                _build_chart_lines(
-                    group_label,
-                    names,
-                    engines,
-                    include_mp=include_mp,
-                )
-            )
-            titles = {
-                **SERIES_TITLES,
-                "strut": strut_title if has_single else "Strut",
-            }
-            headers = [f"{titles[key]} ({unit_label})" for _, key, _, _ in series]
-            lines.extend(
-                [
-                    "",
-                    f"| # | Label | {' | '.join(headers)} |",
-                    f"| ---: | --- | {' | '.join('---:' for _ in series)} |",
-                ]
-            )
-            base_labels = _relative_labels(names)
-            for idx, label in enumerate(base_labels):
-                values = [
-                    _format_scaled(engines[key][idx], unit_divisor_us)
-                    for _, key, _, _ in series
-                ]
-                lines.append(f"| {idx + 1} | `{label}` | {' | '.join(values)} |")
-            lines.append("")
-    else:
-        lines.append("No enabled `opensees_example_*` benchmark cases were found.")
-        lines.append("")
+    lines.extend(_example_lines(summary, include_mp=include_mp))
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text("\n".join(lines), encoding="utf-8")
     print(f"Wrote {output_path}")
@@ -450,7 +485,7 @@ def write_opensees_examples_markdown(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Write Markdown Mermaid charts for enabled OpenSees example benchmarks."
+        description="Write the Markdown benchmark page with Mermaid charts."
     )
     parser.add_argument(
         "--results",
@@ -480,7 +515,7 @@ def main() -> None:
     parser.add_argument(
         "--mp",
         action="store_true",
-        help="Include OpenSeesMP bars and table columns in the Markdown charts.",
+        help="Include OpenSeesMP bars and table columns.",
     )
     args = parser.parse_args()
 
