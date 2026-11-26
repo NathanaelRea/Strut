@@ -1,6 +1,7 @@
 from collections import InlineArray, List
 from math import atan2, cos, sin, sqrt
 from materials import UniMaterialDef, UniMaterialState
+from materials.concrete_s import ConcreteSState
 from os import abort
 from sys import simd_width_of
 
@@ -289,10 +290,9 @@ fn shell4_precompute_geometry(
 
 
 @always_inline
-fn shell4_dot_row(
-    row: UnsafePointer[Float64], u: UnsafePointer[Float64]
-) -> Float64:
+fn shell4_dot_row(row: UnsafePointer[Float64], u: UnsafePointer[Float64]) -> Float64:
     var sum = SIMD[DType.float64, _WIDTH](0.0)
+
     @parameter
     for col in range(0, 24, _WIDTH):
         sum += row.load[width=_WIDTH](col) * u.load[width=_WIDTH](col)
@@ -317,18 +317,22 @@ fn _add_gauss_tangent(
     for row in range(24):
         # OpenSees negates the bending rows on the left for equilibrium.
         var left_d = SIMD[DType.float64, 8](0.0)
+
         @parameter
         for j in range(8):
             var left = b[j * 24 + row]
+
             @parameter
             if 3 <= j and j < 6:
                 left = -left
             left_d += left * (d.load[width=8](j * 8) * dvol)
 
         var drill_left = drill[row] * ktt * dvol
+
         @parameter
         for col in range(0, 24, _WIDTH):
             var value = SIMD[DType.float64, _WIDTH](0.0)
+
             @parameter
             for j in range(8):
                 value += left_d[j] * b.load[width=_WIDTH](j * 24 + col)
@@ -367,10 +371,13 @@ fn shell4_mindlin_stiffness(
         _add_gauss_tangent(point, UnsafePointer(to=d[0]), matrix, G * h, point[216])
 
 
-fn shell4_layered_stiffness_and_residual[tangent: Bool](
+fn shell4_layered_stiffness_and_residual[
+    tangent: Bool
+](
     sec_def: LayeredShellSectionDef,
     uniaxial_defs: UnsafePointer[UniMaterialDef],
     states: UnsafePointer[UniMaterialState],
+    concrete_states: UnsafePointer[ConcreteSState],
     geometry: UnsafePointer[Float64],
     u: UnsafePointer[Float64],
     matrix: UnsafePointer[Float64],
@@ -387,27 +394,30 @@ fn shell4_layered_stiffness_and_residual[tangent: Bool](
     for col in range(0, 24, _WIDTH):
         force.store(col, SIMD[DType.float64, _WIDTH](0.0))
 
-    var ktt = 0.0
+    var ktt = sec_def.drill_stiffness
     for gp in range(4):
         var point = geometry + gp * SHELL4_POINT_SIZE
         var drill = point + 192
         var dvol = point[216]
         for row in range(8):
             strain[row] = shell4_dot_row(point + row * 24, u)
-        var drilling_tangent = layered_shell_set_trial_from_offset[tangent](
-            sec_def, uniaxial_defs, states + gp * len(sec_def.rebars),
-            strain, stress, d, gp == 0,
+        layered_shell_set_trial_from_offset[tangent](
+            sec_def,
+            uniaxial_defs,
+            states + gp * len(sec_def.rebars),
+            concrete_states + gp * len(sec_def.concretes),
+            strain,
+            stress,
+            d,
         )
-        if gp == 0:
-            ktt = drilling_tangent
-            if ktt <= 0.0:
-                ktt = 1.0
         var tau_drill = ktt * shell4_dot_row(drill, u) * dvol
         for col in range(0, 24, _WIDTH):
             var value = SIMD[DType.float64, _WIDTH](0.0)
+
             @parameter
             for row in range(8):
                 var stress_component = stress[row] * dvol
+
                 @parameter
                 if 3 <= row and row < 6:
                     stress_component = -stress_component

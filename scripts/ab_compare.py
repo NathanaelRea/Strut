@@ -12,6 +12,7 @@ Examples:
   uv run scripts/ab_compare.py --baseline build/baseline/strut --candidate build/strut/strut \
       --no-validation-cases --extra-json .tmp/synthetic/*.json
 """
+
 from __future__ import annotations
 
 import argparse
@@ -76,7 +77,9 @@ def _resolved_input(case_path: Path, work_dir: Path) -> tuple[str, Path]:
 
         name = str(data.get("name") or case_path.parent.name)
         entry_tcl = (REPO_ROOT / data["entry_tcl"]).resolve()
-        source_files = direct_tcl_support.resolve_direct_tcl_source_files(entry_tcl, case_path)
+        source_files = direct_tcl_support.resolve_direct_tcl_source_files(
+            entry_tcl, case_path
+        )
         runtime_entry, _ = direct_tcl_support.prepare_direct_tcl_entry(
             entry_tcl,
             source_files or [entry_tcl],
@@ -94,7 +97,9 @@ def _resolved_input(case_path: Path, work_dir: Path) -> tuple[str, Path]:
     return name, out_json
 
 
-def _run_solver(binary: Path, input_json: Path, out_dir: Path, repeat: int, timeout: float) -> dict:
+def _run_solver(
+    binary: Path, input_json: Path, out_dir: Path, repeat: int, timeout: float
+) -> dict:
     best_analysis_us = None
     best_wall_s = None
     error = None
@@ -118,8 +123,12 @@ def _run_solver(binary: Path, input_json: Path, out_dir: Path, repeat: int, time
             error = first_line[0] if first_line else f"exit {proc.returncode}"
             return {"error": error}
         analysis_path = out_dir / "analysis_time_us.txt"
-        analysis_us = int(analysis_path.read_text().strip()) if analysis_path.exists() else None
-        if analysis_us is not None and (best_analysis_us is None or analysis_us < best_analysis_us):
+        analysis_us = (
+            int(analysis_path.read_text().strip()) if analysis_path.exists() else None
+        )
+        if analysis_us is not None and (
+            best_analysis_us is None or analysis_us < best_analysis_us
+        ):
             best_analysis_us = analysis_us
         if best_wall_s is None or wall_s < best_wall_s:
             best_wall_s = wall_s
@@ -137,7 +146,9 @@ def _load_rows(path: Path) -> list[list[float]]:
     return rows
 
 
-def _compare_outputs(base_dir: Path, cand_dir: Path, rtol: float, atol: float) -> tuple[bool, float, str]:
+def _compare_outputs(
+    base_dir: Path, cand_dir: Path, rtol: float, atol: float
+) -> tuple[bool, float, str]:
     base_files = sorted(p.name for p in base_dir.glob("*.out"))
     cand_files = sorted(p.name for p in cand_dir.glob("*.out"))
     if base_files != cand_files:
@@ -151,7 +162,11 @@ def _compare_outputs(base_dir: Path, cand_dir: Path, rtol: float, atol: float) -
         base_rows = _load_rows(base_dir / name)
         cand_rows = _load_rows(cand_dir / name)
         if len(base_rows) != len(cand_rows):
-            return False, math.inf, f"{name}: row count {len(base_rows)} != {len(cand_rows)}"
+            return (
+                False,
+                math.inf,
+                f"{name}: row count {len(base_rows)} != {len(cand_rows)}",
+            )
         scale = max((abs(v) for row in base_rows for v in row), default=0.0)
         for row_index, (base_row, cand_row) in enumerate(zip(base_rows, cand_rows)):
             if len(base_row) != len(cand_row):
@@ -165,7 +180,9 @@ def _compare_outputs(base_dir: Path, cand_dir: Path, rtol: float, atol: float) -
                     rel = min(rel, diff)
                 if rel > worst:
                     worst = rel
-                    detail = f"{name} row {row_index}: {base_value:.9e} vs {cand_value:.9e}"
+                    detail = (
+                        f"{name} row {row_index}: {base_value:.9e} vs {cand_value:.9e}"
+                    )
                 if diff > atol + rtol * max(abs(base_value), scale * 1.0e-3):
                     if ok:
                         first_failure = f"{name} row {row_index}: {base_value:.9e} vs {cand_value:.9e}"
@@ -174,19 +191,39 @@ def _compare_outputs(base_dir: Path, cand_dir: Path, rtol: float, atol: float) -
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument("--baseline", required=True, help="Baseline solver binary.")
     parser.add_argument("--candidate", required=True, help="Candidate solver binary.")
-    parser.add_argument("--cases", default="", help="Comma-separated validation case names or JSON paths.")
-    parser.add_argument("--extra-json", nargs="*", default=[], help="Extra solver-ready JSON inputs.")
+    parser.add_argument(
+        "--cases",
+        default="",
+        help="Comma-separated validation case names or JSON paths.",
+    )
+    parser.add_argument(
+        "--extra-json", nargs="*", default=[], help="Extra solver-ready JSON inputs."
+    )
     parser.add_argument("--no-validation-cases", action="store_true")
     parser.add_argument("--include-disabled", action="store_true")
-    parser.add_argument("--repeat", type=int, default=1, help="Timed runs per binary; the minimum is reported.")
+    parser.add_argument(
+        "--repeat",
+        type=int,
+        default=1,
+        help="Timed runs per binary; the minimum is reported.",
+    )
     parser.add_argument("--rtol", type=float, default=1.0e-6)
     parser.add_argument("--atol", type=float, default=1.0e-9)
     parser.add_argument("--timeout", type=float, default=600.0)
-    parser.add_argument("--min-ms", type=float, default=0.0, help="Hide cases whose baseline is faster than this.")
-    parser.add_argument("--json-out", default="", help="Write machine-readable results here.")
+    parser.add_argument(
+        "--min-ms",
+        type=float,
+        default=0.0,
+        help="Hide cases whose baseline is faster than this.",
+    )
+    parser.add_argument(
+        "--json-out", default="", help="Write machine-readable results here."
+    )
     args = parser.parse_args()
 
     baseline = Path(args.baseline).resolve()
@@ -197,7 +234,11 @@ def main() -> int:
 
     case_paths: list[Path] = []
     if args.cases:
-        case_paths = [_resolve_named_case(item.strip()) for item in args.cases.split(",") if item.strip()]
+        case_paths = [
+            _resolve_named_case(item.strip())
+            for item in args.cases.split(",")
+            if item.strip()
+        ]
     elif not args.no_validation_cases:
         case_paths = _validation_case_paths(args.include_disabled)
 
@@ -212,7 +253,13 @@ def main() -> int:
             try:
                 inputs.append(_resolved_input(case_path, work_dir))
             except (Exception, SystemExit) as exc:  # noqa: BLE001 - report and continue
-                results.append({"case": case_path.parent.name, "status": "SETUP", "detail": str(exc)[:160]})
+                results.append(
+                    {
+                        "case": case_path.parent.name,
+                        "status": "SETUP",
+                        "detail": str(exc)[:160],
+                    }
+                )
         for extra in args.extra_json:
             extra_path = Path(extra).resolve()
             inputs.append((extra_path.stem, extra_path))
@@ -220,8 +267,12 @@ def main() -> int:
         for name, input_json in inputs:
             base_out = work_dir / name / "baseline"
             cand_out = work_dir / name / "candidate"
-            base = _run_solver(baseline, input_json, base_out, args.repeat, args.timeout)
-            cand = _run_solver(candidate, input_json, cand_out, args.repeat, args.timeout)
+            base = _run_solver(
+                baseline, input_json, base_out, args.repeat, args.timeout
+            )
+            cand = _run_solver(
+                candidate, input_json, cand_out, args.repeat, args.timeout
+            )
             entry = {"case": name, "baseline": base, "candidate": cand}
             if base.get("error") and cand.get("error"):
                 entry.update(status="BOTH-FAIL", detail=str(base["error"])[:120])
@@ -230,32 +281,52 @@ def main() -> int:
             elif cand.get("error"):
                 entry.update(status="CAND-FAIL", detail=str(cand["error"])[:120])
             else:
-                ok, worst, detail = _compare_outputs(base_out, cand_out, args.rtol, args.atol)
-                entry.update(status="OK" if ok else "DIFF", max_rel_diff=worst, detail=detail)
+                ok, worst, detail = _compare_outputs(
+                    base_out, cand_out, args.rtol, args.atol
+                )
+                entry.update(
+                    status="OK" if ok else "DIFF", max_rel_diff=worst, detail=detail
+                )
             results.append(entry)
             sys.stderr.write(f"  {entry['status']:9s} {name}\n")
 
-    print(f"{'case':66s} {'base ms':>10s} {'cand ms':>10s} {'speedup':>8s} {'max rel diff':>12s}  status")
+    print(
+        f"{'case':66s} {'base ms':>10s} {'cand ms':>10s} {'speedup':>8s} {'max rel diff':>12s}  status"
+    )
     total_base = 0.0
     total_cand = 0.0
     for entry in results:
         base_us = (entry.get("baseline") or {}).get("analysis_us")
         cand_us = (entry.get("candidate") or {}).get("analysis_us")
-        if base_us is not None and base_us / 1000.0 < args.min_ms and entry["status"] == "OK":
+        if (
+            base_us is not None
+            and base_us / 1000.0 < args.min_ms
+            and entry["status"] == "OK"
+        ):
             continue
-        base_text = f"{base_us / 1000.0:10.3f}" if base_us is not None else f"{'-':>10s}"
-        cand_text = f"{cand_us / 1000.0:10.3f}" if cand_us is not None else f"{'-':>10s}"
-        speed_text = f"{base_us / cand_us:7.2f}x" if base_us and cand_us else f"{'-':>8s}"
+        base_text = (
+            f"{base_us / 1000.0:10.3f}" if base_us is not None else f"{'-':>10s}"
+        )
+        cand_text = (
+            f"{cand_us / 1000.0:10.3f}" if cand_us is not None else f"{'-':>10s}"
+        )
+        speed_text = (
+            f"{base_us / cand_us:7.2f}x" if base_us and cand_us else f"{'-':>8s}"
+        )
         diff = entry.get("max_rel_diff")
         diff_text = f"{diff:12.2e}" if diff is not None else f"{'-':>12s}"
         tail = "" if entry["status"] == "OK" else f"  {entry.get('detail', '')}"
-        print(f"{entry['case'][:66]:66s} {base_text} {cand_text} {speed_text} {diff_text}  {entry['status']}{tail}")
+        print(
+            f"{entry['case'][:66]:66s} {base_text} {cand_text} {speed_text} {diff_text}  {entry['status']}{tail}"
+        )
         if base_us and cand_us:
             total_base += base_us
             total_cand += cand_us
     if total_cand > 0.0:
-        print(f"{'TOTAL (cases that ran on both)':66s} {total_base / 1000.0:10.3f} {total_cand / 1000.0:10.3f} "
-              f"{total_base / total_cand:7.2f}x")
+        print(
+            f"{'TOTAL (cases that ran on both)':66s} {total_base / 1000.0:10.3f} {total_cand / 1000.0:10.3f} "
+            f"{total_base / total_cand:7.2f}x"
+        )
     if args.json_out:
         Path(args.json_out).write_text(json.dumps(results, indent=2), encoding="utf-8")
     bad = [e for e in results if e["status"] in ("DIFF", "CAND-FAIL")]

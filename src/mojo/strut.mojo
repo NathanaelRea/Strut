@@ -60,16 +60,13 @@ def main():
             _ = load_case_document(input_path, input_bin_path, write_input_bin_path)
             return
         abort(
-            "usage: strut.mojo -- "
-            "(--input <case.json> | --input-bin <case.bin>) "
-            "--output <dir> [--batch <manifest.json>] [--profile <speedscope.json>] [--compute-only] "
-            "[--write-input-bin <case.bin>]"
+            "usage: strut.mojo -- (--input <case.json> | --input-bin <case.bin>) --output <dir>"
+            " [--batch <manifest.json>] [--profile <speedscope.json>] [--compute-only]"
+            " [--write-input-bin <case.bin>]"
         )
     var time = Python.import_module("time")
     var t_load_start = Int(time.perf_counter_ns())
-    var loaded = load_case_document(
-        input_path, input_bin_path, write_input_bin_path
-    )
+    var loaded = load_case_document(input_path, input_bin_path, write_input_bin_path)
     var t_load_end = Int(time.perf_counter_ns())
     var case_load_us = (t_load_end - t_load_start) // 1000
     run_case_from_native_source(

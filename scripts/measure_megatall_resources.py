@@ -98,11 +98,11 @@ def _recorder_output_targets(recorders: list[dict[str, Any]]) -> int:
 
 def _summarize_recorders(data: dict[str, Any]) -> dict[str, Any]:
     recorders = [
-        recorder
-        for recorder in data.get("recorders", [])
-        if isinstance(recorder, dict)
+        recorder for recorder in data.get("recorders", []) if isinstance(recorder, dict)
     ]
-    type_counts = Counter(str(recorder.get("type", "unknown")) for recorder in recorders)
+    type_counts = Counter(
+        str(recorder.get("type", "unknown")) for recorder in recorders
+    )
     raw_paths = Counter(
         str(recorder.get("raw_path"))
         for recorder in recorders
@@ -147,7 +147,9 @@ def _summarize_shells(data: dict[str, Any]) -> dict[str, Any]:
         layered_shell_section_count += 1
         params = section.get("params", {})
         layers = params.get("layers", []) if isinstance(params, dict) else []
-        layered_shell_layers[int(section["id"])] = len(layers) if isinstance(layers, list) else 0
+        layered_shell_layers[int(section["id"])] = (
+            len(layers) if isinstance(layers, list) else 0
+        )
     shell_elements = [
         element for element in elements if str(element.get("type")) == "shell"
     ]
@@ -210,7 +212,9 @@ def summarize_case_input(data: dict[str, Any]) -> dict[str, Any]:
     materials = [
         material for material in data.get("materials", []) if isinstance(material, dict)
     ]
-    material_types = Counter(str(material.get("type", "unknown")) for material in materials)
+    material_types = Counter(
+        str(material.get("type", "unknown")) for material in materials
+    )
     sections = [
         section for section in data.get("sections", []) if isinstance(section, dict)
     ]
@@ -313,7 +317,9 @@ def _summarize_failure(
 
     progress = run_summary.get("progress")
     status = progress.get("status") if isinstance(progress, dict) else None
-    analysis_type = progress.get("analysis_type") if isinstance(progress, dict) else None
+    analysis_type = (
+        progress.get("analysis_type") if isinstance(progress, dict) else None
+    )
     stage_number = progress.get("stage_number") if isinstance(progress, dict) else None
     stage_count = progress.get("stage_count") if isinstance(progress, dict) else None
     step_number = progress.get("step_number") if isinstance(progress, dict) else None
@@ -324,7 +330,10 @@ def _summarize_failure(
     )
     failure_text = " ".join(
         part
-        for part in (run_summary.get("stderr_tail", ""), run_summary.get("stdout_tail", ""))
+        for part in (
+            run_summary.get("stderr_tail", ""),
+            run_summary.get("stdout_tail", ""),
+        )
         if part
     ).lower()
 
@@ -487,7 +496,10 @@ def _run_case(
         )
         if proc.poll() is not None:
             break
-        if timeout_seconds is not None and (time.perf_counter() - started) >= timeout_seconds:
+        if (
+            timeout_seconds is not None
+            and (time.perf_counter() - started) >= timeout_seconds
+        ):
             timed_out = True
             os.killpg(proc.pid, signal.SIGTERM)
             try:

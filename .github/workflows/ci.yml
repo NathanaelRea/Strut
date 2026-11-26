@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --locked
+
+      - name: Python format
+        run: uv run ruff format --check .
+
+      - name: Mojo format
+        run: |
+          uv run mojo format -q -l 100 src/mojo tests/mojo
+          git diff --exit-code -- '*.mojo'
+
+      # Mojo compiles for the host CPU, so a binary built on one runner can
+      # hit illegal instructions on another. Key the cache on the CPU features.
+      - name: Fingerprint runner CPU
+        id: cpu
+        run: echo "features=$(grep -m1 '^flags' /proc/cpuinfo | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Mojo build
+        uses: actions/cache@v4
+        with:
+          path: build/strut
+          key: mojo-build-${{ runner.os }}-${{ steps.cpu.outputs.features }}-${{ hashFiles('uv.lock') }}-${{ hashFiles('src/mojo/**/*.mojo') }}
+
+      # Compiles the solver (type-checks Mojo) and fails on any compiler warning.
+      - name: Build Mojo solver
+        run: uv run python scripts/build_mojo_solver.py
+
+      # Needs no downloaded fixtures: ground-motion tests write synthetic
+      # records (scripts/synthetic_ground_motion.py), and tests that need the
+      # pinned mega-tall model skip.
+      - name: Unit tests
+        run: uv run pytest -q -n auto tests/unit tests/validation/test_json_cases.py

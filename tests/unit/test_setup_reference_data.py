@@ -65,6 +65,7 @@ def test_fixture_gitignore_matches_manifest():
     }
     expected = {f"/{entry['path']}" for entry in manifest["files"]}
     expected |= {f"/{entry['path']}/" for entry in manifest["trees"]}
+    expected |= {f"/{path}/" for path in setup_reference_data.GENERATED_FIXTURE_DIRS}
     assert lines == expected
 
 
@@ -79,7 +80,10 @@ def test_every_direct_tcl_entry_is_committed_or_pinned():
         entry_tcl = json.loads(manifest_path.read_text(encoding="utf-8"))["entry_tcl"]
         entry = (REPO_ROOT / entry_tcl).resolve()
         rel = entry.relative_to(fixture_root).as_posix()
-        if any(rel.startswith(prefix) for prefix in pinned_trees) or rel in pinned_files:
+        if (
+            any(rel.startswith(prefix) for prefix in pinned_trees)
+            or rel in pinned_files
+        ):
             continue
         assert entry.is_file(), f"{manifest_path}: {entry_tcl} is not committed"
 

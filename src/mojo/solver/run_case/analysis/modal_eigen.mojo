@@ -96,7 +96,9 @@ fn _solve_upper_from_lower_transpose(
     return solution^
 
 
-fn _multiply_dense_matrices(left: List[List[Float64]], right: List[List[Float64]]) -> List[List[Float64]]:
+fn _multiply_dense_matrices(
+    left: List[List[Float64]], right: List[List[Float64]]
+) -> List[List[Float64]]:
     var rows = len(left)
     var inner = len(right)
     var cols = 0
@@ -315,9 +317,7 @@ fn run_modal_eigen(
             reduced_mode.resize(free_count, 0.0)
             for i in range(free_count):
                 reduced_mode[i] = eigvecs[i][col]
-            reduced_mode = _solve_upper_from_lower_transpose(
-                mass_cholesky, reduced_mode
-            )
+            reduced_mode = _solve_upper_from_lower_transpose(mass_cholesky, reduced_mode)
             var full_mode: List[Float64] = []
             full_mode.resize(total_dofs, 0.0)
             for i in range(free_count):
@@ -342,12 +342,7 @@ fn run_modal_eigen(
                     require_dof_in_range(dof, ndf, "modal_eigen recorder")
                     values[j] = full_mode[node_dof_index(node_idx, dof, ndf)]
                 var filename = (
-                    output
-                    + "_mode"
-                    + String(mode_no)
-                    + "_node"
-                    + String(node_id)
-                    + ".out"
+                    output + "_mode" + String(mode_no) + "_node" + String(node_id) + ".out"
                 )
                 _append_output(
                     static_output_files,

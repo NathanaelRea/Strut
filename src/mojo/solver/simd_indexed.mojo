@@ -11,10 +11,11 @@ alias FLOAT64_SIMD_WIDTH = simd_width_of[DType.float64]()
 
 
 @always_inline
-fn gather_float64_by_index_simd[width: Int](
-    indices: List[Int], start: Int, src: List[Float64]
-) -> SIMD[DType.float64, width]:
+fn gather_float64_by_index_simd[
+    width: Int
+](indices: List[Int], start: Int, src: List[Float64]) -> SIMD[DType.float64, width]:
     var vec = SIMD[DType.float64, width](0.0)
+
     @parameter
     for lane in range(width):
         vec[lane] = src[indices[start + lane]]
@@ -29,12 +30,9 @@ fn gather_float64_by_index(
 
 
 @always_inline
-fn scatter_float64_by_index_simd[width: Int](
-    indices: List[Int],
-    start: Int,
-    mut dst: List[Float64],
-    vec: SIMD[DType.float64, width],
-):
+fn scatter_float64_by_index_simd[
+    width: Int
+](indices: List[Int], start: Int, mut dst: List[Float64], vec: SIMD[DType.float64, width],):
     @parameter
     for lane in range(width):
         dst[indices[start + lane]] = vec[lane]
@@ -51,12 +49,9 @@ fn scatter_float64_by_index(
 
 
 @always_inline
-fn scatter_add_float64_by_index_simd[width: Int](
-    indices: List[Int],
-    start: Int,
-    mut dst: List[Float64],
-    vec: SIMD[DType.float64, width],
-):
+fn scatter_add_float64_by_index_simd[
+    width: Int
+](indices: List[Int], start: Int, mut dst: List[Float64], vec: SIMD[DType.float64, width],):
     @parameter
     for lane in range(width):
         dst[indices[start + lane]] += vec[lane]
@@ -91,9 +86,7 @@ fn vectorize_indexed_gather_unary_map_to_contiguous_float64_simd[
     var scale_vec = SIMD[DType.float64, simd_width](scale)
     var bias_vec = SIMD[DType.float64, simd_width](bias)
     while i + simd_width <= count:
-        var gathered_vec = gather_float64_by_index_simd[simd_width](
-            indices, indices_start + i, src
-        )
+        var gathered_vec = gather_float64_by_index_simd[simd_width](indices, indices_start + i, src)
         var mapped_vec = gathered_vec * scale_vec + bias_vec
         store_float64_contiguous_simd[simd_width](dst, dst_start + i, mapped_vec)
         i += simd_width

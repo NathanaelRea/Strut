@@ -9,6 +9,7 @@ from elements.shell4 import (
     shell4_mindlin_stiffness,
     shell4_precompute_geometry,
 )
+from materials.concrete_s import ConcreteSState
 from os import abort
 from sections import LayeredShellSectionDef
 from solver.assembly.parallel_elements import ParallelElementWork
@@ -27,6 +28,7 @@ struct ShellAssemblyEntry(ImplicitlyCopyable, Movable):
     var section: Int
     var offset: Int
     var state_offset: Int
+    var concrete_offset: Int
 
 
 struct ShellAssemblyCache(Movable):
@@ -37,12 +39,17 @@ struct ShellAssemblyCache(Movable):
     records of 8×24 row-major B, 24 drilling coefficients, and dvol. The basis
     is already incorporated in these rows, which act on global DOFs.
     Elastic blocks hold one row-major 24×24 matrix per element.
+
+    ConcreteS layer states also live here, element-major: four Gauss points
+    per layered element, each with one state per ConcreteS layer. Every element
+    owns a disjoint slice, so threaded sweeps can update them in place.
     """
 
     var entry_by_element: List[Int]
     var entries: List[ShellAssemblyEntry]
     var layered_geometry: List[Float64]
     var elastic_matrices: List[Float64]
+    var concrete_states: List[ConcreteSState]
     var work: ParallelElementWork
 
     fn __init__(out self):
@@ -50,7 +57,13 @@ struct ShellAssemblyCache(Movable):
         self.entries = []
         self.layered_geometry = []
         self.elastic_matrices = []
+        self.concrete_states = []
         self.work = ParallelElementWork()
+
+    fn commit_layered_states(mut self):
+        """Commit every ConcreteS trial state. Rebar states commit with the uniaxial list."""
+        for i in range(len(self.concrete_states)):
+            self.concrete_states[i].commit()
 
     fn prepare(
         mut self,
@@ -72,9 +85,7 @@ struct ShellAssemblyCache(Movable):
             if sections[elements[e].section].type == "LayeredShellSection":
                 layered_count += 1
         self.layered_geometry.resize(layered_count * SHELL4_GEOMETRY_SIZE, 0.0)
-        self.elastic_matrices.resize(
-            (len(shell_indices) - layered_count) * SHELL4_MATRIX_SIZE, 0.0
-        )
+        self.elastic_matrices.resize((len(shell_indices) - layered_count) * SHELL4_MATRIX_SIZE, 0.0)
         self.work = ParallelElementWork(
             min(_BATCH_SIZE, len(shell_indices)),
             SHELL4_MATRIX_SIZE,
@@ -102,15 +113,28 @@ struct ShellAssemblyCache(Movable):
                 var section = section_index[elem.section]
                 var instance = element_instance_offsets[e]
                 ref definition = layered_sections[section]
-                var state_offset = section_state_offsets[section] + instance * len(definition.rebars)
-                self.entries.append(ShellAssemblyEntry(section, layer_offset, state_offset))
-                shell4_precompute_geometry(x, y, z, self.layered_geometry.unsafe_ptr() + layer_offset)
+                var state_offset = section_state_offsets[section] + instance * len(
+                    definition.rebars
+                )
+                var concrete_offset = len(self.concrete_states)
+                self.concrete_states.resize(
+                    concrete_offset + 4 * len(definition.concretes), ConcreteSState()
+                )
+                self.entries.append(
+                    ShellAssemblyEntry(section, layer_offset, state_offset, concrete_offset)
+                )
+                shell4_precompute_geometry(
+                    x, y, z, self.layered_geometry.unsafe_ptr() + layer_offset
+                )
                 layer_offset += SHELL4_GEOMETRY_SIZE
             elif sec.type == "ElasticMembranePlateSection":
-                self.entries.append(ShellAssemblyEntry(-1, elastic_offset, 0))
+                self.entries.append(ShellAssemblyEntry(-1, elastic_offset, 0, 0))
                 shell4_precompute_geometry(x, y, z, UnsafePointer(to=geometry[0]))
                 shell4_mindlin_stiffness(
-                    sec.E, sec.nu, sec.h, UnsafePointer(to=geometry[0]),
+                    sec.E,
+                    sec.nu,
+                    sec.h,
+                    UnsafePointer(to=geometry[0]),
                     self.elastic_matrices.unsafe_ptr() + elastic_offset,
                 )
                 elastic_offset += SHELL4_MATRIX_SIZE

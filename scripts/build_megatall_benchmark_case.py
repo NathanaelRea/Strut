@@ -25,6 +25,7 @@ Example:
       benchmark/.tmp/megatall_model1_40steps/megatall_model1_40steps.json \
       --no-batch --strut-single-thread --no-archive
 """
+
 from __future__ import annotations
 
 import argparse
@@ -41,8 +42,13 @@ if str(SCRIPT_DIR) not in sys.path:
 import direct_tcl_support  # noqa: E402
 
 FIXTURE_DIR = (
-    REPO_ROOT / "tests" / "fixtures" / "opensees" / "OpenSeesExamples"
-    / "MegaTallBuildingBenchmark" / "Model1"
+    REPO_ROOT
+    / "tests"
+    / "fixtures"
+    / "opensees"
+    / "OpenSeesExamples"
+    / "MegaTallBuildingBenchmark"
+    / "Model1"
 )
 ENTRY_TCL = FIXTURE_DIR / "dynamiccpu.tcl"
 GROUND_MOTION = FIXTURE_DIR / "GMX.txt"
@@ -177,7 +183,9 @@ def main() -> int:
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(data), encoding="utf-8")
     counts = (len(data["nodes"]), len(data["elements"]), len(data["recorders"]))
-    print(f"Wrote {output} ({counts[0]} nodes, {counts[1]} elements, {counts[2]} recorders)")
+    print(
+        f"Wrote {output} ({counts[0]} nodes, {counts[1]} elements, {counts[2]} recorders)"
+    )
     return 0
 
 

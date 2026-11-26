@@ -13,9 +13,7 @@ from solver.sparse_pattern import ElementMatrixSink
 from solver.run_case.input_types import ElementInput, NodeInput
 
 
-fn _zero_length_row(
-    dir: Int, ndm: Int, ndf: Int, trans: List[List[Float64]]
-) -> List[Float64]:
+fn _zero_length_row(dir: Int, ndm: Int, ndf: Int, trans: List[List[Float64]]) -> List[Float64]:
     var row: List[Float64] = []
     row.resize(2 * ndf, 0.0)
     if ndm == 2 and ndf == 2:
@@ -67,9 +65,7 @@ fn _zero_length_row(
     return row^
 
 
-fn _two_node_link_tgl(
-    ndm: Int, ndf: Int, trans: List[List[Float64]]
-) -> List[List[Float64]]:
+fn _two_node_link_tgl(ndm: Int, ndf: Int, trans: List[List[Float64]]) -> List[List[Float64]]:
     var num_dof = 2 * ndf
     var tgl: List[List[Float64]] = []
     for _ in range(num_dof):
@@ -352,7 +348,9 @@ fn _assemble_zero_length_element(
                     K[dof_map[i]][dof_map[j]] += ri * tangent * rj
 
 
-fn _assemble_zero_length_element_native[S: ElementMatrixSink](
+fn _assemble_zero_length_element_native[
+    S: ElementMatrixSink
+](
     e: Int,
     elem: ElementInput,
     nodes: List[NodeInput],
@@ -539,7 +537,9 @@ fn _assemble_two_node_link_element(
             K[dof_map[i]][dof_map[j]] += kij
 
 
-fn _assemble_two_node_link_element_native[S: ElementMatrixSink](
+fn _assemble_two_node_link_element_native[
+    S: ElementMatrixSink
+](
     e: Int,
     elem: ElementInput,
     nodes: List[NodeInput],

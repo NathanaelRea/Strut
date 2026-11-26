@@ -28,9 +28,7 @@ fn _elem_node_index(elem: ElementInput, idx: Int) -> Int:
     return elem.node_index_4
 
 
-fn build_node_adjacency_typed(
-    elements: List[ElementInput], node_count: Int
-) -> List[List[Int]]:
+fn build_node_adjacency_typed(elements: List[ElementInput], node_count: Int) -> List[List[Int]]:
     var adjacency: List[List[Int]] = []
     for _ in range(node_count):
         var row: List[Int] = []

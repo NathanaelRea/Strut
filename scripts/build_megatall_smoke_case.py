@@ -78,29 +78,9 @@ def _collect_material_ids_from_section(section: dict) -> set[int]:
     raise ValueError(f"unsupported megatall smoke section type: {section_type}")
 
 
-def _plate_from_plane_stress_surrogate(
-    material_id: int, material: dict, base_material: dict
-) -> dict:
-    props = list(base_material.get("params", {}).get("props", []))
-    if not props:
-        raise ValueError(
-            f"PlaneStressUserMaterial {base_material['id']} is missing props for smoke surrogate"
-        )
-    nu = float(props[-1])
-    gmod = float(material["params"]["gmod"])
-    rho = float(base_material.get("params", {}).get("rho", 0.0))
-    return {
-        "id": material_id,
-        "type": "ElasticIsotropic",
-        "params": {
-            "E": 2.0 * gmod * (1.0 + nu),
-            "nu": nu,
-            "rho": rho,
-        },
-    }
-
-
-def _uniaxial_initial_modulus(material_by_id: dict[int, dict], material_id: int) -> float:
+def _uniaxial_initial_modulus(
+    material_by_id: dict[int, dict], material_id: int
+) -> float:
     material = material_by_id.get(material_id)
     if material is None:
         return 1.0
@@ -227,13 +207,6 @@ def _collect_material_closure(
             continue
         material = material_by_id[material_id]
         ref = material.get("params", {}).get("material")
-        if material.get("type") == "PlateFromPlaneStress" and isinstance(ref, int):
-            base_material = material_by_id[ref]
-            if base_material.get("type") == "PlaneStressUserMaterial":
-                emitted_materials[material_id] = _plate_from_plane_stress_surrogate(
-                    material_id, material, base_material
-                )
-                continue
         emitted_materials[material_id] = copy.deepcopy(material)
         if isinstance(ref, int):
             queue.append(ref)
@@ -298,7 +271,31 @@ def _build_fixed_probe_rigid_diaphragm(node_by_id: dict[int, dict]) -> dict:
     }
 
 
+def _convert_generated_model() -> None:
+    # Prepare the same direct-Tcl context as the parity runner without running
+    # either solver on the full model.
+    from run_case import (
+        _merge_direct_tcl_manifest_metadata,
+        _prepare_direct_tcl_entry,
+        _resolve_direct_tcl_source_files,
+        _resolve_entry_tcl_from_manifest,
+        _write_generated_direct_tcl_case,
+    )
+    from tcl_to_strut import convert_tcl_to_solver_input
+
+    manifest = CASE_DIR / "direct_tcl_case.json"
+    entry = _resolve_entry_tcl_from_manifest(manifest, REPO_ROOT)
+    source_files = _resolve_direct_tcl_source_files(entry, manifest)
+    runtime_entry, _ = _prepare_direct_tcl_entry(entry, CASE_DIR, source_files)
+    data = convert_tcl_to_solver_input(runtime_entry, REPO_ROOT)
+    _write_generated_direct_tcl_case(
+        _merge_direct_tcl_manifest_metadata(data, manifest), CASE_DIR
+    )
+
+
 def build_smoke_case(input_path: Path = DEFAULT_INPUT) -> dict:
+    if input_path == DEFAULT_INPUT and not input_path.exists():
+        _convert_generated_model()
     data = _load_json(input_path)
     node_by_id = {int(node["id"]): node for node in data["nodes"]}
     element_by_id = {int(element["id"]): element for element in data["elements"]}
@@ -308,7 +305,9 @@ def build_smoke_case(input_path: Path = DEFAULT_INPUT) -> dict:
         for element in element_by_id.values()
         if int(element["id"]) in SMOKE_ELEMENT_IDS and "section" in element
     }
-    sections, materials = _collect_material_closure(data, section_ids, direct_material_ids)
+    sections, materials = _collect_material_closure(
+        data, section_ids, direct_material_ids
+    )
 
     nodes = []
     for node_id in sorted(SMOKE_NODE_IDS):
@@ -320,7 +319,8 @@ def build_smoke_case(input_path: Path = DEFAULT_INPUT) -> dict:
         nodes.append(node)
 
     elements = [
-        copy.deepcopy(element_by_id[element_id]) for element_id in sorted(SMOKE_ELEMENT_IDS)
+        copy.deepcopy(element_by_id[element_id])
+        for element_id in sorted(SMOKE_ELEMENT_IDS)
     ]
 
     masses = [
@@ -371,7 +371,7 @@ def build_smoke_case(input_path: Path = DEFAULT_INPUT) -> dict:
         "notes": (
             "Deterministic extracted megatall smoke case derived from the generated native "
             "case. It keeps one real megatall frame member on the staged gravity/transient "
-            "path, plus fixed shell, truss, and rigidDiaphragm probes. The extracted "
+            "path, plus fixed ConcreteS shell, truss, and rigidDiaphragm probes. The extracted "
             "FiberSection3d frame member is converted to a stiffness-equivalent "
             "ElasticSection3d surrogate so the reduced smoke path remains mechanically "
             "stable while still exercising shells, staged analysis, UniformExcitation, "

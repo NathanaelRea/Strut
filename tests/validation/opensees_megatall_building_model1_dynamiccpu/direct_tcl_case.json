@@ -2,6 +2,7 @@
   "name": "opensees_megatall_building_model1_dynamiccpu",
   "entry_tcl": "tests/fixtures/opensees/OpenSeesExamples/MegaTallBuildingBenchmark/Model1/dynamiccpu.tcl",
   "enabled": true,
+  "status": "benchmark",
   "benchmark_size": "large",
-  "notes": "Full direct-Tcl parity case. On this toolchain, PlaneStressUserMaterial is executed through a shared elastic PlateFromPlaneStress surrogate in both OpenSees compatibility mode and Strut so the full megatall workflow can run without PSUMAT."
+  "notes": "Core walls and coupling beams use ConcreteS as a stand-in for the unreleased PSUMAT. The mapping retains fc and ft, sets nu to 0.20 and E to 2*G*(1+nu), and sets Es to ft/(epstu-ft/E). The original transverse shear moduli and reinforcing layers are retained. Full-model Strut runs require substantially more memory than the smoke case."
 }

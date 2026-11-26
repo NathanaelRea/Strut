@@ -223,42 +223,22 @@ fn _dissect_box(box: _LatticeBox, nx: Int, ny: Int, mut order: List[Int]):
                         order.append(6 * node + d)
     elif z >= max(x, y):
         var mid = box.z0 + z // 2
-        _dissect_box(
-            _LatticeBox(box.x0, box.x1, box.y0, box.y1, box.z0, mid), nx, ny, order
-        )
-        _dissect_box(
-            _LatticeBox(box.x0, box.x1, box.y0, box.y1, mid + 1, box.z1), nx, ny, order
-        )
-        _dissect_box(
-            _LatticeBox(box.x0, box.x1, box.y0, box.y1, mid, mid + 1), nx, ny, order
-        )
+        _dissect_box(_LatticeBox(box.x0, box.x1, box.y0, box.y1, box.z0, mid), nx, ny, order)
+        _dissect_box(_LatticeBox(box.x0, box.x1, box.y0, box.y1, mid + 1, box.z1), nx, ny, order)
+        _dissect_box(_LatticeBox(box.x0, box.x1, box.y0, box.y1, mid, mid + 1), nx, ny, order)
     elif y >= x:
         var mid = box.y0 + y // 2
-        _dissect_box(
-            _LatticeBox(box.x0, box.x1, box.y0, mid, box.z0, box.z1), nx, ny, order
-        )
-        _dissect_box(
-            _LatticeBox(box.x0, box.x1, mid + 1, box.y1, box.z0, box.z1), nx, ny, order
-        )
-        _dissect_box(
-            _LatticeBox(box.x0, box.x1, mid, mid + 1, box.z0, box.z1), nx, ny, order
-        )
+        _dissect_box(_LatticeBox(box.x0, box.x1, box.y0, mid, box.z0, box.z1), nx, ny, order)
+        _dissect_box(_LatticeBox(box.x0, box.x1, mid + 1, box.y1, box.z0, box.z1), nx, ny, order)
+        _dissect_box(_LatticeBox(box.x0, box.x1, mid, mid + 1, box.z0, box.z1), nx, ny, order)
     else:
         var mid = box.x0 + x // 2
-        _dissect_box(
-            _LatticeBox(box.x0, mid, box.y0, box.y1, box.z0, box.z1), nx, ny, order
-        )
-        _dissect_box(
-            _LatticeBox(mid + 1, box.x1, box.y0, box.y1, box.z0, box.z1), nx, ny, order
-        )
-        _dissect_box(
-            _LatticeBox(mid, mid + 1, box.y0, box.y1, box.z0, box.z1), nx, ny, order
-        )
+        _dissect_box(_LatticeBox(box.x0, mid, box.y0, box.y1, box.z0, box.z1), nx, ny, order)
+        _dissect_box(_LatticeBox(mid + 1, box.x1, box.y0, box.y1, box.z0, box.z1), nx, ny, order)
+        _dissect_box(_LatticeBox(mid, mid + 1, box.y0, box.y1, box.z0, box.z1), nx, ny, order)
 
 
-fn _dissect_floors(
-    nx: Int, ny: Int, z0: Int, z1: Int, master_base: Int, mut order: List[Int]
-):
+fn _dissect_floors(nx: Int, ny: Int, z0: Int, z1: Int, master_base: Int, mut order: List[Int]):
     # Whole floors separate the tall axis. In a short slab, subdivide
     # the physical grid and retain each floor's masters to the end.
     if z1 - z0 > min(nx, ny):
@@ -306,9 +286,7 @@ fn make_rhs(n: Int) -> List[Float64]:
     return rhs^
 
 
-fn relative_residual(
-    matrix: SparseBenchMatrix, x: List[Float64], rhs: List[Float64]
-) -> Float64:
+fn relative_residual(matrix: SparseBenchMatrix, x: List[Float64], rhs: List[Float64]) -> Float64:
     var residual: List[Float64] = []
     residual.resize(matrix.n, 0.0)
     var p = residual.unsafe_ptr()
@@ -362,9 +340,7 @@ fn _banded_cholesky(mut band: List[Float64], n: Int, width: Int):
                 dst[p] += alpha * src[p]
 
 
-fn _banded_solve(
-    band: List[Float64], width: Int, rhs: List[Float64], mut x: List[Float64]
-):
+fn _banded_solve(band: List[Float64], width: Int, rhs: List[Float64], mut x: List[Float64]):
     var n = len(rhs)
     var factor = band.unsafe_ptr()
     var y = x.unsafe_ptr()
@@ -410,12 +386,8 @@ fn _run_banded(
         var factored = Int(perf_counter_ns())
         _banded_solve(band, width, rhs, x)
         var solved = Int(perf_counter_ns())
-        factor_ns = factored - start if sample == 0 else min(
-            factor_ns, factored - start
-        )
-        solve_ns = solved - factored if sample == 0 else min(
-            solve_ns, solved - factored
-        )
+        factor_ns = factored - start if sample == 0 else min(factor_ns, factored - start)
+        solve_ns = solved - factored if sample == 0 else min(solve_ns, solved - factored)
     var residual = relative_residual(matrix, x, rhs)
     if not (residual <= 1.0e-10):
         raise Error("banded Cholesky residual too large for " + name)
@@ -488,17 +460,11 @@ fn _time_sparse(
         var factored = Int(perf_counter_ns())
         solver.solve(rhs, x)
         var solved = Int(perf_counter_ns())
-        factor_ns = factored - start if sample == 0 else min(
-            factor_ns, factored - start
-        )
-        solve_ns = solved - factored if sample == 0 else min(
-            solve_ns, solved - factored
-        )
+        factor_ns = factored - start if sample == 0 else min(factor_ns, factored - start)
+        solve_ns = solved - factored if sample == 0 else min(solve_ns, solved - factored)
     var residual = relative_residual(matrix, x, rhs)
     if not (residual <= 1.0e-10):
-        raise Error(
-            "sparse LDLT residual too large for " + name + ": " + String(residual)
-        )
+        raise Error("sparse LDLT residual too large for " + name + ": " + String(residual))
     return _SparseTiming(
         solver.factor_nnz(),
         solver.supernode_count(),
@@ -633,9 +599,7 @@ fn _run_pattern(
             dense_multiplier=dense_multiplier,
         )
         var elapsed = Int(perf_counter_ns()) - start
-        print(
-            "ordering,n,nnz(A),nnz(L),supernodes,max_panel,max_front,flops,analyze_ms"
-        )
+        print("ordering,n,nnz(A),nnz(L),supernodes,max_panel,max_front,flops,analyze_ms")
         print(
             method,
             matrix.n,
@@ -659,9 +623,7 @@ fn _run_pattern(
         for threads in [1, 2, 4, 8]:
             if threads_filter != 0 and threads_filter != threads:
                 continue
-            var timing = _time_sparse(
-                name, matrix, rhs, x, kind, threads, [], dense_multiplier
-            )
+            var timing = _time_sparse(name, matrix, rhs, x, kind, threads, [], dense_multiplier)
             print(
                 name,
                 method,
@@ -766,16 +728,12 @@ fn main() raises:
     for size in [100, 300, 600]:
         var name = "grid2d-" + String(size)
         if case_filter == "" or case_filter == name:
-            _run_case(
-                name, make_lattice(size, size, 1), ordering_filter, threads_filter
-            )
+            _run_case(name, make_lattice(size, size, 1), ordering_filter, threads_filter)
             matched = True
     for size in [20, 30, 40]:
         var name = "grid3d-" + String(size)
         if case_filter == "" or case_filter == name:
-            _run_case(
-                name, make_lattice(size, size, size), ordering_filter, threads_filter
-            )
+            _run_case(name, make_lattice(size, size, size), ordering_filter, threads_filter)
             matched = True
     for size in [10, 20]:
         var name = "frame-" + String(size) + "x" + String(size) + "x" + String(3 * size)
@@ -788,9 +746,7 @@ fn main() raises:
             )
             matched = True
     if case_filter == "" or case_filter == "band-30000":
-        _run_case(
-            "band-30000", make_banded(30000, 100), ordering_filter, threads_filter
-        )
+        _run_case("band-30000", make_banded(30000, 100), ordering_filter, threads_filter)
         matched = True
     if case_filter == "" or case_filter == "tall-14x14x125":
         _run_tall(ordering_filter, threads_filter)

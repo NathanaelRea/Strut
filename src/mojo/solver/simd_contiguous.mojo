@@ -7,9 +7,9 @@ alias FLOAT64_SIMD_WIDTH = simd_width_of[DType.float64]()
 
 
 @always_inline
-fn load_float64_ptr_contiguous_simd[width: Int](
-    ptr: UnsafePointer[Float64], start: Int
-) -> SIMD[DType.float64, width]:
+fn load_float64_ptr_contiguous_simd[
+    width: Int
+](ptr: UnsafePointer[Float64], start: Int) -> SIMD[DType.float64, width]:
     alias alignment = align_of[SIMD[DType.float64, width]]()
     var byte_offset = start * size_of[DType.float64]()
     if (Int(ptr) + byte_offset) % alignment == 0:
@@ -18,9 +18,9 @@ fn load_float64_ptr_contiguous_simd[width: Int](
 
 
 @always_inline
-fn store_float64_ptr_contiguous_simd[width: Int](
-    ptr: UnsafePointer[Float64], start: Int, vec: SIMD[DType.float64, width]
-):
+fn store_float64_ptr_contiguous_simd[
+    width: Int
+](ptr: UnsafePointer[Float64], start: Int, vec: SIMD[DType.float64, width]):
     alias alignment = align_of[SIMD[DType.float64, width]]()
     var byte_offset = start * size_of[DType.float64]()
     if (Int(ptr) + byte_offset) % alignment == 0:
@@ -30,16 +30,16 @@ fn store_float64_ptr_contiguous_simd[width: Int](
 
 
 @always_inline
-fn load_float64_contiguous_simd[width: Int](
-    values: List[Float64], start: Int
-) -> SIMD[DType.float64, width]:
+fn load_float64_contiguous_simd[
+    width: Int
+](values: List[Float64], start: Int) -> SIMD[DType.float64, width]:
     return load_float64_ptr_contiguous_simd[width](values.unsafe_ptr(), start)
 
 
 @always_inline
-fn store_float64_contiguous_simd[width: Int](
-    mut values: List[Float64], start: Int, vec: SIMD[DType.float64, width]
-):
+fn store_float64_contiguous_simd[
+    width: Int
+](mut values: List[Float64], start: Int, vec: SIMD[DType.float64, width]):
     store_float64_ptr_contiguous_simd[width](values.unsafe_ptr(), start, vec)
 
 
@@ -92,13 +92,7 @@ fn vectorize_contiguous_unary_map_float64_simd[
 @always_inline
 fn vectorize_contiguous_unary_map_inplace_float64_simd[
     simd_width: Int
-](
-    mut values: List[Float64],
-    start: Int,
-    count: Int,
-    scale: Float64,
-    bias: Float64,
-):
+](mut values: List[Float64], start: Int, count: Int, scale: Float64, bias: Float64,):
     if count <= 0:
         return
     var value_ptr = values.unsafe_ptr()
@@ -217,21 +211,15 @@ fn vectorize_contiguous_binary_map_reduce_float64_simd[
     fn reduce_values[width: Int](i: Int):
         var lhs_vec = load_float64_ptr_contiguous_simd[width](lhs_ptr, lhs_offset + i)
         var rhs_vec = load_float64_ptr_contiguous_simd[width](rhs_ptr, rhs_offset + i)
-        sum += (
-            (lhs_vec * rhs_vec) * SIMD[DType.float64, width](factor_value)
-        ).reduce_add()
+        sum += ((lhs_vec * rhs_vec) * SIMD[DType.float64, width](factor_value)).reduce_add()
 
     vectorize[reduce_values, simd_width](count)
     return sum
 
 
 @always_inline
-fn copy_float64_contiguous_simd[width: Int](
-    mut dst: List[Float64], src: List[Float64], count: Int
-):
-    vectorize_contiguous_unary_map_float64_simd[width](
-        dst, 0, src, 0, count, 1.0, 0.0
-    )
+fn copy_float64_contiguous_simd[width: Int](mut dst: List[Float64], src: List[Float64], count: Int):
+    vectorize_contiguous_unary_map_float64_simd[width](dst, 0, src, 0, count, 1.0, 0.0)
 
 
 @always_inline
@@ -240,28 +228,20 @@ fn copy_float64_contiguous(mut dst: List[Float64], src: List[Float64], count: In
 
 
 @always_inline
-fn dot_float64_contiguous_simd[width: Int](
-    lhs: List[Float64], rhs: List[Float64], count: Int
-) -> Float64:
-    return vectorize_contiguous_binary_map_reduce_float64_simd[width](
-        lhs, 0, rhs, 0, count
-    )
+fn dot_float64_contiguous_simd[
+    width: Int
+](lhs: List[Float64], rhs: List[Float64], count: Int) -> Float64:
+    return vectorize_contiguous_binary_map_reduce_float64_simd[width](lhs, 0, rhs, 0, count)
 
 
 @always_inline
-fn dot_float64_contiguous(
-    lhs: List[Float64], rhs: List[Float64], count: Int
-) -> Float64:
+fn dot_float64_contiguous(lhs: List[Float64], rhs: List[Float64], count: Int) -> Float64:
     return dot_float64_contiguous_simd[FLOAT64_SIMD_WIDTH](lhs, rhs, count)
 
 
 @always_inline
-fn sum_sq_float64_contiguous_simd[width: Int](
-    values: List[Float64], count: Int
-) -> Float64:
-    return vectorize_contiguous_binary_map_reduce_float64_simd[width](
-        values, 0, values, 0, count
-    )
+fn sum_sq_float64_contiguous_simd[width: Int](values: List[Float64], count: Int) -> Float64:
+    return vectorize_contiguous_binary_map_reduce_float64_simd[width](values, 0, values, 0, count)
 
 
 @always_inline
@@ -270,23 +250,21 @@ fn sum_sq_float64_contiguous(values: List[Float64], count: Int) -> Float64:
 
 
 @always_inline
-fn scale_float64_segment_simd[width: Int](
-    mut values: List[Float64], start: Int, count: Int, scale: Float64
-):
-    vectorize_contiguous_unary_map_inplace_float64_simd[width](
-        values, start, count, scale, 0.0
-    )
+fn scale_float64_segment_simd[
+    width: Int
+](mut values: List[Float64], start: Int, count: Int, scale: Float64):
+    vectorize_contiguous_unary_map_inplace_float64_simd[width](values, start, count, scale, 0.0)
 
 
 @always_inline
-fn scale_float64_segment(
-    mut values: List[Float64], start: Int, count: Int, scale: Float64
-):
+fn scale_float64_segment(mut values: List[Float64], start: Int, count: Int, scale: Float64):
     scale_float64_segment_simd[FLOAT64_SIMD_WIDTH](values, start, count, scale)
 
 
 @always_inline
-fn axpy_float64_segments_simd[width: Int](
+fn axpy_float64_segments_simd[
+    width: Int
+](
     mut dst: List[Float64],
     dst_start: Int,
     src: List[Float64],
@@ -308,19 +286,13 @@ fn axpy_float64_segments(
     alpha: Float64,
     count: Int,
 ):
-    axpy_float64_segments_simd[FLOAT64_SIMD_WIDTH](
-        dst, dst_start, src, src_start, alpha, count
-    )
+    axpy_float64_segments_simd[FLOAT64_SIMD_WIDTH](dst, dst_start, src, src_start, alpha, count)
 
 
 @always_inline
-fn dot_float64_segments_simd[width: Int](
-    lhs: List[Float64],
-    lhs_start: Int,
-    rhs: List[Float64],
-    rhs_start: Int,
-    count: Int,
-) -> Float64:
+fn dot_float64_segments_simd[
+    width: Int
+](lhs: List[Float64], lhs_start: Int, rhs: List[Float64], rhs_start: Int, count: Int,) -> Float64:
     return vectorize_contiguous_binary_map_reduce_float64_simd[width](
         lhs, lhs_start, rhs, rhs_start, count
     )
@@ -334,6 +306,4 @@ fn dot_float64_segments(
     rhs_start: Int,
     count: Int,
 ) -> Float64:
-    return dot_float64_segments_simd[FLOAT64_SIMD_WIDTH](
-        lhs, lhs_start, rhs, rhs_start, count
-    )
+    return dot_float64_segments_simd[FLOAT64_SIMD_WIDTH](lhs, lhs_start, rhs, rhs_start, count)

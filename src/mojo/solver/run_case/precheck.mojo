@@ -68,6 +68,7 @@ fn _is_supported_material_type(type_name: String) -> Bool:
         or type_name == "PlateFromPlaneStress"
         or type_name == "PlateRebar"
         or type_name == "PlaneStressUserMaterial"
+        or type_name == "ConcreteS"
     )
 
 
@@ -147,10 +148,7 @@ fn _precheck_analysis(doc: JsonDocument, analysis_index: Int) raises:
     var integrator_type = ""
     if analysis_type == "static_nonlinear":
         integrator_type = "LoadControl"
-    elif (
-        analysis_type == "transient_linear"
-        or analysis_type == "transient_nonlinear"
-    ):
+    elif analysis_type == "transient_linear" or analysis_type == "transient_nonlinear":
         integrator_type = "Newmark"
     integrator_type = _json_string_key(doc, integrator_index, "type", integrator_type)
     if (
@@ -189,12 +187,7 @@ fn _precheck_time_series_entry(doc: JsonDocument, ts_index: Int) raises:
     var typ = _json_string_key(doc, ts_index, "type", "")
     if typ == "PathFile":
         typ = "Path"
-    if (
-        typ != "Constant"
-        and typ != "Linear"
-        and typ != "Path"
-        and typ != "Trig"
-    ):
+    if typ != "Constant" and typ != "Linear" and typ != "Path" and typ != "Trig":
         _precheck_abort("unsupported time_series type: " + typ)
 
 
@@ -279,9 +272,7 @@ fn _build_material_maps(
         var material_type = _json_string_key(doc, material_index, "type", "")
         material_types_by_id[material_id] = material_type
         var params_index = _json_key(doc, material_index, "params")
-        material_base_by_id[material_id] = _json_int_key(
-            doc, params_index, "material", -1
-        )
+        material_base_by_id[material_id] = _json_int_key(doc, params_index, "material", -1)
     return
 
 
@@ -313,21 +304,17 @@ fn _precheck_layered_shell_sections(
             if material_id < 0 or material_id >= len(material_types_by_id):
                 continue
             var material_type = material_types_by_id[material_id]
-            if material_type == "PlaneStressUserMaterial":
-                _precheck_abort(
-                    "LayeredShellSection runtime does not support PlaneStressUserMaterial because the OpenSees PSUMAT implementation is not present in the reference repo"
-                )
             if material_type == "PlateFromPlaneStress":
                 var base_id = material_base_by_id[material_id]
                 if base_id < 0 or base_id >= len(material_types_by_id):
                     continue
                 var base_type = material_types_by_id[base_id]
-                if (
-                    base_type != "ElasticIsotropic"
-                    and base_type != "PlaneStressUserMaterial"
-                ):
+                if base_type == "PlaneStressUserMaterial":
+                    _precheck_abort("PlaneStressUserMaterial requires the unreleased PSUMAT")
+                if base_type != "ElasticIsotropic" and base_type != "ConcreteS":
                     _precheck_abort(
-                        "LayeredShellSection currently supports PlateFromPlaneStress only over ElasticIsotropic"
+                        "LayeredShellSection currently supports PlateFromPlaneStress only over"
+                        " ElasticIsotropic or ConcreteS"
                     )
                 continue
             if material_type == "PlateRebar":
@@ -341,10 +328,10 @@ fn _precheck_layered_shell_sections(
                 continue
             if material_type == "ElasticIsotropic":
                 continue
+            if material_type == "PlaneStressUserMaterial":
+                _precheck_abort("PlaneStressUserMaterial requires the unreleased PSUMAT")
             if len(material_type) > 0:
-                _precheck_abort(
-                    "unsupported LayeredShellSection material: " + material_type
-                )
+                _precheck_abort("unsupported LayeredShellSection material: " + material_type)
 
 
 fn precheck_case_input_native(doc: JsonDocument, include_recorders: Bool) raises:

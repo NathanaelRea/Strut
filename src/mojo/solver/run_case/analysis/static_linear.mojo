@@ -52,6 +52,7 @@ from solver.time_series import TimeSeriesInput, eval_time_series_input
 from sections import FiberCell, FiberSection2dDef, FiberSection3dDef, LayeredShellSectionDef
 from tag_types import AnalysisSystemTag, ElementTypeTag
 
+
 fn run_static_linear(
     typed_nodes: List[NodeInput],
     typed_elements: List[ElementInput],
@@ -181,32 +182,26 @@ fn run_static_linear(
     if do_profile:
         var t_asm_start = Int(time.perf_counter_ns())
         var asm_start_us = (t_asm_start - t0) // 1000
-        _append_event(
-            events, events_need_comma, "O", frame_assemble_stiffness, asm_start_us
-        )
+        _append_event(events, events_need_comma, "O", frame_assemble_stiffness, asm_start_us)
     var bw = 0
     var use_typed_banded = False
     var K_ff_banded: List[List[Float64]] = []
     var K: List[List[Float64]] = []
-    var use_native_backend_assembly = (
-        not has_transformation_mpc
-        and (
-            analysis.system_tag == AnalysisSystemTag.FullGeneral
+    var use_native_backend_assembly = not has_transformation_mpc and (
+        analysis.system_tag == AnalysisSystemTag.FullGeneral
         or analysis.system_tag == AnalysisSystemTag.BandGeneral
         or analysis.system_tag == AnalysisSystemTag.BandSPD
         or analysis.system_tag == AnalysisSystemTag.ProfileSPD
         or analysis.system_tag == AnalysisSystemTag.SuperLU
         or analysis.system_tag == AnalysisSystemTag.UmfPack
         or analysis.system_tag == AnalysisSystemTag.SparseSYM
-        )
     )
     var backend = LinearSolverBackend()
     var use_native_backend_solver = False
     var F_int_dummy: List[Float64] = []
     F_int_dummy.resize(total_dofs, 0.0)
     var use_bandgeneral_banded = (
-        analysis.system_tag == AnalysisSystemTag.BandGeneral
-        and not has_transformation_mpc
+        analysis.system_tag == AnalysisSystemTag.BandGeneral and not has_transformation_mpc
     )
     if use_bandgeneral_banded:
         bw = estimate_bandwidth_typed(typed_elements, free_index)
@@ -418,26 +413,20 @@ fn run_static_linear(
             runtime_metrics,
         )
         if has_transformation_mpc:
-            K = _collapse_matrix_by_mpc(
-                K, mpc_row_offsets, mpc_dof_pool, mpc_coeff_pool
-            )
+            K = _collapse_matrix_by_mpc(K, mpc_row_offsets, mpc_dof_pool, mpc_coeff_pool)
             F_int_dummy = _collapse_vector_by_mpc(
                 F_int_dummy, mpc_row_offsets, mpc_dof_pool, mpc_coeff_pool
             )
     if do_profile:
         var t_asm_end = Int(time.perf_counter_ns())
         var asm_end_us = (t_asm_end - t0) // 1000
-        _append_event(
-            events, events_need_comma, "C", frame_assemble_stiffness, asm_end_us
-        )
+        _append_event(events, events_need_comma, "C", frame_assemble_stiffness, asm_end_us)
     var F_f: List[Float64] = []
     F_f.resize(free_count, 0.0)
     if do_profile:
         var t_kff_start = Int(time.perf_counter_ns())
         var kff_start_us = (t_kff_start - t0) // 1000
-        _append_event(
-            events, events_need_comma, "O", frame_kff_extract, kff_start_us
-        )
+        _append_event(events, events_need_comma, "O", frame_kff_extract, kff_start_us)
     if use_native_backend_solver or not (use_bandgeneral_banded and use_typed_banded):
         for i in range(free_count):
             var row_i = free[i]
@@ -452,9 +441,7 @@ fn run_static_linear(
     if do_profile:
         var t_solve_lin_start = Int(time.perf_counter_ns())
         var solve_lin_start_us = (t_solve_lin_start - t0) // 1000
-        _append_event(
-            events, events_need_comma, "O", frame_solve_linear, solve_lin_start_us
-        )
+        _append_event(events, events_need_comma, "O", frame_solve_linear, solve_lin_start_us)
     var u_f: List[Float64] = []
     if use_bandgeneral_banded and use_typed_banded:
         if runtime_metrics.enabled:
@@ -473,9 +460,7 @@ fn run_static_linear(
     if do_profile:
         var t_solve_lin_end = Int(time.perf_counter_ns())
         var solve_lin_end_us = (t_solve_lin_end - t0) // 1000
-        _append_event(
-            events, events_need_comma, "C", frame_solve_linear, solve_lin_end_us
-        )
+        _append_event(events, events_need_comma, "C", frame_solve_linear, solve_lin_end_us)
     for i in range(free_count):
         u[free[i]] = u_f[i]
     if has_transformation_mpc:

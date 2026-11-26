@@ -1,0 +1,6 @@
+{
+  "name": "strut_concrete_s_cyclic_wall",
+  "entry_tcl": "tests/fixtures/opensees/strut_concrete_s_cyclic_wall/wall.tcl",
+  "enabled": true,
+  "notes": "Two ShellMITC4 panels with ConcreteS and orthogonal Steel02 PlateRebar layers under a reversing lateral load."
+}

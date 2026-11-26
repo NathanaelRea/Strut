@@ -230,19 +230,7 @@ fn _invert_3x3_values(
     g: Float64,
     h: Float64,
     i: Float64,
-) -> (
-    Bool,
-    Float64,
-    Float64,
-    Float64,
-    Float64,
-    Float64,
-    Float64,
-    Float64,
-    Float64,
-    Float64,
-):
-
+) -> (Bool, Float64, Float64, Float64, Float64, Float64, Float64, Float64, Float64, Float64,):
     var co00 = e * i - f * h
     var co01 = -(d * i - f * g)
     var co02 = d * h - e * g
@@ -303,7 +291,7 @@ fn _fiber_section2d_set_trial_from_offset(
 
 
 fn _fiber_section2d_initial_flexibility(
-    sec_def: FiberSection2dDef
+    sec_def: FiberSection2dDef,
 ) -> (Bool, Float64, Float64, Float64):
     if not sec_def.initial_flex_valid:
         return (False, 0.0, 0.0, 0.0)
@@ -316,7 +304,7 @@ fn _fiber_section2d_initial_flexibility(
 
 
 fn _fiber_section2d_response_flexibility(
-    resp: FiberSection2dResponse
+    resp: FiberSection2dResponse,
 ) -> (Bool, Float64, Float64, Float64):
     var det = resp.k11 * resp.k22 - resp.k12 * resp.k12
     if abs(det) <= 1.0e-40:
@@ -325,9 +313,7 @@ fn _fiber_section2d_response_flexibility(
     return (True, resp.k22 * inv_det, -resp.k12 * inv_det, resp.k11 * inv_det)
 
 
-fn _fiber_section2d_all_materials_elastic(
-    sec_def: FiberSection2dDef
-) -> Bool:
+fn _fiber_section2d_all_materials_elastic(sec_def: FiberSection2dDef) -> Bool:
     return sec_def.nonlinear_count == 0
 
 
@@ -353,16 +339,18 @@ fn _restore_force_beam_column2d_predictor_state(
 
 @always_inline
 fn _set_force_beam_column2d_trial_basic_deformation(
-    mut force_basic_q_state: List[Float64], basic_state_offset: Int, v0: Float64, v1: Float64, v2: Float64
+    mut force_basic_q_state: List[Float64],
+    basic_state_offset: Int,
+    v0: Float64,
+    v1: Float64,
+    v2: Float64,
 ):
     force_basic_q_state[basic_state_offset] = v0
     force_basic_q_state[basic_state_offset + 1] = v1
     force_basic_q_state[basic_state_offset + 2] = v2
 
 
-fn _ensure_force_beam_column2d_cache_slot(
-    mut scratch: ForceBeamColumn2dScratch, elem_index: Int
-):
+fn _ensure_force_beam_column2d_cache_slot(mut scratch: ForceBeamColumn2dScratch, elem_index: Int):
     if elem_index < 0:
         return
     var needed = elem_index + 1
@@ -739,17 +727,7 @@ fn _force_beam_column2d_initial_basic_tangent(
     mut sec_def: FiberSection2dDef,
     fibers: List[FiberCell],
     uniaxial_defs: List[UniMaterialDef],
-) -> (
-    Bool,
-    Float64,
-    Float64,
-    Float64,
-    Float64,
-    Float64,
-    Float64,
-    Float64,
-    Float64,
-):
+) -> (Bool, Float64, Float64, Float64, Float64, Float64, Float64, Float64, Float64,):
     var init_flex = _fiber_section2d_initial_flexibility(sec_def)
     if not init_flex[0]:
         return (False, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
@@ -904,9 +882,7 @@ fn _force_beam_column2d_try_increment(
     ):
         return (False, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
     if runtime_metrics.enabled:
-        runtime_metrics.predictor_section_eval_ns += (
-            Int(perf_counter_ns()) - t_predictor_eval_start
-        )
+        runtime_metrics.predictor_section_eval_ns += Int(perf_counter_ns()) - t_predictor_eval_start
         runtime_metrics.section_evaluations += len(scratch.section_batch_points)
     for ip in range(num_int_pts):
         var resp_trial = scratch.section_batch_results[ip]
@@ -959,9 +935,7 @@ fn _force_beam_column2d_try_increment(
         predictor_f21 += wL * b_mj * sec_f11 * b_mi
         predictor_f22 += wL * b_mj * sec_f11 * b_mj
     if runtime_metrics.enabled:
-        runtime_metrics.local_flexibility_accumulation_ns += (
-            Int(perf_counter_ns()) - t_flex_start
-        )
+        runtime_metrics.local_flexibility_accumulation_ns += Int(perf_counter_ns()) - t_flex_start
     var t_solve3_start = 0
     if runtime_metrics.enabled:
         t_solve3_start = Int(perf_counter_ns())
@@ -977,25 +951,11 @@ fn _force_beam_column2d_try_increment(
         predictor_f22,
     )
     if runtime_metrics.enabled:
-        runtime_metrics.local_3x3_solve_ns += (
-            Int(perf_counter_ns()) - t_solve3_start
-        )
+        runtime_metrics.local_3x3_solve_ns += Int(perf_counter_ns()) - t_solve3_start
     if predictor_k[0]:
-        q0 += (
-            predictor_k[1] * dv_trial0
-            + predictor_k[2] * dv_trial1
-            + predictor_k[3] * dv_trial2
-        )
-        q1 += (
-            predictor_k[4] * dv_trial0
-            + predictor_k[5] * dv_trial1
-            + predictor_k[6] * dv_trial2
-        )
-        q2 += (
-            predictor_k[7] * dv_trial0
-            + predictor_k[8] * dv_trial1
-            + predictor_k[9] * dv_trial2
-        )
+        q0 += predictor_k[1] * dv_trial0 + predictor_k[2] * dv_trial1 + predictor_k[3] * dv_trial2
+        q1 += predictor_k[4] * dv_trial0 + predictor_k[5] * dv_trial1 + predictor_k[6] * dv_trial2
+        q2 += predictor_k[7] * dv_trial0 + predictor_k[8] * dv_trial1 + predictor_k[9] * dv_trial2
 
     var num_elem_iters = max_elem_iters
     if use_initial_section_flexibility == 1:
@@ -1019,12 +979,8 @@ fn _force_beam_column2d_try_increment(
         var vr1 = 0.0
         var vr2 = 0.0
 
-        var use_initial_flex = (
-            use_initial_section_flexibility == 1
-            or (
-                use_initial_section_flexibility == 2
-                and elem_iter == 0
-            )
+        var use_initial_flex = use_initial_section_flexibility == 1 or (
+            use_initial_section_flexibility == 2 and elem_iter == 0
         )
         _clear_force_beam_column2d_section_batch(scratch)
         for ip in range(num_int_pts):
@@ -1137,9 +1093,7 @@ fn _force_beam_column2d_try_increment(
         if not k_inv[0]:
             return (False, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
         if runtime_metrics.enabled:
-            runtime_metrics.local_3x3_solve_ns += (
-                Int(perf_counter_ns()) - t_solve3_start
-            )
+            runtime_metrics.local_3x3_solve_ns += Int(perf_counter_ns()) - t_solve3_start
         k00 = k_inv[1]
         k01 = k_inv[2]
         k02 = k_inv[3]
@@ -1181,9 +1135,7 @@ fn _force_beam_column2d_try_increment(
                 scratch.section_fs01[ip] = scratch.section_fs_subdivide01[ip]
                 scratch.section_fs11[ip] = scratch.section_fs_subdivide11[ip]
             if runtime_metrics.enabled:
-                runtime_metrics.local_commit_revert_ns += (
-                    Int(perf_counter_ns()) - t_commit_start
-                )
+                runtime_metrics.local_commit_revert_ns += Int(perf_counter_ns()) - t_commit_start
             return (True, q0, q1, q2, k00, k01, k02, k10, k11, k12, k22)
 
     return (False, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
@@ -1473,9 +1425,7 @@ fn force_beam_column2d_global_tangent_and_internal(
     if elem_index >= 0 and elem_index < len(scratch.section_load_axial_cache):
         for ip in range(num_int_pts):
             scratch.section_load_axial[ip] = scratch.section_load_axial_cache[elem_index][ip]
-            scratch.section_load_moment[ip] = (
-                scratch.section_load_moment_cache[elem_index][ip]
-            )
+            scratch.section_load_moment[ip] = scratch.section_load_moment_cache[elem_index][ip]
     else:
         for ip in range(num_int_pts):
             scratch.section_load_axial[ip] = 0.0
@@ -1504,9 +1454,8 @@ fn force_beam_column2d_global_tangent_and_internal(
     var active_basic_count = predictor_state_count + 3
     if force_basic_q_count < active_basic_count:
         abort("forceBeamColumn2d basic force state count mismatch")
-    if (
-        force_basic_q_offset < 0
-        or force_basic_q_offset + active_basic_count > len(force_basic_q_state)
+    if force_basic_q_offset < 0 or force_basic_q_offset + active_basic_count > len(
+        force_basic_q_state
     ):
         abort("forceBeamColumn2d basic force state out of range")
     var eps0_offset = force_basic_q_offset + 3
@@ -1794,9 +1743,7 @@ fn force_beam_column2d_global_tangent_and_internal(
                 scratch.section_vs_kappa[ip],
             )
         if runtime_metrics.enabled:
-            runtime_metrics.local_commit_revert_ns += (
-                Int(perf_counter_ns()) - t_revert_start
-            )
+            runtime_metrics.local_commit_revert_ns += Int(perf_counter_ns()) - t_revert_start
     if not best_solved[0]:
         if runtime_metrics.enabled:
             runtime_metrics.subdivision_fallback_iterations += 1

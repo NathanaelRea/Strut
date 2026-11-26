@@ -18,19 +18,13 @@ from solver.simd_contiguous import (
 fn _fiber_padded_family_count(count: Int) -> Int:
     if count <= 0:
         return 0
-    return (
-        (count + FLOAT64_SIMD_WIDTH - 1) // FLOAT64_SIMD_WIDTH
-    ) * FLOAT64_SIMD_WIDTH
+    return ((count + FLOAT64_SIMD_WIDTH - 1) // FLOAT64_SIMD_WIDTH) * FLOAT64_SIMD_WIDTH
 
 
 @always_inline
-fn _fiber_copy_float64_range_simd[width: Int](
-    mut dst: List[Float64],
-    dst_start: Int,
-    src: List[Float64],
-    src_start: Int,
-    count: Int,
-):
+fn _fiber_copy_float64_range_simd[
+    width: Int
+](mut dst: List[Float64], dst_start: Int, src: List[Float64], src_start: Int, count: Int,):
     if count <= 0:
         return
     if dst_start == 0 and src_start == 0:
@@ -54,9 +48,9 @@ fn _fiber_copy_int_range(
 
 
 @always_inline
-fn load_int32_ptr_contiguous_simd[width: Int](
-    ptr: UnsafePointer[Int32], start: Int
-) -> SIMD[DType.int32, width]:
+fn load_int32_ptr_contiguous_simd[
+    width: Int
+](ptr: UnsafePointer[Int32], start: Int) -> SIMD[DType.int32, width]:
     alias alignment = align_of[SIMD[DType.int32, width]]()
     var byte_offset = start * size_of[Int32]()
     if (Int(ptr) + byte_offset) % alignment == 0:
@@ -65,9 +59,9 @@ fn load_int32_ptr_contiguous_simd[width: Int](
 
 
 @always_inline
-fn store_int32_ptr_contiguous_simd[width: Int](
-    ptr: UnsafePointer[Int32], start: Int, vec: SIMD[DType.int32, width]
-):
+fn store_int32_ptr_contiguous_simd[
+    width: Int
+](ptr: UnsafePointer[Int32], start: Int, vec: SIMD[DType.int32, width]):
     alias alignment = align_of[SIMD[DType.int32, width]]()
     var byte_offset = start * size_of[Int32]()
     if (Int(ptr) + byte_offset) % alignment == 0:
@@ -77,13 +71,9 @@ fn store_int32_ptr_contiguous_simd[width: Int](
 
 
 @always_inline
-fn _fiber_copy_int32_range_simd[width: Int](
-    mut dst: List[Int32],
-    dst_start: Int,
-    src: List[Int32],
-    src_start: Int,
-    count: Int,
-):
+fn _fiber_copy_int32_range_simd[
+    width: Int
+](mut dst: List[Int32], dst_start: Int, src: List[Int32], src_start: Int, count: Int,):
     if count <= 0:
         return
     var dst_ptr = dst.unsafe_ptr()
@@ -93,23 +83,21 @@ fn _fiber_copy_int32_range_simd[width: Int](
 
     @parameter
     fn copy_chunk[chunk: Int](i: Int):
-        var value_vec = load_int32_ptr_contiguous_simd[chunk](
-            src_ptr, src_offset + i
-        )
+        var value_vec = load_int32_ptr_contiguous_simd[chunk](src_ptr, src_offset + i)
         store_int32_ptr_contiguous_simd[chunk](dst_ptr, dst_offset + i, value_vec)
 
     vectorize[copy_chunk, width](count)
 
 
 @always_inline
-fn _simd_abs_float64[width: Int](
-    x: SIMD[DType.float64, width]
-) -> SIMD[DType.float64, width]:
+fn _simd_abs_float64[width: Int](x: SIMD[DType.float64, width]) -> SIMD[DType.float64, width]:
     return x.lt(0.0).select(-x, x)
 
 
 @always_inline
-fn _concrete02_compr_envlp_simd[width: Int](
+fn _concrete02_compr_envlp_simd[
+    width: Int
+](
     fc: SIMD[DType.float64, width],
     epsc0: SIMD[DType.float64, width],
     fcu: SIMD[DType.float64, width],
@@ -117,13 +105,13 @@ fn _concrete02_compr_envlp_simd[width: Int](
     strain: SIMD[DType.float64, width],
 ) -> (SIMD[DType.float64, width], SIMD[DType.float64, width]):
     var ec0 = (SIMD[DType.float64, width](2.0) * fc) / epsc0
-    return _concrete02_compr_envlp_precomputed_ec0_simd[width](
-        fc, epsc0, fcu, epscu, ec0, strain
-    )
+    return _concrete02_compr_envlp_precomputed_ec0_simd[width](fc, epsc0, fcu, epscu, ec0, strain)
 
 
 @always_inline
-fn _concrete02_compr_envlp_precomputed_ec0_simd[width: Int](
+fn _concrete02_compr_envlp_precomputed_ec0_simd[
+    width: Int
+](
     fc: SIMD[DType.float64, width],
     epsc0: SIMD[DType.float64, width],
     fcu: SIMD[DType.float64, width],
@@ -148,7 +136,9 @@ fn _concrete02_compr_envlp_precomputed_ec0_simd[width: Int](
 
 
 @always_inline
-fn _concrete02_tens_envlp_simd[width: Int](
+fn _concrete02_tens_envlp_simd[
+    width: Int
+](
     fc: SIMD[DType.float64, width],
     epsc0: SIMD[DType.float64, width],
     ft: SIMD[DType.float64, width],
@@ -157,16 +147,14 @@ fn _concrete02_tens_envlp_simd[width: Int](
 ) -> (SIMD[DType.float64, width], SIMD[DType.float64, width]):
     var ec0 = (SIMD[DType.float64, width](2.0) * fc) / epsc0
     var eps0 = ft / ec0
-    var epsu = ft * (
-        SIMD[DType.float64, width](1.0) / ets + SIMD[DType.float64, width](1.0) / ec0
-    )
-    return _concrete02_tens_envlp_precomputed_simd[width](
-        ft, ets, ec0, eps0, epsu, strain
-    )
+    var epsu = ft * (SIMD[DType.float64, width](1.0) / ets + SIMD[DType.float64, width](1.0) / ec0)
+    return _concrete02_tens_envlp_precomputed_simd[width](ft, ets, ec0, eps0, epsu, strain)
 
 
 @always_inline
-fn _concrete02_tens_envlp_precomputed_simd[width: Int](
+fn _concrete02_tens_envlp_precomputed_simd[
+    width: Int
+](
     ft: SIMD[DType.float64, width],
     ets: SIMD[DType.float64, width],
     ec0: SIMD[DType.float64, width],
@@ -189,7 +177,9 @@ fn _concrete02_tens_envlp_precomputed_simd[width: Int](
 
 
 @always_inline
-fn _concrete02_eval_simd_step[width: Int](
+fn _concrete02_eval_simd_step[
+    width: Int
+](
     strain: SIMD[DType.float64, width],
     eps_c: SIMD[DType.float64, width],
     sig_c: SIMD[DType.float64, width],
@@ -287,7 +277,9 @@ fn _concrete02_eval_simd_step[width: Int](
 
 
 @always_inline
-fn _steel02_eval_simd_step[width: Int](
+fn _steel02_eval_simd_step[
+    width: Int
+](
     trial_eps: SIMD[DType.float64, width],
     eps_c: SIMD[DType.float64, width],
     sig_c: SIMD[DType.float64, width],
@@ -342,9 +334,7 @@ fn _steel02_eval_simd_step[width: Int](
     var tangent_t = tangent_c
 
     var tol = SIMD[DType.float64, width](2.220446049250313e-15)
-    var no_change_mask = (kon_c.eq(0) | kon_c.eq(3)) & _simd_abs_float64[width](
-        deps
-    ).lt(tol)
+    var no_change_mask = (kon_c.eq(0) | kon_c.eq(3)) & _simd_abs_float64[width](deps).lt(tol)
     sig_t = no_change_mask.select(sigini, sig_t)
     tangent_t = no_change_mask.select(e0, tangent_t)
     kon_t = no_change_mask.select(SIMD[DType.int32, width](3), kon_t)
@@ -387,9 +377,7 @@ fn _steel02_eval_simd_step[width: Int](
         var shft_pos = SIMD[DType.float64, width](1.0) + a3 * (
             simd_pow_nonneg[width](d1_pos, SIMD[DType.float64, width](0.8))
         )
-        var epss0_pos = (
-            fy * shft_pos - esh * epsy * shft_pos - sig_c + e0 * eps_c
-        ) / (e0 - esh)
+        var epss0_pos = (fy * shft_pos - esh * epsy * shft_pos - sig_c + e0 * eps_c) / (e0 - esh)
         var sigs0_pos = fy * shft_pos + esh * (epss0_pos - epsy * shft_pos)
         kon_t = pos_reversal_mask.select(SIMD[DType.int32, width](1), kon_t)
         epsr_t = pos_reversal_mask.select(eps_c, epsr_t)
@@ -406,9 +394,7 @@ fn _steel02_eval_simd_step[width: Int](
         var shft_neg = SIMD[DType.float64, width](1.0) + a1 * (
             simd_pow_nonneg[width](d1_neg, SIMD[DType.float64, width](0.8))
         )
-        var epss0_neg = (
-            -fy * shft_neg + esh * epsy * shft_neg - sig_c + e0 * eps_c
-        ) / (e0 - esh)
+        var epss0_neg = (-fy * shft_neg + esh * epsy * shft_neg - sig_c + e0 * eps_c) / (e0 - esh)
         var sigs0_neg = -fy * shft_neg + esh * (epss0_neg + epsy * shft_neg)
         kon_t = neg_reversal_mask.select(SIMD[DType.int32, width](2), kon_t)
         epsr_t = neg_reversal_mask.select(eps_c, epsr_t)
@@ -424,13 +410,9 @@ fn _steel02_eval_simd_step[width: Int](
     var dum1 = SIMD[DType.float64, width](1.0) + (
         simd_pow_nonneg[width](_simd_abs_float64[width](epsrat), r)
     )
-    var dum2 = simd_pow_nonneg[width](
-        dum1, SIMD[DType.float64, width](1.0) / r
-    )
+    var dum2 = simd_pow_nonneg[width](dum1, SIMD[DType.float64, width](1.0) / r)
 
-    var sig_active = (
-        b * epsrat + (SIMD[DType.float64, width](1.0) - b) * epsrat / dum2
-    )
+    var sig_active = b * epsrat + (SIMD[DType.float64, width](1.0) - b) * epsrat / dum2
     sig_active = sig_active * (sigs0_t - sigr_t) + sigr_t
     var tangent_active = b + (SIMD[DType.float64, width](1.0) - b) / (dum1 * dum2)
     tangent_active = tangent_active * (sigs0_t - sigr_t) / (epss0_t - epsr_t)
@@ -524,7 +506,9 @@ fn _concrete01_eval_scalar(
 
 
 @always_inline
-fn _concrete01_eval_simd_step[width: Int](
+fn _concrete01_eval_simd_step[
+    width: Int
+](
     eps: SIMD[DType.float64, width],
     eps_c: SIMD[DType.float64, width],
     sig_c: SIMD[DType.float64, width],
@@ -573,17 +557,13 @@ fn _concrete01_eval_simd_step[width: Int](
         var reload_tan = zero
         if not all(~new_min_mask):
             var eta_env = eps / epsc0
-            var par_sig = fpc * (
-                SIMD[DType.float64, width](2.0) * eta_env - eta_env * eta_env
-            )
+            var par_sig = fpc * (SIMD[DType.float64, width](2.0) * eta_env - eta_env * eta_env)
             var par_tan = ec0 * (SIMD[DType.float64, width](1.0) - eta_env)
             var lin_sig = fpc + softening_tangent * (eps - epsc0)
             var above_c0 = eps.gt(epsc0)
             var above_cu = eps.gt(epscu)
             var env_sig = above_c0.select(par_sig, above_cu.select(lin_sig, fpcu))
-            var env_tan = above_c0.select(
-                par_tan, above_cu.select(softening_tangent, zero)
-            )
+            var env_tan = above_c0.select(par_tan, above_cu.select(softening_tangent, zero))
 
             var temp_strain = eps.lt(epscu).select(epscu, eps)
             var eta = temp_strain / epsc0
@@ -600,9 +580,7 @@ fn _concrete01_eval_simd_step[width: Int](
             var temp2 = env_sig / ec0
             var t1_gt_tol = temp1.gt(-1.0e-14)
             var t1_le_t2 = temp1.le(temp2)
-            var safe_temp1 = (t1_le_t2 & ~t1_gt_tol).select(
-                temp1, SIMD[DType.float64, width](-1.0)
-            )
+            var safe_temp1 = (t1_le_t2 & ~t1_gt_tol).select(temp1, SIMD[DType.float64, width](-1.0))
             var new_end_s = t1_gt_tol.select(
                 end_s,
                 t1_le_t2.select(eps - temp1, eps - temp2),
@@ -618,9 +596,7 @@ fn _concrete01_eval_simd_step[width: Int](
             reload_tan = new_min_mask.select(env_tan, reload_tan)
 
         var mid_mask = load_mask & (~new_min_mask) & eps.le(end_strain_c)
-        reload_sig = mid_mask.select(
-            unload_slope_c * (eps - end_strain_c), reload_sig
-        )
+        reload_sig = mid_mask.select(unload_slope_c * (eps - end_strain_c), reload_sig)
         reload_tan = mid_mask.select(unload_slope_c, reload_tan)
 
         var use_temp = temp_stress.gt(reload_sig)
@@ -633,15 +609,15 @@ fn _concrete01_eval_simd_step[width: Int](
     if not all(~unload_mask):
         var neg_temp = temp_stress.le(0.0)
         sig_t = unload_mask.select(neg_temp.select(temp_stress, zero), sig_t)
-        tangent_t = unload_mask.select(
-            neg_temp.select(unload_slope_c, zero), tangent_t
-        )
+        tangent_t = unload_mask.select(neg_temp.select(unload_slope_c, zero), tangent_t)
 
     return (sig_t, tangent_t, min_strain_t, end_strain_t, unload_slope_t)
 
 
 @always_inline
-fn _steel01_eval_simd_step[width: Int](
+fn _steel01_eval_simd_step[
+    width: Int
+](
     eps: SIMD[DType.float64, width],
     eps_p_c: SIMD[DType.float64, width],
     alpha_c: SIMD[DType.float64, width],
@@ -663,9 +639,7 @@ fn _steel01_eval_simd_step[width: Int](
     if all(~yield_mask):
         return (sigma_trial, e0, eps_p_c, alpha_c)
     var dg = f * inv_e0_plus_h
-    var sgn = xi.lt(0.0).select(
-        SIMD[DType.float64, width](-1.0), SIMD[DType.float64, width](1.0)
-    )
+    var sgn = xi.lt(0.0).select(SIMD[DType.float64, width](-1.0), SIMD[DType.float64, width](1.0))
     var dgs = dg * sgn
     var sig_t = yield_mask.select(sigma_trial - e0 * dgs, sigma_trial)
     var tan_t = yield_mask.select(e_ep, e0)

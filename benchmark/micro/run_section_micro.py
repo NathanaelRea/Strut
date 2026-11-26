@@ -10,7 +10,13 @@ import tempfile
 from collections import defaultdict
 from pathlib import Path
 
-from common import DEFAULT_CASE, REPO_ROOT, build_mojo_binary, prepare_case_json, resolve_case_input
+from common import (
+    DEFAULT_CASE,
+    REPO_ROOT,
+    build_mojo_binary,
+    prepare_case_json,
+    resolve_case_input,
+)
 
 
 DEFAULT_SWEEP_MATERIALS = (
@@ -300,7 +306,11 @@ def _summarize(
 
 
 def _build_table(summary: list[dict]) -> str:
-    scenario_order = [name for name in SCENARIO_LABELS if any(item["scenario"] == name for item in summary)]
+    scenario_order = [
+        name
+        for name in SCENARIO_LABELS
+        if any(item["scenario"] == name for item in summary)
+    ]
     by_label: dict[str, dict[str, dict]] = defaultdict(dict)
     row_meta: dict[str, dict] = {}
     for item in summary:
@@ -347,7 +357,11 @@ def _build_table(summary: list[dict]) -> str:
 def _print_summary(summary: list[dict], synthetic: bool) -> None:
     if not summary:
         raise SystemExit("no full_section benchmark rows were produced")
-    heading = "Synthetic full-section material sweep" if synthetic else "Full-section benchmark summary"
+    heading = (
+        "Synthetic full-section material sweep"
+        if synthetic
+        else "Full-section benchmark summary"
+    )
     samples = summary[0]["samples"]
     instances = summary[0]["instances"]
     fibers = summary[0]["fiber_count"]

@@ -137,7 +137,7 @@ def _mermaid_chart(
         "---",
         "xychart-beta",
         f'    title "{title}"',
-        f'    x-axis [{", ".join(x_labels)}]',
+        f"    x-axis [{', '.join(x_labels)}]",
         f'    y-axis "Analysis time ({unit_label})" 0 --> {axis_max:.3f}',
         *[f'    bar "{name}" [{", ".join(values)}]' for name, values in series_values],
         "```",
@@ -234,7 +234,9 @@ def _runs_phrase(summary: dict) -> str:
     repeat = ((summary.get("metadata") or {}).get("runner") or {}).get("repeat")
     if not isinstance(repeat, int):
         return ""
-    return f"Median of {repeat} runs per engine." if repeat > 1 else "One run per engine."
+    return (
+        f"Median of {repeat} runs per engine." if repeat > 1 else "One run per engine."
+    )
 
 
 def _key_lines(
@@ -252,7 +254,10 @@ def _key_lines(
 
 
 def _speedup(base_us: float, value_us: float) -> str:
-    if all(isinstance(v, (int, float)) and math.isfinite(v) and v > 0 for v in (base_us, value_us)):
+    if all(
+        isinstance(v, (int, float)) and math.isfinite(v) and v > 0
+        for v in (base_us, value_us)
+    ):
         return f"{base_us / value_us:.1f}x"
     return "n/a"
 
@@ -271,7 +276,12 @@ def _large_model_lines(summary: dict) -> list[str]:
         }
         series = [
             spec
-            for spec in (OPENSEES_SERIES, OPENSEESMP_SERIES, STRUT_SINGLE_SERIES, STRUT_SERIES)
+            for spec in (
+                OPENSEES_SERIES,
+                OPENSEESMP_SERIES,
+                STRUT_SINGLE_SERIES,
+                STRUT_SERIES,
+            )
             if _has_values(engines[spec[1]])
         ]
         if not series:
@@ -280,7 +290,9 @@ def _large_model_lines(summary: dict) -> list[str]:
         axis_max = max(1.0, math.ceil(max_value * 1.1 * 1000.0) / 1000.0)
         slots = {
             key: [
-                _mermaid_scaled_value(engines[key][0], unit_divisor_us) if key == other else "0.0"
+                _mermaid_scaled_value(engines[key][0], unit_divisor_us)
+                if key == other
+                else "0.0"
                 for _, other, _, _ in series
             ]
             for _, key, _, _ in series

@@ -27,7 +27,7 @@ struct JsonTokenTag:
     alias EOF = 12
 
 
-struct JsonParseDiagnostic(Movable, ImplicitlyCopyable):
+struct JsonParseDiagnostic(ImplicitlyCopyable, Movable):
     var message: String
     var offset: Int
     var line: Int
@@ -63,7 +63,7 @@ struct JsonParseDiagnostic(Movable, ImplicitlyCopyable):
         return rendered
 
 
-struct JsonToken(Movable, ImplicitlyCopyable):
+struct JsonToken(ImplicitlyCopyable, Movable):
     var tag: Int
     var start: Int
     var end: Int
@@ -82,7 +82,7 @@ struct JsonToken(Movable, ImplicitlyCopyable):
         self.number_is_integer = False
 
 
-struct JsonObjectEntry(Movable, ImplicitlyCopyable):
+struct JsonObjectEntry(ImplicitlyCopyable, Movable):
     var key: String
     var value_index: Int
     var key_offset: Int
@@ -93,7 +93,7 @@ struct JsonObjectEntry(Movable, ImplicitlyCopyable):
         self.key_offset = key_offset
 
 
-struct JsonNode(Movable, ImplicitlyCopyable):
+struct JsonNode(ImplicitlyCopyable, Movable):
     var tag: Int
     var start: Int
     var end: Int
@@ -156,9 +156,7 @@ struct JsonDocument(Movable):
                 return entry.value_index
         return -1
 
-    fn object_entry(
-        self, node_index: Int, item_index: Int
-    ) raises -> JsonObjectEntry:
+    fn object_entry(self, node_index: Int, item_index: Int) raises -> JsonObjectEntry:
         var node = self.nodes[node_index]
         if node.tag != JsonValueTag.Object:
             raise Error("JSON node is not an object")
@@ -194,6 +192,8 @@ struct JsonDocument(Movable):
 
     fn node_offset(self, node_index: Int) -> Int:
         return self.nodes[node_index].start
+
+
 fn _is_whitespace(ch: Byte) -> Bool:
     return (
         ch == Byte(ord(" "))
@@ -271,11 +271,10 @@ struct JsonParser(Movable):
             if bytes[i] == Byte(ord("\n")):
                 line_end = i
                 break
-        diagnostic.context = String(
-            StringSlice(unsafe_from_utf8=bytes[line_start:line_end])
-        )
+        diagnostic.context = String(StringSlice(unsafe_from_utf8=bytes[line_start:line_end]))
         diagnostic.caret_column = column
         return diagnostic^
+
     fn _error_at(self, offset: Int, message: String) raises:
         raise Error(self._make_diagnostic(offset, message).render())
 
@@ -332,7 +331,7 @@ struct JsonParser(Movable):
             token.end = self.position + 1
             self.position += 1
             return token^
-        if ch == Byte(ord("\"")):
+        if ch == Byte(ord('"')):
             return self._scan_string_token()
         if ch == Byte(ord("-")) or _is_digit(ch):
             return self._scan_number_token()
@@ -371,7 +370,7 @@ struct JsonParser(Movable):
         var i = self.position + 1
         while i < len(bytes):
             var ch = bytes[i]
-            if ch == Byte(ord("\"")):
+            if ch == Byte(ord('"')):
                 token.end = i + 1
                 token.value_end = i
                 self.position = i + 1
@@ -383,7 +382,7 @@ struct JsonParser(Movable):
                     self._error_at(token.start, "unterminated string escape")
                 var escape = bytes[i]
                 if (
-                    escape == Byte(ord("\""))
+                    escape == Byte(ord('"'))
                     or escape == Byte(ord("\\"))
                     or escape == Byte(ord("/"))
                     or escape == Byte(ord("b"))
@@ -488,7 +487,9 @@ struct JsonParser(Movable):
     fn _decode_string(self, token: JsonToken) raises -> String:
         if not token.has_escape:
             return String(
-                StringSlice(unsafe_from_utf8=self.text.as_bytes()[token.value_start:token.value_end])
+                StringSlice(
+                    unsafe_from_utf8=self.text.as_bytes()[token.value_start : token.value_end]
+                )
             )
 
         var decoded = String()
@@ -501,8 +502,8 @@ struct JsonParser(Movable):
                 continue
             _append_utf8_segment(decoded, self.text, segment_start, i)
             var escape = bytes[i + 1]
-            if escape == Byte(ord("\"")):
-                decoded += "\""
+            if escape == Byte(ord('"')):
+                decoded += '"'
                 i += 2
             elif escape == Byte(ord("\\")):
                 decoded += "\\"
@@ -527,9 +528,7 @@ struct JsonParser(Movable):
                 i += 2
             else:
                 var (codepoint, next_index) = self._decode_unicode_scalar(token, i + 2, i)
-                decoded += String(
-                    Codepoint(unsafe_unchecked_codepoint=UInt32(codepoint))
-                )
+                decoded += String(Codepoint(unsafe_unchecked_codepoint=UInt32(codepoint)))
                 i = next_index
             segment_start = i
         _append_utf8_segment(decoded, self.text, segment_start, token.value_end)
@@ -542,7 +541,7 @@ struct JsonParser(Movable):
         node.end = token.end
         node.number_is_integer = token.number_is_integer
         node.text_value = String(
-            StringSlice(unsafe_from_utf8=self.text.as_bytes()[token.value_start:token.value_end])
+            StringSlice(unsafe_from_utf8=self.text.as_bytes()[token.value_start : token.value_end])
         )
         node.number_value = atof(StringSlice(node.text_value))
         return node^
@@ -666,9 +665,7 @@ struct JsonParser(Movable):
             self._expect(JsonTokenTag.Colon, "expected ':' after object key")
             self._advance()
             var value_index = self._parse_value(doc)
-            direct_entries.append(
-                JsonObjectEntry(key, value_index, key_token.start)
-            )
+            direct_entries.append(JsonObjectEntry(key, value_index, key_token.start))
             if self.current.tag == JsonTokenTag.Comma:
                 self._advance()
                 if self.current.tag == JsonTokenTag.RightBrace:
@@ -699,6 +696,8 @@ struct JsonParser(Movable):
         if self.current.tag != JsonTokenTag.EOF:
             self._error_at(self.current.start, "unexpected trailing content")
         return doc^
+
+
 fn parse_json_native(text: String) raises -> JsonDocument:
     var owned_text = String(text)
     var parser = JsonParser(owned_text)

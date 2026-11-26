@@ -206,10 +206,7 @@ fn _broyden_update_direction(
     if abs(current_p) >= eps:
         var current_sdotdu = dot_float64_contiguous(history_s[current_pair], du, len(du))
         for j in range(len(du)):
-            du[j] += (
-                ((history_s[current_pair][j] + current_z[j]) * current_sdotdu)
-                / current_p
-            )
+            du[j] += ((history_s[current_pair][j] + current_z[j]) * current_sdotdu) / current_p
 
 
 fn _solve_displacement_control_augmented_from_factorized_backend(
@@ -363,9 +360,7 @@ fn _static_load_control_residual(
         force_beam_column3d_scratch,
     )
     if has_transformation_mpc:
-        F_int = _collapse_vector_by_mpc(
-            F_int, mpc_row_offsets, mpc_dof_pool, mpc_coeff_pool
-        )
+        F_int = _collapse_vector_by_mpc(F_int, mpc_row_offsets, mpc_dof_pool, mpc_coeff_pool)
     for i in range(free_count):
         var row_i = free[i]
         residual[i] = F_step[row_i] - F_int[row_i]
@@ -498,13 +493,9 @@ fn _static_displacement_control_residual(
         force_beam_column3d_scratch,
     )
     if has_transformation_mpc:
-        F_int = _collapse_vector_by_mpc(
-            F_int, mpc_row_offsets, mpc_dof_pool, mpc_coeff_pool
-        )
+        F_int = _collapse_vector_by_mpc(F_int, mpc_row_offsets, mpc_dof_pool, mpc_coeff_pool)
     for i in range(free_count):
-        residual_aug[i] = (
-            F_const_free[i] + load_factor * F_pattern_free[i] - F_int[free[i]]
-        )
+        residual_aug[i] = F_const_free[i] + load_factor * F_pattern_free[i] - F_int[free[i]]
     residual_aug[free_count] = attempt_du - (u[control_idx] - u_base[control_idx])
 
 
@@ -531,9 +522,7 @@ fn _append_static_retry_attempt(
     if len(algorithm) == 0:
         return
     retry_algorithm_tags.append(algorithm_tag)
-    retry_algorithm_modes.append(
-        _static_nonlinear_algorithm_mode(algorithm_tag, algorithm, label)
-    )
+    retry_algorithm_modes.append(_static_nonlinear_algorithm_mode(algorithm_tag, algorithm, label))
     retry_test_modes.append(_static_nonlinear_test_mode(test_type_tag, test_type, label))
     if max_iters < 1:
         abort(label + "_max_iters must be >= 1")
@@ -1127,9 +1116,7 @@ fn run_static_nonlinear_load_control(
         if do_profile:
             var t_step_start = Int(time.perf_counter_ns())
             var step_start_us = (t_step_start - t0) // 1000
-            _append_event(
-                events, events_need_comma, "O", frame_nonlinear_step, step_start_us
-            )
+            _append_event(events, events_need_comma, "O", frame_nonlinear_step, step_start_us)
         if has_transformation_mpc:
             _enforce_mpc_values(
                 u,
@@ -1143,9 +1130,7 @@ fn run_static_nonlinear_load_control(
         if adaptive_step:
             if last_step_iters > 0:
                 step_size = (
-                    current_step_size
-                    * Float64(step_target_iters)
-                    / Float64(last_step_iters)
+                    current_step_size * Float64(step_target_iters) / Float64(last_step_iters)
                 )
             var step_sign = 1.0
             if step_size < 0.0:
@@ -1225,9 +1210,7 @@ fn run_static_nonlinear_load_control(
                 attempt_max_iters = retry_max_iters[attempt]
                 attempt_tol = retry_tols[attempt]
                 attempt_broyden_count = retry_broyden_counts[attempt]
-                attempt_krylov_max_dim = default_krylov_max_dim(
-                    retry_krylov_max_dims[attempt]
-                )
+                attempt_krylov_max_dim = default_krylov_max_dim(retry_krylov_max_dims[attempt])
 
             var tangent_initialized = False
             var tangent_factored = False
@@ -1255,9 +1238,7 @@ fn run_static_nonlinear_load_control(
                         frame_nonlinear_iter,
                         iter_start_us,
                     )
-                var broyden_refresh_interval = _default_broyden_count(
-                    attempt_broyden_count
-                )
+                var broyden_refresh_interval = _default_broyden_count(attempt_broyden_count)
                 var krylov_max_dim = attempt_krylov_max_dim
                 if krylov_max_dim > free_count:
                     krylov_max_dim = free_count
@@ -1271,8 +1252,7 @@ fn run_static_nonlinear_load_control(
                         )
                     elif attempt_algorithm_tag == AnalysisAlgorithmTag.KrylovNewton:
                         refresh_tangent = (
-                            not tangent_initialized
-                            or len(krylov_history_v) > krylov_max_dim
+                            not tangent_initialized or len(krylov_history_v) > krylov_max_dim
                         )
                     else:
                         refresh_tangent = True
@@ -1287,9 +1267,7 @@ fn run_static_nonlinear_load_control(
                     native_direct_backend_available
                     and attempt_algorithm_mode != NonlinearAlgorithmMode.ModifiedNewtonInitial
                 )
-                var use_native_tangent_assembly = (
-                    use_native_direct_solve and refresh_tangent
-                )
+                var use_native_tangent_assembly = use_native_direct_solve and refresh_tangent
                 var use_native_internal_force_only = (
                     use_native_direct_solve and not use_native_tangent_assembly
                 )
@@ -1522,9 +1500,7 @@ fn run_static_nonlinear_load_control(
                 if do_profile:
                     var t_kff_start = Int(time.perf_counter_ns())
                     var kff_start_us = (t_kff_start - t0) // 1000
-                    _append_event(
-                        events, events_need_comma, "O", frame_kff_extract, kff_start_us
-                    )
+                    _append_event(events, events_need_comma, "O", frame_kff_extract, kff_start_us)
                 if use_banded_loadcontrol:
                     if refresh_tangent:
                         var width = bw_nl * 2 + 1
@@ -1582,9 +1558,7 @@ fn run_static_nonlinear_load_control(
                 if do_profile:
                     var t_kff_end = Int(time.perf_counter_ns())
                     var kff_end_us = (t_kff_end - t0) // 1000
-                    _append_event(
-                        events, events_need_comma, "C", frame_kff_extract, kff_end_us
-                    )
+                    _append_event(events, events_need_comma, "C", frame_kff_extract, kff_end_us)
 
                 var residual_norm_dbg = sqrt(sum_sq_float64_contiguous(F_f, free_count))
 
@@ -1808,9 +1782,7 @@ fn run_static_nonlinear_load_control(
                         var line_search_iter = 0
                         while r > line_search_tol and line_search_iter < 10:
                             line_search_iter += 1
-                            var eta = _update_initial_interpolated_eta(
-                                s0, s, r, r0, eta_prev
-                            )
+                            var eta = _update_initial_interpolated_eta(s0, s, r, r0, eta_prev)
                             if eta == eta_prev:
                                 break
                             var delta_eta = eta - eta_prev
@@ -1932,9 +1904,7 @@ fn run_static_nonlinear_load_control(
         if do_profile:
             var t_step_end = Int(time.perf_counter_ns())
             var step_end_us = (t_step_end - t0) // 1000
-            _append_event(
-                events, events_need_comma, "C", frame_nonlinear_step, step_end_us
-            )
+            _append_event(events, events_need_comma, "C", frame_nonlinear_step, step_end_us)
         if not converged:
             abort("static_nonlinear did not converge")
         if adaptive_step:
@@ -2009,6 +1979,7 @@ fn run_static_nonlinear_load_control(
                 commit_start_us,
             )
         _uniaxial_commit_active_states(uniaxial_states, elem_uniaxial_state_ids)
+        shell_cache.commit_layered_states()
         fiber_section2d_commit_runtime_all(fiber_section_defs)
         fiber_section3d_commit_runtime_all(fiber_section3d_defs)
         if do_profile:
@@ -2072,10 +2043,7 @@ fn run_static_nonlinear_load_control(
             elif rec.type_tag == RecorderTypeTag.ElementForce:
                 for eidx in range(rec.element_count):
                     var elem_id = recorder_elements_pool[rec.element_offset + eidx]
-                    if (
-                        elem_id >= len(elem_id_to_index)
-                        or elem_id_to_index[elem_id] < 0
-                    ):
+                    if elem_id >= len(elem_id_to_index) or elem_id_to_index[elem_id] < 0:
                         abort("recorder element not found")
                     var elem_index = elem_id_to_index[elem_id]
                     var elem = typed_elements[elem_index]
@@ -2128,16 +2096,11 @@ fn run_static_nonlinear_load_control(
                         )
                     var line = _format_values_line(f_elem)
                     var filename = rec.output + "_ele" + String(elem_id) + ".out"
-                    _append_output(
-                        static_output_files, static_output_buffers, filename, line
-                    )
+                    _append_output(static_output_files, static_output_buffers, filename, line)
             elif rec.type_tag == RecorderTypeTag.ElementLocalForce:
                 for eidx in range(rec.element_count):
                     var elem_id = recorder_elements_pool[rec.element_offset + eidx]
-                    if (
-                        elem_id >= len(elem_id_to_index)
-                        or elem_id_to_index[elem_id] < 0
-                    ):
+                    if elem_id >= len(elem_id_to_index) or elem_id_to_index[elem_id] < 0:
                         abort("recorder element not found")
                     var elem_index = elem_id_to_index[elem_id]
                     var elem = typed_elements[elem_index]
@@ -2174,10 +2137,7 @@ fn run_static_nonlinear_load_control(
             elif rec.type_tag == RecorderTypeTag.ElementBasicForce:
                 for eidx in range(rec.element_count):
                     var elem_id = recorder_elements_pool[rec.element_offset + eidx]
-                    if (
-                        elem_id >= len(elem_id_to_index)
-                        or elem_id_to_index[elem_id] < 0
-                    ):
+                    if elem_id >= len(elem_id_to_index) or elem_id_to_index[elem_id] < 0:
                         abort("recorder element not found")
                     var elem_index = elem_id_to_index[elem_id]
                     var elem = typed_elements[elem_index]
@@ -2204,10 +2164,7 @@ fn run_static_nonlinear_load_control(
             elif rec.type_tag == RecorderTypeTag.ElementDeformation:
                 for eidx in range(rec.element_count):
                     var elem_id = recorder_elements_pool[rec.element_offset + eidx]
-                    if (
-                        elem_id >= len(elem_id_to_index)
-                        or elem_id_to_index[elem_id] < 0
-                    ):
+                    if elem_id >= len(elem_id_to_index) or elem_id_to_index[elem_id] < 0:
                         abort("recorder element not found")
                     var elem_index = elem_id_to_index[elem_id]
                     var elem = typed_elements[elem_index]
@@ -2247,14 +2204,7 @@ fn run_static_nonlinear_load_control(
                 var i_node = rec.i_node
                 var j_node = rec.j_node
                 var value = _drift_value(rec, typed_nodes, id_to_index, ndf, u)
-                var filename = (
-                    rec.output
-                    + "_i"
-                    + String(i_node)
-                    + "_j"
-                    + String(j_node)
-                    + ".out"
-                )
+                var filename = rec.output + "_i" + String(i_node) + "_j" + String(j_node) + ".out"
                 _append_output(
                     static_output_files,
                     static_output_buffers,
@@ -2264,10 +2214,7 @@ fn run_static_nonlinear_load_control(
             elif rec.type_tag == RecorderTypeTag.EnvelopeElementForce:
                 for eidx in range(rec.element_count):
                     var elem_id = recorder_elements_pool[rec.element_offset + eidx]
-                    if (
-                        elem_id >= len(elem_id_to_index)
-                        or elem_id_to_index[elem_id] < 0
-                    ):
+                    if elem_id >= len(elem_id_to_index) or elem_id_to_index[elem_id] < 0:
                         abort("recorder element not found")
                     var elem_index = elem_id_to_index[elem_id]
                     var elem = typed_elements[elem_index]
@@ -2330,10 +2277,7 @@ fn run_static_nonlinear_load_control(
             elif rec.type_tag == RecorderTypeTag.EnvelopeElementLocalForce:
                 for eidx in range(rec.element_count):
                     var elem_id = recorder_elements_pool[rec.element_offset + eidx]
-                    if (
-                        elem_id >= len(elem_id_to_index)
-                        or elem_id_to_index[elem_id] < 0
-                    ):
+                    if elem_id >= len(elem_id_to_index) or elem_id_to_index[elem_id] < 0:
                         abort("recorder element not found")
                     var elem_index = elem_id_to_index[elem_id]
                     var elem = typed_elements[elem_index]
@@ -2376,10 +2320,7 @@ fn run_static_nonlinear_load_control(
                 var want_defo = rec.type_tag == RecorderTypeTag.SectionDeformation
                 for eidx in range(rec.element_count):
                     var elem_id = recorder_elements_pool[rec.element_offset + eidx]
-                    if (
-                        elem_id >= len(elem_id_to_index)
-                        or elem_id_to_index[elem_id] < 0
-                    ):
+                    if elem_id >= len(elem_id_to_index) or elem_id_to_index[elem_id] < 0:
                         abort("recorder element not found")
                     var elem_index = elem_id_to_index[elem_id]
                     var elem = typed_elements[elem_index]
@@ -2435,12 +2376,7 @@ fn run_static_nonlinear_load_control(
                                 want_defo,
                             )
                         var filename = (
-                            rec.output
-                            + "_ele"
-                            + String(elem_id)
-                            + "_sec"
-                            + String(sec_no)
-                            + ".out"
+                            rec.output + "_ele" + String(elem_id) + "_sec" + String(sec_no) + ".out"
                         )
                         _append_output(
                             static_output_files,
@@ -2468,6 +2404,7 @@ fn run_static_nonlinear_load_control(
         steps,
         steps,
     )
+
 
 fn run_static_nonlinear_displacement_control(
     analysis: AnalysisInput,
@@ -2649,17 +2586,14 @@ fn run_static_nonlinear_displacement_control(
     F_int.resize(total_dofs, 0.0)
 
     var backend = LinearSolverBackend()
-    var native_direct_backend_available = (
-        not has_transformation_mpc
-        and (
-            analysis.system_tag == AnalysisSystemTag.FullGeneral
-            or analysis.system_tag == AnalysisSystemTag.BandGeneral
-            or analysis.system_tag == AnalysisSystemTag.BandSPD
-            or analysis.system_tag == AnalysisSystemTag.ProfileSPD
-            or analysis.system_tag == AnalysisSystemTag.SuperLU
-            or analysis.system_tag == AnalysisSystemTag.UmfPack
-            or analysis.system_tag == AnalysisSystemTag.SparseSYM
-        )
+    var native_direct_backend_available = not has_transformation_mpc and (
+        analysis.system_tag == AnalysisSystemTag.FullGeneral
+        or analysis.system_tag == AnalysisSystemTag.BandGeneral
+        or analysis.system_tag == AnalysisSystemTag.BandSPD
+        or analysis.system_tag == AnalysisSystemTag.ProfileSPD
+        or analysis.system_tag == AnalysisSystemTag.SuperLU
+        or analysis.system_tag == AnalysisSystemTag.UmfPack
+        or analysis.system_tag == AnalysisSystemTag.SparseSYM
     )
     # Global tangent over the shared reduced sparse pattern (MPC-expanded) for
     # every path that does not assemble straight into the backend.
@@ -2956,9 +2890,7 @@ fn run_static_nonlinear_displacement_control(
         if do_profile:
             var t_step_start = Int(time.perf_counter_ns())
             var step_start_us = (t_step_start - t0) // 1000
-            _append_event(
-                events, events_need_comma, "O", frame_nonlinear_step, step_start_us
-            )
+            _append_event(events, events_need_comma, "O", frame_nonlinear_step, step_start_us)
         if has_transformation_mpc:
             _enforce_mpc_values(
                 u,
@@ -2976,11 +2908,7 @@ fn run_static_nonlinear_displacement_control(
             if adaptive_du:
                 var du_next = current_du_step
                 if du_last_iters > 0:
-                    du_next = (
-                        current_du_step
-                        * Float64(du_target_iters)
-                        / Float64(du_last_iters)
-                    )
+                    du_next = current_du_step * Float64(du_target_iters) / Float64(du_last_iters)
                 var du_sign = 1.0
                 if du_next < 0.0:
                     du_sign = -1.0
@@ -3068,9 +2996,7 @@ fn run_static_nonlinear_displacement_control(
                                 frame_nonlinear_iter,
                                 iter_start_us,
                             )
-                        var broyden_refresh_interval = _default_broyden_count(
-                            attempt_broyden_count
-                        )
+                        var broyden_refresh_interval = _default_broyden_count(attempt_broyden_count)
                         var krylov_max_dim = attempt_krylov_max_dim
                         if krylov_max_dim > free_count + 1:
                             krylov_max_dim = free_count + 1
@@ -3093,17 +3019,18 @@ fn run_static_nonlinear_displacement_control(
                             refresh_tangent = not tangent_initialized
                         else:
                             refresh_tangent = not tangent_initialized
-                        if refresh_tangent and attempt_algorithm_tag == AnalysisAlgorithmTag.KrylovNewton:
+                        if (
+                            refresh_tangent
+                            and attempt_algorithm_tag == AnalysisAlgorithmTag.KrylovNewton
+                        ):
                             krylov_history_v = []
                             krylov_history_av = []
-                        var use_native_direct_solve = (
-                            native_direct_backend_available
-                        )
+                        var use_native_direct_solve = native_direct_backend_available
                         var use_native_tangent_assembly = (
                             use_native_direct_solve
                             and refresh_tangent
                             and attempt_algorithm_mode
-                                != NonlinearAlgorithmMode.ModifiedNewtonInitial
+                            != NonlinearAlgorithmMode.ModifiedNewtonInitial
                         )
                         var use_native_internal_force_only = (
                             use_native_direct_solve and not use_native_tangent_assembly
@@ -3446,7 +3373,10 @@ fn run_static_nonlinear_displacement_control(
                         # current equilibrium state. Treating that as convergence before any
                         # augmented solve would leave the control displacement unchanged and
                         # spin forever on the same target.
-                        if attempt_test_mode == 2 and abs(u[control_idx] - u_base[control_idx]) > 0.0:
+                        if (
+                            attempt_test_mode == 2
+                            and abs(u[control_idx] - u_base[control_idx]) > 0.0
+                        ):
                             var residual_norm = sqrt(sum_sq_float64_contiguous(R_f, free_count))
                             if residual_norm <= attempt_tol:
                                 if do_profile:
@@ -3465,9 +3395,7 @@ fn run_static_nonlinear_displacement_control(
 
                         for i in range(free_count):
                             rhs_aug[i] = R_f[i]
-                        rhs_aug[free_count] = (
-                            attempt_du - (u[control_idx] - u_base[control_idx])
-                        )
+                        rhs_aug[free_count] = attempt_du - (u[control_idx] - u_base[control_idx])
 
                         if do_profile:
                             var t_solve_nl_start = Int(time.perf_counter_ns())
@@ -3492,10 +3420,8 @@ fn run_static_nonlinear_displacement_control(
                         else:
                             var direct_newton_solve = (
                                 attempt_algorithm_mode == NonlinearAlgorithmMode.Newton
-                                and attempt_algorithm_tag
-                                    != AnalysisAlgorithmTag.Broyden
-                                and attempt_algorithm_tag
-                                    != AnalysisAlgorithmTag.KrylovNewton
+                                and attempt_algorithm_tag != AnalysisAlgorithmTag.Broyden
+                                and attempt_algorithm_tag != AnalysisAlgorithmTag.KrylovNewton
                             )
                             var force_refactor = direct_newton_solve or not tangent_factored
                             if use_native_direct_solve:
@@ -3541,9 +3467,7 @@ fn run_static_nonlinear_displacement_control(
                             break
                         var krylov_base_sol_aug: List[Float64] = []
                         if attempt_algorithm_tag == AnalysisAlgorithmTag.KrylovNewton:
-                            krylov_base_sol_aug = copy_krylov_vector(
-                                sol_aug, free_count + 1
-                            )
+                            krylov_base_sol_aug = copy_krylov_vector(sol_aug, free_count + 1)
                             _ = krylov_apply_acceleration(
                                 sol_aug,
                                 krylov_history_v,
@@ -3561,26 +3485,26 @@ fn run_static_nonlinear_displacement_control(
                                 broyden_history_z = []
                                 broyden_prev_residual = []
                                 has_broyden_prev_residual = False
-                            elif has_broyden_prev_residual and len(
-                                broyden_history_s
-                            ) > len(broyden_history_z):
+                            elif has_broyden_prev_residual and len(broyden_history_s) > len(
+                                broyden_history_z
+                            ):
                                 var delta_residual_aug: List[Float64] = []
                                 delta_residual_aug.resize(free_count + 1, 0.0)
                                 for i in range(free_count + 1):
-                                    delta_residual_aug[i] = (
-                                        rhs_aug[i] - broyden_prev_residual[i]
-                                    )
+                                    delta_residual_aug[i] = rhs_aug[i] - broyden_prev_residual[i]
                                 var z_aug: List[Float64] = []
                                 z_aug.resize(free_count + 1, 0.0)
-                                var z_ok = _solve_displacement_control_augmented_from_factorized_backend(
-                                    backend,
-                                    delta_residual_aug,
-                                    aug_load_column_free,
-                                    control_free,
-                                    delta_residual_aug[free_count],
-                                    z_aug,
-                                    aug_rhs_solve,
-                                    aug_load_solve,
+                                var z_ok = (
+                                    _solve_displacement_control_augmented_from_factorized_backend(
+                                        backend,
+                                        delta_residual_aug,
+                                        aug_load_column_free,
+                                        control_free,
+                                        delta_residual_aug[free_count],
+                                        z_aug,
+                                        aug_rhs_solve,
+                                        aug_load_solve,
+                                    )
                                 )
                                 if z_ok:
                                     _broyden_update_direction(
@@ -3617,12 +3541,8 @@ fn run_static_nonlinear_displacement_control(
                                 mpc_coeff_pool,
                             )
                         if attempt_algorithm_tag == AnalysisAlgorithmTag.NewtonLineSearch:
-                            var line_search_tol = _default_line_search_tol(
-                                attempt_line_search_eta
-                            )
-                            var s0 = -dot_float64_contiguous(
-                                sol_aug, rhs_aug, free_count + 1
-                            )
+                            var line_search_tol = _default_line_search_tol(attempt_line_search_eta)
+                            var s0 = -dot_float64_contiguous(sol_aug, rhs_aug, free_count + 1)
                             if abs(s0) > 0.0:
                                 _static_displacement_control_residual(
                                     typed_nodes,
@@ -3690,9 +3610,7 @@ fn run_static_nonlinear_displacement_control(
                                     u_base,
                                     rhs_aug,
                                 )
-                                var s = -dot_float64_contiguous(
-                                    sol_aug, rhs_aug, free_count + 1
-                                )
+                                var s = -dot_float64_contiguous(sol_aug, rhs_aug, free_count + 1)
                                 var r0 = abs(s / s0)
                                 var r = r0
                                 var eta_prev = 1.0
@@ -3783,20 +3701,14 @@ fn run_static_nonlinear_displacement_control(
                                         u_base,
                                         rhs_aug,
                                     )
-                                    s = dot_float64_contiguous(
-                                        sol_aug, rhs_aug, free_count + 1
-                                    )
+                                    s = dot_float64_contiguous(sol_aug, rhs_aug, free_count + 1)
                                     r = abs(s / s0)
                                     eta_prev = eta
                                 for i in range(free_count + 1):
                                     sol_aug[i] *= eta_prev
                         if attempt_algorithm_tag == AnalysisAlgorithmTag.Broyden:
-                            broyden_history_s.append(
-                                _copy_vector(sol_aug, free_count + 1)
-                            )
-                            broyden_prev_residual = _copy_vector(
-                                rhs_aug, free_count + 1
-                            )
+                            broyden_history_s.append(_copy_vector(sol_aug, free_count + 1))
+                            broyden_prev_residual = _copy_vector(rhs_aug, free_count + 1)
                             has_broyden_prev_residual = True
                         elif attempt_algorithm_tag == AnalysisAlgorithmTag.KrylovNewton:
                             krylov_push_iteration_state(
@@ -3932,6 +3844,7 @@ fn run_static_nonlinear_displacement_control(
                     commit_start_us,
                 )
             _uniaxial_commit_active_states(uniaxial_states, elem_uniaxial_state_ids)
+            shell_cache.commit_layered_states()
             fiber_section2d_commit_runtime_all(fiber_section_defs)
             fiber_section3d_commit_runtime_all(fiber_section3d_defs)
             if do_profile:
@@ -3962,9 +3875,7 @@ fn run_static_nonlinear_displacement_control(
         if do_profile:
             var t_step_end = Int(time.perf_counter_ns())
             var step_end_us = (t_step_end - t0) // 1000
-            _append_event(
-                events, events_need_comma, "C", frame_nonlinear_step, step_end_us
-            )
+            _append_event(events, events_need_comma, "C", frame_nonlinear_step, step_end_us)
 
         var final_load_scale = load_scale_derivative * load_factor
         var F_step = build_active_nodal_load(F_const, F_pattern, final_load_scale)
@@ -4101,10 +4012,7 @@ fn run_static_nonlinear_displacement_control(
             elif rec.type_tag == RecorderTypeTag.ElementForce:
                 for eidx in range(rec.element_count):
                     var elem_id = recorder_elements_pool[rec.element_offset + eidx]
-                    if (
-                        elem_id >= len(elem_id_to_index)
-                        or elem_id_to_index[elem_id] < 0
-                    ):
+                    if elem_id >= len(elem_id_to_index) or elem_id_to_index[elem_id] < 0:
                         abort("recorder element not found")
                     var elem_index = elem_id_to_index[elem_id]
                     var elem = typed_elements[elem_index]
@@ -4157,16 +4065,11 @@ fn run_static_nonlinear_displacement_control(
                         )
                     var line = _format_values_line(f_elem)
                     var filename = rec.output + "_ele" + String(elem_id) + ".out"
-                    _append_output(
-                        static_output_files, static_output_buffers, filename, line
-                    )
+                    _append_output(static_output_files, static_output_buffers, filename, line)
             elif rec.type_tag == RecorderTypeTag.ElementLocalForce:
                 for eidx in range(rec.element_count):
                     var elem_id = recorder_elements_pool[rec.element_offset + eidx]
-                    if (
-                        elem_id >= len(elem_id_to_index)
-                        or elem_id_to_index[elem_id] < 0
-                    ):
+                    if elem_id >= len(elem_id_to_index) or elem_id_to_index[elem_id] < 0:
                         abort("recorder element not found")
                     var elem_index = elem_id_to_index[elem_id]
                     var elem = typed_elements[elem_index]
@@ -4203,10 +4106,7 @@ fn run_static_nonlinear_displacement_control(
             elif rec.type_tag == RecorderTypeTag.ElementBasicForce:
                 for eidx in range(rec.element_count):
                     var elem_id = recorder_elements_pool[rec.element_offset + eidx]
-                    if (
-                        elem_id >= len(elem_id_to_index)
-                        or elem_id_to_index[elem_id] < 0
-                    ):
+                    if elem_id >= len(elem_id_to_index) or elem_id_to_index[elem_id] < 0:
                         abort("recorder element not found")
                     var elem_index = elem_id_to_index[elem_id]
                     var elem = typed_elements[elem_index]
@@ -4233,10 +4133,7 @@ fn run_static_nonlinear_displacement_control(
             elif rec.type_tag == RecorderTypeTag.ElementDeformation:
                 for eidx in range(rec.element_count):
                     var elem_id = recorder_elements_pool[rec.element_offset + eidx]
-                    if (
-                        elem_id >= len(elem_id_to_index)
-                        or elem_id_to_index[elem_id] < 0
-                    ):
+                    if elem_id >= len(elem_id_to_index) or elem_id_to_index[elem_id] < 0:
                         abort("recorder element not found")
                     var elem_index = elem_id_to_index[elem_id]
                     var elem = typed_elements[elem_index]
@@ -4276,14 +4173,7 @@ fn run_static_nonlinear_displacement_control(
                 var i_node = rec.i_node
                 var j_node = rec.j_node
                 var value = _drift_value(rec, typed_nodes, id_to_index, ndf, u)
-                var filename = (
-                    rec.output
-                    + "_i"
-                    + String(i_node)
-                    + "_j"
-                    + String(j_node)
-                    + ".out"
-                )
+                var filename = rec.output + "_i" + String(i_node) + "_j" + String(j_node) + ".out"
                 _append_output(
                     static_output_files,
                     static_output_buffers,
@@ -4293,10 +4183,7 @@ fn run_static_nonlinear_displacement_control(
             elif rec.type_tag == RecorderTypeTag.EnvelopeElementForce:
                 for eidx in range(rec.element_count):
                     var elem_id = recorder_elements_pool[rec.element_offset + eidx]
-                    if (
-                        elem_id >= len(elem_id_to_index)
-                        or elem_id_to_index[elem_id] < 0
-                    ):
+                    if elem_id >= len(elem_id_to_index) or elem_id_to_index[elem_id] < 0:
                         abort("recorder element not found")
                     var elem_index = elem_id_to_index[elem_id]
                     var elem = typed_elements[elem_index]
@@ -4359,10 +4246,7 @@ fn run_static_nonlinear_displacement_control(
             elif rec.type_tag == RecorderTypeTag.EnvelopeElementLocalForce:
                 for eidx in range(rec.element_count):
                     var elem_id = recorder_elements_pool[rec.element_offset + eidx]
-                    if (
-                        elem_id >= len(elem_id_to_index)
-                        or elem_id_to_index[elem_id] < 0
-                    ):
+                    if elem_id >= len(elem_id_to_index) or elem_id_to_index[elem_id] < 0:
                         abort("recorder element not found")
                     var elem_index = elem_id_to_index[elem_id]
                     var elem = typed_elements[elem_index]
@@ -4405,10 +4289,7 @@ fn run_static_nonlinear_displacement_control(
                 var want_defo = rec.type_tag == RecorderTypeTag.SectionDeformation
                 for eidx in range(rec.element_count):
                     var elem_id = recorder_elements_pool[rec.element_offset + eidx]
-                    if (
-                        elem_id >= len(elem_id_to_index)
-                        or elem_id_to_index[elem_id] < 0
-                    ):
+                    if elem_id >= len(elem_id_to_index) or elem_id_to_index[elem_id] < 0:
                         abort("recorder element not found")
                     var elem_index = elem_id_to_index[elem_id]
                     var elem = typed_elements[elem_index]
@@ -4464,12 +4345,7 @@ fn run_static_nonlinear_displacement_control(
                                 want_defo,
                             )
                         var filename = (
-                            rec.output
-                            + "_ele"
-                            + String(elem_id)
-                            + "_sec"
-                            + String(sec_no)
-                            + ".out"
+                            rec.output + "_ele" + String(elem_id) + "_sec" + String(sec_no) + ".out"
                         )
                         _append_output(
                             static_output_files,

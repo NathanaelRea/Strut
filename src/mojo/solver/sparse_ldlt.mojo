@@ -33,8 +33,7 @@ from sys.ffi import external_call
 
 
 struct SparseOrdering:
-    """Auto compares symbolic factor fill and checks a wider AMD cutoff on hub graphs.
-    """
+    """Auto compares symbolic factor fill and checks a wider AMD cutoff on hub graphs."""
 
     alias AMD = 0
     alias RCM = 1
@@ -356,9 +355,7 @@ fn _amd(graph: _Graph, dense_multiplier: Int = 8) -> List[Int]:
             else:
                 lists[i].resize(length, 0)
                 lists[i].append(-pivot - 1)
-                buckets.degree.unsafe_ptr()[i] = min(
-                    degree, buckets.degree.unsafe_ptr()[i]
-                )
+                buckets.degree.unsafe_ptr()[i] = min(degree, buckets.degree.unsafe_ptr()[i])
                 members[kept] = i
                 kept += 1
 
@@ -366,9 +363,7 @@ fn _amd(graph: _Graph, dense_multiplier: Int = 8) -> List[Int]:
         for k in range(kept):
             var i = members[k]
             lists[pivot].append(i)
-            buckets.insert(
-                i, min(remaining - 1, buckets.degree.unsafe_ptr()[i] + kept - 1)
-            )
+            buckets.insert(i, min(remaining - 1, buckets.degree.unsafe_ptr()[i] + kept - 1))
         size[pivot] = kept
     for i in range(len(dense)):
         order.append(dense[i])
@@ -627,14 +622,8 @@ fn _choose_symbolic(
     var symbolic = _SymbolicOrder(graph, kind, permutation, dense_multiplier)
     # RCM can preserve a band without any fill. That is optimal, so
     # skip the more expensive quotient-graph search in that case.
-    if (
-        not custom_order
-        and ordering == SparseOrdering.Auto
-        and symbolic.nnz > matrix_nnz
-    ):
-        var amd = _SymbolicOrder(
-            graph, SparseOrdering.AMD, dense_multiplier=dense_multiplier
-        )
+    if not custom_order and ordering == SparseOrdering.Auto and symbolic.nnz > matrix_nnz:
+        var amd = _SymbolicOrder(graph, SparseOrdering.AMD, dense_multiplier=dense_multiplier)
         if amd.nnz <= symbolic.nnz:
             symbolic = amd^
     # High-degree hubs can benefit from the looser, sqrt(n)-limited AMD
@@ -645,13 +634,8 @@ fn _choose_symbolic(
             var threshold = 16 * max(1, len(graph.rows) // n)
             for j in range(n):
                 if graph.ptr[j + 1] - graph.ptr[j] > threshold:
-                    var alternate = _SymbolicOrder(
-                        graph, SparseOrdering.AMD, dense_multiplier=64
-                    )
-                    if (
-                        alternate.nnz < symbolic.nnz
-                        and alternate.flops < symbolic.flops
-                    ):
+                    var alternate = _SymbolicOrder(graph, SparseOrdering.AMD, dense_multiplier=64)
+                    if alternate.nnz < symbolic.nnz and alternate.flops < symbolic.flops:
                         symbolic = alternate^
                     break
     return symbolic^
@@ -670,8 +654,7 @@ fn estimate_sparse_ldlt_ordering(
     ordering: Int = SparseOrdering.Auto,
     dense_multiplier: Int = 8,
 ) raises -> SparseOrderingEstimate:
-    """Count structural factor entries and operations with no panel or factor allocation.
-    """
+    """Count structural factor entries and operations with no panel or factor allocation."""
     _validate_symbolic_input(n, col_ptr, row_idx, ordering, dense_multiplier)
     var graph = _adjacency(n, col_ptr, row_idx)
     var symbolic = _choose_symbolic(graph, len(row_idx), ordering, [], dense_multiplier)
@@ -683,18 +666,14 @@ fn _scale_column(column: UnsafePointer[Float64], count: Int, alpha: Float64):
     alias width = FLOAT64_SIMD_WIDTH
     var i = 0
     while i + width <= count:
-        column.store[width=width, alignment=1](
-            i, column.load[width=width, alignment=1](i) * alpha
-        )
+        column.store[width=width, alignment=1](i, column.load[width=width, alignment=1](i) * alpha)
         i += width
     for k in range(i, count):
         column[k] *= alpha
 
 
 @always_inline
-fn _dot_tail(
-    lhs: UnsafePointer[Float64], rhs: UnsafePointer[Float64], count: Int
-) -> Float64:
+fn _dot_tail(lhs: UnsafePointer[Float64], rhs: UnsafePointer[Float64], count: Int) -> Float64:
     alias lanes = FLOAT64_SIMD_WIDTH
     var total = SIMD[DType.float64, lanes](0.0)
     var i = 0
@@ -957,9 +936,7 @@ fn _blocked_update_layout[
                 var src = factor + slots[k] + r
                 var dst = packed + k * _TILE_ROWS
                 if rows == _TILE_ROWS:
-                    dst.store[width=lanes, alignment=1](
-                        0, src.load[width=lanes, alignment=1](0)
-                    )
+                    dst.store[width=lanes, alignment=1](0, src.load[width=lanes, alignment=1](0))
                     dst.store[width=lanes, alignment=1](
                         lanes, src.load[width=lanes, alignment=1](lanes)
                     )
@@ -976,9 +953,7 @@ fn _blocked_update_layout[
             for j in range(cols):
                 var column = _target_column[sparse](target_cols, target_row, p + j)
                 col_base[j] = col_start[column] - column
-            for r in range(
-                base + (max(0, p - base) // _TILE_ROWS) * _TILE_ROWS, limit, _TILE_ROWS
-            ):
+            for r in range(base + (max(0, p - base) // _TILE_ROWS) * _TILE_ROWS, limit, _TILE_ROWS):
                 var packed_a = scratch + (r - base) * rank
                 var rows = min(_TILE_ROWS, limit - r)
                 var start = _target_row[sparse](mapped, target_row, r)
@@ -987,9 +962,7 @@ fn _blocked_update_layout[
                     if last - start == rows - 1:
                         for j in range(tile_cols):
                             off[j] = col_base[j] + start
-                        _gemm_tile[False, tile_cols](
-                            packed_a, packed_b, factor, off, rank, mapped
-                        )
+                        _gemm_tile[False, tile_cols](packed_a, packed_b, factor, off, rank, mapped)
                     else:
                         for j in range(tile_cols):
                             off[j] = col_base[j] + target_row
@@ -1004,19 +977,13 @@ fn _blocked_update_layout[
                         var real = factor + col_base[j]
                         var temp = stage + off[j]
                         for i in range(max(0, p + j - r), rows):
-                            temp[i] = real[
-                                _target_row[sparse](mapped, target_row, r + i)
-                            ]
-                    _gemm_tile[False, tile_cols](
-                        packed_a, packed_b, stage, off, rank, mapped
-                    )
+                            temp[i] = real[_target_row[sparse](mapped, target_row, r + i)]
+                    _gemm_tile[False, tile_cols](packed_a, packed_b, stage, off, rank, mapped)
                     for j in range(cols):
                         var real = factor + col_base[j]
                         var temp = stage + off[j]
                         for i in range(max(0, p + j - r), rows):
-                            real[_target_row[sparse](mapped, target_row, r + i)] = temp[
-                                i
-                            ]
+                            real[_target_row[sparse](mapped, target_row, r + i)] = temp[i]
 
 
 fn _blocked_update[
@@ -1103,9 +1070,7 @@ fn _mailbox_wait(state: UnsafePointer[Int32], expected: Int32):
     @parameter
     if CompilationTarget.is_linux() and CompilationTarget.is_x86():
         # Linux x86-64 SYS_futex with FUTEX_WAIT_PRIVATE.
-        _ = external_call["syscall", Int](
-            Int(202), state, Int(128), Int(expected), Int(0)
-        )
+        _ = external_call["syscall", Int](Int(202), state, Int(128), Int(expected), Int(0))
     else:
         var delay = InlineArray[Int, 2](fill=0)
         delay[1] = 25_000
@@ -1490,9 +1455,7 @@ struct _NumericPanels(ImplicitlyCopyable):
                 factor[Int(self.scatter[p])] = self.values[Int(self.matrix_input[p])]
         else:
             for p in range(self.matrix_ptr[start], self.matrix_ptr[end]):
-                var dst = Int(
-                    self.scatter[p]
-                ) if self.compact_scatter else self.wide_scatter[p]
+                var dst = Int(self.scatter[p]) if self.compact_scatter else self.wide_scatter[p]
                 var src = Int(
                     self.matrix_input[p]
                 ) if self.compact_input else self.wide_matrix_input[p]
@@ -1577,10 +1540,7 @@ struct _NumericPanels(ImplicitlyCopyable):
             var update = self.updates[i]
             var first = update.first
             var limit = self.row_ptr[update.source + 1]
-            if (
-                local[Int(self.rows[first])] >= hi
-                or local[Int(self.rows[limit - 1])] < lo
-            ):
+            if local[Int(self.rows[first])] >= hi or local[Int(self.rows[limit - 1])] < lo:
                 continue
             var row_begin = first
             var row_end = limit
@@ -1841,8 +1801,7 @@ struct SparseLDLT(Movable):
         return self._negative
 
     fn factor_flops(self) -> Int:
-        """Structural LDLᵀ update and scaling operations from the exact column counts.
-        """
+        """Structural LDLᵀ update and scaling operations from the exact column counts."""
         return self._flops
 
     fn largest_supernode(self) -> Int:
@@ -1871,9 +1830,7 @@ struct SparseLDLT(Movable):
         var custom_order = len(permutation) > 0
         if custom_order:
             if len(permutation) != n:
-                raise Error(
-                    "sparse LDLT permutation length does not match the dimension"
-                )
+                raise Error("sparse LDLT permutation length does not match the dimension")
             var seen = _ints(n)
             for j in range(n):
                 var col = permutation[j]
@@ -1971,11 +1928,7 @@ struct SparseLDLT(Movable):
             # Along a consecutive etree chain, each column's external
             # rows are contained in its parent's. The last column supplies
             # the shared row list even when we allow a little padding.
-            while (
-                end < n
-                and end - start < _MAX_PANEL_COLS
-                and self._parent[end - 1] == end
-            ):
+            while end < n and end - start < _MAX_PANEL_COLS and self._parent[end - 1] == end:
                 var width = end - start + 1
                 var exact = entries + counts[end]
                 var packed = width * (counts[end] - 1) + width * (width + 1) // 2
@@ -2025,22 +1978,16 @@ struct SparseLDLT(Movable):
                 if s >= target:
                     continue
                 while s != target:
-                    debug_assert(
-                        s >= 0 and s < target, "invalid sparse LDLT panel reach"
-                    )
+                    debug_assert(s >= 0 and s < target, "invalid sparse LDLT panel reach")
                     if stamps[s] == i:
                         break
                     stamps[s] = i
-                    debug_assert(
-                        cursor[s] < row_ptr[s + 1], "sparse LDLT column count too small"
-                    )
+                    debug_assert(cursor[s] < row_ptr[s + 1], "sparse LDLT column count too small")
                     panel_rows[cursor[s]] = Int32(i)
                     cursor[s] += 1
                     s = parents[s]
         for s in range(self.supernode_count()):
-            debug_assert(
-                cursor[s] == row_ptr[s + 1], "sparse LDLT column count too large"
-            )
+            debug_assert(cursor[s] == row_ptr[s + 1], "sparse LDLT column count too large")
 
     fn factorize(mut self, values: List[Float64]) -> Bool:
         """Replace the numeric factor. Return False if a pivot is unsafe."""
@@ -2133,9 +2080,7 @@ struct SparseLDLT(Movable):
                 for q in range(first, min(end, external)):
                     work[j + q - diag] -= factor[q] * y
                 for q in range(external, end):
-                    work[Int(panel_rows[panel_row_ptr[s] + q - external])] -= (
-                        factor[q] * y
-                    )
+                    work[Int(panel_rows[panel_row_ptr[s] + q - external])] -= factor[q] * y
                 var lij = y / factor[diag]
                 factor[end] = lij
                 cursor[j] = end + 1
@@ -2192,9 +2137,7 @@ struct SparseLDLT(Movable):
                 self._updates[cursor[target]] = _PanelUpdate(s, first, split)
                 cursor[target] += 1
                 first = split
-        self._indices.resize(
-            self._active_threads * (len(self._order) + 2 * self._max_front), 0
-        )
+        self._indices.resize(self._active_threads * (len(self._order) + 2 * self._max_front), 0)
         self._pack.resize(self._active_threads * _PACK_WORK, 0.0)
         self._remaining = []
         self._lane_ptr = _ints(self._active_threads + 1)
@@ -2252,9 +2195,7 @@ struct SparseLDLT(Movable):
         # several source panels begin high in the destination front.
         # Use the exact triangular update count below each cut instead.
         var stride = self._active_threads + 1
-        self._row_cuts = List[Int32](
-            length=self.supernode_count() * stride, fill=Int32(0)
-        )
+        self._row_cuts = List[Int32](length=self.supernode_count() * stride, fill=Int32(0))
         var local_array = _ints(len(self._order))
         var local = local_array.unsafe_ptr()
         var rows = self._panel_rows.unsafe_ptr()
@@ -2269,9 +2210,7 @@ struct SparseLDLT(Movable):
             var height = width + row_ptr[s + 1] - row_ptr[s]
             var first_update = self._updates_ptr[s]
             var end_update = self._updates_ptr[s + 1]
-            var lanes = _incoming_lanes(
-                self._active_threads, height, self._panel_work[s]
-            )
+            var lanes = _incoming_lanes(self._active_threads, height, self._panel_work[s])
             if lanes == 1 or first_update == end_update:
                 continue
             for j in range(start, end):
@@ -2284,9 +2223,7 @@ struct SparseLDLT(Movable):
                 var rank = panels[update.source + 1] - panels[update.source]
                 var overlap = update.split - update.first
                 total += (
-                    rank
-                    * overlap
-                    * (2 * (row_ptr[update.source + 1] - update.first) - overlap + 1)
+                    rank * overlap * (2 * (row_ptr[update.source + 1] - update.first) - overlap + 1)
                 )
 
             var base = s * stride
@@ -2392,9 +2329,7 @@ struct SparseLDLT(Movable):
     fn solve(mut self, rhs: List[Float64], mut x: List[Float64]):
         """Solve with the last successful factor and pre-sized vectors."""
         var n = len(self._order)
-        debug_assert(
-            self._valid and len(rhs) == n and len(x) == n, "invalid sparse LDLT solve"
-        )
+        debug_assert(self._valid and len(rhs) == n and len(x) == n, "invalid sparse LDLT solve")
         var order = self._order.unsafe_ptr()
         var col_start = self._col_start.unsafe_ptr()
         var panels = self._panel_start.unsafe_ptr()
@@ -2413,9 +2348,7 @@ struct SparseLDLT(Movable):
             var start_row = row_ptr[s]
             var count = row_ptr[s + 1] - start_row
             var index = rows + start_row
-            var direct = (
-                count >= 16 and Int(index[count - 1]) - Int(index[0]) == count - 1
-            )
+            var direct = count >= 16 and Int(index[count - 1]) - Int(index[0]) == count - 1
             var buffered = not direct and count >= 24 and end - start >= 4
             var tail = y + Int(index[0]) if direct else scratch
             if buffered:
@@ -2453,9 +2386,7 @@ struct SparseLDLT(Movable):
             var start_row = row_ptr[s]
             var count = row_ptr[s + 1] - start_row
             var index = rows + start_row
-            var direct = (
-                count >= 16 and Int(index[count - 1]) - Int(index[0]) == count - 1
-            )
+            var direct = count >= 16 and Int(index[count - 1]) - Int(index[0]) == count - 1
             var buffered = not direct and count >= 24 and end - start >= 4
             var tail = y + Int(index[0]) if direct else scratch
             if buffered:

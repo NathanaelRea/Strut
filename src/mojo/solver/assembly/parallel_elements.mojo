@@ -49,7 +49,9 @@ struct ParallelElementWork(Movable):
 
     fn compute[
         Context: AnyType,
-        kernel: fn(Context, Int, UnsafePointer[Float64], UnsafePointer[Float64], UnsafePointer[Float64]),
+        kernel: fn (
+            Context, Int, UnsafePointer[Float64], UnsafePointer[Float64], UnsafePointer[Float64]
+        ),
     ](mut self, context: Context, start: Int, count: Int):
         """Run kernel(context, index, matrix, force, scratch) for one batch."""
         if start < 0 or count < 0 or count > self.capacity:
@@ -82,7 +84,7 @@ struct ParallelElementWork(Movable):
 
     fn scatter[
         Context: AnyType,
-        add: fn(Context, Int, Int, Int),
+        add: fn (Context, Int, Int, Int),
     ](self, context: Context, start: Int, count: Int):
         """Run add(context, index, matrix_offset, force_offset) in source order."""
         if start < 0 or count < 0 or count > self.capacity:

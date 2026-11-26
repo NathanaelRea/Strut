@@ -12,7 +12,7 @@ from json_native import (
 )
 
 
-struct CaseSourceInfo(Movable, ImplicitlyCopyable):
+struct CaseSourceInfo(ImplicitlyCopyable, Movable):
     var json_path: String
     var case_dir: String
 
@@ -34,9 +34,7 @@ struct NativeCaseDocument(Movable):
         self.source_info = CaseSourceInfo()
 
 
-fn arg_value(
-    args: VariadicList[StringSlice[StaticConstantOrigin]], name: String
-) -> String:
+fn arg_value(args: VariadicList[StringSlice[StaticConstantOrigin]], name: String) -> String:
     for i in range(len(args) - 1):
         if String(args[i]) == name:
             return String(args[i + 1])
@@ -126,9 +124,7 @@ fn case_source_from_path(path: String) raises -> CaseSourceInfo:
     return _case_source_from_path(path)
 
 
-fn write_json_cache(
-    path: String, doc: JsonDocument, source_info: CaseSourceInfo
-) raises:
+fn write_json_cache(path: String, doc: JsonDocument, source_info: CaseSourceInfo) raises:
     var serialized = String("STRUT_JSON_CACHE_V1\n")
     _append_cache_block(serialized, source_info.json_path)
     _append_cache_block(serialized, source_info.case_dir)
@@ -183,17 +179,13 @@ fn load_json_cache(path: String) raises -> NativeCaseDocument:
     if magic != "STRUT_JSON_CACHE_V1":
         abort("invalid native input cache magic")
 
-    var (json_path_len_line, json_path_len_position) = _read_cache_line(
-        serialized, position
-    )
+    var (json_path_len_line, json_path_len_position) = _read_cache_line(serialized, position)
     position = json_path_len_position
     var (json_path, json_path_position) = _read_cache_block(
         serialized, position, Int(json_path_len_line)
     )
     position = json_path_position
-    var (case_dir_len_line, case_dir_len_position) = _read_cache_line(
-        serialized, position
-    )
+    var (case_dir_len_line, case_dir_len_position) = _read_cache_line(serialized, position)
     position = case_dir_len_position
     var (case_dir, case_dir_position) = _read_cache_block(
         serialized, position, Int(case_dir_len_line)
@@ -210,9 +202,7 @@ fn load_json_cache(path: String) raises -> NativeCaseDocument:
     var (root_line, root_position) = _read_cache_line(serialized, position)
     position = root_position
     doc.root_index = Int(root_line)
-    var (node_count_line, node_count_position) = _read_cache_line(
-        serialized, position
-    )
+    var (node_count_line, node_count_position) = _read_cache_line(serialized, position)
     position = node_count_position
     for _ in range(Int(node_count_line)):
         var (node_line, node_position) = _read_cache_line(serialized, position)
@@ -220,9 +210,7 @@ fn load_json_cache(path: String) raises -> NativeCaseDocument:
         var field_position = 0
         var (tag_field, tag_position) = _next_tab_field(node_line, field_position)
         field_position = tag_position
-        var (start_field, start_position) = _next_tab_field(
-            node_line, field_position
-        )
+        var (start_field, start_position) = _next_tab_field(node_line, field_position)
         field_position = start_position
         var (end_field, end_position) = _next_tab_field(node_line, field_position)
         field_position = end_position
@@ -232,13 +220,9 @@ fn load_json_cache(path: String) raises -> NativeCaseDocument:
             node_line, field_position
         )
         field_position = number_integer_position
-        var (child_offset_field, child_offset_position) = _next_tab_field(
-            node_line, field_position
-        )
+        var (child_offset_field, child_offset_position) = _next_tab_field(node_line, field_position)
         field_position = child_offset_position
-        var (child_count_field, child_count_position) = _next_tab_field(
-            node_line, field_position
-        )
+        var (child_count_field, child_count_position) = _next_tab_field(node_line, field_position)
         field_position = child_count_position
         var (text_len_field, _) = _next_tab_field(node_line, field_position)
         var (text_value, text_position) = _read_cache_block(
@@ -258,33 +242,23 @@ fn load_json_cache(path: String) raises -> NativeCaseDocument:
         if node.tag == JsonValueTag.Number and len(node.text_value) > 0:
             node.number_value = atof(StringSlice(node.text_value))
         doc.nodes.append(node)
-    var (entry_count_line, entry_count_position) = _read_cache_line(
-        serialized, position
-    )
+    var (entry_count_line, entry_count_position) = _read_cache_line(serialized, position)
     position = entry_count_position
     for _ in range(Int(entry_count_line)):
         var (entry_line, entry_position) = _read_cache_line(serialized, position)
         position = entry_position
         var field_position = 0
-        var (value_index_field, value_index_position) = _next_tab_field(
-            entry_line, field_position
-        )
+        var (value_index_field, value_index_position) = _next_tab_field(entry_line, field_position)
         field_position = value_index_position
-        var (key_offset_field, key_offset_position) = _next_tab_field(
-            entry_line, field_position
-        )
+        var (key_offset_field, key_offset_position) = _next_tab_field(entry_line, field_position)
         field_position = key_offset_position
         var (key_len_field, _) = _next_tab_field(entry_line, field_position)
-        var (key, key_position) = _read_cache_block(
-            serialized, position, Int(key_len_field)
-        )
+        var (key, key_position) = _read_cache_block(serialized, position, Int(key_len_field))
         position = key_position
         doc.object_entries.append(
             JsonObjectEntry(key, Int(value_index_field), Int(key_offset_field))
         )
-    var (array_count_line, array_count_position) = _read_cache_line(
-        serialized, position
-    )
+    var (array_count_line, array_count_position) = _read_cache_line(serialized, position)
     position = array_count_position
     for _ in range(Int(array_count_line)):
         var (item_line, item_position) = _read_cache_line(serialized, position)

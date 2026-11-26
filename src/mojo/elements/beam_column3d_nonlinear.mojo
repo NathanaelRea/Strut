@@ -38,12 +38,8 @@ fn _section_kinematics_at_xi_static(
     var r_i = (4.0 - 6.0 * xi) * inv_L
     var r_j = (2.0 - 6.0 * xi) * inv_L
     var eps0 = inv_L * (u_local[6] - u_local[0])
-    var kappa_y = (
-        t * (u_local[2] - u_local[8]) + r_i * u_local[4] + r_j * u_local[10]
-    )
-    var kappa_z = (
-        t * (u_local[1] - u_local[7]) - r_i * u_local[5] - r_j * u_local[11]
-    )
+    var kappa_y = t * (u_local[2] - u_local[8]) + r_i * u_local[4] + r_j * u_local[10]
+    var kappa_z = t * (u_local[1] - u_local[7]) - r_i * u_local[5] - r_j * u_local[11]
     return (eps0, kappa_y, kappa_z, t, r_i, r_j)
 
 
@@ -562,21 +558,11 @@ fn beam_column3d_fiber_global_tangent_and_internal(
     var k10_11 = -s23_jj
     var k11_11 = s33_jj
 
-    _write_disp_k_local_row_pair(
-        0, 6, k00, k01, k02, k04, k05, k0_10, k0_11, scratch.k_local_flat
-    )
-    _write_disp_k_local_row_pair(
-        1, 7, k01, k11, k12, k14, k15, k1_10, k1_11, scratch.k_local_flat
-    )
-    _write_disp_k_local_row_pair(
-        2, 8, k02, k12, k22, k24, k25, k2_10, k2_11, scratch.k_local_flat
-    )
-    _write_disp_k_local_row_single(
-        4, k04, k14, k24, k44, k45, k4_10, k4_11, scratch.k_local_flat
-    )
-    _write_disp_k_local_row_single(
-        5, k05, k15, k25, k45, k55, k5_10, k5_11, scratch.k_local_flat
-    )
+    _write_disp_k_local_row_pair(0, 6, k00, k01, k02, k04, k05, k0_10, k0_11, scratch.k_local_flat)
+    _write_disp_k_local_row_pair(1, 7, k01, k11, k12, k14, k15, k1_10, k1_11, scratch.k_local_flat)
+    _write_disp_k_local_row_pair(2, 8, k02, k12, k22, k24, k25, k2_10, k2_11, scratch.k_local_flat)
+    _write_disp_k_local_row_single(4, k04, k14, k24, k44, k45, k4_10, k4_11, scratch.k_local_flat)
+    _write_disp_k_local_row_single(5, k05, k15, k25, k45, k55, k5_10, k5_11, scratch.k_local_flat)
     _write_disp_k_local_row_single(
         10, k0_10, k1_10, k2_10, k4_10, k5_10, k10_10, k10_11, scratch.k_local_flat
     )
@@ -738,9 +724,7 @@ fn beam_column3d_fiber_section_response(
     var inv_L2 = inv_L * inv_L
     var R = Beam3dMat3(fill=0.0)
     var u_local = Beam3dVec12(fill=0.0)
-    _element_rotation_into_static(
-        x1, y1, z1, x2, y2, z2, u_elem_global, geom_transf, R
-    )
+    _element_rotation_into_static(x1, y1, z1, x2, y2, z2, u_elem_global, geom_transf, R)
     _beam3d_transform_u_global_to_local_static(R, u_elem_global, u_local)
     var xis: List[Float64] = []
     var weights: List[Float64] = []

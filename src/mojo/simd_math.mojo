@@ -17,12 +17,12 @@ from memory import bitcast
 
 alias _LN2_HI: Float64 = 6.93147180369123816490e-01
 alias _LN2_LO: Float64 = 1.90821492927058770002e-10
-alias _INV_LN2: Float64 = 1.44269504088896338700e+00
-alias _SQRT2: Float64 = 1.41421356237309504880e+00
+alias _INV_LN2: Float64 = 1.44269504088896338700e00
+alias _SQRT2: Float64 = 1.41421356237309504880e00
 alias _TWO54: Float64 = 18014398509481984.0
 alias _FLOAT64_MIN_NORMAL: Float64 = 2.2250738585072014e-308
-alias _EXP_OVERFLOW: Float64 = 7.09782712893383973096e+02
-alias _EXP_UNDERFLOW: Float64 = -7.45133219101941108420e+02
+alias _EXP_OVERFLOW: Float64 = 7.09782712893383973096e02
+alias _EXP_UNDERFLOW: Float64 = -7.45133219101941108420e02
 
 alias _LG1: Float64 = 6.666666666666735130e-01
 alias _LG2: Float64 = 3.999999999940941908e-01
@@ -85,16 +85,16 @@ fn simd_exp[width: Int](x: SIMD[DType.float64, width]) -> SIMD[DType.float64, wi
     clamped = underflow.select(F(_EXP_UNDERFLOW), clamped)
 
     var scaled = clamped * F(_INV_LN2)
-    var k_float = (scaled + scaled.lt(F(0.0)).select(F(-0.5), F(0.5))).cast[
-        DType.int64
-    ]().cast[DType.float64]()
+    var k_float = (
+        (scaled + scaled.lt(F(0.0)).select(F(-0.5), F(0.5)))
+        .cast[DType.int64]()
+        .cast[DType.float64]()
+    )
     var hi = clamped - k_float * F(_LN2_HI)
     var lo = k_float * F(_LN2_LO)
     var r = hi - lo
     var rr = r * r
-    var c = r - rr * (
-        F(_P1) + rr * (F(_P2) + rr * (F(_P3) + rr * (F(_P4) + rr * F(_P5))))
-    )
+    var c = r - rr * (F(_P1) + rr * (F(_P2) + rr * (F(_P3) + rr * (F(_P4) + rr * F(_P5)))))
     var y = F(1.0) - ((lo - (r * c) / (F(2.0) - c)) - hi)
 
     # Scale by 2**k in two steps so results in the subnormal range stay exact.
@@ -109,9 +109,9 @@ fn simd_exp[width: Int](x: SIMD[DType.float64, width]) -> SIMD[DType.float64, wi
 
 
 @always_inline
-fn simd_pow_nonneg[width: Int](
-    x: SIMD[DType.float64, width], y: SIMD[DType.float64, width]
-) -> SIMD[DType.float64, width]:
+fn simd_pow_nonneg[
+    width: Int
+](x: SIMD[DType.float64, width], y: SIMD[DType.float64, width]) -> SIMD[DType.float64, width]:
     """x**y for each lane with x >= 0 and finite, and y finite.
 
     Zero bases follow the usual convention: 0**y is 0 for y > 0, 1 for y == 0,
@@ -133,6 +133,4 @@ fn simd_pow_nonneg[width: Int](
 @always_inline
 fn pow_nonneg(x: Float64, y: Float64) -> Float64:
     """Scalar `simd_pow_nonneg`, so scalar and SIMD material paths agree bit for bit."""
-    return simd_pow_nonneg[1](
-        SIMD[DType.float64, 1](x), SIMD[DType.float64, 1](y)
-    )[0]
+    return simd_pow_nonneg[1](SIMD[DType.float64, 1](x), SIMD[DType.float64, 1](y))[0]

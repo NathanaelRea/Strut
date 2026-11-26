@@ -29,9 +29,7 @@ from strut_io import load_json_native
 from tag_types import UniMaterialTypeTag
 
 
-fn arg_value(
-    args: VariadicList[StringSlice[StaticConstantOrigin]], name: String
-) -> String:
+fn arg_value(args: VariadicList[StringSlice[StaticConstantOrigin]], name: String) -> String:
     for i in range(len(args) - 1):
         if String(args[i]) == name:
             return String(args[i + 1])
@@ -50,9 +48,7 @@ fn _json_has_value(doc: JsonDocument, node_index: Int) -> Bool:
     return node_index >= 0 and doc.node_tag(node_index) != JsonValueTag.Null
 
 
-fn _json_require_key(
-    doc: JsonDocument, object_index: Int, key: StringSlice
-) raises -> Int:
+fn _json_require_key(doc: JsonDocument, object_index: Int, key: StringSlice) raises -> Int:
     var node_index = _json_key(doc, object_index, key)
     if node_index < 0:
         abort("missing required key: " + String(key))
@@ -65,9 +61,7 @@ fn _json_expect_array_len(doc: JsonDocument, array_index: Int, field: String) ->
     return doc.node_len(array_index)
 
 
-fn _json_number_value(
-    doc: JsonDocument, node_index: Int, field: String
-) -> Float64:
+fn _json_number_value(doc: JsonDocument, node_index: Int, field: String) -> Float64:
     if doc.node_tag(node_index) != JsonValueTag.Number:
         abort(field + " must be a number")
     return doc.node_number(node_index)
@@ -294,9 +288,7 @@ fn _parse_section_input(
     fibers = List[FiberInput]()
     var patches_index = _json_key(doc, params_index, "patches")
     if _json_has_value(doc, patches_index):
-        section.fiber_patch_count = _json_expect_array_len(
-            doc, patches_index, "section patches"
-        )
+        section.fiber_patch_count = _json_expect_array_len(doc, patches_index, "section patches")
         for i in range(section.fiber_patch_count):
             var patch_index = doc.array_item(patches_index, i)
             var patch = FiberPatchInput()
@@ -317,9 +309,7 @@ fn _parse_section_input(
             patches.append(patch)
     var layers_index = _json_key(doc, params_index, "layers")
     if _json_has_value(doc, layers_index):
-        section.fiber_layer_count = _json_expect_array_len(
-            doc, layers_index, "section layers"
-        )
+        section.fiber_layer_count = _json_expect_array_len(doc, layers_index, "section layers")
         for i in range(section.fiber_layer_count):
             var layer_index = doc.array_item(layers_index, i)
             var layer = FiberLayerInput()

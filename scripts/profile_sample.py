@@ -11,6 +11,7 @@ Examples:
   uv run scripts/profile_sample.py --case opensees_example_ex5_frame2d_eq_uniform_rc_fiber
   uv run scripts/profile_sample.py --input .tmp/synthetic/rc_frame3d_2x2x3.json --top 30
 """
+
 from __future__ import annotations
 
 import argparse
@@ -46,9 +47,13 @@ def _ensure_sampler() -> Path:
     if not _newer_than(SAMPLER_BIN, [SAMPLER_SRC]):
         compiler = shutil.which("cc") or shutil.which("gcc") or shutil.which("clang")
         if compiler is None:
-            raise SystemExit("a C compiler (cc, gcc, or clang) is required to build the sampler")
+            raise SystemExit(
+                "a C compiler (cc, gcc, or clang) is required to build the sampler"
+            )
         BUILD_DIR.mkdir(parents=True, exist_ok=True)
-        subprocess.check_call([compiler, "-O2", "-o", str(SAMPLER_BIN), str(SAMPLER_SRC)])
+        subprocess.check_call(
+            [compiler, "-O2", "-o", str(SAMPLER_BIN), str(SAMPLER_SRC)]
+        )
     return SAMPLER_BIN
 
 
@@ -58,8 +63,16 @@ def _ensure_line_table_solver() -> Path:
         BUILD_DIR.mkdir(parents=True, exist_ok=True)
         print("building line-table solver (about a minute)...", file=sys.stderr)
         subprocess.check_call(
-            ["uv", "run", "mojo", "build", "-g1", str(REPO_ROOT / "src" / "mojo" / "strut.mojo"),
-             "-o", str(SOLVER_BIN)],
+            [
+                "uv",
+                "run",
+                "mojo",
+                "build",
+                "-g1",
+                str(REPO_ROOT / "src" / "mojo" / "strut.mojo"),
+                "-o",
+                str(SOLVER_BIN),
+            ],
             cwd=REPO_ROOT,
         )
     return SOLVER_BIN
@@ -91,7 +104,9 @@ def _report(samples_path: Path, binary: Path, top: int) -> None:
         raise SystemExit("no samples collected (run too short? raise --freq)")
 
     symbols: list[tuple[int, str]] = []
-    nm = subprocess.run(["nm", "-n", "--defined-only", str(binary)], capture_output=True, text=True)
+    nm = subprocess.run(
+        ["nm", "-n", "--defined-only", str(binary)], capture_output=True, text=True
+    )
     for line in nm.stdout.splitlines():
         fields = line.split(None, 2)
         if len(fields) == 3 and fields[1].lower() in "tw":
@@ -121,14 +136,19 @@ def _report(samples_path: Path, binary: Path, top: int) -> None:
             print(f"{100.0 * count / total:6.2f}%  {count:7d}  {name[:140]}")
 
     print(f"total samples: {total}")
-    show("by symbol, self time (inlined callees are folded into their caller)", by_symbol, top)
+    show(
+        "by symbol, self time (inlined callees are folded into their caller)",
+        by_symbol,
+        top,
+    )
 
     by_function: collections.Counter[str] = collections.Counter()
     by_file: collections.Counter[str] = collections.Counter()
     by_line: collections.Counter[str] = collections.Counter()
     if main_ips:
         resolved = subprocess.run(
-            ["addr2line", "-e", str(binary), "-f", "-i", "-a"] + [hex(ip) for ip in main_ips],
+            ["addr2line", "-e", str(binary), "-f", "-i", "-a"]
+            + [hex(ip) for ip in main_ips],
             capture_output=True,
             text=True,
         )
@@ -157,15 +177,24 @@ def _report(samples_path: Path, binary: Path, top: int) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--case", help="Validation case name (JSON or direct-Tcl).")
     source.add_argument("--input", help="Solver-ready JSON input.")
-    parser.add_argument("--freq", type=int, default=4000, help="Sampling frequency in Hz.")
+    parser.add_argument(
+        "--freq", type=int, default=4000, help="Sampling frequency in Hz."
+    )
     parser.add_argument("--top", type=int, default=30)
-    parser.add_argument("--with-recorders", action="store_true",
-                        help="Keep recorder output in the profile (default profiles compute only).")
-    parser.add_argument("--keep-samples", default="", help="Write the raw sample file here.")
+    parser.add_argument(
+        "--with-recorders",
+        action="store_true",
+        help="Keep recorder output in the profile (default profiles compute only).",
+    )
+    parser.add_argument(
+        "--keep-samples", default="", help="Write the raw sample file here."
+    )
     args = parser.parse_args()
 
     sampler = _ensure_sampler()
@@ -178,21 +207,38 @@ def main() -> int:
         if args.case:
             import ab_compare
 
-            _, input_json = ab_compare._resolved_input(ab_compare._resolve_named_case(args.case), work_dir)
+            _, input_json = ab_compare._resolved_input(
+                ab_compare._resolve_named_case(args.case), work_dir
+            )
         else:
             input_json = Path(args.input).resolve()
         samples_path = work_dir / "samples.txt"
-        command = [str(sampler), str(samples_path), str(args.freq), "--", str(solver),
-                   "--input", str(input_json), "--output", str(work_dir / "out")]
+        command = [
+            str(sampler),
+            str(samples_path),
+            str(args.freq),
+            "--",
+            str(solver),
+            "--input",
+            str(input_json),
+            "--output",
+            str(work_dir / "out"),
+        ]
         if not args.with_recorders:
             command.append("--compute-only")
-        proc = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        proc = subprocess.run(
+            command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+        )
         if proc.returncode != 0:
             sys.stderr.write(proc.stdout + proc.stderr)
-            raise SystemExit(f"solver failed under the sampler (exit {proc.returncode})")
+            raise SystemExit(
+                f"solver failed under the sampler (exit {proc.returncode})"
+            )
         analysis_path = work_dir / "out" / "analysis_time_us.txt"
         if analysis_path.exists():
-            print(f"analysis time: {int(analysis_path.read_text().strip()) / 1000.0:.3f} ms")
+            print(
+                f"analysis time: {int(analysis_path.read_text().strip()) / 1000.0:.3f} ms"
+            )
         _report(samples_path, solver, args.top)
         if args.keep_samples:
             shutil.copy2(samples_path, args.keep_samples)

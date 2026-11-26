@@ -264,8 +264,7 @@ struct SparseAssembler(ElementMatrixSink, Movable):
         if elem_index < 0 or elem_index >= self.scatter.elem_count:
             abort("sparse assembler element index out of range")
         if (
-            self.scatter.elem_dof_start[elem_index + 1]
-            - self.scatter.elem_dof_start[elem_index]
+            self.scatter.elem_dof_start[elem_index + 1] - self.scatter.elem_dof_start[elem_index]
             != dof_count
         ):
             abort("sparse assembler element dof count mismatch")

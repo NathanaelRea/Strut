@@ -101,14 +101,7 @@ fn _beam3d_local_axes_from_vecxz(
     vecxz_x: Float64,
     vecxz_y: Float64,
     vecxz_z: Float64,
-) -> (
-    Float64,
-    Float64,
-    Float64,
-    Float64,
-    Float64,
-    Float64,
-):
+) -> (Float64, Float64, Float64, Float64, Float64, Float64,):
     var vx: Float64
     var vy: Float64
     var vz: Float64

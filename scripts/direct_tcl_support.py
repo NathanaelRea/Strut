@@ -21,9 +21,7 @@ def load_direct_tcl_manifest(manifest_path: Path) -> dict:
 
 
 def direct_tcl_manifest_paths(repo_root: Path) -> list[Path]:
-    return sorted(
-        (repo_root / "tests" / "validation").glob("*/direct_tcl_case.json")
-    )
+    return sorted((repo_root / "tests" / "validation").glob("*/direct_tcl_case.json"))
 
 
 def resolve_repo_relative_path(raw_path: str | Path, repo_root: Path) -> Path:
@@ -80,8 +78,7 @@ def resolve_direct_tcl_source_files(
 
     if source_files[-1] != entry_path:
         raise SystemExit(
-            "direct Tcl manifest source_files must end with entry_tcl: "
-            f"{manifest_path}"
+            f"direct Tcl manifest source_files must end with entry_tcl: {manifest_path}"
         )
 
     return source_files
@@ -112,7 +109,9 @@ def _should_mirror_direct_tcl_sibling(path: Path) -> bool:
     return True
 
 
-def _copy_direct_tcl_shared_assets(script_dir: Path, mirrored_parent: Path) -> list[Path]:
+def _copy_direct_tcl_shared_assets(
+    script_dir: Path, mirrored_parent: Path
+) -> list[Path]:
     mirrored_script_dir = mirrored_parent / script_dir.name
     mirrored_inputs: list[Path] = []
     for child in sorted(script_dir.parent.iterdir()):
@@ -161,7 +160,9 @@ def _ensure_direct_tcl_compat_aliases(
         seen_dirs.add(gm_dir)
 
         at2_files = sorted(
-            path for path in gm_dir.iterdir() if path.is_file() and path.suffix.lower() == ".at2"
+            path
+            for path in gm_dir.iterdir()
+            if path.is_file() and path.suffix.lower() == ".at2"
         )
         for at2_path in at2_files:
             dt2_path = at2_path.with_suffix(".dt2")
@@ -223,7 +224,9 @@ def prepare_direct_tcl_entry(
     entry_path = entry_tcl.resolve()
     resolved_sources = [Path(path).resolve() for path in source_files]
     if not resolved_sources:
-        raise SystemExit(f"direct Tcl entry requires at least one source file: {entry_tcl}")
+        raise SystemExit(
+            f"direct Tcl entry requires at least one source file: {entry_tcl}"
+        )
 
     script_dir = entry_path.parent
     script_parent = script_dir.parent
@@ -251,9 +254,7 @@ def prepare_direct_tcl_entry(
                 ignored.add(excluded_root.name)
         return ignored
 
-    shutil.copytree(
-        script_parent, mirrored_parent, dirs_exist_ok=True, ignore=_ignore
-    )
+    shutil.copytree(script_parent, mirrored_parent, dirs_exist_ok=True, ignore=_ignore)
     mirrored_script_dir = mirrored_parent / script_dir.name
     shared_asset_inputs = _copy_direct_tcl_shared_assets(script_dir, mirrored_parent)
     compat_alias_inputs = _ensure_direct_tcl_compat_aliases(
@@ -261,7 +262,9 @@ def prepare_direct_tcl_entry(
     )
     for source_path in resolved_sources:
         relative_path = source_path.relative_to(script_dir)
-        _patch_direct_tcl_compatibility(mirrored_script_dir / relative_path, source_path)
+        _patch_direct_tcl_compatibility(
+            mirrored_script_dir / relative_path, source_path
+        )
 
     wrapper_path = mirrored_script_dir / f"__strut_{entry_path.stem}_entry.tcl"
     wrapper_lines = []

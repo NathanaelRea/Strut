@@ -24,7 +24,7 @@ from tag_types import (
 )
 
 
-struct ModelInput(Movable, ImplicitlyCopyable):
+struct ModelInput(ImplicitlyCopyable, Movable):
     var ndm: Int
     var ndf: Int
 
@@ -33,7 +33,7 @@ struct ModelInput(Movable, ImplicitlyCopyable):
         self.ndf = ndf
 
 
-struct NodeInput(Movable, ImplicitlyCopyable):
+struct NodeInput(ImplicitlyCopyable, Movable):
     var id: Int
     var x: Float64
     var y: Float64
@@ -76,7 +76,7 @@ struct NodeInput(Movable, ImplicitlyCopyable):
         self.constraint_6 = 0
 
 
-struct SectionInput(Movable, ImplicitlyCopyable):
+struct SectionInput(ImplicitlyCopyable, Movable):
     var id: Int
     var type: String
     var E: Float64
@@ -164,7 +164,7 @@ struct SectionInput(Movable, ImplicitlyCopyable):
         self.shell_layer_count = 0
 
 
-struct FiberPatchInput(Movable, ImplicitlyCopyable):
+struct FiberPatchInput(ImplicitlyCopyable, Movable):
     var type: String
     var material: Int
     var num_subdiv_y: Int
@@ -193,7 +193,7 @@ struct FiberPatchInput(Movable, ImplicitlyCopyable):
         self.z_l = 0.0
 
 
-struct FiberLayerInput(Movable, ImplicitlyCopyable):
+struct FiberLayerInput(ImplicitlyCopyable, Movable):
     var type: String
     var material: Int
     var num_bars: Int
@@ -214,7 +214,7 @@ struct FiberLayerInput(Movable, ImplicitlyCopyable):
         self.z_end = 0.0
 
 
-struct FiberInput(Movable, ImplicitlyCopyable):
+struct FiberInput(ImplicitlyCopyable, Movable):
     var y: Float64
     var z: Float64
     var area: Float64
@@ -227,7 +227,7 @@ struct FiberInput(Movable, ImplicitlyCopyable):
         self.material = -1
 
 
-struct ShellLayerInput(Movable, ImplicitlyCopyable):
+struct ShellLayerInput(ImplicitlyCopyable, Movable):
     var material: Int
     var thickness: Float64
 
@@ -236,7 +236,7 @@ struct ShellLayerInput(Movable, ImplicitlyCopyable):
         self.thickness = 0.0
 
 
-struct MaterialInput(Movable, ImplicitlyCopyable):
+struct MaterialInput(ImplicitlyCopyable, Movable):
     var id: Int
     var type: String
 
@@ -259,14 +259,13 @@ struct MaterialInput(Movable, ImplicitlyCopyable):
     var rat: Float64
     var ft: Float64
     var Ets: Float64
+    var fc: Float64
+    var Es: Float64
     var nu: Float64
     var rho: Float64
     var base_material: Int
     var angle: Float64
     var gmod: Float64
-    var nstatevs: Int
-    var props_offset: Int
-    var props_count: Int
 
     var has_r0: Bool
     var has_cr1: Bool
@@ -302,14 +301,13 @@ struct MaterialInput(Movable, ImplicitlyCopyable):
         self.rat = 0.0
         self.ft = 0.0
         self.Ets = 0.0
+        self.fc = 0.0
+        self.Es = 0.0
         self.nu = 0.0
         self.rho = 0.0
         self.base_material = -1
         self.angle = 0.0
         self.gmod = 0.0
-        self.nstatevs = 0
-        self.props_offset = 0
-        self.props_count = 0
         self.has_r0 = False
         self.has_cr1 = False
         self.has_cr2 = False
@@ -323,7 +321,7 @@ struct MaterialInput(Movable, ImplicitlyCopyable):
         self.has_ets = False
 
 
-struct ElementInput(Movable, ImplicitlyCopyable):
+struct ElementInput(ImplicitlyCopyable, Movable):
     var id: Int
     var type: String
     var type_tag: Int
@@ -516,7 +514,7 @@ struct ElementInput(Movable, ImplicitlyCopyable):
         self.dof_24 = -1
 
 
-struct ElementLoadInput(Movable, ImplicitlyCopyable):
+struct ElementLoadInput(ImplicitlyCopyable, Movable):
     var element: Int
     var type: String
     var type_tag: Int
@@ -553,7 +551,7 @@ struct ElementLoadInput(Movable, ImplicitlyCopyable):
         self.x = x
 
 
-struct NodalLoadInput(Movable, ImplicitlyCopyable):
+struct NodalLoadInput(ImplicitlyCopyable, Movable):
     var node: Int
     var dof: Int
     var value: Float64
@@ -564,7 +562,7 @@ struct NodalLoadInput(Movable, ImplicitlyCopyable):
         self.value = value
 
 
-struct MassInput(Movable, ImplicitlyCopyable):
+struct MassInput(ImplicitlyCopyable, Movable):
     var node: Int
     var dof: Int
     var value: Float64
@@ -575,7 +573,7 @@ struct MassInput(Movable, ImplicitlyCopyable):
         self.value = value
 
 
-struct AnalysisInput(Movable, ImplicitlyCopyable):
+struct AnalysisInput(ImplicitlyCopyable, Movable):
     var type: String
     var type_tag: Int
     var constraints: String
@@ -702,7 +700,7 @@ struct AnalysisInput(Movable, ImplicitlyCopyable):
         self.integrator_targets_count = 0
 
 
-struct SolverAttemptInput(Movable, ImplicitlyCopyable):
+struct SolverAttemptInput(ImplicitlyCopyable, Movable):
     var algorithm: String
     var algorithm_tag: Int
     var broyden_count: Int
@@ -725,7 +723,7 @@ struct SolverAttemptInput(Movable, ImplicitlyCopyable):
         self.tol = 1.0e-10
 
 
-struct MPConstraintInput(Movable, ImplicitlyCopyable):
+struct MPConstraintInput(ImplicitlyCopyable, Movable):
     var type: String
     var retained_node: Int
     var constrained_node: Int
@@ -833,7 +831,7 @@ struct MPConstraintInput(Movable, ImplicitlyCopyable):
         self.rigid_dz = 0.0
 
 
-struct PatternInput(Movable, ImplicitlyCopyable):
+struct PatternInput(ImplicitlyCopyable, Movable):
     var has_pattern: Bool
     var type: String
     var type_tag: Int
@@ -856,7 +854,7 @@ struct PatternInput(Movable, ImplicitlyCopyable):
         self.accel = -1
 
 
-struct RayleighInput(Movable, ImplicitlyCopyable):
+struct RayleighInput(ImplicitlyCopyable, Movable):
     var has_rayleigh: Bool
     var alpha_m: Float64
     var beta_k: Float64
@@ -871,7 +869,7 @@ struct RayleighInput(Movable, ImplicitlyCopyable):
         self.beta_k_comm = 0.0
 
 
-struct DampingInput(Movable, ImplicitlyCopyable):
+struct DampingInput(ImplicitlyCopyable, Movable):
     var tag: Int
     var type: String
     var beta: Float64
@@ -890,7 +888,7 @@ struct DampingInput(Movable, ImplicitlyCopyable):
         self.factor_ts_index = -1
 
 
-struct StageInput(Movable, ImplicitlyCopyable):
+struct StageInput(ImplicitlyCopyable, Movable):
     var analysis: AnalysisInput
     var analysis_integrator_targets_pool: List[Float64]
     var analysis_solver_chain_pool: List[SolverAttemptInput]
@@ -920,9 +918,7 @@ struct StageInput(Movable, ImplicitlyCopyable):
 
     fn __copyinit__(out self, existing: Self):
         self.analysis = existing.analysis
-        self.analysis_integrator_targets_pool = (
-            existing.analysis_integrator_targets_pool.copy()
-        )
+        self.analysis_integrator_targets_pool = existing.analysis_integrator_targets_pool.copy()
         self.analysis_solver_chain_pool = existing.analysis_solver_chain_pool.copy()
         self.pattern = existing.pattern
         self.rayleigh = existing.rayleigh
@@ -935,7 +931,7 @@ struct StageInput(Movable, ImplicitlyCopyable):
         self.time_series_times = existing.time_series_times.copy()
 
 
-struct RecorderInput(Movable, ImplicitlyCopyable):
+struct RecorderInput(ImplicitlyCopyable, Movable):
     var type_tag: Int
     var output: String
     var node_offset: Int
@@ -983,7 +979,6 @@ struct CaseInput(Movable):
     var fibers: List[FiberInput]
     var shell_layers: List[ShellLayerInput]
     var materials: List[MaterialInput]
-    var shell_material_props: List[Float64]
     var elements: List[ElementInput]
     var element_loads: List[ElementLoadInput]
     var loads: List[NodalLoadInput]
@@ -1015,7 +1010,6 @@ struct CaseInput(Movable):
         self.fibers = []
         self.shell_layers = []
         self.materials = []
-        self.shell_material_props = []
         self.elements = []
         self.element_loads = []
         self.loads = []
@@ -1037,7 +1031,6 @@ struct CaseInput(Movable):
         self.recorder_modes_pool = []
         self.recorder_sections_pool = []
         self.recorders = []
-
 
 
 fn element_type_tag(type_name: String) -> Int:
@@ -1187,11 +1180,7 @@ fn _validate_analysis_system_options(
                 _ = Int(system_options[i + 1])
                 i += 2
                 continue
-            abort(
-                "unsupported analysis system option `"
-                + option
-                + "` for system `SuperLU`"
-            )
+            abort("unsupported analysis system option `" + option + "` for system `SuperLU`")
         return
 
     if system_tag == AnalysisSystemTag.UmfPack:
@@ -1206,11 +1195,7 @@ fn _validate_analysis_system_options(
             ):
                 i += 1
                 continue
-            if (
-                option == "-lValueFact"
-                or option == "-lvalueFact"
-                or option == "-LVALUE"
-            ):
+            if option == "-lValueFact" or option == "-lvalueFact" or option == "-LVALUE":
                 if i + 1 >= count:
                     abort(
                         "analysis system_options for `UmfPack` expects a value after `"
@@ -1220,11 +1205,7 @@ fn _validate_analysis_system_options(
                 _ = Int(system_options[i + 1])
                 i += 2
                 continue
-            abort(
-                "unsupported analysis system option `"
-                + option
-                + "` for system `UmfPack`"
-            )
+            abort("unsupported analysis system option `" + option + "` for system `UmfPack`")
         return
 
     if system_tag == AnalysisSystemTag.SparseSYM:
@@ -1232,19 +1213,19 @@ fn _validate_analysis_system_options(
             var ordering = Int(system_options[0])
             if ordering < 1 or ordering > 3:
                 abort(
-                    "analysis system_options for `SparseSYM` ordering must be 1 (MMD), 2 (ND), or 3 (RCM)"
+                    "analysis system_options for `SparseSYM` ordering must be 1 (MMD), 2 (ND), or 3"
+                    " (RCM)"
                 )
             return
         abort(
-            "analysis system_options for `SparseSYM` expects at most one ordering value (1, 2, or 3)"
+            "analysis system_options for `SparseSYM` expects at most one ordering value (1, 2,"
+            " or 3)"
         )
 
     abort("unsupported analysis system tag")
 
 
-fn _apply_analysis_system_options(
-    mut analysis: AnalysisInput, system_options: List[String]
-) raises:
+fn _apply_analysis_system_options(mut analysis: AnalysisInput, system_options: List[String]) raises:
     analysis.superlu_prefer_symmetric = False
     analysis.superlu_enable_pivot = False
     analysis.superlu_np_row = -1
@@ -1313,11 +1294,7 @@ fn _apply_analysis_system_options(
                 analysis.umfpack_print_time = True
                 i += 1
                 continue
-            if (
-                option == "-lValueFact"
-                or option == "-lvalueFact"
-                or option == "-LVALUE"
-            ):
+            if option == "-lValueFact" or option == "-lvalueFact" or option == "-LVALUE":
                 analysis.umfpack_lvalue_fact = Int(system_options[i + 1])
                 i += 2
                 continue
@@ -1469,9 +1446,7 @@ fn _json_key(doc: JsonDocument, object_index: Int, key: StringSlice) raises -> I
     return doc.object_find(object_index, key)
 
 
-fn _json_require_key(
-    doc: JsonDocument, object_index: Int, key: StringSlice
-) raises -> Int:
+fn _json_require_key(doc: JsonDocument, object_index: Int, key: StringSlice) raises -> Int:
     var node_index = _json_key(doc, object_index, key)
     if node_index < 0:
         abort("missing required key: " + String(key))
@@ -1492,9 +1467,7 @@ fn _json_string_value(doc: JsonDocument, node_index: Int, field: String) -> Stri
     return doc.node_text(node_index)
 
 
-fn _json_number_value(
-    doc: JsonDocument, node_index: Int, field: String
-) -> Float64:
+fn _json_number_value(doc: JsonDocument, node_index: Int, field: String) -> Float64:
     if doc.node_tag(node_index) != JsonValueTag.Number:
         abort(field + " must be a number")
     return doc.node_number(node_index)
@@ -1605,15 +1578,16 @@ fn _numeric_token_start(bytes: Span[Byte], idx: Int) -> Bool:
     if ch >= Byte(ord("0")) and ch <= Byte(ord("9")):
         return True
     if ch == Byte(ord(".")):
-        return idx + 1 < len(bytes) and bytes[idx + 1] >= Byte(ord("0")) and bytes[idx + 1] <= Byte(ord("9"))
+        return (
+            idx + 1 < len(bytes)
+            and bytes[idx + 1] >= Byte(ord("0"))
+            and bytes[idx + 1] <= Byte(ord("9"))
+        )
     if ch == Byte(ord("+")) or ch == Byte(ord("-")):
         if idx + 1 >= len(bytes):
             return False
         var next = bytes[idx + 1]
-        return (
-            (next >= Byte(ord("0")) and next <= Byte(ord("9")))
-            or next == Byte(ord("."))
-        )
+        return (next >= Byte(ord("0")) and next <= Byte(ord("9"))) or next == Byte(ord("."))
     return False
 
 
@@ -1642,19 +1616,15 @@ fn _parse_numeric_values_text(text: String, values_path: String) raises -> List[
             i = start + 1
             continue
 
-        if (
-            i < len(bytes)
-            and (
-                bytes[i] == Byte(ord("e"))
-                or bytes[i] == Byte(ord("E"))
-                or bytes[i] == Byte(ord("d"))
-                or bytes[i] == Byte(ord("D"))
-            )
+        if i < len(bytes) and (
+            bytes[i] == Byte(ord("e"))
+            or bytes[i] == Byte(ord("E"))
+            or bytes[i] == Byte(ord("d"))
+            or bytes[i] == Byte(ord("D"))
         ):
             var exponent_end = i + 1
             if exponent_end < len(bytes) and (
-                bytes[exponent_end] == Byte(ord("+"))
-                or bytes[exponent_end] == Byte(ord("-"))
+                bytes[exponent_end] == Byte(ord("+")) or bytes[exponent_end] == Byte(ord("-"))
             ):
                 exponent_end += 1
             var exponent_digits = 0
@@ -1686,10 +1656,7 @@ fn _load_path_time_series_values_native(
         abort("Path time_series missing values_path")
 
     var resolved_path = values_path
-    if (
-        not values_path.startswith("/")
-        and source_info.case_dir != ""
-    ):
+    if not values_path.startswith("/") and source_info.case_dir != "":
         var candidate = String(Path(source_info.case_dir) / values_path)
         if Path(candidate).exists():
             resolved_path = candidate
@@ -1745,9 +1712,7 @@ fn _append_time_series_entry_native(
                     )
                 )
         else:
-            var loaded_values = _load_path_time_series_values_native(
-                doc, ts_index, source_info
-            )
+            var loaded_values = _load_path_time_series_values_native(doc, ts_index, source_info)
             parsed_entry.values_count = len(loaded_values)
             for i in range(len(loaded_values)):
                 values_pool.append(loaded_values[i])
@@ -1772,7 +1737,9 @@ fn _append_time_series_entry_native(
         return
     if typ == "Trig":
         parsed_entry.type_tag = TimeSeriesTypeTag.Trig
-        if not _json_has_key(doc, ts_index, "t_start") or not _json_has_key(doc, ts_index, "t_finish"):
+        if not _json_has_key(doc, ts_index, "t_start") or not _json_has_key(
+            doc, ts_index, "t_finish"
+        ):
             abort("Trig time_series missing t_start/t_finish")
         if not _json_has_key(doc, ts_index, "period"):
             abort("Trig time_series missing period")
@@ -1809,9 +1776,7 @@ fn _append_time_series_inputs_native(
             )
         return
     if doc.node_tag(ts_index) == JsonValueTag.Object:
-        _append_time_series_entry_native(
-            doc, ts_index, source_info, parsed, values_pool, time_pool
-        )
+        _append_time_series_entry_native(doc, ts_index, source_info, parsed, values_pool, time_pool)
         return
     if doc.node_tag(ts_index) == JsonValueTag.Null:
         return
@@ -1829,14 +1794,10 @@ fn parse_analysis_input_from_native(
     analysis.type_tag = analysis_type_tag(analysis.type)
     analysis.constraints = _json_get_string(doc, analysis_index, "constraints", "Plain")
     analysis.constraints_tag = constraint_handler_tag(analysis.constraints)
-    analysis.numberer_tag = numberer_tag(
-        _json_get_string(doc, analysis_index, "numberer", "")
-    )
+    analysis.numberer_tag = numberer_tag(_json_get_string(doc, analysis_index, "numberer", ""))
     analysis.steps = _json_get_int(doc, analysis_index, "steps", 1)
     analysis.num_modes = _json_get_int(doc, analysis_index, "num_modes", 0)
-    analysis.force_beam_mode = _json_get_string(
-        doc, analysis_index, "force_beam_mode", "auto"
-    )
+    analysis.force_beam_mode = _json_get_string(doc, analysis_index, "force_beam_mode", "auto")
     analysis.force_beam_mode_tag = force_beam_mode_tag(analysis.force_beam_mode)
     analysis.dt = _json_get_float(doc, analysis_index, "dt", 0.0)
     analysis.algorithm = _json_get_string(doc, analysis_index, "algorithm", "Newton")
@@ -1845,9 +1806,7 @@ fn parse_analysis_input_from_native(
     analysis.tol = _json_get_float(doc, analysis_index, "tol", 1.0e-10)
     if _json_has_key(doc, analysis_index, "rel_tol"):
         abort("analysis rel_tol is unsupported")
-    analysis.test_type = _json_get_string(
-        doc, analysis_index, "test_type", "NormUnbalance"
-    )
+    analysis.test_type = _json_get_string(doc, analysis_index, "test_type", "NormUnbalance")
     analysis.test_type_tag = nonlinear_test_type_tag(analysis.test_type)
 
     var step_retry_index = _json_key(doc, analysis_index, "step_retry")
@@ -1886,9 +1845,7 @@ fn parse_analysis_input_from_native(
                     "analysis system_options",
                 )
             )
-    _validate_analysis_system_options(
-        analysis.system, analysis.system_tag, system_options
-    )
+    _validate_analysis_system_options(analysis.system, analysis.system_tag, system_options)
     _apply_analysis_system_options(analysis, system_options)
     for i in range(len(system_options)):
         if i > 0:
@@ -1912,10 +1869,9 @@ fn parse_analysis_input_from_native(
     analysis.integrator_tag = integrator_type_tag(analysis.integrator_type)
     analysis.integrator_gamma = _json_get_float(doc, integrator_index, "gamma", 0.5)
     analysis.integrator_beta = _json_get_float(doc, integrator_index, "beta", 0.25)
-    analysis.has_integrator_num_iter = (
-        _json_has_key(doc, integrator_index, "num_iter")
-        or _json_has_key(doc, integrator_index, "numIter")
-    )
+    analysis.has_integrator_num_iter = _json_has_key(
+        doc, integrator_index, "num_iter"
+    ) or _json_has_key(doc, integrator_index, "numIter")
     analysis.integrator_num_iter = _json_get_int(
         doc,
         integrator_index,
@@ -1948,10 +1904,9 @@ fn parse_analysis_input_from_native(
         "max_cutbacks",
         _json_get_int(doc, analysis_index, "max_cutbacks", 8),
     )
-    analysis.has_integrator_min_du = (
-        _json_has_key(doc, integrator_index, "min_du")
-        or _json_has_key(doc, integrator_index, "minIncrement")
-    )
+    analysis.has_integrator_min_du = _json_has_key(
+        doc, integrator_index, "min_du"
+    ) or _json_has_key(doc, integrator_index, "minIncrement")
     analysis.integrator_min_du = _json_get_float(
         doc,
         integrator_index,
@@ -1963,10 +1918,9 @@ fn parse_analysis_input_from_native(
             _json_get_float(doc, analysis_index, "min_du", 1.0e-10),
         ),
     )
-    analysis.has_integrator_max_du = (
-        _json_has_key(doc, integrator_index, "max_du")
-        or _json_has_key(doc, integrator_index, "maxIncrement")
-    )
+    analysis.has_integrator_max_du = _json_has_key(
+        doc, integrator_index, "max_du"
+    ) or _json_has_key(doc, integrator_index, "maxIncrement")
     analysis.integrator_max_du = _json_get_float(
         doc,
         integrator_index,
@@ -1990,21 +1944,15 @@ fn parse_analysis_input_from_native(
                     "integrator targets",
                 )
             )
-    var primary_algorithm_options_index = _json_key(
-        doc, analysis_index, "algorithm_options"
-    )
+    var primary_algorithm_options_index = _json_key(doc, analysis_index, "algorithm_options")
     analysis.solver_chain_offset = len(solver_chain_pool)
-    analysis.has_solver_chain_override = _json_has_key(
-        doc, analysis_index, "solver_chain"
-    )
+    analysis.has_solver_chain_override = _json_has_key(doc, analysis_index, "solver_chain")
     if analysis.has_solver_chain_override:
         var solver_chain_index = _json_require_key(doc, analysis_index, "solver_chain")
         for i in range(_json_expect_array_len(doc, solver_chain_index, "solver_chain")):
             var attempt_index = doc.array_item(solver_chain_index, i)
             var attempt = SolverAttemptInput()
-            var attempt_algorithm_options_index = _json_key(
-                doc, attempt_index, "algorithm_options"
-            )
+            var attempt_algorithm_options_index = _json_key(doc, attempt_index, "algorithm_options")
             attempt.algorithm = _json_get_string(
                 doc, attempt_index, "algorithm", analysis.algorithm
             )
@@ -2031,9 +1979,7 @@ fn parse_analysis_input_from_native(
                 doc, attempt_index, "test_type", analysis.test_type
             )
             attempt.test_type_tag = nonlinear_test_type_tag(attempt.test_type)
-            attempt.max_iters = _json_get_int(
-                doc, attempt_index, "max_iters", analysis.max_iters
-            )
+            attempt.max_iters = _json_get_int(doc, attempt_index, "max_iters", analysis.max_iters)
             attempt.tol = _json_get_float(doc, attempt_index, "tol", analysis.tol)
             if _json_has_key(doc, attempt_index, "rel_tol"):
                 abort("solver_chain rel_tol is unsupported")
@@ -2062,9 +2008,7 @@ fn parse_analysis_input_from_native(
     return analysis^
 
 
-fn parse_pattern_input_from_native(
-    doc: JsonDocument, pattern_index: Int
-) raises -> PatternInput:
+fn parse_pattern_input_from_native(doc: JsonDocument, pattern_index: Int) raises -> PatternInput:
     var pattern = PatternInput()
     if not _json_has_value(doc, pattern_index):
         return pattern^
@@ -2083,9 +2027,7 @@ fn parse_pattern_input_from_native(
     return pattern^
 
 
-fn parse_rayleigh_input_from_native(
-    doc: JsonDocument, rayleigh_index: Int
-) raises -> RayleighInput:
+fn parse_rayleigh_input_from_native(doc: JsonDocument, rayleigh_index: Int) raises -> RayleighInput:
     var rayleigh = RayleighInput()
     if not _json_has_value(doc, rayleigh_index):
         return rayleigh^
@@ -2115,9 +2057,7 @@ fn parse_element_load_input_from_native(
     )
 
 
-fn parse_nodal_load_input_from_native(
-    doc: JsonDocument, load_index: Int
-) raises -> NodalLoadInput:
+fn parse_nodal_load_input_from_native(doc: JsonDocument, load_index: Int) raises -> NodalLoadInput:
     return NodalLoadInput(
         _json_get_int(doc, load_index, "node", 0),
         _json_get_int(doc, load_index, "dof", 0),
@@ -2138,9 +2078,7 @@ fn parse_damping_inputs_from_native(
         for i in range(doc.node_len(dampings_index)):
             var raw = doc.array_item(dampings_index, i)
             var damping = DampingInput()
-            damping.tag = _json_get_int(
-                doc, raw, "id", _json_get_int(doc, raw, "tag", -1)
-            )
+            damping.tag = _json_get_int(doc, raw, "id", _json_get_int(doc, raw, "tag", -1))
             if damping.tag < 0:
                 abort("damping requires id")
             for j in range(len(parsed)):
@@ -2167,9 +2105,7 @@ fn parse_damping_inputs_from_native(
                 _json_get_int(doc, raw, "factor_time_series", -1),
             )
             if damping.factor_ts_tag >= 0:
-                damping.factor_ts_index = find_time_series_input(
-                    time_series, damping.factor_ts_tag
-                )
+                damping.factor_ts_index = find_time_series_input(time_series, damping.factor_ts_tag)
                 if damping.factor_ts_index < 0:
                     abort("damping factor time_series tag not found")
             parsed.append(damping^)
@@ -2203,9 +2139,7 @@ fn parse_damping_inputs_from_native(
             _json_get_int(doc, dampings_index, "factor_time_series", -1),
         )
         if damping.factor_ts_tag >= 0:
-            damping.factor_ts_index = find_time_series_input(
-                time_series, damping.factor_ts_tag
-            )
+            damping.factor_ts_index = find_time_series_input(time_series, damping.factor_ts_tag)
             if damping.factor_ts_index < 0:
                 abort("damping factor time_series tag not found")
         parsed.append(damping^)
@@ -2227,12 +2161,8 @@ fn parse_stage_input_from_native(
         stage.analysis_integrator_targets_pool,
         stage.analysis_solver_chain_pool,
     )
-    stage.pattern = parse_pattern_input_from_native(
-        doc, _json_key(doc, stage_index, "pattern")
-    )
-    stage.rayleigh = parse_rayleigh_input_from_native(
-        doc, _json_key(doc, stage_index, "rayleigh")
-    )
+    stage.pattern = parse_pattern_input_from_native(doc, _json_key(doc, stage_index, "pattern"))
+    stage.rayleigh = parse_rayleigh_input_from_native(doc, _json_key(doc, stage_index, "rayleigh"))
 
     var load_const_index = _json_key(doc, stage_index, "load_const")
     if _json_has_value(doc, load_const_index):
@@ -2251,13 +2181,9 @@ fn parse_stage_input_from_native(
 
     var element_loads_index = _json_key(doc, stage_index, "element_loads")
     if _json_has_value(doc, element_loads_index):
-        for i in range(
-            _json_expect_array_len(doc, element_loads_index, "stage element_loads")
-        ):
+        for i in range(_json_expect_array_len(doc, element_loads_index, "stage element_loads")):
             stage.element_loads.append(
-                parse_element_load_input_from_native(
-                    doc, doc.array_item(element_loads_index, i)
-                )
+                parse_element_load_input_from_native(doc, doc.array_item(element_loads_index, i))
             )
 
     _append_time_series_inputs_native(
@@ -2371,25 +2297,15 @@ fn parse_case_input_native_from_source(
             if _json_has_key(doc, params, "axial_material"):
                 parsed.axial_material = _json_get_int(doc, params, "axial_material", -1)
             if _json_has_key(doc, params, "flexural_material"):
-                parsed.flexural_material = _json_get_int(
-                    doc, params, "flexural_material", -1
-                )
+                parsed.flexural_material = _json_get_int(doc, params, "flexural_material", -1)
             if _json_has_key(doc, params, "moment_y_material"):
-                parsed.moment_y_material = _json_get_int(
-                    doc, params, "moment_y_material", -1
-                )
+                parsed.moment_y_material = _json_get_int(doc, params, "moment_y_material", -1)
             if _json_has_key(doc, params, "torsion_material"):
-                parsed.torsion_material = _json_get_int(
-                    doc, params, "torsion_material", -1
-                )
+                parsed.torsion_material = _json_get_int(doc, params, "torsion_material", -1)
             if _json_has_key(doc, params, "shear_y_material"):
-                parsed.shear_y_material = _json_get_int(
-                    doc, params, "shear_y_material", -1
-                )
+                parsed.shear_y_material = _json_get_int(doc, params, "shear_y_material", -1)
             if _json_has_key(doc, params, "shear_z_material"):
-                parsed.shear_z_material = _json_get_int(
-                    doc, params, "shear_z_material", -1
-                )
+                parsed.shear_z_material = _json_get_int(doc, params, "shear_z_material", -1)
             if _json_has_key(doc, params, "base_section"):
                 parsed.base_section = _json_get_int(doc, params, "base_section", -1)
             if parsed.type == "FiberSection2d" or parsed.type == "FiberSection3d":
@@ -2427,9 +2343,7 @@ fn parse_case_input_native_from_source(
 
                 var layers_raw = _json_key(doc, params, "layers")
                 parsed.fiber_layer_offset = len(case_input.fiber_layers)
-                parsed.fiber_layer_count = _json_expect_array_len(
-                    doc, layers_raw, "section layers"
-                )
+                parsed.fiber_layer_count = _json_expect_array_len(doc, layers_raw, "section layers")
                 for j in range(parsed.fiber_layer_count):
                     var layer = doc.array_item(layers_raw, j)
                     var layer_input = FiberLayerInput()
@@ -2445,25 +2359,19 @@ fn parse_case_input_native_from_source(
                 var fibers_raw = _json_key(doc, params, "fibers")
                 if _json_has_value(doc, fibers_raw):
                     parsed.fiber_offset = len(case_input.fibers)
-                    parsed.fiber_count = _json_expect_array_len(
-                        doc, fibers_raw, "section fibers"
-                    )
+                    parsed.fiber_count = _json_expect_array_len(doc, fibers_raw, "section fibers")
                     for j in range(parsed.fiber_count):
                         var fiber = doc.array_item(fibers_raw, j)
                         var fiber_input = FiberInput()
                         fiber_input.y = _json_get_float(doc, fiber, "y", 0.0)
                         fiber_input.z = _json_get_float(doc, fiber, "z", 0.0)
                         fiber_input.area = _json_get_float(doc, fiber, "area", 0.0)
-                        fiber_input.material = _json_get_int(
-                            doc, fiber, "material", -1
-                        )
+                        fiber_input.material = _json_get_int(doc, fiber, "material", -1)
                         case_input.fibers.append(fiber_input)
             elif parsed.type == "LayeredShellSection":
                 var layers_raw = _json_key(doc, params, "layers")
                 parsed.shell_layer_offset = len(case_input.shell_layers)
-                parsed.shell_layer_count = _json_expect_array_len(
-                    doc, layers_raw, "shell layers"
-                )
+                parsed.shell_layer_count = _json_expect_array_len(doc, layers_raw, "shell layers")
                 for j in range(parsed.shell_layer_count):
                     var layer = doc.array_item(layers_raw, j)
                     var layer_input = ShellLayerInput()
@@ -2480,6 +2388,24 @@ fn parse_case_input_native_from_source(
             var parsed = MaterialInput()
             parsed.id = _json_get_int(doc, mat, "id", -1)
             parsed.type = _json_get_string(doc, mat, "type", "")
+            if parsed.type == "ConcreteS":
+                parsed.E = _json_number_value(
+                    doc, _json_require_key(doc, params, "E"), "ConcreteS E"
+                )
+                parsed.nu = _json_number_value(
+                    doc, _json_require_key(doc, params, "nu"), "ConcreteS nu"
+                )
+                parsed.fc = _json_number_value(
+                    doc, _json_require_key(doc, params, "fc"), "ConcreteS fc"
+                )
+                parsed.ft = _json_number_value(
+                    doc, _json_require_key(doc, params, "ft"), "ConcreteS ft"
+                )
+                parsed.Es = _json_number_value(
+                    doc, _json_require_key(doc, params, "Es"), "ConcreteS Es"
+                )
+                case_input.materials.append(parsed^)
+                continue
             if _json_has_key(doc, params, "E"):
                 parsed.E = _json_get_float(doc, params, "E", 0.0)
             if _json_has_key(doc, params, "Fy"):
@@ -2539,18 +2465,6 @@ fn parse_case_input_native_from_source(
                 parsed.angle = _json_get_float(doc, params, "angle", 0.0)
             if _json_has_key(doc, params, "gmod"):
                 parsed.gmod = _json_get_float(doc, params, "gmod", 0.0)
-            if _json_has_key(doc, params, "nstatevs"):
-                parsed.nstatevs = _json_get_int(doc, params, "nstatevs", 0)
-            var props_raw = _json_key(doc, params, "props")
-            if _json_has_value(doc, props_raw):
-                parsed.props_offset = len(case_input.shell_material_props)
-                parsed.props_count = _json_expect_array_len(doc, props_raw, "material props")
-                for j in range(parsed.props_count):
-                    case_input.shell_material_props.append(
-                        _json_number_value(
-                            doc, doc.array_item(props_raw, j), "material props"
-                        )
-                    )
             case_input.materials.append(parsed^)
 
     var elements_raw = _json_require_key(doc, root, "elements")
@@ -2583,37 +2497,59 @@ fn parse_case_input_native_from_source(
                 material_count = 6
             parsed.material_count = material_count
             if material_count > 0:
-                parsed.material_1 = _json_int_value(doc, doc.array_item(mat_ids, 0), "element materials")
+                parsed.material_1 = _json_int_value(
+                    doc, doc.array_item(mat_ids, 0), "element materials"
+                )
             if material_count > 1:
-                parsed.material_2 = _json_int_value(doc, doc.array_item(mat_ids, 1), "element materials")
+                parsed.material_2 = _json_int_value(
+                    doc, doc.array_item(mat_ids, 1), "element materials"
+                )
             if material_count > 2:
-                parsed.material_3 = _json_int_value(doc, doc.array_item(mat_ids, 2), "element materials")
+                parsed.material_3 = _json_int_value(
+                    doc, doc.array_item(mat_ids, 2), "element materials"
+                )
             if material_count > 3:
-                parsed.material_4 = _json_int_value(doc, doc.array_item(mat_ids, 3), "element materials")
+                parsed.material_4 = _json_int_value(
+                    doc, doc.array_item(mat_ids, 3), "element materials"
+                )
             if material_count > 4:
-                parsed.material_5 = _json_int_value(doc, doc.array_item(mat_ids, 4), "element materials")
+                parsed.material_5 = _json_int_value(
+                    doc, doc.array_item(mat_ids, 4), "element materials"
+                )
             if material_count > 5:
-                parsed.material_6 = _json_int_value(doc, doc.array_item(mat_ids, 5), "element materials")
+                parsed.material_6 = _json_int_value(
+                    doc, doc.array_item(mat_ids, 5), "element materials"
+                )
         var damp_mat_ids = _json_key(doc, elem, "dampMats")
         if _json_has_value(doc, damp_mat_ids):
-            var damp_material_count = _json_expect_array_len(
-                doc, damp_mat_ids, "element dampMats"
-            )
+            var damp_material_count = _json_expect_array_len(doc, damp_mat_ids, "element dampMats")
             if damp_material_count > 6:
                 damp_material_count = 6
             parsed.damp_material_count = damp_material_count
             if damp_material_count > 0:
-                parsed.damp_material_1 = _json_int_value(doc, doc.array_item(damp_mat_ids, 0), "element dampMats")
+                parsed.damp_material_1 = _json_int_value(
+                    doc, doc.array_item(damp_mat_ids, 0), "element dampMats"
+                )
             if damp_material_count > 1:
-                parsed.damp_material_2 = _json_int_value(doc, doc.array_item(damp_mat_ids, 1), "element dampMats")
+                parsed.damp_material_2 = _json_int_value(
+                    doc, doc.array_item(damp_mat_ids, 1), "element dampMats"
+                )
             if damp_material_count > 2:
-                parsed.damp_material_3 = _json_int_value(doc, doc.array_item(damp_mat_ids, 2), "element dampMats")
+                parsed.damp_material_3 = _json_int_value(
+                    doc, doc.array_item(damp_mat_ids, 2), "element dampMats"
+                )
             if damp_material_count > 3:
-                parsed.damp_material_4 = _json_int_value(doc, doc.array_item(damp_mat_ids, 3), "element dampMats")
+                parsed.damp_material_4 = _json_int_value(
+                    doc, doc.array_item(damp_mat_ids, 3), "element dampMats"
+                )
             if damp_material_count > 4:
-                parsed.damp_material_5 = _json_int_value(doc, doc.array_item(damp_mat_ids, 4), "element dampMats")
+                parsed.damp_material_5 = _json_int_value(
+                    doc, doc.array_item(damp_mat_ids, 4), "element dampMats"
+                )
             if damp_material_count > 5:
-                parsed.damp_material_6 = _json_int_value(doc, doc.array_item(damp_mat_ids, 5), "element dampMats")
+                parsed.damp_material_6 = _json_int_value(
+                    doc, doc.array_item(damp_mat_ids, 5), "element dampMats"
+                )
         if _json_has_key(doc, elem, "damp"):
             parsed.damping_tag = _json_get_int(doc, elem, "damp", -1)
         var dirs = _json_key(doc, elem, "dirs")
@@ -2644,11 +2580,17 @@ fn parse_case_input_native_from_source(
         if _json_has_value(doc, vecxz):
             var vec_count = _json_expect_array_len(doc, vecxz, "element vecxz")
             if vec_count > 0:
-                parsed.geom_vecxz_1 = _json_number_value(doc, doc.array_item(vecxz, 0), "element vecxz")
+                parsed.geom_vecxz_1 = _json_number_value(
+                    doc, doc.array_item(vecxz, 0), "element vecxz"
+                )
             if vec_count > 1:
-                parsed.geom_vecxz_2 = _json_number_value(doc, doc.array_item(vecxz, 1), "element vecxz")
+                parsed.geom_vecxz_2 = _json_number_value(
+                    doc, doc.array_item(vecxz, 1), "element vecxz"
+                )
             if vec_count > 2:
-                parsed.geom_vecxz_3 = _json_number_value(doc, doc.array_item(vecxz, 2), "element vecxz")
+                parsed.geom_vecxz_3 = _json_number_value(
+                    doc, doc.array_item(vecxz, 2), "element vecxz"
+                )
             parsed.has_geom_vecxz = True
         parsed.integration = _json_get_string(doc, elem, "integration", "Lobatto")
         parsed.num_int_pts = _json_get_int(doc, elem, "num_int_pts", 3)
@@ -2662,41 +2604,65 @@ fn parse_case_input_native_from_source(
             if _json_has_value(doc, x_vals):
                 var x_count = _json_expect_array_len(doc, x_vals, "element orient x")
                 if x_count > 0:
-                    parsed.orient_x_1 = _json_number_value(doc, doc.array_item(x_vals, 0), "element orient x")
+                    parsed.orient_x_1 = _json_number_value(
+                        doc, doc.array_item(x_vals, 0), "element orient x"
+                    )
                 if x_count > 1:
-                    parsed.orient_x_2 = _json_number_value(doc, doc.array_item(x_vals, 1), "element orient x")
+                    parsed.orient_x_2 = _json_number_value(
+                        doc, doc.array_item(x_vals, 1), "element orient x"
+                    )
                 if x_count > 2:
-                    parsed.orient_x_3 = _json_number_value(doc, doc.array_item(x_vals, 2), "element orient x")
+                    parsed.orient_x_3 = _json_number_value(
+                        doc, doc.array_item(x_vals, 2), "element orient x"
+                    )
                 parsed.has_orient_x = True
             var y_vals = _json_key(doc, orient, "y")
             if _json_has_value(doc, y_vals):
                 var y_count = _json_expect_array_len(doc, y_vals, "element orient y")
                 if y_count > 0:
-                    parsed.orient_y_1 = _json_number_value(doc, doc.array_item(y_vals, 0), "element orient y")
+                    parsed.orient_y_1 = _json_number_value(
+                        doc, doc.array_item(y_vals, 0), "element orient y"
+                    )
                 if y_count > 1:
-                    parsed.orient_y_2 = _json_number_value(doc, doc.array_item(y_vals, 1), "element orient y")
+                    parsed.orient_y_2 = _json_number_value(
+                        doc, doc.array_item(y_vals, 1), "element orient y"
+                    )
                 if y_count > 2:
-                    parsed.orient_y_3 = _json_number_value(doc, doc.array_item(y_vals, 2), "element orient y")
+                    parsed.orient_y_3 = _json_number_value(
+                        doc, doc.array_item(y_vals, 2), "element orient y"
+                    )
                 parsed.has_orient_y = True
         var p_delta = _json_key(doc, elem, "pDelta")
         if _json_has_value(doc, p_delta):
             var p_delta_count = _json_expect_array_len(doc, p_delta, "element pDelta")
             if p_delta_count > 0:
-                parsed.pdelta_1 = _json_number_value(doc, doc.array_item(p_delta, 0), "element pDelta")
+                parsed.pdelta_1 = _json_number_value(
+                    doc, doc.array_item(p_delta, 0), "element pDelta"
+                )
             if p_delta_count > 1:
-                parsed.pdelta_2 = _json_number_value(doc, doc.array_item(p_delta, 1), "element pDelta")
+                parsed.pdelta_2 = _json_number_value(
+                    doc, doc.array_item(p_delta, 1), "element pDelta"
+                )
             if p_delta_count > 2:
-                parsed.pdelta_3 = _json_number_value(doc, doc.array_item(p_delta, 2), "element pDelta")
+                parsed.pdelta_3 = _json_number_value(
+                    doc, doc.array_item(p_delta, 2), "element pDelta"
+                )
             if p_delta_count > 3:
-                parsed.pdelta_4 = _json_number_value(doc, doc.array_item(p_delta, 3), "element pDelta")
+                parsed.pdelta_4 = _json_number_value(
+                    doc, doc.array_item(p_delta, 3), "element pDelta"
+                )
             parsed.has_pdelta = p_delta_count > 0
         var shear_dist = _json_key(doc, elem, "shearDist")
         if _json_has_value(doc, shear_dist):
             var shear_dist_count = _json_expect_array_len(doc, shear_dist, "element shearDist")
             if shear_dist_count > 0:
-                parsed.shear_dist_1 = _json_number_value(doc, doc.array_item(shear_dist, 0), "element shearDist")
+                parsed.shear_dist_1 = _json_number_value(
+                    doc, doc.array_item(shear_dist, 0), "element shearDist"
+                )
             if shear_dist_count > 1:
-                parsed.shear_dist_2 = _json_number_value(doc, doc.array_item(shear_dist, 1), "element shearDist")
+                parsed.shear_dist_2 = _json_number_value(
+                    doc, doc.array_item(shear_dist, 1), "element shearDist"
+                )
             parsed.has_shear_dist = shear_dist_count > 0
         parsed.type_tag = element_type_tag(parsed.type)
         parsed.geom_tag = geom_transf_tag(parsed.geom_transf)
@@ -2706,9 +2672,7 @@ fn parse_case_input_native_from_source(
     if _json_has_value(doc, element_loads_raw):
         for i in range(_json_expect_array_len(doc, element_loads_raw, "element_loads")):
             case_input.element_loads.append(
-                parse_element_load_input_from_native(
-                    doc, doc.array_item(element_loads_raw, i)
-                )
+                parse_element_load_input_from_native(doc, doc.array_item(element_loads_raw, i))
             )
 
     var loads_raw = _json_key(doc, root, "loads")
@@ -2764,17 +2728,29 @@ fn parse_case_input_native_from_source(
                     dof_count = 6
                 parsed.dof_count = dof_count
                 if dof_count > 0:
-                    parsed.dof_1 = _json_int_value(doc, doc.array_item(dofs, 0), "mp_constraint dofs")
+                    parsed.dof_1 = _json_int_value(
+                        doc, doc.array_item(dofs, 0), "mp_constraint dofs"
+                    )
                 if dof_count > 1:
-                    parsed.dof_2 = _json_int_value(doc, doc.array_item(dofs, 1), "mp_constraint dofs")
+                    parsed.dof_2 = _json_int_value(
+                        doc, doc.array_item(dofs, 1), "mp_constraint dofs"
+                    )
                 if dof_count > 2:
-                    parsed.dof_3 = _json_int_value(doc, doc.array_item(dofs, 2), "mp_constraint dofs")
+                    parsed.dof_3 = _json_int_value(
+                        doc, doc.array_item(dofs, 2), "mp_constraint dofs"
+                    )
                 if dof_count > 3:
-                    parsed.dof_4 = _json_int_value(doc, doc.array_item(dofs, 3), "mp_constraint dofs")
+                    parsed.dof_4 = _json_int_value(
+                        doc, doc.array_item(dofs, 3), "mp_constraint dofs"
+                    )
                 if dof_count > 4:
-                    parsed.dof_5 = _json_int_value(doc, doc.array_item(dofs, 4), "mp_constraint dofs")
+                    parsed.dof_5 = _json_int_value(
+                        doc, doc.array_item(dofs, 4), "mp_constraint dofs"
+                    )
                 if dof_count > 5:
-                    parsed.dof_6 = _json_int_value(doc, doc.array_item(dofs, 5), "mp_constraint dofs")
+                    parsed.dof_6 = _json_int_value(
+                        doc, doc.array_item(dofs, 5), "mp_constraint dofs"
+                    )
             var perp_dirn = _json_key(doc, mpc, "perp_dirn")
             if _json_has_value(doc, perp_dirn):
                 parsed.rigid_perp_dirn = _json_int_value(doc, perp_dirn, "mp_constraint perp_dirn")
@@ -2891,12 +2867,8 @@ fn parse_case_input_native_from_source(
                 parsed.rigid_dz = _json_get_float(doc, mpc, "dz", 0.0)
             case_input.mp_constraints.append(parsed)
 
-    case_input.pattern = parse_pattern_input_from_native(
-        doc, _json_key(doc, root, "pattern")
-    )
-    case_input.rayleigh = parse_rayleigh_input_from_native(
-        doc, _json_key(doc, root, "rayleigh")
-    )
+    case_input.pattern = parse_pattern_input_from_native(doc, _json_key(doc, root, "pattern"))
+    case_input.rayleigh = parse_rayleigh_input_from_native(doc, _json_key(doc, root, "rayleigh"))
     _append_time_series_inputs_native(
         doc,
         root,
@@ -2931,13 +2903,9 @@ fn parse_case_input_native_from_source(
             if parsed.type_tag == RecorderTypeTag.NodeDisplacement:
                 parsed.output = _json_get_string(doc, rec, "output", "node_disp")
             elif parsed.type_tag == RecorderTypeTag.EnvelopeNodeDisplacement:
-                parsed.output = _json_get_string(
-                    doc, rec, "output", "envelope_node_displacement"
-                )
+                parsed.output = _json_get_string(doc, rec, "output", "envelope_node_displacement")
             else:
-                parsed.output = _json_get_string(
-                    doc, rec, "output", "envelope_node_acceleration"
-                )
+                parsed.output = _json_get_string(doc, rec, "output", "envelope_node_acceleration")
             var recorder_nodes = _json_key(doc, rec, "nodes")
             var recorder_dofs = _json_key(doc, rec, "dofs")
             if not _json_has_value(doc, recorder_nodes) or not _json_has_value(doc, recorder_dofs):
@@ -2973,13 +2941,9 @@ fn parse_case_input_native_from_source(
             elif parsed.type_tag == RecorderTypeTag.ElementDeformation:
                 parsed.output = _json_get_string(doc, rec, "output", "element_deformation")
             elif parsed.type_tag == RecorderTypeTag.EnvelopeElementForce:
-                parsed.output = _json_get_string(
-                    doc, rec, "output", "envelope_element_force"
-                )
+                parsed.output = _json_get_string(doc, rec, "output", "envelope_element_force")
             else:
-                parsed.output = _json_get_string(
-                    doc, rec, "output", "envelope_element_local_force"
-                )
+                parsed.output = _json_get_string(doc, rec, "output", "envelope_element_local_force")
             var recorder_elements = _json_key(doc, rec, "elements")
             if not _json_has_value(doc, recorder_elements):
                 abort("element recorder requires elements")
@@ -3029,9 +2993,7 @@ fn parse_case_input_native_from_source(
             if parsed.type_tag == RecorderTypeTag.SectionForce:
                 parsed.output = _json_get_string(doc, rec, "output", "section_force")
             else:
-                parsed.output = _json_get_string(
-                    doc, rec, "output", "section_deformation"
-                )
+                parsed.output = _json_get_string(doc, rec, "output", "section_deformation")
             var recorder_elements = _json_key(doc, rec, "elements")
             if not _json_has_value(doc, recorder_elements):
                 abort("section recorder requires elements")
@@ -3041,7 +3003,9 @@ fn parse_case_input_native_from_source(
             )
             for j in range(parsed.element_count):
                 case_input.recorder_elements_pool.append(
-                    _json_int_value(doc, doc.array_item(recorder_elements, j), "section recorder elements")
+                    _json_int_value(
+                        doc, doc.array_item(recorder_elements, j), "section recorder elements"
+                    )
                 )
             var sections_node = _json_key(doc, rec, "sections")
             if not _json_has_value(doc, sections_node):
@@ -3062,7 +3026,9 @@ fn parse_case_input_native_from_source(
                     abort("section recorder requires non-empty sections")
                 for j in range(parsed.section_count):
                     case_input.recorder_sections_pool.append(
-                        _json_int_value(doc, doc.array_item(sections_node, j), "section recorder sections")
+                        _json_int_value(
+                            doc, doc.array_item(sections_node, j), "section recorder sections"
+                        )
                     )
         else:
             parsed.output = _json_get_string(doc, rec, "output", "modal")

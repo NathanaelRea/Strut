@@ -323,9 +323,7 @@ fn _element_rotation_into_static(
             R,
         )
         return
-    _beam3d_rotation_into_static(
-        x1, y1, z1, x2, y2, z2, has_vecxz, vecxz_x, vecxz_y, vecxz_z, R
-    )
+    _beam3d_rotation_into_static(x1, y1, z1, x2, y2, z2, has_vecxz, vecxz_x, vecxz_y, vecxz_z, R)
 
 
 @always_inline
@@ -401,14 +399,11 @@ fn _beam3d_transform_stiffness_local_to_global_flat(
     var r2_v4 = SIMD[DType.float64, 4](r20, r21, r22, 0.0)
     for row in range(12):
         var row_base = row * 12
+
         @parameter
         for col_block in range(4):
             var base = row_base + 3 * col_block
-            var out = (
-                r0_v4 * k_local[base]
-                + r1_v4 * k_local[base + 1]
-                + r2_v4 * k_local[base + 2]
-            )
+            var out = r0_v4 * k_local[base] + r1_v4 * k_local[base + 1] + r2_v4 * k_local[base + 2]
             work[base] = out[0]
             work[base + 1] = out[1]
             work[base + 2] = out[2]
@@ -604,9 +599,7 @@ fn _beam3d_assemble_local_stiffness_from_basic(
     var k44 = k_basic[24]
 
     # Columns 0 and 6 (col 6 = -col 0)
-    _beam3d_write_local_stiffness_col_pair(
-        0, 6, -k00, -k10, -k20, -k30, -k40, inv_L, k_local
-    )
+    _beam3d_write_local_stiffness_col_pair(0, 6, -k00, -k10, -k20, -k30, -k40, inv_L, k_local)
     # Columns 1 and 7 (col 7 = -col 1)
     _beam3d_write_local_stiffness_col_pair(
         1,
@@ -632,18 +625,10 @@ fn _beam3d_assemble_local_stiffness_from_basic(
         k_local,
     )
     # Rotational columns 4, 5, 10, 11
-    _beam3d_write_local_stiffness_col_single(
-        4, k03, k13, k23, k33, k43, inv_L, k_local
-    )
-    _beam3d_write_local_stiffness_col_single(
-        5, k01, k11, k21, k31, k41, inv_L, k_local
-    )
-    _beam3d_write_local_stiffness_col_single(
-        10, k04, k14, k24, k34, k44, inv_L, k_local
-    )
-    _beam3d_write_local_stiffness_col_single(
-        11, k02, k12, k22, k32, k42, inv_L, k_local
-    )
+    _beam3d_write_local_stiffness_col_single(4, k03, k13, k23, k33, k43, inv_L, k_local)
+    _beam3d_write_local_stiffness_col_single(5, k01, k11, k21, k31, k41, inv_L, k_local)
+    _beam3d_write_local_stiffness_col_single(10, k04, k14, k24, k34, k44, inv_L, k_local)
+    _beam3d_write_local_stiffness_col_single(11, k02, k12, k22, k32, k42, inv_L, k_local)
     # Torsion columns 3 and 9
     for r in range(12):
         k_local[r * 12 + 3] = 0.0
@@ -727,18 +712,7 @@ fn _invert_3x3_values(
     g: Float64,
     h: Float64,
     i: Float64,
-) -> (
-    Bool,
-    Float64,
-    Float64,
-    Float64,
-    Float64,
-    Float64,
-    Float64,
-    Float64,
-    Float64,
-    Float64,
-):
+) -> (Bool, Float64, Float64, Float64, Float64, Float64, Float64, Float64, Float64, Float64,):
     var co00 = e * i - f * h
     var co01 = -(d * i - f * g)
     var co02 = d * h - e * g
@@ -789,6 +763,7 @@ fn _invert_5x5_flat_into(mut a: Beam3dMat5, mut inv_out: Beam3dMat5) -> Bool:
     for i in range(5):
         var pivot = i
         var max_val = abs(a_rows[i][i])
+
         @parameter
         for r in range(i + 1, 5):
             var abs_val = abs(a_rows[r][i])
@@ -814,6 +789,7 @@ fn _invert_5x5_flat_into(mut a: Beam3dMat5, mut inv_out: Beam3dMat5) -> Bool:
 
         @parameter
         for r in range(5):
+
             @parameter
             if r != i:
                 var factor = a_rows[r][i]
@@ -832,9 +808,7 @@ fn _invert_5x5_flat_into(mut a: Beam3dMat5, mut inv_out: Beam3dMat5) -> Bool:
     return True
 
 
-fn _ensure_force_beam_column3d_cache_slot(
-    mut scratch: ForceBeamColumn3dScratch, elem_index: Int
-):
+fn _ensure_force_beam_column3d_cache_slot(mut scratch: ForceBeamColumn3dScratch, elem_index: Int):
     if elem_index < 0:
         return
     var needed = elem_index + 1
@@ -989,7 +963,7 @@ fn _ensure_force_beam_column3d_load_cache(
 
 @always_inline
 fn _fiber_section3d_response_flexibility(
-    resp: FiberSection3dResponse
+    resp: FiberSection3dResponse,
 ) -> (Bool, Float64, Float64, Float64, Float64, Float64, Float64):
     var inv_sec = _invert_3x3_values(
         resp.k11,
@@ -1326,9 +1300,8 @@ fn _force_beam_column3d_try_increment(
         var v_from_2 = 0.0
         var v_from_3 = 0.0
         var v_from_4 = 0.0
-        var use_initial_flex = (
-            use_initial_section_flexibility == 1
-            or (use_initial_section_flexibility == 2 and elem_iter == 0)
+        var use_initial_flex = use_initial_section_flexibility == 1 or (
+            use_initial_section_flexibility == 2 and elem_iter == 0
         )
         for ip in range(num_int_pts):
             var xi = scratch.integration_cache.xis[ip]
@@ -1425,9 +1398,7 @@ fn _force_beam_column3d_try_increment(
             )
 
         scratch.f_basic_copy_flat = scratch.f_basic_flat
-        if not _invert_5x5_flat_into(
-            scratch.f_basic_copy_flat, scratch.k_basic_flat
-        ):
+        if not _invert_5x5_flat_into(scratch.f_basic_copy_flat, scratch.k_basic_flat):
             return (False, 0.0, 0.0, 0.0, 0.0, 0.0)
 
         var residual_0 = target_v0 - v_from_0
@@ -1970,9 +1941,14 @@ fn force_beam_column3d_global_tangent_and_internal(
     var v_basic_3: Float64
     var v_basic_4: Float64
     var torsion_basic: Float64
-    (v_basic_0, v_basic_1, v_basic_2, v_basic_3, v_basic_4, torsion_basic) = (
-        _force_beam_column3d_basic_state(scratch.u_local, inv_L)
-    )
+    (
+        v_basic_0,
+        v_basic_1,
+        v_basic_2,
+        v_basic_3,
+        v_basic_4,
+        torsion_basic,
+    ) = _force_beam_column3d_basic_state(scratch.u_local, inv_L)
     var axial_k = E * A * inv_L
     var flex_z = E * Iz * inv_L
     var flex_y = E * Iy * inv_L
@@ -2014,9 +1990,7 @@ fn force_beam_column3d_global_tangent_and_internal(
         scratch.f_local[7] += fe7
         scratch.f_local[8] += fe9
     if geom_transf == "PDelta" or geom_transf == "Corotational":
-        _beam3d_add_axial_geometric_force(
-            scratch.f_local, scratch.u_local, q_basic_0, inv_L
-        )
+        _beam3d_add_axial_geometric_force(scratch.f_local, scratch.u_local, q_basic_0, inv_L)
 
     _beam3d_transform_stiffness_local_to_global_flat(
         scratch.R, scratch.k_local_flat, scratch.k_work_flat, k_global_out
@@ -2471,9 +2445,8 @@ fn force_beam_column3d_fiber_global_tangent_and_internal(
     var predictor_state_count = 5 + 3 * num_int_pts
     if force_basic_q_count < predictor_state_count:
         abort("forceBeamColumn3d basic force state count mismatch")
-    if (
-        force_basic_q_offset < 0
-        or force_basic_q_offset + predictor_state_count > len(force_basic_q_state)
+    if force_basic_q_offset < 0 or force_basic_q_offset + predictor_state_count > len(
+        force_basic_q_state
     ):
         abort("forceBeamColumn3d basic force state out of range")
 
@@ -2597,9 +2570,14 @@ fn force_beam_column3d_fiber_global_tangent_and_internal(
     var v_basic_3: Float64
     var v_basic_4: Float64
     var torsion_basic: Float64
-    (v_basic_0, v_basic_1, v_basic_2, v_basic_3, v_basic_4, torsion_basic) = (
-        _force_beam_column3d_basic_state(scratch.u_local, inv_L)
-    )
+    (
+        v_basic_0,
+        v_basic_1,
+        v_basic_2,
+        v_basic_3,
+        v_basic_4,
+        torsion_basic,
+    ) = _force_beam_column3d_basic_state(scratch.u_local, inv_L)
 
     var eps0_offset = force_basic_q_offset + 5
     var ky_offset = eps0_offset + num_int_pts
@@ -2771,9 +2749,7 @@ fn force_beam_column3d_fiber_global_tangent_and_internal(
         _beam3d_add_axial_geometric_stiffness_flat(scratch.k_local_flat, q0, inv_L)
 
     var q_basic_5 = torsion_k * torsion_basic
-    _beam3d_assemble_local_force_from_basic(
-        q0, q1, q2, q3, q4, q_basic_5, inv_L, scratch.f_local
-    )
+    _beam3d_assemble_local_force_from_basic(q0, q1, q2, q3, q4, q_basic_5, inv_L, scratch.f_local)
     if has_elem_loads:
         scratch.f_local[0] += fe5
         scratch.f_local[1] += fe6
@@ -2781,9 +2757,7 @@ fn force_beam_column3d_fiber_global_tangent_and_internal(
         scratch.f_local[7] += fe7
         scratch.f_local[8] += fe9
     if geom_transf == "PDelta" or geom_transf == "Corotational":
-        _beam3d_add_axial_geometric_force(
-            scratch.f_local, scratch.u_local, q0, inv_L
-        )
+        _beam3d_add_axial_geometric_force(scratch.f_local, scratch.u_local, q0, inv_L)
 
     _beam3d_transform_stiffness_local_to_global_flat(
         scratch.R, scratch.k_local_flat, scratch.k_work_flat, k_global_out

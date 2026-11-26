@@ -94,9 +94,7 @@ fn assemble_zero_length_damping_typed(
             continue
         if elem.damp_material_count <= 0:
             continue
-        _assemble_zero_length_damping_element(
-            elem, nodes, ndf, ndm, materials_by_id, C
-        )
+        _assemble_zero_length_damping_element(elem, nodes, ndf, ndm, materials_by_id, C)
 
 
 fn _find_damping_input(dampings: List[DampingInput], tag: Int) -> Int:
@@ -298,7 +296,9 @@ fn _zero_flat_prefix(mut values: List[Float64], count: Int):
         values[i] = 0.0
 
 
-fn assemble_zero_length_damping_sparse[S: ElementMatrixSink](
+fn assemble_zero_length_damping_sparse[
+    S: ElementMatrixSink
+](
     nodes: List[NodeInput],
     elements: List[ElementInput],
     materials_by_id: List[MaterialInput],
@@ -359,7 +359,9 @@ fn assemble_zero_length_damping_sparse[S: ElementMatrixSink](
         sink.add_element_matrix_flat(e, elem_free_pool, elem_free_offsets[e], n, k_flat)
 
 
-fn assemble_zero_length_damping_secstif_sparse[S: ElementMatrixSink](
+fn assemble_zero_length_damping_secstif_sparse[
+    S: ElementMatrixSink
+](
     nodes: List[NodeInput],
     elements: List[ElementInput],
     dampings: List[DampingInput],

@@ -13,7 +13,10 @@ What gets installed:
   sha256 of the wiki download (a single file or a zip) it came from. Each is
   copied into ``tests/fixtures/opensees/<path>``.
 * ``trees``: whole archives extracted into ``tests/fixtures/opensees/<path>``.
-  The mega-tall benchmark model is one.
+  None are pinned today.
+* The mega-tall benchmark model is generated, not downloaded:
+  ``scripts/megatall_recon/bundle.py`` rebuilds it from compact tables into
+  ``tests/fixtures/opensees/OpenSeesExamples/MegaTallBuildingBenchmark/Model1``.
 * ``git``: source trees cloned at a pinned commit into the cache and linked
   from ``docs/agent-reference/<path>``. These are OpenSees (matching the locked
   binary) and Modular (matching the Mojo version). An entry's ``links`` map
@@ -55,6 +58,9 @@ FIXTURE_ROOT = REPO_ROOT / "tests" / "fixtures" / "opensees"
 MANIFEST = FIXTURE_ROOT / "reference-data.lock.json"
 FIXTURE_GITIGNORE = FIXTURE_ROOT / ".gitignore"
 AGENT_REFERENCE = REPO_ROOT / "docs" / "agent-reference"
+
+# Fixture directories built locally by a generator instead of downloaded.
+GENERATED_FIXTURE_DIRS = ("OpenSeesExamples/MegaTallBuildingBenchmark",)
 
 # Wiki example directories that vendor-wiki syncs from a scrape.
 WIKI_EXAMPLE_DIRS = ("OpenSeesExamplesBasic", "OpenSeesExamplesAdvanced")
@@ -238,7 +244,11 @@ def install_file(entry: dict, sources: dict, downloader: Downloader) -> bool:
     source = sources[entry["source"]]
     blob = ensure_blob(entry["source"], source, downloader)
     member = entry.get("member")
-    data = blob.read_bytes() if member is None else read_member(blob, source["kind"], member)
+    data = (
+        blob.read_bytes()
+        if member is None
+        else read_member(blob, source["kind"], member)
+    )
     if sha256_bytes(data) != entry["sha256"]:
         die(f"{entry['path']}: extracted sha256 does not match the manifest")
     atomic_write(FIXTURE_ROOT / safe_relative(entry["path"]), data)
@@ -292,7 +302,10 @@ def git_cache_dir(entry: dict) -> Path:
 def ensure_git(entry: dict) -> Path:
     dest = git_cache_dir(entry)
     marker = dest / GIT_MARKER
-    if marker.is_file() and marker.read_text(encoding="utf-8").strip() == entry["commit"]:
+    if (
+        marker.is_file()
+        and marker.read_text(encoding="utf-8").strip() == entry["commit"]
+    ):
         return dest
     if dest.exists():
         shutil.rmtree(dest)
@@ -300,14 +313,26 @@ def ensure_git(entry: dict) -> Path:
     shutil.rmtree(staging, ignore_errors=True)
     log(f"cloning {entry['url']} at {entry['ref']} (shallow)")
     subprocess.run(
-        ["git", "-c", "advice.detachedHead=false", "clone", "--quiet",
-         "--depth", "1", "--branch", entry["ref"],
-         entry["url"], str(staging)],
+        [
+            "git",
+            "-c",
+            "advice.detachedHead=false",
+            "clone",
+            "--quiet",
+            "--depth",
+            "1",
+            "--branch",
+            entry["ref"],
+            entry["url"],
+            str(staging),
+        ],
         check=True,
     )
     head = subprocess.run(
         ["git", "-C", str(staging), "rev-parse", "HEAD"],
-        check=True, capture_output=True, text=True,
+        check=True,
+        capture_output=True,
+        text=True,
     ).stdout.strip()
     if head != entry["commit"]:
         shutil.rmtree(staging, ignore_errors=True)
@@ -327,8 +352,10 @@ def link_agent_reference(rel: str, target: Path) -> None:
             return
         link.unlink()
     elif link.exists():
-        log(f"leaving existing {link.relative_to(REPO_ROOT)} in place (not a link); "
-            "delete it to use the shared copy")
+        log(
+            f"leaving existing {link.relative_to(REPO_ROOT)} in place (not a link); "
+            "delete it to use the shared copy"
+        )
         return
     link.symlink_to(target, target_is_directory=target.is_dir())
 
@@ -340,8 +367,13 @@ def cmd_install(skip_agent_reference: bool) -> None:
     reference_cache().mkdir(parents=True, exist_ok=True)
     with open(reference_cache() / ".install.lock", "w") as lock_handle:
         fcntl.flock(lock_handle, fcntl.LOCK_EX)
-        written = sum(install_file(entry, sources, downloader) for entry in manifest["files"])
-        trees = sum(install_tree(entry, sources, downloader) for entry in manifest["trees"])
+        written = sum(
+            install_file(entry, sources, downloader) for entry in manifest["files"]
+        )
+        trees = sum(
+            install_tree(entry, sources, downloader) for entry in manifest["trees"]
+        )
+        megatall = megatall_bundle().ensure_bundle()
         if not skip_agent_reference:
             for entry in manifest["git"]:
                 tree = ensure_git(entry)
@@ -354,11 +386,23 @@ def cmd_install(skip_agent_reference: bool) -> None:
     log(
         f"fixtures: {len(manifest['files'])} files ({written} written), "
         f"{len(manifest['trees'])} trees ({trees} extracted); "
+        f"mega-tall model {'generated' if megatall else 'up to date'}; "
         f"{downloader.count} download(s); cache {reference_cache()}"
     )
-    problems = collect_problems(manifest, include_agent_reference=not skip_agent_reference)
+    problems = collect_problems(
+        manifest, include_agent_reference=not skip_agent_reference
+    )
     if problems:
         die("install incomplete:\n  " + "\n  ".join(problems))
+
+
+def megatall_bundle():
+    """The mega-tall model generator (imported lazily; it lives under scripts/)."""
+    if str(REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(REPO_ROOT))
+    from scripts.megatall_recon import bundle
+
+    return bundle
 
 
 def collect_problems(manifest: dict, include_agent_reference: bool) -> list[str]:
@@ -371,6 +415,11 @@ def collect_problems(manifest: dict, include_agent_reference: bool) -> list[str]
         status = tree_status(entry)
         if status:
             problems.append(f"tests/fixtures/opensees/{entry['path']}/: {status}")
+    bundle = megatall_bundle()
+    if not bundle.bundle_is_current():
+        problems.append(
+            f"{bundle.FIXTURE_DIR.relative_to(REPO_ROOT)}/: generated model missing or stale"
+        )
     if include_agent_reference:
         for entry in manifest["git"]:
             for name in [entry["path"], *entry.get("links", {})]:
@@ -396,17 +445,24 @@ def is_vendored(rel: PurePosixPath, size: int) -> bool:
 def cmd_vendor_wiki(scrape_root: Path) -> None:
     provenance_path = scrape_root / WIKI_PROVENANCE
     if not provenance_path.is_file():
-        die(f"{provenance_path} not found; scrape with "
-            "`uv run python scripts/setup-opensees-docs.py --root DIR` first")
+        die(
+            f"{provenance_path} not found; scrape with "
+            "`uv run python scripts/setup-opensees-docs.py --root DIR` first"
+        )
     provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
-    manifest = load_manifest() if MANIFEST.is_file() else {
-        "version": 1, "sources": {}, "files": [], "trees": [], "git": []}
+    manifest = (
+        load_manifest()
+        if MANIFEST.is_file()
+        else {"version": 1, "sources": {}, "files": [], "trees": [], "git": []}
+    )
 
     # Replace everything previously vendored from the wiki.
     for name in WIKI_EXAMPLE_DIRS:
         shutil.rmtree(FIXTURE_ROOT / name, ignore_errors=True)
     wiki_prefixes = tuple(f"{name}/" for name in WIKI_EXAMPLE_DIRS)
-    manifest["files"] = [e for e in manifest["files"] if not e["path"].startswith(wiki_prefixes)]
+    manifest["files"] = [
+        e for e in manifest["files"] if not e["path"].startswith(wiki_prefixes)
+    ]
 
     vendored = 0
     data_entries: dict[str, dict] = {}
@@ -427,7 +483,8 @@ def cmd_vendor_wiki(scrape_root: Path) -> None:
             source_sha = origin["url_sha256"]
             kind = "file" if origin["member"] is None else "zip"
             source = manifest["sources"].setdefault(
-                source_sha, {"kind": kind, "urls": [origin["url"]]})
+                source_sha, {"kind": kind, "urls": [origin["url"]]}
+            )
             if origin["url"] not in source["urls"]:
                 source["urls"].append(origin["url"])
             entry = {
@@ -455,8 +512,10 @@ def cmd_vendor_wiki(scrape_root: Path) -> None:
     manifest["sources"] = {k: v for k, v in manifest["sources"].items() if k in used}
     write_manifest(manifest)
     write_fixture_gitignore(manifest)
-    log(f"vendored {vendored} Tcl files; manifest lists {len(manifest['files'])} data files "
-        f"from {len(manifest['sources'])} sources")
+    log(
+        f"vendored {vendored} Tcl files; manifest lists {len(manifest['files'])} data files "
+        f"from {len(manifest['sources'])} sources"
+    )
 
 
 def write_fixture_gitignore(manifest: dict) -> None:
@@ -466,19 +525,29 @@ def write_fixture_gitignore(manifest: dict) -> None:
     ]
     lines += sorted(f"/{e['path']}" for e in manifest["files"])
     lines += sorted(f"/{e['path']}/" for e in manifest["trees"])
+    lines.append("# Generated by scripts/megatall_recon/bundle.py; not committed.")
+    lines += [f"/{path}/" for path in GENERATED_FIXTURE_DIRS]
     FIXTURE_GITIGNORE.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     sub = parser.add_subparsers(dest="command")
-    install = sub.add_parser("install", help="fetch and materialize everything (default)")
-    install.add_argument("--fixtures-only", action="store_true",
-                         help="skip docs/agent-reference (pinned source clones)")
+    install = sub.add_parser(
+        "install", help="fetch and materialize everything (default)"
+    )
+    install.add_argument(
+        "--fixtures-only",
+        action="store_true",
+        help="skip docs/agent-reference (pinned source clones)",
+    )
     check = sub.add_parser("check", help="report missing or mismatched data")
     check.add_argument("--fixtures-only", action="store_true")
-    vendor = sub.add_parser("vendor-wiki", help="maintainers: re-vendor from a wiki scrape")
+    vendor = sub.add_parser(
+        "vendor-wiki", help="maintainers: re-vendor from a wiki scrape"
+    )
     vendor.add_argument("--from", dest="scrape_root", type=Path, required=True)
     args = parser.parse_args()
 

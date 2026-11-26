@@ -335,9 +335,7 @@ def _analysis_stage_from_dict(stage: dict[str, Any]) -> AnalysisStage:
         analysis=Analysis(dict(stage["analysis"])),
         pattern=Pattern(dict(stage["pattern"])) if "pattern" in stage else None,
         loads=[Load(dict(load)) for load in stage.get("loads", [])],
-        element_loads=[
-            Load(dict(load)) for load in stage.get("element_loads", [])
-        ],
+        element_loads=[Load(dict(load)) for load in stage.get("element_loads", [])],
         load_const=dict(stage["load_const"]) if "load_const" in stage else None,
         rayleigh=dict(stage["rayleigh"]) if "rayleigh" in stage else None,
         time_series=[
@@ -396,7 +394,9 @@ class TclStrutBuilder:
         self.last_eigenvalues: list[float] = []
         self.last_error: Optional[TclToStrutError] = None
         self.pending_initialize = False
-        self.step_retry_policies_by_location: dict[tuple[Path, int], StepRetryPolicy] = {}
+        self.step_retry_policies_by_location: dict[
+            tuple[Path, int], StepRetryPolicy
+        ] = {}
         self.step_retry_policies_by_signature: dict[
             tuple[Path, tuple[str, ...]], list[StepRetryPolicy]
         ] = {}
@@ -432,7 +432,9 @@ class TclStrutBuilder:
         self.interp.createcommand("fixY", self._wrap_command(self._cmd_fix_y))
         self.interp.createcommand("fixZ", self._wrap_command(self._cmd_fix_z))
         self.interp.createcommand("mass", self._wrap_command(self._cmd_mass))
-        self.interp.createcommand("nDMaterial", self._wrap_command(self._cmd_nd_material))
+        self.interp.createcommand(
+            "nDMaterial", self._wrap_command(self._cmd_nd_material)
+        )
         self.interp.createcommand("equalDOF", self._wrap_command(self._cmd_equal_dof))
         self.interp.createcommand(
             "rigidDiaphragm", self._wrap_command(self._cmd_rigid_diaphragm)
@@ -440,33 +442,49 @@ class TclStrutBuilder:
         self.interp.createcommand(
             "uniaxialMaterial", self._wrap_command(self._cmd_uniaxial_material)
         )
-        self.interp.createcommand("geomTransf", self._wrap_command(self._cmd_geom_transf))
+        self.interp.createcommand(
+            "geomTransf", self._wrap_command(self._cmd_geom_transf)
+        )
         self.interp.createcommand("block2D", self._wrap_command(self._cmd_block_2d))
         self.interp.createcommand("element", self._wrap_command(self._cmd_element))
         self.interp.createcommand("recorder", self._wrap_command(self._cmd_recorder))
-        self.interp.createcommand("timeSeries", self._wrap_command(self._cmd_time_series))
+        self.interp.createcommand(
+            "timeSeries", self._wrap_command(self._cmd_time_series)
+        )
         self.interp.createcommand("pattern", self._wrap_command(self._cmd_pattern))
         self.interp.createcommand("load", self._wrap_command(self._cmd_load))
         self.interp.createcommand("eleLoad", self._wrap_command(self._cmd_ele_load))
-        self.interp.createcommand("constraints", self._wrap_command(self._cmd_constraints))
+        self.interp.createcommand(
+            "constraints", self._wrap_command(self._cmd_constraints)
+        )
         self.interp.createcommand("numberer", self._wrap_command(self._cmd_numberer))
         self.interp.createcommand("system", self._wrap_command(self._cmd_system))
         self.interp.createcommand("test", self._wrap_command(self._cmd_test))
         self.interp.createcommand("algorithm", self._wrap_command(self._cmd_algorithm))
-        self.interp.createcommand("integrator", self._wrap_command(self._cmd_integrator))
-        self.interp.createcommand("initialize", self._wrap_command(self._cmd_initialize))
+        self.interp.createcommand(
+            "integrator", self._wrap_command(self._cmd_integrator)
+        )
+        self.interp.createcommand(
+            "initialize", self._wrap_command(self._cmd_initialize)
+        )
         self.interp.createcommand("analysis", self._wrap_command(self._cmd_analysis))
         self.interp.createcommand("analyze", self._wrap_command(self._cmd_analyze))
         self.interp.createcommand("getTime", self._wrap_command(self._cmd_get_time))
-        self.interp.createcommand("nodeBounds", self._wrap_command(self._cmd_node_bounds))
+        self.interp.createcommand(
+            "nodeBounds", self._wrap_command(self._cmd_node_bounds)
+        )
         self.interp.createcommand("nodeDisp", self._wrap_command(self._cmd_node_disp))
-        self.interp.createcommand("nodeReaction", self._wrap_command(self._cmd_node_reaction))
+        self.interp.createcommand(
+            "nodeReaction", self._wrap_command(self._cmd_node_reaction)
+        )
         self.interp.createcommand(
             "nodeEigenvector", self._wrap_command(self._cmd_node_eigenvector)
         )
         self.interp.createcommand("loadConst", self._wrap_command(self._cmd_load_const))
         self.interp.createcommand("setTime", self._wrap_command(self._cmd_set_time))
-        self.interp.createcommand("wipeAnalysis", self._wrap_command(self._cmd_wipe_analysis))
+        self.interp.createcommand(
+            "wipeAnalysis", self._wrap_command(self._cmd_wipe_analysis)
+        )
         self.interp.createcommand("eigen", self._wrap_command(self._cmd_eigen))
         self.interp.createcommand("rayleigh", self._wrap_command(self._cmd_rayleigh))
         self.interp.createcommand("section", self._wrap_command(self._cmd_section))
@@ -525,7 +543,9 @@ class TclStrutBuilder:
             raise TclToStrutError(str(exc), location) from exc
 
         if self.model is None:
-            raise TclToStrutError("model was never defined", self._current_location("model", []))
+            raise TclToStrutError(
+                "model was never defined", self._current_location("model", [])
+            )
         if not self.analysis_stages:
             raise TclToStrutError(
                 "no analysis stages were produced",
@@ -547,9 +567,7 @@ class TclStrutBuilder:
             metadata=Metadata(name=slug, units="unknown"),
             model=Model(ndm=int(self.model["ndm"]), ndf=int(self.model["ndf"])),
             source_example=rel_entry,
-            nodes=[
-                Node(self.nodes[node_id]) for node_id in sorted(self.nodes)
-            ],
+            nodes=[Node(self.nodes[node_id]) for node_id in sorted(self.nodes)],
             materials=[Material(material) for material in self.materials],
             sections=[Section(section) for section in self.sections],
             elements=[Element(element) for element in self.elements],
@@ -751,7 +769,9 @@ class TclStrutBuilder:
             "wipe",
             "wipeAnalysis",
         } | set(SUPPORTED_TCL_BUILTINS)
-        commands = self.interp.tk.splitlist(self.interp.tk.call("::strut::_info_builtin", "commands"))
+        commands = self.interp.tk.splitlist(
+            self.interp.tk.call("::strut::_info_builtin", "commands")
+        )
         for command_name in sorted(str(name) for name in commands):
             if "::" in command_name:
                 continue
@@ -763,7 +783,9 @@ class TclStrutBuilder:
                 f"::strut::_disabled_{command_name}",
             )
 
-    def _error(self, reason: str, command: str, args: tuple[str, ...]) -> TclToStrutError:
+    def _error(
+        self, reason: str, command: str, args: tuple[str, ...]
+    ) -> TclToStrutError:
         return TclToStrutError(reason, self._current_location(command, list(args)))
 
     def _eval_tcl(self, script: str, command: str, args: tuple[str, ...]) -> str:
@@ -780,10 +802,14 @@ class TclStrutBuilder:
         return self.model
 
     def _sync_materials(self) -> None:
-        self.materials = [self.materials_by_id[key] for key in sorted(self.materials_by_id)]
+        self.materials = [
+            self.materials_by_id[key] for key in sorted(self.materials_by_id)
+        ]
 
     def _sync_sections(self) -> None:
-        self.sections = [self.sections_by_id[key] for key in sorted(self.sections_by_id)]
+        self.sections = [
+            self.sections_by_id[key] for key in sorted(self.sections_by_id)
+        ]
 
     def _upsert_material(self, entry: dict[str, Any]) -> None:
         if entry.get("type") == "Elastic":
@@ -815,7 +841,9 @@ class TclStrutBuilder:
             if int(element.get("section", -1)) == section_id:
                 element["section"] = new_id
 
-    def _upsert_section(self, entry: dict[str, Any], *, generated: bool = False) -> None:
+    def _upsert_section(
+        self, entry: dict[str, Any], *, generated: bool = False
+    ) -> None:
         section_id = int(entry["id"])
         if not generated and section_id in self.generated_section_ids:
             self._reassign_generated_section_id(section_id)
@@ -829,7 +857,9 @@ class TclStrutBuilder:
     def _register_time_series_entry(self, entry: dict[str, Any]) -> int:
         tag = int(entry["tag"])
         self.time_series_by_tag[tag] = entry
-        self.time_series = [self.time_series_by_tag[key] for key in sorted(self.time_series_by_tag)]
+        self.time_series = [
+            self.time_series_by_tag[key] for key in sorted(self.time_series_by_tag)
+        ]
         return tag
 
     def _next_time_series_tag(self) -> int:
@@ -1051,7 +1081,11 @@ class TclStrutBuilder:
                     tuple(parts),
                 )
         if "dt" not in options or "values_path" not in options:
-            raise self._error("inline acceleration series requires -dt and -filePath", "pattern", tuple(parts))
+            raise self._error(
+                "inline acceleration series requires -dt and -filePath",
+                "pattern",
+                tuple(parts),
+            )
         return options
 
     def _append_recorder(self, recorder: dict[str, Any]) -> None:
@@ -1107,7 +1141,9 @@ class TclStrutBuilder:
             return None
         return width
 
-    def _envelope_node_width(self, dofs: list[int], include_time: bool) -> Optional[int]:
+    def _envelope_node_width(
+        self, dofs: list[int], include_time: bool
+    ) -> Optional[int]:
         if not dofs:
             return None
         return len(dofs)
@@ -1147,7 +1183,9 @@ class TclStrutBuilder:
             return self.material_ids_by_e[e_value]
         material_id = len(self.materials) + 1
         self.material_ids_by_e[e_value] = material_id
-        self._upsert_material({"id": material_id, "type": "Elastic", "params": {"E": e_value}})
+        self._upsert_material(
+            {"id": material_id, "type": "Elastic", "params": {"E": e_value}}
+        )
         return material_id
 
     def _register_section(self, area: float, e_value: float, inertia: float) -> int:
@@ -1200,7 +1238,11 @@ class TclStrutBuilder:
         return section_id
 
     def _validate_beam_integration(
-        self, element_type: str, integration: str, num_int_pts: int, args: tuple[str, ...]
+        self,
+        element_type: str,
+        integration: str,
+        num_int_pts: int,
+        args: tuple[str, ...],
     ) -> None:
         min_points = _BEAM_INTEGRATION_MIN_POINTS.get(integration)
         if min_points is None:
@@ -1289,7 +1331,9 @@ class TclStrutBuilder:
         if not args:
             raise self._error("unknown command", "unknown", args)
         command = args[0]
-        raise self._error(f"unsupported Tcl/OpenSees command `{command}`", command, args[1:])
+        raise self._error(
+            f"unsupported Tcl/OpenSees command `{command}`", command, args[1:]
+        )
 
     def _cmd_noop(self, *args: str) -> str:
         return ""
@@ -1419,7 +1463,9 @@ class TclStrutBuilder:
             settings: dict[str, Any] = {
                 "fallback_test_type": command_words[1],
                 "fallback_tol": self._resolve_numeric_token(command_words[2]),
-                "fallback_max_iters": int(self._resolve_numeric_token(command_words[3])),
+                "fallback_max_iters": int(
+                    self._resolve_numeric_token(command_words[3])
+                ),
             }
         except (ValueError, tkinter.TclError):
             return None
@@ -1437,7 +1483,11 @@ class TclStrutBuilder:
     def _parse_algorithm_settings(
         self, command_words: tuple[str, ...]
     ) -> Optional[dict[str, Any]]:
-        if not command_words or command_words[0] != "algorithm" or len(command_words) < 2:
+        if (
+            not command_words
+            or command_words[0] != "algorithm"
+            or len(command_words) < 2
+        ):
             return None
         algorithm_args = command_words[1:]
         settings: dict[str, Any] = {
@@ -1471,7 +1521,9 @@ class TclStrutBuilder:
 
     def _subst_variables_only(self, script: str) -> str:
         try:
-            return str(self.interp.call("subst", "-nocommands", "-nobackslashes", script))
+            return str(
+                self.interp.call("subst", "-nocommands", "-nobackslashes", script)
+            )
         except tkinter.TclError:
             return script
 
@@ -1542,7 +1594,9 @@ class TclStrutBuilder:
             if body_words[0] == "while" and len(body_words) >= 3:
                 pending_attempt = {}
                 loop_body = body_words[2]
-                if not self._script_contains_analyze_assignment(loop_body, result_var, ("1",)):
+                if not self._script_contains_analyze_assignment(
+                    loop_body, result_var, ("1",)
+                ):
                     continue
                 continue_after_failure = True
                 nested_policy = self._build_step_retry_policy_from_if_body(
@@ -1609,7 +1663,10 @@ class TclStrutBuilder:
 
     def _register_source_step_retry_policies(self, path: Path) -> None:
         resolved = path.resolve()
-        if any(policy_path == resolved for policy_path, _ in self.step_retry_policies_by_location):
+        if any(
+            policy_path == resolved
+            for policy_path, _ in self.step_retry_policies_by_location
+        ):
             return
         lines = resolved.read_text(encoding="utf-8").splitlines()
         idx = 0
@@ -1739,7 +1796,11 @@ class TclStrutBuilder:
                 continue
             if not current.is_dir():
                 return path
-            matches = [child for child in current.iterdir() if child.name.lower() == part.lower()]
+            matches = [
+                child
+                for child in current.iterdir()
+                if child.name.lower() == part.lower()
+            ]
             if len(matches) != 1:
                 return path
             current = matches[0]
@@ -1779,7 +1840,9 @@ class TclStrutBuilder:
             return peer_candidates[0]
         return resolved
 
-    def _resolve_io_path(self, raw_path: str, command: str, args: tuple[str, ...]) -> Path:
+    def _resolve_io_path(
+        self, raw_path: str, command: str, args: tuple[str, ...]
+    ) -> Path:
         path = Path(raw_path)
         resolved = (
             (self._current_base_dir() / path).resolve()
@@ -1791,7 +1854,11 @@ class TclStrutBuilder:
         allowed_roots.update(path.parent for path in self.source_stack)
         if any(self._path_is_within(resolved, root) for root in allowed_roots):
             return resolved
-        raise self._error(f"access outside the restricted Tcl roots is not allowed: {resolved}", command, args)
+        raise self._error(
+            f"access outside the restricted Tcl roots is not allowed: {resolved}",
+            command,
+            args,
+        )
 
     def _cmd_open(self, *args: str) -> str:
         if len(args) not in {1, 2}:
@@ -1804,7 +1871,9 @@ class TclStrutBuilder:
             resolved = self._resolve_peer_motion_alias_path(resolved)
         if mode == "w":
             resolved.parent.mkdir(parents=True, exist_ok=True)
-        channel = str(self.interp.tk.call("::strut::_open_builtin", str(resolved), mode))
+        channel = str(
+            self.interp.tk.call("::strut::_open_builtin", str(resolved), mode)
+        )
         self.open_channels.add(channel)
         return channel
 
@@ -1813,7 +1882,11 @@ class TclStrutBuilder:
             raise self._error("read expects `read channel ?numChars?`", "read", args)
         channel = args[0]
         if channel not in self.open_channels:
-            raise self._error(f"read requires a channel opened by this runtime: {channel}", "read", args)
+            raise self._error(
+                f"read requires a channel opened by this runtime: {channel}",
+                "read",
+                args,
+            )
         if len(args) == 1:
             return str(self.interp.tk.call("::strut::_read_builtin", channel))
         return str(self.interp.tk.call("::strut::_read_builtin", channel, int(args[1])))
@@ -1823,7 +1896,11 @@ class TclStrutBuilder:
             raise self._error("close expects exactly one channel", "close", args)
         channel = args[0]
         if channel not in self.open_channels:
-            raise self._error(f"close requires a channel opened by this runtime: {channel}", "close", args)
+            raise self._error(
+                f"close requires a channel opened by this runtime: {channel}",
+                "close",
+                args,
+            )
         self.interp.tk.call("::strut::_close_builtin", channel)
         self.open_channels.discard(channel)
         return ""
@@ -1835,7 +1912,9 @@ class TclStrutBuilder:
 
     def _cmd_variable(self, *args: str) -> str:
         if not args:
-            raise self._error("variable expects at least one argument", "variable", args)
+            raise self._error(
+                "variable expects at least one argument", "variable", args
+            )
         if len(args) == 1:
             value = self.interp.getvar(args[0])
             return "" if value is None else str(value)
@@ -1860,7 +1939,9 @@ class TclStrutBuilder:
 
     def _cmd_exit(self, *args: str) -> str:
         if args:
-            raise self._error("exit takes no arguments in the restricted runtime", "exit", args)
+            raise self._error(
+                "exit takes no arguments in the restricted runtime", "exit", args
+            )
         return ""
 
     def _cmd_file(self, *args: str) -> str:
@@ -1941,7 +2022,9 @@ class TclStrutBuilder:
 
     def _cmd_model(self, *args: str) -> str:
         if len(args) != 5 or args[1] != "-ndm" or args[3] != "-ndf":
-            raise self._error("expected `model basic -ndm <ndm> -ndf <ndf>`", "model", args)
+            raise self._error(
+                "expected `model basic -ndm <ndm> -ndf <ndf>`", "model", args
+            )
         builder_type = self._normalize_alias("model", args[0])
         if builder_type != "basic":
             raise self._error(
@@ -1963,7 +2046,10 @@ class TclStrutBuilder:
                 args,
             )
         if len(args) > coord_count:
-            if args[coord_count] != "-mass" or len(args) != coord_count + 1 + model["ndf"]:
+            if (
+                args[coord_count] != "-mass"
+                or len(args) != coord_count + 1 + model["ndf"]
+            ):
                 raise self._error(
                     f"{ndm}D node optional mass expects `-mass m1 ...` matching ndf",
                     "node",
@@ -1993,7 +2079,9 @@ class TclStrutBuilder:
         node["constraints"] = constraints
         return ""
 
-    def _apply_node_constraints(self, node: dict[str, Any], fixities: list[int]) -> None:
+    def _apply_node_constraints(
+        self, node: dict[str, Any], fixities: list[int]
+    ) -> None:
         constraints = set(int(value) for value in node.get("constraints", []))
         for dof, flag in enumerate(fixities, start=1):
             if flag != 0:
@@ -2014,11 +2102,15 @@ class TclStrutBuilder:
         fixity_tokens = list(args[1:])
         if len(fixity_tokens) == ndf + 2:
             if fixity_tokens[-2] != "-tol":
-                raise self._error(f"{command} optional tail must be `-tol value`", command, args)
+                raise self._error(
+                    f"{command} optional tail must be `-tol value`", command, args
+                )
             tol = float(fixity_tokens[-1])
             fixity_tokens = fixity_tokens[:-2]
         if len(fixity_tokens) != ndf:
-            raise self._error(f"{command} fixity count does not match ndf", command, args)
+            raise self._error(
+                f"{command} fixity count does not match ndf", command, args
+            )
         target = float(args[0])
         fixities = [int(value) for value in fixity_tokens]
         for node in self.nodes.values():
@@ -2063,7 +2155,17 @@ class TclStrutBuilder:
             params = {"E": float(args[2]), "nu": float(args[3]), "rho": 0.0}
             if len(args) == 5:
                 params["rho"] = float(args[4])
-            self._upsert_material({"id": tag, "type": "ElasticIsotropic", "params": params})
+            self._upsert_material(
+                {"id": tag, "type": "ElasticIsotropic", "params": params}
+            )
+            return ""
+        if material_type == "ConcreteS":
+            if len(args) != 7:
+                raise self._error(
+                    "ConcreteS expects `tag E nu fc ft Es`", "nDMaterial", args
+                )
+            params = dict(zip(("E", "nu", "fc", "ft", "Es"), map(float, args[2:])))
+            self._upsert_material({"id": tag, "type": "ConcreteS", "params": params})
             return ""
         if material_type == "PlaneStressUserMaterial":
             if len(args) < 5:
@@ -2130,7 +2232,9 @@ class TclStrutBuilder:
 
     def _cmd_equal_dof(self, *args: str) -> str:
         if len(args) < 3:
-            raise self._error("equalDOF expects retained constrained dofs...", "equalDOF", args)
+            raise self._error(
+                "equalDOF expects retained constrained dofs...", "equalDOF", args
+            )
         self.mp_constraints.append(
             {
                 "type": "equalDOF",
@@ -2153,7 +2257,9 @@ class TclStrutBuilder:
         retained_node = int(args[1])
         constrained_nodes = [int(value) for value in args[2:]]
         if retained_node not in self.nodes:
-            raise self._error("rigidDiaphragm retained_node not found", "rigidDiaphragm", args)
+            raise self._error(
+                "rigidDiaphragm retained_node not found", "rigidDiaphragm", args
+            )
         if retained_node in constrained_nodes:
             raise self._error(
                 "rigidDiaphragm retained_node cannot also be constrained",
@@ -2263,7 +2369,9 @@ class TclStrutBuilder:
 
     def _cmd_uniaxial_material(self, *args: str) -> str:
         if len(args) < 2:
-            raise self._error("uniaxialMaterial expects type and tag", "uniaxialMaterial", args)
+            raise self._error(
+                "uniaxialMaterial expects type and tag", "uniaxialMaterial", args
+            )
         mat_type = args[0]
         tag = int(args[1])
         if mat_type == "Elastic":
@@ -2329,7 +2437,9 @@ class TclStrutBuilder:
             raise self._error("geomTransf expects type and tag", "geomTransf", args)
         geom_type = args[0]
         if geom_type not in {"Linear", "PDelta", "Corotational"}:
-            raise self._error(f"unsupported geomTransf `{geom_type}`", "geomTransf", args)
+            raise self._error(
+                f"unsupported geomTransf `{geom_type}`", "geomTransf", args
+            )
         vecxz: Optional[tuple[float, float, float]] = None
         if len(args) >= 5:
             vecxz = (float(args[2]), float(args[3]), float(args[4]))
@@ -2408,7 +2518,9 @@ class TclStrutBuilder:
                     args,
                 )
 
-            section_output_type = "FiberSection3d" if int(model["ndm"]) == 3 else "FiberSection2d"
+            section_output_type = (
+                "FiberSection3d" if int(model["ndm"]) == 3 else "FiberSection2d"
+            )
             self.current_section = PendingFiberSection(
                 id=tag,
                 section_type=section_output_type,
@@ -2518,12 +2630,18 @@ class TclStrutBuilder:
                             "section",
                             args,
                         )
-                    torsion_rigidity = self._material_modulus(int(params["torsion_material"]))
+                    torsion_rigidity = self._material_modulus(
+                        int(params["torsion_material"])
+                    )
                     self._upsert_section(
-                        self._clone_section_with_torsion(tag, base_section, torsion_rigidity)
+                        self._clone_section_with_torsion(
+                            tag, base_section, torsion_rigidity
+                        )
                     )
                     return ""
-            self._upsert_section({"id": tag, "type": "AggregatorSection2d", "params": params})
+            self._upsert_section(
+                {"id": tag, "type": "AggregatorSection2d", "params": params}
+            )
             return ""
         if section_type == "ElasticMembranePlateSection":
             if len(args) < 6:
@@ -2541,7 +2659,11 @@ class TclStrutBuilder:
             if len(args) > 6:
                 params["Ep_mod"] = float(args[6])
             self._upsert_section(
-                {"id": int(args[1]), "type": "ElasticMembranePlateSection", "params": params}
+                {
+                    "id": int(args[1]),
+                    "type": "ElasticMembranePlateSection",
+                    "params": params,
+                }
             )
             return ""
         if section_type == "LayeredShell":
@@ -2594,7 +2716,9 @@ class TclStrutBuilder:
 
     def _cmd_patch(self, *args: str) -> str:
         if self.current_section is None:
-            raise self._error("patch is only supported inside a Fiber section", "patch", args)
+            raise self._error(
+                "patch is only supported inside a Fiber section", "patch", args
+            )
         patch_type = args[0]
         if patch_type == "rect":
             self.current_section.patches.append(
@@ -2632,7 +2756,9 @@ class TclStrutBuilder:
 
     def _cmd_layer(self, *args: str) -> str:
         if self.current_section is None:
-            raise self._error("layer is only supported inside a Fiber section", "layer", args)
+            raise self._error(
+                "layer is only supported inside a Fiber section", "layer", args
+            )
         if args[0] != "straight":
             raise self._error(f"unsupported layer type `{args[0]}`", "layer", args)
         self.current_section.layers.append(
@@ -2651,7 +2777,9 @@ class TclStrutBuilder:
 
     def _cmd_fiber(self, *args: str) -> str:
         if self.current_section is None:
-            raise self._error("fiber is only supported inside a Fiber section", "fiber", args)
+            raise self._error(
+                "fiber is only supported inside a Fiber section", "fiber", args
+            )
         if len(args) != 4:
             raise self._error("fiber expects `y z A matTag`", "fiber", args)
         self.current_section.fibers.append(
@@ -2669,7 +2797,9 @@ class TclStrutBuilder:
             return "PlaneStress"
         if formulation in {"PlaneStrain", "PlaneStrain2D"}:
             return "PlaneStrain"
-        raise self._error(f"unsupported quad formulation `{formulation}`", "block2D", (formulation,))
+        raise self._error(
+            f"unsupported quad formulation `{formulation}`", "block2D", (formulation,)
+        )
 
     def _block_2d_fill_geometry_nodes(
         self, corners: dict[int, tuple[float, ...]]
@@ -2684,7 +2814,12 @@ class TclStrutBuilder:
         if 9 not in filled:
             filled[9] = tuple(
                 0.25
-                * (filled[1][axis] + filled[2][axis] + filled[3][axis] + filled[4][axis])
+                * (
+                    filled[1][axis]
+                    + filled[2][axis]
+                    + filled[3][axis]
+                    + filled[4][axis]
+                )
                 for axis in range(len(filled[1]))
             )
         return filled
@@ -2713,7 +2848,12 @@ class TclStrutBuilder:
         ]
 
     def _block_2d_nodal_coords(
-        self, i: int, j: int, nx: int, ny: int, geometry_nodes: dict[int, tuple[float, ...]]
+        self,
+        i: int,
+        j: int,
+        nx: int,
+        ny: int,
+        geometry_nodes: dict[int, tuple[float, ...]],
     ) -> tuple[float, ...]:
         x_value = -1.0 + (2.0 * i / nx if nx > 0 else 0.0)
         y_value = -1.0 + (2.0 * j / ny if ny > 0 else 0.0)
@@ -2726,7 +2866,9 @@ class TclStrutBuilder:
                 coords[axis] += factor * point[axis]
         return tuple(coords)
 
-    def _block_2d_element_nodes(self, i: int, j: int, nx: int, num_nodes: int) -> list[int]:
+    def _block_2d_element_nodes(
+        self, i: int, j: int, nx: int, num_nodes: int
+    ) -> list[int]:
         nenx = nx + 1
         if num_nodes == 4:
             node_1 = i + j * nenx
@@ -2769,7 +2911,9 @@ class TclStrutBuilder:
         if len(ele_arg_tokens) < 1:
             raise self._error("block2D missing element arguments", "block2D", args)
         if num_ele_nodes not in {4, 9}:
-            raise self._error("block2D only supports `-numEleNodes 4|9`", "block2D", args)
+            raise self._error(
+                "block2D only supports `-numEleNodes 4|9`", "block2D", args
+            )
         if num_ele_nodes == 9:
             raise self._error(
                 "block2D `-numEleNodes 9` is not supported by the Strut case schema yet",
@@ -2793,7 +2937,9 @@ class TclStrutBuilder:
                 )
             node_id = int(parts[0])
             if node_id < 1 or node_id > 9:
-                raise self._error("block2D geometry node ids must be in 1..9", "block2D", args)
+                raise self._error(
+                    "block2D geometry node ids must be in 1..9", "block2D", args
+                )
             corners[node_id] = tuple(float(value) for value in parts[1:])
         if any(node_id not in corners for node_id in (1, 2, 3, 4)):
             raise self._error("block2D requires corner points 1..4", "block2D", args)
@@ -2806,7 +2952,9 @@ class TclStrutBuilder:
         output_element_type: Optional[str] = None
         if element_type in {"quad", "stdQuad"}:
             if model["ndm"] != 2 or model["ndf"] != 2:
-                raise self._error("quad block2D requires a 2D solid model", "block2D", args)
+                raise self._error(
+                    "quad block2D requires a 2D solid model", "block2D", args
+                )
             if len(ele_arg_tokens) != 3:
                 raise self._error(
                     "quad block2D expects `thickness formulation material`",
@@ -2819,7 +2967,9 @@ class TclStrutBuilder:
             output_element_type = "fourNodeQuad"
         elif element_type in {"bbarQuad", "mixedQuad"}:
             if model["ndm"] != 2 or model["ndf"] != 2:
-                raise self._error("bbarQuad block2D requires a 2D solid model", "block2D", args)
+                raise self._error(
+                    "bbarQuad block2D requires a 2D solid model", "block2D", args
+                )
             if len(ele_arg_tokens) != 2:
                 raise self._error(
                     f"{element_type} block2D expects `thickness material`",
@@ -2831,13 +2981,17 @@ class TclStrutBuilder:
             output_element_type = "bbarQuad"
         elif element_type in {"shell", "Shell", "shellMITC4", "ShellMITC4"}:
             if model["ndm"] != 3 or model["ndf"] != 6:
-                raise self._error("shell block2D requires a 3D shell model", "block2D", args)
+                raise self._error(
+                    "shell block2D requires a 3D shell model", "block2D", args
+                )
             if len(ele_arg_tokens) != 1:
                 raise self._error("shell block2D expects `section`", "block2D", args)
             section_id = int(ele_arg_tokens[0])
             output_element_type = "shell"
         else:
-            raise self._error(f"unsupported block2D element type `{element_type}`", "block2D", args)
+            raise self._error(
+                f"unsupported block2D element type `{element_type}`", "block2D", args
+            )
 
         stride = nx + 1
         for j in range(ny + 1):
@@ -2853,7 +3007,11 @@ class TclStrutBuilder:
             for i in range(nx):
                 local_nodes = self._block_2d_element_nodes(i, j, nx, num_ele_nodes)
                 nodes = [start_node + node_index for node_index in local_nodes]
-                element = {"id": start_ele + j * nx + i, "type": output_element_type, "nodes": nodes}
+                element = {
+                    "id": start_ele + j * nx + i,
+                    "type": output_element_type,
+                    "nodes": nodes,
+                }
                 if output_element_type in {"fourNodeQuad", "bbarQuad"}:
                     element["material"] = material_id
                     element["thickness"] = thickness
@@ -2897,7 +3055,9 @@ class TclStrutBuilder:
                     )
                 geom = self.geom_transforms.get(transf_tag)
                 if geom is None:
-                    raise self._error(f"geomTransf tag {transf_tag} not defined", "element", args)
+                    raise self._error(
+                        f"geomTransf tag {transf_tag} not defined", "element", args
+                    )
                 element = {
                     "id": elem_id,
                     "type": "elasticBeamColumn3d",
@@ -2916,7 +3076,9 @@ class TclStrutBuilder:
             transf_tag = int(args[7])
             geom = self.geom_transforms.get(transf_tag)
             if geom is None:
-                raise self._error(f"geomTransf tag {transf_tag} not defined", "element", args)
+                raise self._error(
+                    f"geomTransf tag {transf_tag} not defined", "element", args
+                )
             section_id = self._register_section(area, e_value, inertia)
             element = {
                 "id": elem_id,
@@ -2952,7 +3114,9 @@ class TclStrutBuilder:
             self._validate_beam_integration(output_type, integration, num_int_pts, args)
             geom = self.geom_transforms.get(transf_tag)
             if geom is None:
-                raise self._error(f"geomTransf tag {transf_tag} not defined", "element", args)
+                raise self._error(
+                    f"geomTransf tag {transf_tag} not defined", "element", args
+                )
             ndim = int(model["ndm"])
             output_type = f"{output_type}{ndim}d"
             element = {
@@ -2977,7 +3141,9 @@ class TclStrutBuilder:
                 section_id = int(args[4])
                 section = self.sections_by_id.get(section_id)
                 if section is None:
-                    raise self._error(f"section {section_id} not found", "element", args)
+                    raise self._error(
+                        f"section {section_id} not found", "element", args
+                    )
                 if section.get("type") != "ElasticSection2d":
                     raise self._error(
                         "truss section syntax currently requires section Elastic",
@@ -3125,7 +3291,9 @@ class TclStrutBuilder:
             elif token == "-wipe":
                 idx += 1
             else:
-                raise self._error(f"unsupported recorder flag `{token}`", "recorder", args)
+                raise self._error(
+                    f"unsupported recorder flag `{token}`", "recorder", args
+                )
         return options, args[idx:]
 
     def _cmd_recorder(self, *args: str) -> str:
@@ -3145,7 +3313,9 @@ class TclStrutBuilder:
             nodes = options.get("node") or []
             dofs = options.get("dof") or []
             if not remainder:
-                raise self._error("Node recorder response is required", "recorder", args)
+                raise self._error(
+                    "Node recorder response is required", "recorder", args
+                )
             kind = remainder[0]
             if kind == "disp":
                 rec_type = "node_displacement"
@@ -3176,16 +3346,22 @@ class TclStrutBuilder:
             elif kind == "eigen" or kind.startswith("eigen "):
                 return ""
             else:
-                raise self._error(f"unsupported Node recorder response `{kind}`", "recorder", args)
+                raise self._error(
+                    f"unsupported Node recorder response `{kind}`", "recorder", args
+                )
             return ""
 
         if recorder_type == "EnvelopeNode":
             nodes = options.get("node") or []
             dofs = options.get("dof") or []
             if not remainder:
-                raise self._error("EnvelopeNode recorder response is required", "recorder", args)
+                raise self._error(
+                    "EnvelopeNode recorder response is required", "recorder", args
+                )
             if not nodes or not dofs:
-                raise self._error("EnvelopeNode recorder requires -node and -dof", "recorder", args)
+                raise self._error(
+                    "EnvelopeNode recorder requires -node and -dof", "recorder", args
+                )
             kind = remainder[0]
             if kind == "disp":
                 rec_type = "envelope_node_displacement"
@@ -3229,7 +3405,9 @@ class TclStrutBuilder:
             i_nodes = options.get("iNode") or []
             j_nodes = options.get("jNode") or []
             if not i_nodes or not j_nodes:
-                raise self._error("Drift recorder requires -iNode and -jNode", "recorder", args)
+                raise self._error(
+                    "Drift recorder requires -iNode and -jNode", "recorder", args
+                )
             if len(i_nodes) != len(j_nodes):
                 raise self._error(
                     "Drift recorder requires matching -iNode and -jNode counts",
@@ -3254,18 +3432,26 @@ class TclStrutBuilder:
         if recorder_type == "Element":
             element_by_id = {int(element["id"]): element for element in self.elements}
             known_elements = {int(element["id"]) for element in self.elements}
-            elements = [elem_id for elem_id in (options.get("ele") or []) if elem_id in known_elements]
+            elements = [
+                elem_id
+                for elem_id in (options.get("ele") or [])
+                if elem_id in known_elements
+            ]
             if not elements:
                 return ""
             if not remainder:
-                raise self._error("Element recorder response is required", "recorder", args)
+                raise self._error(
+                    "Element recorder response is required", "recorder", args
+                )
             kind = remainder[0]
             if kind in {"force", "forces", "globalForce"}:
                 rec_type = "element_force"
             elif kind == "localForce":
                 rec_type = "element_local_force"
             elif kind in {"basicForce", "basicForces"}:
-                if all(element_by_id[elem_id]["type"] == "truss" for elem_id in elements):
+                if all(
+                    element_by_id[elem_id]["type"] == "truss" for elem_id in elements
+                ):
                     return ""
                 rec_type = "element_basic_force"
             elif kind in {
@@ -3284,7 +3470,9 @@ class TclStrutBuilder:
                 response = remainder[2]
                 if response == "fiber":
                     return ""
-                rec_type = "section_force" if response == "force" else "section_deformation"
+                rec_type = (
+                    "section_force" if response == "force" else "section_deformation"
+                )
                 for elem_id in elements:
                     self._append_recorder(
                         {
@@ -3298,7 +3486,9 @@ class TclStrutBuilder:
                     )
                 return ""
             else:
-                raise self._error(f"unsupported Element recorder response `{kind}`", "recorder", args)
+                raise self._error(
+                    f"unsupported Element recorder response `{kind}`", "recorder", args
+                )
             for elem_id in elements:
                 recorder = {
                     "type": rec_type,
@@ -3307,11 +3497,9 @@ class TclStrutBuilder:
                     "raw_path": raw_file,
                     "include_time": include_time,
                 }
-                if (
-                    rec_type == "element_deformation"
-                    and element_by_id[elem_id]["type"]
-                    in {"elasticBeamColumn2d", "elasticBeamColumn3d"}
-                ):
+                if rec_type == "element_deformation" and element_by_id[elem_id][
+                    "type"
+                ] in {"elasticBeamColumn2d", "elasticBeamColumn3d"}:
                     # Elastic beam-column direct Tcl references from OpenSees examples
                     # can be blank because the upstream response aliasing is inconsistent.
                     recorder["parity"] = False
@@ -3321,14 +3509,20 @@ class TclStrutBuilder:
         if recorder_type == "EnvelopeElement":
             known_elements = {int(element["id"]) for element in self.elements}
             if not remainder or remainder[0] not in {"force", "forces", "localForce"}:
-                raise self._error("unsupported EnvelopeElement response", "recorder", args)
+                raise self._error(
+                    "unsupported EnvelopeElement response", "recorder", args
+                )
             rec_type = (
                 "envelope_element_local_force"
                 if remainder[0] == "localForce"
                 else "envelope_element_force"
             )
             element_by_id = {int(element["id"]): element for element in self.elements}
-            elements = [elem_id for elem_id in (options.get("ele") or []) if elem_id in known_elements]
+            elements = [
+                elem_id
+                for elem_id in (options.get("ele") or [])
+                if elem_id in known_elements
+            ]
             group_layout = None
             if elements:
                 widths: list[int] = []
@@ -3359,11 +3553,15 @@ class TclStrutBuilder:
                 self._append_recorder(recorder)
             return ""
 
-        raise self._error(f"unsupported recorder type `{recorder_type}`", "recorder", args)
+        raise self._error(
+            f"unsupported recorder type `{recorder_type}`", "recorder", args
+        )
 
     def _cmd_time_series(self, *args: str) -> str:
         if len(args) < 2:
-            raise self._error("timeSeries expects at least type and tag", "timeSeries", args)
+            raise self._error(
+                "timeSeries expects at least type and tag", "timeSeries", args
+            )
         ts_type = args[0]
         tag = int(args[1])
         if ts_type in {"Constant", "Linear"}:
@@ -3392,9 +3590,15 @@ class TclStrutBuilder:
                     options["factor"] = float(args[idx + 1])
                     idx += 2
                 else:
-                    raise self._error(f"unsupported Path timeSeries flag `{token}`", "timeSeries", args)
+                    raise self._error(
+                        f"unsupported Path timeSeries flag `{token}`",
+                        "timeSeries",
+                        args,
+                    )
             if "dt" not in options or "values_path" not in options:
-                raise self._error("Path timeSeries requires -dt and -filePath", "timeSeries", args)
+                raise self._error(
+                    "Path timeSeries requires -dt and -filePath", "timeSeries", args
+                )
             entry = {
                 "type": "Path",
                 "tag": tag,
@@ -3433,7 +3637,9 @@ class TclStrutBuilder:
                         args,
                     )
         else:
-            raise self._error(f"unsupported timeSeries type `{ts_type}`", "timeSeries", args)
+            raise self._error(
+                f"unsupported timeSeries type `{ts_type}`", "timeSeries", args
+            )
         self._register_time_series_entry(entry)
         return ""
 
@@ -3443,19 +3649,35 @@ class TclStrutBuilder:
         pattern_type = args[0]
         if pattern_type == "Plain":
             if len(args) != 4:
-                raise self._error("expected `pattern Plain tag tsSpec {body}`", "pattern", args)
+                raise self._error(
+                    "expected `pattern Plain tag tsSpec {body}`", "pattern", args
+                )
             tag = int(args[1])
             try:
                 ts_tag = int(args[2])
                 if ts_tag not in self.time_series_by_tag:
-                    raise self._error(f"timeSeries tag {ts_tag} not found", "pattern", args)
+                    raise self._error(
+                        f"timeSeries tag {ts_tag} not found", "pattern", args
+                    )
             except ValueError:
                 if args[2] not in {"Linear", "Constant"}:
-                    raise self._error(f"unsupported Plain pattern timeSeries `{args[2]}`", "pattern", args)
-                ts_tag = tag if tag not in self.time_series_by_tag else self._next_time_series_tag()
-                self._register_time_series_entry({"type": args[2], "tag": ts_tag, "factor": 1.0})
+                    raise self._error(
+                        f"unsupported Plain pattern timeSeries `{args[2]}`",
+                        "pattern",
+                        args,
+                    )
+                ts_tag = (
+                    tag
+                    if tag not in self.time_series_by_tag
+                    else self._next_time_series_tag()
+                )
+                self._register_time_series_entry(
+                    {"type": args[2], "tag": ts_tag, "factor": 1.0}
+                )
             self.current_pattern = {"type": "Plain", "tag": tag, "time_series": ts_tag}
-            self.current_plain_pattern = PendingPlainPattern(tag=tag, time_series=ts_tag)
+            self.current_plain_pattern = PendingPlainPattern(
+                tag=tag, time_series=ts_tag
+            )
             try:
                 self._eval_tcl(args[3], "pattern", args)
             finally:
@@ -3492,11 +3714,15 @@ class TclStrutBuilder:
                 token = args[idx]
                 if token == "-accel":
                     if idx + 1 >= len(args):
-                        raise self._error("UniformExcitation missing accel series", "pattern", args)
+                        raise self._error(
+                            "UniformExcitation missing accel series", "pattern", args
+                        )
                     try:
                         accel = int(args[idx + 1])
                         if accel not in self.time_series_by_tag:
-                            raise self._error(f"timeSeries tag {accel} not found", "pattern", args)
+                            raise self._error(
+                                f"timeSeries tag {accel} not found", "pattern", args
+                            )
                     except ValueError:
                         accel = self._register_time_series_entry(
                             self._parse_inline_series_spec(args[idx + 1])
@@ -3505,7 +3731,9 @@ class TclStrutBuilder:
                     idx += 2
                 elif token == "-vel0":
                     if idx + 1 >= len(args):
-                        raise self._error("UniformExcitation missing vel0 value", "pattern", args)
+                        raise self._error(
+                            "UniformExcitation missing vel0 value", "pattern", args
+                        )
                     options["vel0"] = float(args[idx + 1])
                     idx += 2
                 else:
@@ -3543,7 +3771,9 @@ class TclStrutBuilder:
     def _cmd_load(self, *args: str) -> str:
         model = self._require_model("load", args)
         if self.current_plain_pattern is None:
-            raise self._error("load is only supported inside `pattern Plain`", "load", args)
+            raise self._error(
+                "load is only supported inside `pattern Plain`", "load", args
+            )
         if len(args) < model["ndf"] + 1:
             raise self._error("load argument count does not match ndf", "load", args)
         node_id = int(args[0])
@@ -3551,12 +3781,16 @@ class TclStrutBuilder:
             value = float(value_text)
             if abs(value) <= 0.0:
                 continue
-            self.current_plain_pattern.loads.append({"node": node_id, "dof": dof, "value": value})
+            self.current_plain_pattern.loads.append(
+                {"node": node_id, "dof": dof, "value": value}
+            )
         return ""
 
     def _cmd_ele_load(self, *args: str) -> str:
         if self.current_plain_pattern is None:
-            raise self._error("eleLoad is only supported inside `pattern Plain`", "eleLoad", args)
+            raise self._error(
+                "eleLoad is only supported inside `pattern Plain`", "eleLoad", args
+            )
         if len(args) < 4 or args[0] != "-ele":
             raise self._error("eleLoad expects `-ele ... -type ...`", "eleLoad", args)
         idx = 1
@@ -3568,7 +3802,9 @@ class TclStrutBuilder:
             raise self._error("eleLoad missing `-type`", "eleLoad", args)
         load_type = args[idx + 1]
         if load_type != "-beamUniform":
-            raise self._error(f"unsupported eleLoad type `{load_type}`", "eleLoad", args)
+            raise self._error(
+                f"unsupported eleLoad type `{load_type}`", "eleLoad", args
+            )
         values = [float(value) for value in args[idx + 2 :]]
         payload: dict[str, Any] = {"type": "beamUniform"}
         if len(values) == 1:
@@ -3578,9 +3814,13 @@ class TclStrutBuilder:
             payload["wy"] = values[0]
             payload["wx"] = values[1]
         else:
-            raise self._error("beamUniform expects one or two load values", "eleLoad", args)
+            raise self._error(
+                "beamUniform expects one or two load values", "eleLoad", args
+            )
         for elem_id in elements:
-            self.current_plain_pattern.element_loads.append({"element": elem_id, **payload})
+            self.current_plain_pattern.element_loads.append(
+                {"element": elem_id, **payload}
+            )
         return ""
 
     def _cmd_constraints(self, *args: str) -> str:
@@ -3661,7 +3901,9 @@ class TclStrutBuilder:
             raise self._error("integrator type is required", "integrator", args)
         if args[0] == "LoadControl":
             if len(args) < 2:
-                raise self._error("LoadControl expects one step size", "integrator", args)
+                raise self._error(
+                    "LoadControl expects one step size", "integrator", args
+                )
             integrator = {"type": "LoadControl", "step": float(args[1])}
             if len(args) >= 3:
                 integrator["num_iter"] = int(float(args[2]))
@@ -3717,9 +3959,7 @@ class TclStrutBuilder:
         self.pending_initialize = True
         return ""
 
-    def _solver_chain_primary_attempt(
-        self, analysis: dict[str, Any]
-    ) -> dict[str, Any]:
+    def _solver_chain_primary_attempt(self, analysis: dict[str, Any]) -> dict[str, Any]:
         attempt: dict[str, Any] = {
             "algorithm": analysis.get("algorithm", "Newton"),
             "test_type": analysis.get("test_type", "MaxDispIncr"),
@@ -3784,13 +4024,19 @@ class TclStrutBuilder:
 
     def _cmd_analyze(self, *args: str) -> str:
         if self.analysis_type is None:
-            raise self._error("analysis type must be set before analyze", "analyze", args)
+            raise self._error(
+                "analysis type must be set before analyze", "analyze", args
+            )
         step_retry = self._active_step_retry_policy(tuple(args))
         if self.analysis_type == "Static":
             if len(args) != 1:
-                raise self._error("static analyze expects `analyze steps`", "analyze", args)
+                raise self._error(
+                    "static analyze expects `analyze steps`", "analyze", args
+                )
             if self.integrator is None:
-                raise self._error("static analysis requires an integrator", "analyze", args)
+                raise self._error(
+                    "static analysis requires an integrator", "analyze", args
+                )
             analysis: dict[str, Any] = {
                 "type": "static_nonlinear",
                 "constraints": self._analysis_constraints_name(),
@@ -3844,7 +4090,9 @@ class TclStrutBuilder:
                             du = abs(float(self.integrator.get("du", 0.0)))
                             if du > 0.0:
                                 continue_max_steps = int(continue_target / du) + 2
-                                step_retry_payload["continue_max_steps"] = continue_max_steps
+                                step_retry_payload["continue_max_steps"] = (
+                                    continue_max_steps
+                                )
                                 if continue_max_steps > 500:
                                     step_retry_payload = None
                 if step_retry_payload is not None:
@@ -3859,7 +4107,9 @@ class TclStrutBuilder:
                     if key in {"type", "tag", "time_series", "direction", "accel"}
                 }
                 stage["loads"] = list(self.current_pattern.get("loads", []))
-                stage["element_loads"] = list(self.current_pattern.get("element_loads", []))
+                stage["element_loads"] = list(
+                    self.current_pattern.get("element_loads", [])
+                )
             elif self.pattern_removed:
                 stage["pattern"] = {"type": "None"}
                 stage["loads"] = []
@@ -3898,14 +4148,18 @@ class TclStrutBuilder:
                 self.current_time += steps * float(self.integrator["step"])
             elif self.integrator["type"] == "DisplacementControl":
                 key = (int(self.integrator["node"]), int(self.integrator["dof"]))
-                self.node_displacements[key] = self.node_displacements.get(key, 0.0) + steps * float(
-                    self.integrator["du"]
-                )
+                self.node_displacements[key] = self.node_displacements.get(
+                    key, 0.0
+                ) + steps * float(self.integrator["du"])
         else:
             if len(args) != 2:
-                raise self._error("transient analyze expects `analyze steps dt`", "analyze", args)
+                raise self._error(
+                    "transient analyze expects `analyze steps dt`", "analyze", args
+                )
             if self.integrator is None or self.integrator.get("type") != "Newmark":
-                raise self._error("transient analysis requires Newmark", "analyze", args)
+                raise self._error(
+                    "transient analysis requires Newmark", "analyze", args
+                )
             stage = {
                 "analysis": {
                     "type": "transient_linear"
@@ -3937,7 +4191,9 @@ class TclStrutBuilder:
                         if key in {"type", "tag", "time_series"}
                     }
                     stage["loads"] = list(self.current_pattern.get("loads", []))
-                    stage["element_loads"] = list(self.current_pattern.get("element_loads", []))
+                    stage["element_loads"] = list(
+                        self.current_pattern.get("element_loads", [])
+                    )
             elif self.pattern_removed:
                 stage["pattern"] = {"type": "None"}
                 stage["loads"] = []
@@ -3951,9 +4207,13 @@ class TclStrutBuilder:
                 stage["analysis"]["tol"] = self.current_test["tol"]
                 stage["analysis"]["max_iters"] = self.current_test["max_iters"]
                 if "print_flag" in self.current_test:
-                    stage["analysis"]["test_print_flag"] = self.current_test["print_flag"]
+                    stage["analysis"]["test_print_flag"] = self.current_test[
+                        "print_flag"
+                    ]
                 if "extra_args" in self.current_test:
-                    stage["analysis"]["test_extra_args"] = list(self.current_test["extra_args"])
+                    stage["analysis"]["test_extra_args"] = list(
+                        self.current_test["extra_args"]
+                    )
             if step_retry is not None and step_retry.attempts:
                 stage["analysis"]["solver_chain"] = [
                     self._solver_chain_primary_attempt(stage["analysis"]),
@@ -4021,7 +4281,10 @@ class TclStrutBuilder:
     def _cmd_remove(self, *args: str) -> str:
         if len(args) == 2 and args[0] == "loadPattern":
             tag = int(args[1])
-            if self.current_pattern is not None and int(self.current_pattern.get("tag", -1)) == tag:
+            if (
+                self.current_pattern is not None
+                and int(self.current_pattern.get("tag", -1)) == tag
+            ):
                 self.current_pattern = None
                 self.current_plain_pattern = None
             self.pattern_removed = True
@@ -4032,7 +4295,9 @@ class TclStrutBuilder:
         if len(args) != 2 or args[0] != "-time":
             raise self._error("loadConst expects `-time value`", "loadConst", args)
         if self.last_stage is None:
-            raise self._error("loadConst requires a preceding analyze", "loadConst", args)
+            raise self._error(
+                "loadConst requires a preceding analyze", "loadConst", args
+            )
         self.last_stage["load_const"] = {"time": float(args[1])}
         self.current_time = float(args[1])
         return ""
@@ -4090,7 +4355,9 @@ class TclStrutBuilder:
     def _build_global_stiffness(self) -> list[list[float]]:
         model = self._require_model("eigen", ())
         if model["ndm"] != 2 or model["ndf"] not in {2, 3}:
-            raise self._error("eigen only supports 2D truss/frame models in v1", "eigen", ())
+            raise self._error(
+                "eigen only supports 2D truss/frame models in v1", "eigen", ()
+            )
 
         node_ids = sorted(self.nodes)
         node_index = {node_id: idx for idx, node_id in enumerate(node_ids)}
@@ -4108,7 +4375,9 @@ class TclStrutBuilder:
             dy = y2 - y1
             length = math.hypot(dx, dy)
             if length <= 0.0:
-                raise self._error("element length must be positive for eigen", "eigen", ())
+                raise self._error(
+                    "element length must be positive for eigen", "eigen", ()
+                )
             c = dx / length
             s = dy / length
             if element["type"] == "truss":
@@ -4131,11 +4400,39 @@ class TclStrutBuilder:
                 l3 = l2 * length
                 local = [
                     [axial, 0.0, 0.0, -axial, 0.0, 0.0],
-                    [0.0, 12.0 * ei / l3, 6.0 * ei / l2, 0.0, -12.0 * ei / l3, 6.0 * ei / l2],
-                    [0.0, 6.0 * ei / l2, 4.0 * ei / length, 0.0, -6.0 * ei / l2, 2.0 * ei / length],
+                    [
+                        0.0,
+                        12.0 * ei / l3,
+                        6.0 * ei / l2,
+                        0.0,
+                        -12.0 * ei / l3,
+                        6.0 * ei / l2,
+                    ],
+                    [
+                        0.0,
+                        6.0 * ei / l2,
+                        4.0 * ei / length,
+                        0.0,
+                        -6.0 * ei / l2,
+                        2.0 * ei / length,
+                    ],
                     [-axial, 0.0, 0.0, axial, 0.0, 0.0],
-                    [0.0, -12.0 * ei / l3, -6.0 * ei / l2, 0.0, 12.0 * ei / l3, -6.0 * ei / l2],
-                    [0.0, 6.0 * ei / l2, 2.0 * ei / length, 0.0, -6.0 * ei / l2, 4.0 * ei / length],
+                    [
+                        0.0,
+                        -12.0 * ei / l3,
+                        -6.0 * ei / l2,
+                        0.0,
+                        12.0 * ei / l3,
+                        -6.0 * ei / l2,
+                    ],
+                    [
+                        0.0,
+                        6.0 * ei / l2,
+                        2.0 * ei / length,
+                        0.0,
+                        -6.0 * ei / l2,
+                        4.0 * ei / length,
+                    ],
                 ]
                 transform = [
                     [c, s, 0.0, 0.0, 0.0, 0.0],
@@ -4204,7 +4501,9 @@ class TclStrutBuilder:
         massful = [idx for idx, value in enumerate(m_free) if value > 0.0]
         massless = [idx for idx, value in enumerate(m_free) if value <= 0.0]
         if not massful:
-            raise self._error("eigen requires at least one positive nodal mass", "eigen", ())
+            raise self._error(
+                "eigen requires at least one positive nodal mass", "eigen", ()
+            )
 
         if massless:
             k_mm = [[k_free[i][j] for j in massful] for i in massful]
@@ -4214,7 +4513,9 @@ class TclStrutBuilder:
             try:
                 inv_k_ss = _matrix_inverse(k_ss)
             except ValueError as exc:
-                raise self._error(f"failed to condense massless DOFs: {exc}", "eigen", ()) from exc
+                raise self._error(
+                    f"failed to condense massless DOFs: {exc}", "eigen", ()
+                ) from exc
             correction = _matrix_multiply(_matrix_multiply(k_ms, inv_k_ss), k_sm)
             k_eff = []
             for i in range(len(k_mm)):
@@ -4233,7 +4534,9 @@ class TclStrutBuilder:
                 scaled_row.append(value / math.sqrt(m_eff[i] * m_eff[j]))
             scaled.append(scaled_row)
 
-        values = [value for value in _jacobi_eigenvalues_symmetric(scaled) if value > 1.0e-12]
+        values = [
+            value for value in _jacobi_eigenvalues_symmetric(scaled) if value > 1.0e-12
+        ]
         if len(values) < num_modes:
             raise self._error(
                 f"requested {num_modes} mode(s), but only {len(values)} finite mode(s) were found",
@@ -4248,7 +4551,9 @@ def convert_tcl_to_typed_case(
 ) -> StrutCase:
     entry_path = entry_tcl.resolve()
     resolved_repo_root = (
-        repo_root.resolve() if repo_root is not None else Path(__file__).resolve().parents[1]
+        repo_root.resolve()
+        if repo_root is not None
+        else Path(__file__).resolve().parents[1]
     )
     builder = TclStrutBuilder(entry_path, resolved_repo_root)
     return builder.convert()

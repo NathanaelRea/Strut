@@ -84,7 +84,9 @@ def _is_direct_tcl_manifest(path: Path) -> bool:
     return isinstance(raw_path, str) and bool(raw_path)
 
 
-def _resolve_json_case_root(repo_root: Path, case_input: Path) -> tuple[str, Path, Path]:
+def _resolve_json_case_root(
+    repo_root: Path, case_input: Path
+) -> tuple[str, Path, Path]:
     validation_root = (repo_root / "tests" / "validation").resolve()
     resolved_input = case_input.resolve()
     try:
@@ -132,7 +134,6 @@ def _prepare_opensees_compat_entry(entry_tcl: Path) -> Path:
             [
                 "set __strut_ndm 0",
                 "set __strut_ndf 0",
-                "array set __strut_psumat_nu {}",
                 "proc __strut_install_section_compat {} {",
                 "    if {![llength [info commands section]] || [llength [info commands __strut_builtin_section]]} {",
                 "        return",
@@ -155,30 +156,6 @@ def _prepare_opensees_compat_entry(entry_tcl: Path) -> Path:
                 "        return [uplevel 1 [linsert $args 0 __strut_builtin_section]]",
                 "    }",
                 "}",
-                "proc __strut_install_ndmaterial_compat {} {",
-                "    if {![llength [info commands nDMaterial]] || [llength [info commands __strut_builtin_nDMaterial]]} {",
-                "        return",
-                "    }",
-                "    rename nDMaterial __strut_builtin_nDMaterial",
-                "    proc nDMaterial {args} {",
-                "        global __strut_psumat_nu",
-                '        if {[llength $args] >= 4 && [lindex $args 0] eq "PlaneStressUserMaterial"} {',
-                "            set __strut_psumat_nu([lindex $args 1]) [lindex $args end]",
-                "            return {}",
-                "        }",
-                '        if {[llength $args] == 4 && [lindex $args 0] eq "PlateFromPlaneStress"} {',
-                "            set tag [lindex $args 1]",
-                "            set baseTag [lindex $args 2]",
-                "            set gmod [lindex $args 3]",
-                "            if {[info exists __strut_psumat_nu($baseTag)]} {",
-                "                set nu $__strut_psumat_nu($baseTag)",
-                "                set E [expr {2.0 * $gmod * (1.0 + $nu)}]",
-                "                return [uplevel 1 [list __strut_builtin_nDMaterial ElasticIsotropic $tag $E $nu]]",
-                "            }",
-                "        }",
-                "        return [uplevel 1 [linsert $args 0 __strut_builtin_nDMaterial]]",
-                "    }",
-                "}",
                 "if {[llength [info commands model]] > 0 && ![llength [info commands __strut_builtin_model]]} {",
                 "    rename model __strut_builtin_model",
                 "    proc model {args} {",
@@ -193,12 +170,10 @@ def _prepare_opensees_compat_entry(entry_tcl: Path) -> Path:
                 "        }",
                 "        set __strut_model_result [uplevel 1 [linsert $args 0 __strut_builtin_model]]",
                 "        __strut_install_section_compat",
-                "        __strut_install_ndmaterial_compat",
                 "        return $__strut_model_result",
                 "    }",
                 "}",
                 "__strut_install_section_compat",
-                "__strut_install_ndmaterial_compat",
                 "if {[llength [info commands mass]] > 0 && ![llength [info commands __strut_builtin_mass]]} {",
                 "    rename mass __strut_builtin_mass",
                 "    proc mass {args} {",
@@ -249,7 +224,9 @@ def _reference_output_path(reference_dir: Path, raw_path: str):
             continue
         if not current.exists() or not current.is_dir():
             return None
-        matches = [child for child in current.iterdir() if child.name.lower() == part.lower()]
+        matches = [
+            child for child in current.iterdir() if child.name.lower() == part.lower()
+        ]
         if len(matches) != 1:
             return None
         current = matches[0]
@@ -269,32 +246,48 @@ def _normalized_recorder_outputs(recorder: dict):
     ):
         nodes = recorder.get("nodes", [])
         if len(nodes) != 1:
-            raise SystemExit(f"direct Tcl parity requires single-node recorder: {recorder}")
+            raise SystemExit(
+                f"direct Tcl parity requires single-node recorder: {recorder}"
+            )
         return [f"{output}_node{int(nodes[0])}.out"]
     if rec_type == "element_force":
         elements = recorder.get("elements", [])
         if len(elements) != 1:
-            raise SystemExit(f"direct Tcl parity requires single-element recorder: {recorder}")
+            raise SystemExit(
+                f"direct Tcl parity requires single-element recorder: {recorder}"
+            )
         return [f"{output}_ele{int(elements[0])}.out"]
-    if rec_type in ("element_local_force", "element_basic_force", "element_deformation"):
+    if rec_type in (
+        "element_local_force",
+        "element_basic_force",
+        "element_deformation",
+    ):
         elements = recorder.get("elements", [])
         if len(elements) != 1:
-            raise SystemExit(f"direct Tcl parity requires single-element recorder: {recorder}")
+            raise SystemExit(
+                f"direct Tcl parity requires single-element recorder: {recorder}"
+            )
         return [f"{output}_ele{int(elements[0])}.out"]
     if rec_type in ("envelope_element_force", "envelope_element_local_force"):
         elements = recorder.get("elements", [])
         if len(elements) != 1:
-            raise SystemExit(f"direct Tcl parity requires single-element recorder: {recorder}")
+            raise SystemExit(
+                f"direct Tcl parity requires single-element recorder: {recorder}"
+            )
         return [f"{output}_ele{int(elements[0])}.out"]
     if rec_type in ("section_force", "section_deformation"):
         elements = recorder.get("elements", [])
         if len(elements) != 1:
-            raise SystemExit(f"direct Tcl parity requires single-element recorder: {recorder}")
+            raise SystemExit(
+                f"direct Tcl parity requires single-element recorder: {recorder}"
+            )
         section = recorder.get("section")
         if section is None:
             sections = recorder.get("sections") or []
             if len(sections) != 1:
-                raise SystemExit(f"direct Tcl parity requires single section: {recorder}")
+                raise SystemExit(
+                    f"direct Tcl parity requires single section: {recorder}"
+                )
             section = sections[0]
         return [f"{output}_ele{int(elements[0])}_sec{int(section)}.out"]
     if rec_type == "drift":
@@ -337,7 +330,11 @@ def _normalize_reference_outputs(case_data: dict | Path, reference_dir: Path):
             if not line.strip():
                 continue
             parts = line.replace(",", " ").split()
-            if group_layout and group_layout.get("type", "").startswith("envelope_") and strip_time:
+            if (
+                group_layout
+                and group_layout.get("type", "").startswith("envelope_")
+                and strip_time
+            ):
                 normalized_rows.append(parts)
                 continue
             if strip_time and parts:
@@ -372,7 +369,9 @@ def _normalize_reference_outputs(case_data: dict | Path, reference_dir: Path):
                             )
                         offset = 0
                         for idx, width in enumerate(widths):
-                            payloads[idx].append(" ".join(parts[offset : offset + width]))
+                            payloads[idx].append(
+                                " ".join(parts[offset : offset + width])
+                            )
                             offset += width
                         continue
                     if strip_time and len(parts) == 2 * expected:
@@ -422,7 +421,9 @@ def _normalize_reference_outputs(case_data: dict | Path, reference_dir: Path):
             (reference_dir / rel_name).write_text(payload, encoding="utf-8")
 
 
-def _merge_direct_tcl_manifest_metadata(case_data: dict, manifest_path: Path | None) -> dict:
+def _merge_direct_tcl_manifest_metadata(
+    case_data: dict, manifest_path: Path | None
+) -> dict:
     if manifest_path is None or not manifest_path.exists():
         return case_data
     manifest = _load_direct_tcl_manifest(manifest_path)

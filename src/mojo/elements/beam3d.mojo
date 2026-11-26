@@ -161,7 +161,9 @@ fn _beam3d_transform_matrix(R: List[List[Float64]]) -> List[List[Float64]]:
     return T^
 
 
-fn _beam3d_transform_u_global_to_local(T: List[List[Float64]], u_global: List[Float64]) -> List[Float64]:
+fn _beam3d_transform_u_global_to_local(
+    T: List[List[Float64]], u_global: List[Float64]
+) -> List[Float64]:
     var u_local: List[Float64] = []
     u_local.resize(12, 0.0)
     for i in range(12):
@@ -172,9 +174,7 @@ fn _beam3d_transform_u_global_to_local(T: List[List[Float64]], u_global: List[Fl
     return u_local^
 
 
-fn _beam3d_add_axial_geometric_stiffness(
-    mut k_local: List[List[Float64]], N: Float64, L: Float64
-):
+fn _beam3d_add_axial_geometric_stiffness(mut k_local: List[List[Float64]], N: Float64, L: Float64):
     var N_over_L = N / L
 
     k_local[1][1] += N_over_L
@@ -202,9 +202,7 @@ fn beam3d_global_stiffness(
     y2: Float64,
     z2: Float64,
 ) -> List[List[Float64]]:
-    return beam3d_global_stiffness(
-        E, A, Iy, Iz, G, J, x1, y1, z1, x2, y2, z2, False, 0.0, 0.0, 0.0
-    )
+    return beam3d_global_stiffness(E, A, Iy, Iz, G, J, x1, y1, z1, x2, y2, z2, False, 0.0, 0.0, 0.0)
 
 
 fn beam3d_global_stiffness(

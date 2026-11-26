@@ -28,21 +28,15 @@ fn _matrix(
     return result^
 
 
-fn _check_modes(
-    matrix: SparseBenchMatrix, negative: Int = 0, expected_nnz: Int = -1
-) raises:
+fn _check_modes(matrix: SparseBenchMatrix, negative: Int = 0, expected_nnz: Int = -1) raises:
     var rhs = make_rhs(matrix.n)
     var a = SparseLDLT(1)
     var b = SparseLDLT(1)
     var xa = rhs.copy()
     var xb = rhs.copy()
     for ordering in [SparseOrdering.AMD, SparseOrdering.RCM]:
-        a.analyze(
-            matrix.n, matrix.col_ptr, matrix.rows, ordering, SparseFactorMode.Simplicial
-        )
-        b.analyze(
-            matrix.n, matrix.col_ptr, matrix.rows, ordering, SparseFactorMode.Supernodal
-        )
+        a.analyze(matrix.n, matrix.col_ptr, matrix.rows, ordering, SparseFactorMode.Simplicial)
+        b.analyze(matrix.n, matrix.col_ptr, matrix.rows, ordering, SparseFactorMode.Supernodal)
         assert_equal(a.factor_nnz(), b.factor_nnz())
         assert_true(b.supernode_count() <= a.supernode_count())
         if expected_nnz >= 0:

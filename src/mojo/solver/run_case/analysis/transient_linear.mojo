@@ -116,10 +116,7 @@ fn _has_nonparticipating_link_for_rayleigh(elements: List[ElementInput]) -> Bool
 fn _has_zero_length_damp_mats(elements: List[ElementInput]) -> Bool:
     for i in range(len(elements)):
         var elem = elements[i]
-        if (
-            elem.type_tag == ElementTypeTag.ZeroLength
-            and elem.damp_material_count > 0
-        ):
+        if elem.type_tag == ElementTypeTag.ZeroLength and elem.damp_material_count > 0:
             return True
     return False
 
@@ -171,7 +168,6 @@ fn _build_solver_load_vector_with_element_loads(
             dst[elem_dof_pool[dof_offset + a]] += f_load[a]
 
 
-
 fn _build_effective_rhs_newmark(
     free: List[Int],
     u_f: List[Float64],
@@ -202,7 +198,9 @@ fn _build_effective_rhs_newmark(
 
 
 @always_inline
-fn _update_newmark_state_from_solution_simd_impl[width: Int](
+fn _update_newmark_state_from_solution_simd_impl[
+    width: Int
+](
     mut u_f: List[Float64],
     mut v_f: List[Float64],
     mut a_f: List[Float64],
@@ -256,9 +254,9 @@ fn _update_newmark_state_from_solution_simd(
 
 
 @always_inline
-fn _scatter_free_vector_to_full_simd_impl[width: Int](
-    free: List[Int], src: List[Float64], mut dst: List[Float64]
-):
+fn _scatter_free_vector_to_full_simd_impl[
+    width: Int
+](free: List[Int], src: List[Float64], mut dst: List[Float64]):
     var n = len(free)
 
     @parameter
@@ -270,12 +268,8 @@ fn _scatter_free_vector_to_full_simd_impl[width: Int](
 
 
 @always_inline
-fn _scatter_free_vector_to_full(
-    free: List[Int], src: List[Float64], mut dst: List[Float64]
-):
-    _scatter_free_vector_to_full_simd_impl[simd_width_of[DType.float64]()](
-        free, src, dst
-    )
+fn _scatter_free_vector_to_full(free: List[Int], src: List[Float64], mut dst: List[Float64]):
+    _scatter_free_vector_to_full_simd_impl[simd_width_of[DType.float64]()](free, src, dst)
 
 
 fn run_transient_linear(
@@ -457,9 +451,7 @@ fn run_transient_linear(
     if do_profile:
         var t_asm_start = Int(time.perf_counter_ns())
         var asm_start_us = (t_asm_start - t0) // 1000
-        _append_event(
-            events, events_need_comma, "O", frame_assemble_stiffness, asm_start_us
-        )
+        _append_event(events, events_need_comma, "O", frame_assemble_stiffness, asm_start_us)
     var initial_pattern_scale = 0.0
     if pattern_type_tag == PatternTypeTag.Plain:
         if ts_index >= 0:
@@ -578,9 +570,7 @@ fn run_transient_linear(
     if do_profile:
         var t_asm_end = Int(time.perf_counter_ns())
         var asm_end_us = (t_asm_end - t0) // 1000
-        _append_event(
-            events, events_need_comma, "C", frame_assemble_stiffness, asm_end_us
-        )
+        _append_event(events, events_need_comma, "C", frame_assemble_stiffness, asm_end_us)
     # The assembled (MPC-reduced) stiffness is the constant tangent.
     copy_values(mats.k_tangent, mats.assembler.values)
 
@@ -591,8 +581,8 @@ fn run_transient_linear(
     var a4 = gamma / beta - 1.0
     var a5 = dt * (gamma / (2.0 * beta) - 1.0)
     var beta_sum = rayleigh_beta_k + rayleigh_beta_k_init + rayleigh_beta_k_comm
-    var need_link_rayleigh_filter = (
-        beta_sum != 0.0 and _has_nonparticipating_link_for_rayleigh(typed_elements)
+    var need_link_rayleigh_filter = beta_sum != 0.0 and _has_nonparticipating_link_for_rayleigh(
+        typed_elements
     )
     var has_zero_length_damp_mats = _has_zero_length_damp_mats(typed_elements)
     var has_zero_length_dampers = _has_zero_length_dampers(typed_elements)
@@ -645,9 +635,7 @@ fn run_transient_linear(
             F_link_scratch,
         )
         swap(mats.assembler.values, mats.k_link_rayleigh)
-        link_filtered_values(
-            mats.k_damp, mats.k_tangent, mats.k_link_all, mats.k_link_rayleigh
-        )
+        link_filtered_values(mats.k_damp, mats.k_tangent, mats.k_link_all, mats.k_link_rayleigh)
         mats.use_k_damp = True
 
     # C = alphaM * M_rayleigh + (betaK + betaKInit + betaKComm) * K_damping + C_zl,
@@ -719,9 +707,9 @@ fn run_transient_linear(
     var u_next_f: List[Float64] = []
     u_next_f.resize(free_count, 0.0)
     var record_reactions = _has_recorder_type(recorders, RecorderTypeTag.NodeReaction)
-    var record_any_element_force = (
-        _has_recorder_type(recorders, RecorderTypeTag.ElementForce) or _has_recorder_type(recorders, RecorderTypeTag.EnvelopeElementForce)
-    )
+    var record_any_element_force = _has_recorder_type(
+        recorders, RecorderTypeTag.ElementForce
+    ) or _has_recorder_type(recorders, RecorderTypeTag.EnvelopeElementForce)
     var elem_count = len(typed_elements)
     var elem_force_cached: List[Bool] = []
     var elem_force_values: List[List[Float64]] = []
@@ -739,9 +727,7 @@ fn run_transient_linear(
         if do_profile:
             var t_step_start = Int(time.perf_counter_ns())
             var step_start_us = (t_step_start - t0) // 1000
-            _append_event(
-                events, events_need_comma, "O", frame_transient_step, step_start_us
-            )
+            _append_event(events, events_need_comma, "O", frame_transient_step, step_start_us)
         if has_transformation_mpc:
             if do_profile:
                 var t_constraints_start = Int(time.perf_counter_ns())
@@ -882,11 +868,11 @@ fn run_transient_linear(
                     var ts_end_us = (t_ts_end - t0) // 1000
                     _append_event(
                         events,
-                    events_need_comma,
-                    "C",
-                    frame_time_series_eval,
-                    ts_end_us,
-                )
+                        events_need_comma,
+                        "C",
+                        frame_time_series_eval,
+                        ts_end_us,
+                    )
                 copy_float64_contiguous(
                     F_ext_step,
                     build_active_nodal_load(F_const, F_pattern, factor),
@@ -1039,19 +1025,13 @@ fn run_transient_linear(
         if do_profile:
             var t_solve_start = Int(time.perf_counter_ns())
             var solve_start_us = (t_solve_start - t0) // 1000
-            _append_event(
-                events, events_need_comma, "O", frame_solve_linear, solve_start_us
-            )
+            _append_event(events, events_need_comma, "O", frame_solve_linear, solve_start_us)
         solve(backend, lu_rhs, u_next_f)
         if do_profile:
             var t_solve_end = Int(time.perf_counter_ns())
             var solve_end_us = (t_solve_end - t0) // 1000
-            _append_event(
-                events, events_need_comma, "C", frame_solve_linear, solve_end_us
-            )
-        _update_newmark_state_from_solution_simd(
-            u_f, v_f, a_f, u_next_f, a0, a2, a3, gamma, dt
-        )
+            _append_event(events, events_need_comma, "C", frame_solve_linear, solve_end_us)
+        _update_newmark_state_from_solution_simd(u_f, v_f, a_f, u_next_f, a0, a2, a3, gamma, dt)
         var need_full_state = (
             has_transformation_mpc or record_reactions or len(recorders) > 0 or step == steps - 1
         )
@@ -1286,41 +1266,37 @@ fn run_transient_linear(
                     var elem_index = elem_id_to_index[elem_id]
                     if not elem_force_cached[elem_index]:
                         var elem = typed_elements[elem_index]
-                        elem_force_values[elem_index] = (
-                            _element_force_global_for_recorder(
-                        elem_index,
-                        elem,
-                        ndf,
-                        u,
-                        active_element_load_state.element_loads,
-                        active_element_load_state.elem_load_offsets,
-                        active_element_load_state.elem_load_pool,
-                        1.0,
-                        typed_nodes,
-                        typed_sections_by_id,
-                                fiber_section_defs,
-                                fiber_section_cells,
-                                fiber_section_index_by_id,
-                                fiber_section3d_defs,
-                                fiber_section3d_cells,
-                                fiber_section3d_index_by_id,
-                                uniaxial_defs,
-                                uniaxial_state_defs,
-                                uniaxial_states,
-                                elem_uniaxial_offsets,
-                                elem_uniaxial_counts,
-                                elem_uniaxial_state_ids,
-                                force_basic_offsets,
-                                force_basic_counts,
-                                force_basic_q,
-                            )
+                        elem_force_values[elem_index] = _element_force_global_for_recorder(
+                            elem_index,
+                            elem,
+                            ndf,
+                            u,
+                            active_element_load_state.element_loads,
+                            active_element_load_state.elem_load_offsets,
+                            active_element_load_state.elem_load_pool,
+                            1.0,
+                            typed_nodes,
+                            typed_sections_by_id,
+                            fiber_section_defs,
+                            fiber_section_cells,
+                            fiber_section_index_by_id,
+                            fiber_section3d_defs,
+                            fiber_section3d_cells,
+                            fiber_section3d_index_by_id,
+                            uniaxial_defs,
+                            uniaxial_state_defs,
+                            uniaxial_states,
+                            elem_uniaxial_offsets,
+                            elem_uniaxial_counts,
+                            elem_uniaxial_state_ids,
+                            force_basic_offsets,
+                            force_basic_counts,
+                            force_basic_q,
                         )
                         elem_force_cached[elem_index] = True
                     var line = _format_values_line(elem_force_values[elem_index])
                     var filename = rec.output + "_ele" + String(elem_id) + ".out"
-                    _append_output(
-                        transient_output_files, transient_output_buffers, filename, line
-                    )
+                    _append_output(transient_output_files, transient_output_buffers, filename, line)
             elif rec.type_tag == RecorderTypeTag.ElementLocalForce:
                 for eidx in range(rec.element_count):
                     var elem_id = recorder_elements_pool[rec.element_offset + eidx]
@@ -1417,21 +1393,12 @@ fn run_transient_linear(
                         values[j] = F_int_reaction[idx] - F_ext_step[idx]
                     var line = _format_values_line(values)
                     var filename = rec.output + "_node" + String(node_id) + ".out"
-                    _append_output(
-                        transient_output_files, transient_output_buffers, filename, line
-                    )
+                    _append_output(transient_output_files, transient_output_buffers, filename, line)
             elif rec.type_tag == RecorderTypeTag.Drift:
                 var i_node = rec.i_node
                 var j_node = rec.j_node
                 var value = _drift_value(rec, typed_nodes, id_to_index, ndf, u)
-                var filename = (
-                    rec.output
-                    + "_i"
-                    + String(i_node)
-                    + "_j"
-                    + String(j_node)
-                    + ".out"
-                )
+                var filename = rec.output + "_i" + String(i_node) + "_j" + String(j_node) + ".out"
                 _append_output(
                     transient_output_files,
                     transient_output_buffers,
@@ -1446,34 +1413,32 @@ fn run_transient_linear(
                     var elem_index = elem_id_to_index[elem_id]
                     if not elem_force_cached[elem_index]:
                         var elem = typed_elements[elem_index]
-                        elem_force_values[elem_index] = (
-                            _element_force_global_for_recorder(
-                                elem_index,
-                                elem,
-                                ndf,
-                                u,
-                                active_element_load_state.element_loads,
-                                active_element_load_state.elem_load_offsets,
-                                active_element_load_state.elem_load_pool,
-                                1.0,
-                                typed_nodes,
-                                typed_sections_by_id,
-                                fiber_section_defs,
-                                fiber_section_cells,
-                                fiber_section_index_by_id,
-                                fiber_section3d_defs,
-                                fiber_section3d_cells,
-                                fiber_section3d_index_by_id,
-                                uniaxial_defs,
-                                uniaxial_state_defs,
-                                uniaxial_states,
-                                elem_uniaxial_offsets,
-                                elem_uniaxial_counts,
-                                elem_uniaxial_state_ids,
-                                force_basic_offsets,
-                                force_basic_counts,
-                                force_basic_q,
-                            )
+                        elem_force_values[elem_index] = _element_force_global_for_recorder(
+                            elem_index,
+                            elem,
+                            ndf,
+                            u,
+                            active_element_load_state.element_loads,
+                            active_element_load_state.elem_load_offsets,
+                            active_element_load_state.elem_load_pool,
+                            1.0,
+                            typed_nodes,
+                            typed_sections_by_id,
+                            fiber_section_defs,
+                            fiber_section_cells,
+                            fiber_section_index_by_id,
+                            fiber_section3d_defs,
+                            fiber_section3d_cells,
+                            fiber_section3d_index_by_id,
+                            uniaxial_defs,
+                            uniaxial_state_defs,
+                            uniaxial_states,
+                            elem_uniaxial_offsets,
+                            elem_uniaxial_counts,
+                            elem_uniaxial_state_ids,
+                            force_basic_offsets,
+                            force_basic_counts,
+                            force_basic_q,
                         )
                         elem_force_cached[elem_index] = True
                     var filename = rec.output + "_ele" + String(elem_id) + ".out"
@@ -1566,12 +1531,7 @@ fn run_transient_linear(
                             want_defo,
                         )
                         var filename = (
-                            rec.output
-                            + "_ele"
-                            + String(elem_id)
-                            + "_sec"
-                            + String(sec_no)
-                            + ".out"
+                            rec.output + "_ele" + String(elem_id) + "_sec" + String(sec_no) + ".out"
                         )
                         _append_output(
                             transient_output_files,
@@ -1585,9 +1545,7 @@ fn run_transient_linear(
             var t_rec_end = Int(time.perf_counter_ns())
             var rec_end_us = (t_rec_end - t0) // 1000
             _append_event(events, events_need_comma, "C", frame_recorders, rec_end_us)
-            _append_event(
-                events, events_need_comma, "C", frame_transient_step, rec_end_us
-            )
+            _append_event(events, events_need_comma, "C", frame_transient_step, rec_end_us)
         if has_zero_length_dampers:
             if do_profile:
                 var t_commit_start = Int(time.perf_counter_ns())
@@ -1600,6 +1558,7 @@ fn run_transient_linear(
                     commit_start_us,
                 )
             uniaxial_commit_all(uniaxial_states)
+            shell_cache.commit_layered_states()
             fiber_section2d_commit_runtime_all(fiber_section_defs)
             fiber_section3d_commit_runtime_all(fiber_section3d_defs)
             if do_profile:

@@ -367,7 +367,9 @@ fn _generate_strains_for_scenario(
     return strains^
 
 
-fn _init_steel02_candidate(mut sec_def: FiberSection2dDef, mat_def: UniMaterialDef, state_count: Int):
+fn _init_steel02_candidate(
+    mut sec_def: FiberSection2dDef, mat_def: UniMaterialDef, state_count: Int
+):
     sec_def.runtime_s2_eps_c.resize(state_count, 0.0)
     sec_def.runtime_s2_sig_c.resize(state_count, 0.0)
     sec_def.runtime_s2_tangent_c.resize(state_count, 0.0)
@@ -416,7 +418,9 @@ fn _init_steel02_candidate(mut sec_def: FiberSection2dDef, mat_def: UniMaterialD
         sec_def.runtime_s2_kon_t[i] = state.s2_kon_t
 
 
-fn _init_concrete02_candidate(mut sec_def: FiberSection2dDef, mat_def: UniMaterialDef, state_count: Int):
+fn _init_concrete02_candidate(
+    mut sec_def: FiberSection2dDef, mat_def: UniMaterialDef, state_count: Int
+):
     sec_def.runtime_c2_eps_c.resize(state_count, 0.0)
     sec_def.runtime_c2_sig_c.resize(state_count, 0.0)
     sec_def.runtime_c2_tangent_c.resize(state_count, 0.0)
@@ -600,7 +604,9 @@ fn _commit_impl(
         return
 
 
-fn _trial_stress(impl_id: Int, uni_states: List[UniMaterialState], sec_def: FiberSection2dDef, slot: Int) -> Float64:
+fn _trial_stress(
+    impl_id: Int, uni_states: List[UniMaterialState], sec_def: FiberSection2dDef, slot: Int
+) -> Float64:
     if (
         impl_id == IMPL_ELASTIC_UNIAXIAL
         or impl_id == IMPL_STEEL01_UNIAXIAL
@@ -616,7 +622,9 @@ fn _trial_stress(impl_id: Int, uni_states: List[UniMaterialState], sec_def: Fibe
     return sec_def.runtime_s2_sig_t[slot]
 
 
-fn _trial_tangent(impl_id: Int, uni_states: List[UniMaterialState], sec_def: FiberSection2dDef, slot: Int) -> Float64:
+fn _trial_tangent(
+    impl_id: Int, uni_states: List[UniMaterialState], sec_def: FiberSection2dDef, slot: Int
+) -> Float64:
     if (
         impl_id == IMPL_ELASTIC_UNIAXIAL
         or impl_id == IMPL_STEEL01_UNIAXIAL

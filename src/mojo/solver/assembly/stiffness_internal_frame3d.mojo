@@ -197,9 +197,7 @@ fn _frame3d_element_tangent_and_force(
         var sec_index = fiber_section3d_index_by_id[elem_section_ids[e]]
         if sec_index < 0 or sec_index >= len(fiber_section3d_defs):
             abort("fiber section not found")
-        var integration_name = _beam_integration_name_from_tag(
-            elem_integration_tags[e]
-        )
+        var integration_name = _beam_integration_name_from_tag(elem_integration_tags[e])
         if elem_type == ElementTypeTag.ForceBeamColumn3d:
             force_beam_column3d_fiber_global_tangent_and_internal(
                 e,
@@ -391,7 +389,9 @@ fn _frame3d_compute_batch(
     parallelize[run](workers, workers)
 
 
-fn _assemble_frame3d_native_soa_indices[S: ElementMatrixSink](
+fn _assemble_frame3d_native_soa_indices[
+    S: ElementMatrixSink
+](
     frame3d_elem_indices: List[Int],
     elements: List[ElementInput],
     node_x: List[Float64],
@@ -482,9 +482,7 @@ fn _assemble_frame3d_native_soa_indices[S: ElementMatrixSink](
             var t_batch_start = 0
             if runtime_metrics.enabled:
                 t_batch_start = Int(perf_counter_ns())
-            _frame3d_compute_batch(
-                ctx, force_beam_column3d_scratch, start, count, batch_workers
-            )
+            _frame3d_compute_batch(ctx, force_beam_column3d_scratch, start, count, batch_workers)
             # Scatter on this thread in element order, so sums match the serial loop.
             for local_idx in range(count):
                 var e = frame3d_elem_indices[start + local_idx]
@@ -499,9 +497,9 @@ fn _assemble_frame3d_native_soa_indices[S: ElementMatrixSink](
                 var dof_offset = elem_dof_offsets[e]
                 var force_offset = local_idx * FRAME3D_DOFS
                 for a in range(FRAME3D_DOFS):
-                    F_int[elem_dof_pool[dof_offset + a]] += (
-                        force_beam_column3d_scratch.forces[force_offset + a]
-                    )
+                    F_int[elem_dof_pool[dof_offset + a]] += force_beam_column3d_scratch.forces[
+                        force_offset + a
+                    ]
             if runtime_metrics.enabled:
                 # Wall time of the batch split evenly; per-element time is not observable here.
                 var per_element_ns = (Int(perf_counter_ns()) - t_batch_start) // count
@@ -534,9 +532,7 @@ fn _assemble_frame3d_native_soa_indices[S: ElementMatrixSink](
             and sections_by_id[elem_section_ids[e]].type == "FiberSection3d"
         )
         if profile_fiber:
-            _profile_scope_open(
-                do_profile, events, events_need_comma, frame_assemble_fiber, t0
-            )
+            _profile_scope_open(do_profile, events, events_need_comma, frame_assemble_fiber, t0)
             _profile_scope_open(
                 do_profile,
                 events,
@@ -589,9 +585,7 @@ fn _assemble_frame3d_native_soa_indices[S: ElementMatrixSink](
                 PROFILE_FRAME_ASSEMBLE_FIBER_SECTION_RESPONSE,
                 t0,
             )
-            _profile_scope_close(
-                do_profile, events, events_need_comma, frame_assemble_fiber, t0
-            )
+            _profile_scope_close(do_profile, events, events_need_comma, frame_assemble_fiber, t0)
         backend.add_element_matrix(e, elem_free_pool, elem_free_offsets[e], FRAME3D_DOFS, k_elem12)
         var dof_offset = elem_dof_offsets[e]
         for a in range(FRAME3D_DOFS):
@@ -787,9 +781,7 @@ fn _assemble_frame3d_soa_indices(
                 var sec_index = fiber_section3d_index_by_id[elem_section_ids[e]]
                 if sec_index < 0 or sec_index >= len(fiber_section3d_defs):
                     abort("fiber section not found")
-                var integration_name = _beam_integration_name_from_tag(
-                    elem_integration_tags[e]
-                )
+                var integration_name = _beam_integration_name_from_tag(elem_integration_tags[e])
                 _profile_scope_open(
                     do_profile,
                     events,

@@ -383,7 +383,12 @@ def test_beam_column3d_section_recorders_include_torsion_and_twist(element_type:
         "loads": [{"node": 2, "dof": 4, "value": 1200.0}],
         "analysis": {"type": "static_linear", "steps": 1},
         "recorders": [
-            {"type": "section_force", "elements": [1], "section": 1, "output": "sec_force"},
+            {
+                "type": "section_force",
+                "elements": [1],
+                "section": 1,
+                "output": "sec_force",
+            },
             {
                 "type": "section_deformation",
                 "elements": [1],

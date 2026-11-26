@@ -27,6 +27,16 @@ def _load_run_benchmarks_module():
 
 run_benchmarks = _load_run_benchmarks_module()
 
+synthetic_gm_spec = importlib.util.spec_from_file_location(
+    "strut_synthetic_ground_motion_benchmarks_test_module",
+    REPO_ROOT / "scripts" / "synthetic_ground_motion.py",
+)
+assert synthetic_gm_spec is not None
+assert synthetic_gm_spec.loader is not None
+synthetic_gm = importlib.util.module_from_spec(synthetic_gm_spec)
+sys.modules[synthetic_gm_spec.name] = synthetic_gm
+synthetic_gm_spec.loader.exec_module(synthetic_gm)
+
 
 def _load_compare_case_module():
     module_name = "strut_compare_case_test_module"
@@ -123,14 +133,18 @@ def test_discover_default_cases_includes_enabled_direct_tcl_case(tmp_path: Path)
     entry_tcl.parent.mkdir(parents=True, exist_ok=True)
     entry_tcl.write_text("puts ok\n", encoding="utf-8")
     _write_direct_tcl_case(
-        validation_root / "opensees_example_2d_elastic_cantileaver_column" / "direct_tcl_case.json",
+        validation_root
+        / "opensees_example_2d_elastic_cantileaver_column"
+        / "direct_tcl_case.json",
         entry_tcl=entry_tcl,
         enabled=True,
     )
 
     cases = run_benchmarks.discover_default_cases(validation_root)
 
-    assert [case.name for case in cases] == ["opensees_example_2d_elastic_cantileaver_column"]
+    assert [case.name for case in cases] == [
+        "opensees_example_2d_elastic_cantileaver_column"
+    ]
     assert cases[0].tcl_path == entry_tcl.resolve()
     assert cases[0].json_path is None
 
@@ -232,16 +246,12 @@ def test_resolve_engine_mode_prefers_explicit_engine_over_mp_and_env():
 
 def test_engines_require_direct_tcl_parser_check_for_reference_engines():
     assert (
-        run_benchmarks._engines_require_direct_tcl_parser_check(("opensees",))
-        is True
+        run_benchmarks._engines_require_direct_tcl_parser_check(("opensees",)) is True
     )
     assert (
-        run_benchmarks._engines_require_direct_tcl_parser_check(("openseesmp",))
-        is True
+        run_benchmarks._engines_require_direct_tcl_parser_check(("openseesmp",)) is True
     )
-    assert (
-        run_benchmarks._engines_require_direct_tcl_parser_check(("strut",)) is False
-    )
+    assert run_benchmarks._engines_require_direct_tcl_parser_check(("strut",)) is False
     assert (
         run_benchmarks._engines_require_direct_tcl_parser_check(("opensees", "strut"))
         is True
@@ -271,7 +281,9 @@ def test_select_case_with_fzf_returns_selected_case_name(monkeypatch, tmp_path: 
         "_interactive_case_options",
         lambda root, include_disabled: [("alpha_case", selected_case)],
     )
-    monkeypatch.setattr(run_benchmarks.Path, "open", lambda self, *args, **kwargs: io.StringIO())
+    monkeypatch.setattr(
+        run_benchmarks.Path, "open", lambda self, *args, **kwargs: io.StringIO()
+    )
 
     class FakePopen:
         returncode = 0
@@ -472,9 +484,18 @@ def test_write_direct_tcl_wrapper_copies_non_data_raw_outputs(tmp_path: Path):
 
     wrapper = wrapper_path.read_text(encoding="utf-8")
 
-    assert 'file copy -force {Data/Disp.out} [file join $__strut_out_dir {Data/Disp.out}]' in wrapper
-    assert 'file copy -force {example.out} [file join $__strut_out_dir {example.out}]' in wrapper
-    assert 'file copy -force {nested/out.dat} [file join $__strut_out_dir {nested/out.dat}]' in wrapper
+    assert (
+        "file copy -force {Data/Disp.out} [file join $__strut_out_dir {Data/Disp.out}]"
+        in wrapper
+    )
+    assert (
+        "file copy -force {example.out} [file join $__strut_out_dir {example.out}]"
+        in wrapper
+    )
+    assert (
+        "file copy -force {nested/out.dat} [file join $__strut_out_dir {nested/out.dat}]"
+        in wrapper
+    )
 
 
 def test_write_direct_tcl_wrapper_compute_only_noops_display_commands(tmp_path: Path):
@@ -491,15 +512,15 @@ def test_write_direct_tcl_wrapper_compute_only_noops_display_commands(tmp_path: 
 
     assert "rename source __strut_orig_source" in wrapper
     assert 'if {$tail == "DisplayModel2D.tcl"} {' in wrapper
-    assert 'proc DisplayModel2D args { return {} }' in wrapper
+    assert "proc DisplayModel2D args { return {} }" in wrapper
     assert 'if {$tail == "DisplayPlane.tcl"} {' in wrapper
-    assert 'proc DisplayPlane args { return {} }' in wrapper
+    assert "proc DisplayPlane args { return {} }" in wrapper
     assert "rename exit __strut_orig_exit" in wrapper
     assert "proc exit args { return {} }" in wrapper
     assert "rename quit __strut_orig_quit" in wrapper
     assert "proc quit args { return {} }" in wrapper
     assert "foreach __strut_display_cmd {prp vup vpn viewWindow display} {" in wrapper
-    assert 'proc $__strut_display_cmd args { return {} }' in wrapper
+    assert "proc $__strut_display_cmd args { return {} }" in wrapper
 
 
 def test_prepare_direct_tcl_wrappers_mirror_shared_parent_assets(tmp_path: Path):
@@ -527,8 +548,12 @@ def test_prepare_direct_tcl_wrappers_mirror_shared_parent_assets(tmp_path: Path)
     mirrored_script_dir = timed_wrapper.parent
     assert compute_wrapper.parent == mirrored_script_dir
     assert (mirrored_script_dir / "BM68elc.acc").read_text(encoding="utf-8") == "0.0\n"
-    assert (mirrored_script_dir / "GMfiles" / "gm.dat").read_text(encoding="utf-8") == "1.0\n"
-    assert (mirrored_script_dir / "ReadSMDfile.tcl").read_text(encoding="utf-8") == "puts reader\n"
+    assert (mirrored_script_dir / "GMfiles" / "gm.dat").read_text(
+        encoding="utf-8"
+    ) == "1.0\n"
+    assert (mirrored_script_dir / "ReadSMDfile.tcl").read_text(
+        encoding="utf-8"
+    ) == "puts reader\n"
     assert not (mirrored_script_dir / "other_example").exists()
 
 
@@ -571,10 +596,17 @@ def test_prepare_direct_tcl_wrappers_use_manifest_source_files_order(
     ]
     timed_text = timed_wrapper.read_text(encoding="utf-8")
     compute_text = compute_wrapper.read_text(encoding="utf-8")
-    compat_wrapper = entry_wrapper.with_name(entry_wrapper.stem + "__opensees_compat.tcl")
+    compat_wrapper = entry_wrapper.with_name(
+        entry_wrapper.stem + "__opensees_compat.tcl"
+    )
     compute_entry = entry_wrapper.with_name(entry_wrapper.stem + "__compute.tcl")
-    compute_compat = compute_entry.with_name(compute_entry.stem + "__opensees_compat.tcl")
-    instrumented_fiber = mirrored_script_dir / "Ex3.Canti2D.build.InelasticFiberSection__strut_compute.tcl"
+    compute_compat = compute_entry.with_name(
+        compute_entry.stem + "__opensees_compat.tcl"
+    )
+    instrumented_fiber = (
+        mirrored_script_dir
+        / "Ex3.Canti2D.build.InelasticFiberSection__strut_compute.tcl"
+    )
     assert compat_wrapper.exists()
     assert compute_entry.exists()
     assert compute_compat.exists()
@@ -583,9 +615,8 @@ def test_prepare_direct_tcl_wrappers_use_manifest_source_files_order(
     compute_entry_text = compute_entry.read_text(encoding="utf-8")
     instrumented_text = instrumented_fiber.read_text(encoding="utf-8")
     assert "rename section __strut_builtin_section" in compat_text
-    assert 'set args [linsert $args 2 -GJ 1.0e-12]' in compat_text
-    assert "rename nDMaterial __strut_builtin_nDMaterial" in compat_text
-    assert 'if {[llength $args] == 4 && [lindex $args 0] eq "PlateFromPlaneStress"} {' in compat_text
+    assert "set args [linsert $args 2 -GJ 1.0e-12]" in compat_text
+    assert "rename nDMaterial" not in compat_text
     assert "rename mass __strut_builtin_mass" in compat_text
     assert (
         f"source [file join [file dirname [info script]] {{{entry_wrapper.name}}}]"
@@ -593,7 +624,10 @@ def test_prepare_direct_tcl_wrappers_use_manifest_source_files_order(
     )
     assert f"source {{{compat_wrapper.name}}}" in timed_text
     assert f"source {{{compute_compat.name}}}" in compute_text
-    assert "source {Ex3.Canti2D.build.InelasticFiberSection__strut_compute.tcl}" in compute_entry_text
+    assert (
+        "source {Ex3.Canti2D.build.InelasticFiberSection__strut_compute.tcl}"
+        in compute_entry_text
+    )
     assert "puts fiber" in instrumented_text
 
 
@@ -823,10 +857,14 @@ def test_ensure_direct_tcl_case_artifacts_reuses_existing_canonical_reference(
     entry_tcl.write_text("puts ok\n", encoding="utf-8")
     _write_direct_tcl_case(manifest, entry_tcl=entry_tcl)
     (case_root / "generated").mkdir(parents=True, exist_ok=True)
-    (case_root / "generated" / "model.tcl").write_text("puts generated\n", encoding="utf-8")
+    (case_root / "generated" / "model.tcl").write_text(
+        "puts generated\n", encoding="utf-8"
+    )
     (case_root / "generated" / "case.json").write_text("{}", encoding="utf-8")
     (case_root / "reference-original").mkdir(parents=True, exist_ok=True)
-    (case_root / "reference-original" / "disp_node1.out").write_text("1.0\n", encoding="utf-8")
+    (case_root / "reference-original" / "disp_node1.out").write_text(
+        "1.0\n", encoding="utf-8"
+    )
     (case_root / "reference").mkdir(parents=True, exist_ok=True)
     (case_root / "reference" / "disp_node1.out").write_text("1.0\n", encoding="utf-8")
     (case_root / ".parser-check").write_text("ok\n", encoding="utf-8")
@@ -947,7 +985,9 @@ def test_require_direct_tcl_parser_check_rejects_missing_file(tmp_path: Path):
 
     case = run_benchmarks._direct_tcl_case_spec(manifest)
 
-    with pytest.raises(SystemExit, match="missing parser-check for direct Tcl benchmark"):
+    with pytest.raises(
+        SystemExit, match="missing parser-check for direct Tcl benchmark"
+    ):
         run_benchmarks._require_direct_tcl_parser_check(case)
 
 
@@ -1028,8 +1068,19 @@ def test_absolutize_time_series_paths_resolves_relative_values_path(tmp_path: Pa
 
 
 def test_absolutize_time_series_paths_resolves_from_repo_root_when_needed(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
+    # The repo root comes from the module's own location. Point it at a scratch
+    # repo holding a synthetic motion so the real fixture tree is not needed.
+    repo_root = tmp_path / "repo"
+    motion_rel = "tests/fixtures/opensees/OpenSeesExamplesBasic/time_history_analysis_of_a_2d_elastic_cantilever_column/A10000.tcl"
+    synthetic_gm.write_motion(
+        repo_root / motion_rel,
+        synthetic_gm.MotionParams(seed=11, dt=0.005, npts=400, pga=0.1),
+    )
+    monkeypatch.setattr(
+        run_benchmarks, "__file__", str(repo_root / "scripts" / "run_benchmarks.py")
+    )
     case_json = tmp_path / "validation" / "case_b" / "case_b.json"
     case_json.parent.mkdir(parents=True, exist_ok=True)
     case_data = {
@@ -1037,7 +1088,7 @@ def test_absolutize_time_series_paths_resolves_from_repo_root_when_needed(
             {
                 "type": "Path",
                 "tag": 1,
-                "values_path": "tests/fixtures/opensees/OpenSeesExamplesBasic/time_history_analysis_of_a_2d_elastic_cantilever_column/A10000.tcl",
+                "values_path": motion_rel,
             }
         ]
     }
@@ -1045,10 +1096,7 @@ def test_absolutize_time_series_paths_resolves_from_repo_root_when_needed(
     run_benchmarks._absolutize_time_series_paths(case_data, case_json)
 
     resolved = Path(case_data["time_series"][0]["values_path"])
-    expected = (
-        REPO_ROOT
-        / "tests/fixtures/opensees/OpenSeesExamplesBasic/time_history_analysis_of_a_2d_elastic_cantilever_column/A10000.tcl"
-    ).resolve()
+    expected = (repo_root / motion_rel).resolve()
     assert resolved.is_absolute()
     assert resolved == expected
 
@@ -1398,8 +1446,7 @@ def test_summarize_benchmark_failures_includes_runtime_context():
     assert summary[1] == "  Case File: /tmp/cases/beam_case.json"
     assert (
         '  Runtime Failures: ["opensees total: opensees total pass aborted (exit 1); stderr=bad recorder '
-        '[error_file=/tmp/results/opensees/beam_case/case_error.txt]"]'
-        in summary
+        '[error_file=/tmp/results/opensees/beam_case/case_error.txt]"]' in summary
     )
     assert (
         '  Node Mismatch: ["node 1 mismatch at step 4", "dof 1: ref=1.000000e+00 got=2.000000e+00 abs=1.000e+00 rel=1.000e+00"]'
@@ -1420,7 +1467,9 @@ def test_format_subprocess_failure_prefers_abort_marker_over_stack_tail():
         ),
     )
 
-    message = run_benchmarks._format_subprocess_failure("strut compute-only pass aborted", exc)
+    message = run_benchmarks._format_subprocess_failure(
+        "strut compute-only pass aborted", exc
+    )
 
     assert (
         "stderr=ABORT: [precheck-fail] rigidDiaphragm perp_dirn must be in 1..3"
@@ -1441,7 +1490,9 @@ def test_format_subprocess_failure_prefers_load_fail_marker():
         ),
     )
 
-    message = run_benchmarks._format_subprocess_failure("strut compute-only pass aborted", exc)
+    message = run_benchmarks._format_subprocess_failure(
+        "strut compute-only pass aborted", exc
+    )
 
     assert "stderr=[load-fail] rigidDiaphragm constrained_node not found" in message
 
@@ -1762,10 +1813,9 @@ def test_finalize_benchmark_outputs_archives_summary_and_plot(
     monkeypatch.setattr(
         run_benchmarks,
         "_archive_benchmark_artifacts",
-        lambda archive_root, stamp, artifacts: archive_calls.append(
-            (archive_root, stamp, list(artifacts))
-        )
-        or [],
+        lambda archive_root, stamp, artifacts: (
+            archive_calls.append((archive_root, stamp, list(artifacts))) or []
+        ),
     )
     monkeypatch.setattr(
         run_benchmarks,

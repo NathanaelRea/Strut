@@ -244,11 +244,7 @@ fn beam_integration_rule(
 fn beam_integration_cache_ensure(
     mut cache: BeamIntegrationCache, integration: String, num_int_pts: Int
 ):
-    if (
-        cache.is_valid
-        and cache.integration == integration
-        and cache.num_int_pts == num_int_pts
-    ):
+    if cache.is_valid and cache.integration == integration and cache.num_int_pts == num_int_pts:
         return
     beam_integration_rule(integration, num_int_pts, cache.xis, cache.weights)
     cache.integration = integration
@@ -256,9 +252,7 @@ fn beam_integration_cache_ensure(
     cache.is_valid = True
 
 
-fn beam_integration_xi_weight(
-    integration: String, num_int_pts: Int, ip: Int
-) -> (Float64, Float64):
+fn beam_integration_xi_weight(integration: String, num_int_pts: Int, ip: Int) -> (Float64, Float64):
     if ip < 0 or ip >= num_int_pts:
         abort("beam integration point index out of range")
     var xis: List[Float64] = []
@@ -279,9 +273,7 @@ fn beam_integration_is_supported(integration: String, num_int_pts: Int) -> Bool:
     return False
 
 
-fn beam_integration_validate_or_abort(
-    beam_col_type: String, integration: String, num_int_pts: Int
-):
+fn beam_integration_validate_or_abort(beam_col_type: String, integration: String, num_int_pts: Int):
     if integration != "Lobatto" and integration != "Legendre" and integration != "Radau":
         abort(beam_col_type + " supports integration Lobatto, Legendre, or Radau")
     if integration == "Lobatto" and num_int_pts < 2:

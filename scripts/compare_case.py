@@ -277,9 +277,7 @@ def _compare_output_dirs(data: dict, ref_dir: Path, strut_dir: Path) -> list[str
     tol = data.get("parity_tolerance", {})
     rtol = tol.get("rtol", REL_TOL)
     atol = tol.get("atol", ABS_TOL)
-    has_global_tol_override = isinstance(tol, dict) and (
-        "rtol" in tol or "atol" in tol
-    )
+    has_global_tol_override = isinstance(tol, dict) and ("rtol" in tol or "atol" in tol)
     tol_by_recorder = data.get("parity_tolerance_by_recorder", {})
     if not isinstance(tol_by_recorder, dict):
         tol_by_recorder = {}
@@ -490,8 +488,12 @@ def _compare_output_dirs(data: dict, ref_dir: Path, strut_dir: Path) -> list[str
                 item_ids = rec.get("nodes", [])
                 filename_template = "{output}_node{item_id}.out"
             for item_id in item_ids:
-                ref_file = ref_dir / filename_template.format(output=output, item_id=item_id)
-                strut_file = strut_dir / filename_template.format(output=output, item_id=item_id)
+                ref_file = ref_dir / filename_template.format(
+                    output=output, item_id=item_id
+                )
+                strut_file = strut_dir / filename_template.format(
+                    output=output, item_id=item_id
+                )
                 if not ref_file.exists():
                     failures.append(f"missing reference output: {ref_file}")
                     continue
@@ -642,7 +644,9 @@ def main():
         else:
             case_root = repo_root / "tests" / "validation" / entry_tcl.stem
             manifest_path = None
-        data = _load_direct_tcl_case_data(entry_tcl, repo_root, case_root, manifest_path)
+        data = _load_direct_tcl_case_data(
+            entry_tcl, repo_root, case_root, manifest_path
+        )
     elif args.case:
         case_root = repo_root / "tests" / "validation" / args.case
         case_json = case_root / f"{args.case}.json"

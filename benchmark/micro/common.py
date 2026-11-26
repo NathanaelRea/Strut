@@ -27,7 +27,11 @@ DEFAULT_CASE = (
 
 def resolve_case_input(case_arg: str) -> Path:
     raw_path = Path(case_arg)
-    path = raw_path.resolve() if raw_path.is_absolute() else (REPO_ROOT / raw_path).resolve()
+    path = (
+        raw_path.resolve()
+        if raw_path.is_absolute()
+        else (REPO_ROOT / raw_path).resolve()
+    )
     if not path.exists():
         raise SystemExit(f"case input not found: {case_arg}")
     return path
@@ -85,4 +89,3 @@ def build_mojo_binary(source_name: str, binary_name: str) -> Path:
             cwd=REPO_ROOT,
         )
     return bin_path
-

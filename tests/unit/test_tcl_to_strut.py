@@ -1,4 +1,6 @@
 import importlib.util
+import json
+import shutil
 import sys
 from pathlib import Path
 
@@ -8,6 +10,8 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TCL_TO_STRUT_PATH = REPO_ROOT / "scripts" / "tcl_to_strut.py"
 RUN_CASE_PATH = REPO_ROOT / "scripts" / "run_case.py"
+SYNTHETIC_GM_PATH = REPO_ROOT / "scripts" / "synthetic_ground_motion.py"
+FIXTURE_ROOT = REPO_ROOT / "tests" / "fixtures" / "opensees"
 
 
 def _load_tcl_to_strut_module():
@@ -32,11 +36,60 @@ sys.modules["strut_run_case_test_module"] = run_case
 run_case_spec.loader.exec_module(run_case)
 
 
+synthetic_gm_spec = importlib.util.spec_from_file_location(
+    "strut_synthetic_ground_motion_test_module", SYNTHETIC_GM_PATH
+)
+assert synthetic_gm_spec is not None
+assert synthetic_gm_spec.loader is not None
+synthetic_gm = importlib.util.module_from_spec(synthetic_gm_spec)
+sys.modules["strut_synthetic_ground_motion_test_module"] = synthetic_gm
+synthetic_gm_spec.loader.exec_module(synthetic_gm)
+
+EX1A_BASIC_DIR = (
+    "OpenSeesExamplesBasic/time_history_analysis_of_a_2d_elastic_cantilever_column"
+)
+EX2A_DIR = "OpenSeesExamplesAdvanced/opensees_example_2a_elastic_cantilever_column_with_variables"
+EX5_DIR = (
+    "OpenSeesExamplesAdvanced/"
+    "opensees_example_5_2d_frame_3_story_3_bay_reinforced_concrete_section_steel_w_section"
+)
+
+
+def _copy_committed_example(rel_dir: str, root: Path) -> Path:
+    """Copy one committed example directory to ``root/rel_dir``.
+
+    Pinned downloads (real ground motions) that may be installed next to the
+    committed Tcl are left out, so tests only see the synthetic motions they
+    write themselves.
+    """
+    pinned = {
+        entry["path"]
+        for entry in json.loads(
+            (FIXTURE_ROOT / "reference-data.lock.json").read_text(encoding="utf-8")
+        )["files"]
+    }
+    source = FIXTURE_ROOT / rel_dir
+    target = root / rel_dir
+    target.mkdir(parents=True, exist_ok=True)
+    for path in sorted(source.iterdir()):
+        if path.is_file() and f"{rel_dir}/{path.name}" not in pinned:
+            shutil.copy2(path, target / path.name)
+    return target
+
+
+def _write_synthetic_motion(path: Path, seed: int, dt: float, npts: int) -> None:
+    synthetic_gm.write_motion(
+        path, synthetic_gm.MotionParams(seed=seed, dt=dt, npts=npts, pga=0.3)
+    )
+
+
 def _convert_direct_tcl_manifest(case_name: str) -> dict:
     manifest = REPO_ROOT / "tests" / "validation" / case_name / "direct_tcl_case.json"
     entry = run_case._resolve_entry_tcl_from_manifest(manifest, REPO_ROOT)
     source_files = run_case._resolve_direct_tcl_source_files(entry, manifest)
-    runtime_entry, _ = run_case._prepare_direct_tcl_entry(entry, manifest.parent, source_files)
+    runtime_entry, _ = run_case._prepare_direct_tcl_entry(
+        entry, manifest.parent, source_files
+    )
     return tcl_to_strut.convert_tcl_to_case(runtime_entry, REPO_ROOT)
 
 
@@ -70,9 +123,8 @@ def test_prepare_direct_tcl_entry_preserves_legacy_mass_arity_in_source(tmp_path
     opensees_wrapper = run_case._prepare_opensees_compat_entry(runtime_entry)
     wrapper_text = opensees_wrapper.read_text(encoding="utf-8")
     assert "rename section __strut_builtin_section" in wrapper_text
-    assert 'set args [linsert $args 2 -GJ 1.0e-12]' in wrapper_text
-    assert "rename nDMaterial __strut_builtin_nDMaterial" in wrapper_text
-    assert 'if {[llength $args] == 4 && [lindex $args 0] eq "PlateFromPlaneStress"} {' in wrapper_text
+    assert "set args [linsert $args 2 -GJ 1.0e-12]" in wrapper_text
+    assert "rename nDMaterial" not in wrapper_text
     assert "rename mass __strut_builtin_mass" in wrapper_text
     assert f"source {{{runtime_entry.name}}}" in wrapper_text
 
@@ -115,8 +167,8 @@ def test_resolve_json_case_root_keeps_generated_case_json_in_canonical_case_dir(
     generated_case_json.parent.mkdir(parents=True, exist_ok=True)
     generated_case_json.write_text("{}\n", encoding="utf-8")
 
-    case_name, resolved_case_root, resolved_case_json = run_case._resolve_json_case_root(
-        repo_root, generated_case_json
+    case_name, resolved_case_root, resolved_case_json = (
+        run_case._resolve_json_case_root(repo_root, generated_case_json)
     )
 
     assert case_name == "example_case"
@@ -124,15 +176,12 @@ def test_resolve_json_case_root_keeps_generated_case_json_in_canonical_case_dir(
     assert resolved_case_json == generated_case_json.resolve()
 
 
-def test_convert_ex1a_builds_staged_case():
-    entry = (
-        REPO_ROOT
-        / "tests/fixtures/opensees/OpenSeesExamplesBasic"
-        / "time_history_analysis_of_a_2d_elastic_cantilever_column"
-        / "Ex1a.Canti2D.EQ.modif.tcl"
-    )
+def test_convert_ex1a_builds_staged_case(tmp_path: Path):
+    example_dir = _copy_committed_example(EX1A_BASIC_DIR, tmp_path)
+    _write_synthetic_motion(example_dir / "A10000.tcl", seed=1, dt=0.005, npts=7990)
+    entry = example_dir / "Ex1a.Canti2D.EQ.modif.tcl"
 
-    case = tcl_to_strut.convert_tcl_to_case(entry, REPO_ROOT)
+    case = tcl_to_strut.convert_tcl_to_case(entry, tmp_path)
 
     assert case["analysis"]["type"] == "staged"
     assert len(case["analysis"]["stages"]) == 2
@@ -465,23 +514,22 @@ def test_convert_displacement_control_zero_increment_is_noop(tmp_path: Path):
     assert stage["integrator"]["du"] == pytest.approx(0.1)
 
 
-def test_convert_ex2a_eq_resolves_ground_motion_from_example_root_when_available():
-    entry = (
-        REPO_ROOT
-        / "tests/fixtures/opensees/OpenSeesExamplesAdvanced"
-        / "opensees_example_2a_elastic_cantilever_column_with_variables"
-        / "Ex2a.Canti2D.ElasticElement.EQ.tcl"
+def test_convert_ex2a_eq_resolves_ground_motion_from_example_root_when_available(
+    tmp_path: Path,
+):
+    # Same layout as the pinned fixtures: one copy of the motion in the bundle
+    # root and one next to the example. The example's own copy wins.
+    example_dir = _copy_committed_example(EX2A_DIR, tmp_path)
+    _write_synthetic_motion(example_dir / "BM68elc.acc", seed=2, dt=0.01, npts=4000)
+    _write_synthetic_motion(
+        example_dir.parent / "BM68elc.acc", seed=3, dt=0.01, npts=4000
     )
+    entry = example_dir / "Ex2a.Canti2D.ElasticElement.EQ.tcl"
 
-    case = tcl_to_strut.convert_tcl_to_case(entry, REPO_ROOT)
+    case = tcl_to_strut.convert_tcl_to_case(entry, tmp_path)
 
     assert case["time_series"][1]["values_path"] == str(
-        (
-            REPO_ROOT
-            / "tests/fixtures/opensees/OpenSeesExamplesAdvanced"
-            / "opensees_example_2a_elastic_cantilever_column_with_variables"
-            / "BM68elc.acc"
-        ).resolve()
+        (example_dir / "BM68elc.acc").resolve()
     )
 
 
@@ -498,15 +546,12 @@ def test_convert_reports_unknown_command_with_location(tmp_path: Path):
     assert "line 2" in message
 
 
-def test_convert_typed_case_returns_dataclass_model():
-    entry = (
-        REPO_ROOT
-        / "tests/fixtures/opensees/OpenSeesExamplesBasic"
-        / "time_history_analysis_of_a_2d_elastic_cantilever_column"
-        / "Ex1a.Canti2D.EQ.modif.tcl"
-    )
+def test_convert_typed_case_returns_dataclass_model(tmp_path: Path):
+    example_dir = _copy_committed_example(EX1A_BASIC_DIR, tmp_path)
+    _write_synthetic_motion(example_dir / "A10000.tcl", seed=4, dt=0.005, npts=7990)
+    entry = example_dir / "Ex1a.Canti2D.EQ.modif.tcl"
 
-    case = tcl_to_strut.convert_tcl_to_typed_case(entry, REPO_ROOT)
+    case = tcl_to_strut.convert_tcl_to_typed_case(entry, tmp_path)
 
     assert case.model.ndm == 2
     assert case.model.ndf == 3
@@ -516,11 +561,48 @@ def test_convert_typed_case_returns_dataclass_model():
     )
 
 
-def test_convert_ex5_disables_transient_force_beam_local_force_parity():
+def test_convert_ex5_disables_transient_force_beam_local_force_parity(tmp_path: Path):
     # Originally read Ex5.Frame2D.complete.Dynamic.EQ.Uniform.tcl from the wiki's
-    # Ex5Fram2DEQ.zip, which no longer exists. This manifest sources the same
-    # build + EQ-uniform analysis scripts.
-    case = _convert_direct_tcl_manifest("opensees_example_ex5_frame2d_eq_uniform_rc_fiber")
+    # Ex5Fram2DEQ.zip, which no longer exists. The manifest sources the same
+    # build + EQ-uniform analysis scripts. The Tcl's ReadSMDFile proc opens
+    # ../GMfiles/H-e12140.at2 and takes DT from the PEER header, so a synthetic
+    # record goes there. It is named like the wiki zip member (H-E12140.AT2),
+    # which only resolves through the converter's case-insensitive lookup.
+    example_dir = _copy_committed_example(EX5_DIR, tmp_path)
+    gm_dt = 0.004
+    gm_npts = 2500
+    _write_synthetic_motion(
+        example_dir.parent / "GMfiles" / "H-E12140.AT2",
+        seed=5,
+        dt=gm_dt,
+        npts=gm_npts,
+    )
+    manifest_data = json.loads(
+        (
+            REPO_ROOT
+            / "tests/validation/opensees_example_ex5_frame2d_eq_uniform_rc_fiber"
+            / "direct_tcl_case.json"
+        ).read_text(encoding="utf-8")
+    )
+    entry = example_dir / Path(manifest_data["entry_tcl"]).name
+    manifest_data["entry_tcl"] = str(entry)
+    case_root = tmp_path / "validation" / manifest_data["name"]
+    case_root.mkdir(parents=True)
+    manifest = case_root / "direct_tcl_case.json"
+    manifest.write_text(json.dumps(manifest_data), encoding="utf-8")
+    source_files = run_case._resolve_direct_tcl_source_files(entry, manifest)
+    runtime_entry, _ = run_case._prepare_direct_tcl_entry(
+        entry, case_root, source_files
+    )
+
+    case = tcl_to_strut.convert_tcl_to_case(runtime_entry, tmp_path)
+
+    accel_series = [ts for ts in case["time_series"] if ts["type"] == "Path"]
+    assert len(accel_series) == 1
+    assert accel_series[0]["dt"] == pytest.approx(gm_dt)
+    converted_values = Path(accel_series[0]["values_path"])
+    assert converted_values.name.lower() == "h-e12140.g3"
+    assert len(converted_values.read_text(encoding="ascii").split()) == gm_npts
 
     recorders = {}
     for recorder in case["recorders"]:
@@ -625,7 +707,9 @@ def test_convert_rcframepushover_preserves_runtime_test_without_injected_fallbac
 
 
 def test_convert_ex4_static_push_uses_solver_chain_and_continuation_policy():
-    case = _convert_direct_tcl_manifest("opensees_example_ex4_portal2d_analyze_static_push")
+    case = _convert_direct_tcl_manifest(
+        "opensees_example_ex4_portal2d_analyze_static_push"
+    )
 
     stages = case["analysis"]["stages"]
     pushover = stages[1]["analysis"]
@@ -668,7 +752,9 @@ def test_convert_ex4_static_push_uses_solver_chain_and_continuation_policy():
 
 
 def test_convert_ex5_static_push_uses_very_loose_parity_tolerances():
-    case = _convert_direct_tcl_manifest("opensees_example_ex5_frame2d_analyze_static_push")
+    case = _convert_direct_tcl_manifest(
+        "opensees_example_ex5_frame2d_analyze_static_push"
+    )
 
     assert case["parity_mode"] == "max_abs"
     assert case["parity_tolerance"] == {
@@ -686,7 +772,9 @@ def test_convert_ex5_static_push_uses_very_loose_parity_tolerances():
 
 
 def test_convert_ex4_static_cycle_uses_solver_chain_per_step():
-    case = _convert_direct_tcl_manifest("opensees_example_ex4_portal2d_analyze_static_cycle")
+    case = _convert_direct_tcl_manifest(
+        "opensees_example_ex4_portal2d_analyze_static_cycle"
+    )
 
     first_cycle = next(
         stage["analysis"]
@@ -724,7 +812,9 @@ def test_convert_ex4_static_cycle_uses_solver_chain_per_step():
     }
 
 
-def test_convert_rigid_diaphragm_preserves_opensees_small_rotation_mapping(tmp_path: Path):
+def test_convert_rigid_diaphragm_preserves_opensees_small_rotation_mapping(
+    tmp_path: Path,
+):
     script = tmp_path / "rigid_diaphragm.tcl"
     script.write_text(
         "\n".join(
@@ -1461,7 +1551,9 @@ def test_convert_imports_zero_length_section(tmp_path: Path):
 
     case = tcl_to_strut.convert_tcl_to_case(script, REPO_ROOT)
 
-    assert case["elements"] == [{"id": 6, "type": "zeroLengthSection", "nodes": [1, 2], "section": 9}]
+    assert case["elements"] == [
+        {"id": 6, "type": "zeroLengthSection", "nodes": [1, 2], "section": 9}
+    ]
 
 
 def test_convert_imports_block2d_quad_and_fallback_eigen(tmp_path: Path):
@@ -1513,7 +1605,11 @@ def test_convert_imports_block2d_quad_and_fallback_eigen(tmp_path: Path):
     case = tcl_to_strut.convert_tcl_to_case(script, REPO_ROOT)
 
     assert case["materials"] == [
-        {"id": 1, "type": "ElasticIsotropic", "params": {"E": 1000.0, "nu": 0.25, "rho": 3.0}}
+        {
+            "id": 1,
+            "type": "ElasticIsotropic",
+            "params": {"E": 1000.0, "nu": 0.25, "rho": 3.0},
+        }
     ]
     assert case["elements"] == [
         {
@@ -1637,7 +1733,9 @@ def test_convert_imports_block2d_shell_geometry(tmp_path: Path):
         {"id": 3, "x": 20.0, "y": 0.0, "z": 0.0},
         {"id": 4, "x": 20.0, "y": 0.0, "z": 40.0},
     ]
-    assert case["elements"] == [{"id": 1, "type": "shell", "nodes": [1, 2, 4, 3], "section": 1}]
+    assert case["elements"] == [
+        {"id": 1, "type": "shell", "nodes": [1, 2, 4, 3], "section": 1}
+    ]
 
 
 def test_convert_imports_layered_shell_materials_and_shellmitc4(tmp_path: Path):
@@ -1708,7 +1806,18 @@ def test_convert_imports_layered_shell_materials_and_shellmitc4(tmp_path: Path):
             "type": "PlateRebar",
             "params": {"material": 77997, "angle": 0.0},
         },
-        {"id": 77997, "type": "Steel02", "params": {"Fy": 4.0e8, "E0": 1.99999995904e11, "b": 0.0, "R0": 18.5, "cR1": 0.925, "cR2": 0.15}},
+        {
+            "id": 77997,
+            "type": "Steel02",
+            "params": {
+                "Fy": 4.0e8,
+                "E0": 1.99999995904e11,
+                "b": 0.0,
+                "R0": 18.5,
+                "cR1": 0.925,
+                "cR2": 0.15,
+            },
+        },
         {
             "id": 77998,
             "type": "PlateRebar",
@@ -1729,10 +1838,14 @@ def test_convert_imports_layered_shell_materials_and_shellmitc4(tmp_path: Path):
             },
         }
     ]
-    assert case["elements"] == [{"id": 20076, "type": "shell", "nodes": [1, 2, 3, 4], "section": 8501}]
+    assert case["elements"] == [
+        {"id": 20076, "type": "shell", "nodes": [1, 2, 3, 4], "section": 8501}
+    ]
 
 
-def test_convert_rejects_block2d_nine_node_elements_until_schema_supports_them(tmp_path: Path):
+def test_convert_rejects_block2d_nine_node_elements_until_schema_supports_them(
+    tmp_path: Path,
+):
     script = tmp_path / "case.tcl"
     script.write_text(
         "\n".join(
@@ -1882,7 +1995,10 @@ def test_convert_allows_nodebounds_in_display_helper_proc(tmp_path: Path):
 
     case = tcl_to_strut.convert_tcl_to_case(script, REPO_ROOT)
 
-    assert case["nodes"] == [{"id": 1, "x": 0.0, "y": 0.0}, {"id": 2, "x": 10.0, "y": 5.0}]
+    assert case["nodes"] == [
+        {"id": 1, "x": 0.0, "y": 0.0},
+        {"id": 2, "x": 10.0, "y": 5.0},
+    ]
 
 
 def test_convert_ignores_plot_recorder(tmp_path: Path):
@@ -2133,7 +2249,9 @@ def test_convert_adds_envelope_element_group_layout(tmp_path: Path):
     )
 
     case = tcl_to_strut.convert_tcl_to_case(script, REPO_ROOT)
-    recorders = [rec for rec in case["recorders"] if rec["type"] == "envelope_element_force"]
+    recorders = [
+        rec for rec in case["recorders"] if rec["type"] == "envelope_element_force"
+    ]
     assert len(recorders) == 2
     for recorder in recorders:
         layout = recorder.get("group_layout")
@@ -2173,7 +2291,9 @@ def test_convert_adds_envelope_element_group_layout_with_time_without_doubling(
     )
 
     case = tcl_to_strut.convert_tcl_to_case(script, REPO_ROOT)
-    recorders = [rec for rec in case["recorders"] if rec["type"] == "envelope_element_force"]
+    recorders = [
+        rec for rec in case["recorders"] if rec["type"] == "envelope_element_force"
+    ]
     assert len(recorders) == 2
     for recorder in recorders:
         layout = recorder.get("group_layout")
@@ -2213,21 +2333,27 @@ def test_convert_adds_envelope_local_force_and_node_recorders(tmp_path: Path):
     case = tcl_to_strut.convert_tcl_to_case(script, REPO_ROOT)
 
     local_force = [
-        rec for rec in case["recorders"] if rec["type"] == "envelope_element_local_force"
+        rec
+        for rec in case["recorders"]
+        if rec["type"] == "envelope_element_local_force"
     ]
     assert len(local_force) == 2
     for recorder in local_force:
         assert recorder["group_layout"]["type"] == "envelope_element_local_force"
         assert recorder["group_layout"]["values_per_element"] == [6, 6]
 
-    disp = [rec for rec in case["recorders"] if rec["type"] == "envelope_node_displacement"]
+    disp = [
+        rec for rec in case["recorders"] if rec["type"] == "envelope_node_displacement"
+    ]
     assert len(disp) == 2
     for recorder in disp:
         assert recorder["group_layout"]["type"] == "envelope_node_displacement"
         assert recorder["group_layout"]["nodes"] == [2, 3]
         assert recorder["group_layout"]["values_per_node"] == [1, 1]
 
-    accel = [rec for rec in case["recorders"] if rec["type"] == "envelope_node_acceleration"]
+    accel = [
+        rec for rec in case["recorders"] if rec["type"] == "envelope_node_acceleration"
+    ]
     assert len(accel) == 2
     for recorder in accel:
         assert recorder["time_series"] == 1
@@ -2265,7 +2391,9 @@ def test_convert_accepts_xml_plastic_rotation_recorder_and_skips_it(tmp_path: Pa
     assert case["recorders"] == []
 
 
-def test_convert_uniform_excitation_inline_series_resolves_values_path_case(tmp_path: Path):
+def test_convert_uniform_excitation_inline_series_resolves_values_path_case(
+    tmp_path: Path,
+):
     (tmp_path / "GMfiles").mkdir(parents=True, exist_ok=True)
     (tmp_path / "GMfiles" / "H-e12140.at2").write_text("0.0\n", encoding="utf-8")
     script = tmp_path / "case.tcl"

@@ -123,9 +123,7 @@ fn _build_stage_nodal_force_vector(
         var idx = node_dof_index(id_to_index[node_id], dof, ndf)
         F_stage[idx] += load.value
     if has_transformation_mpc:
-        return _collapse_vector_by_mpc(
-            F_stage, mpc_row_offsets, mpc_dof_pool, mpc_coeff_pool
-        )
+        return _collapse_vector_by_mpc(F_stage, mpc_row_offsets, mpc_dof_pool, mpc_coeff_pool)
     return F_stage^
 
 
@@ -231,9 +229,7 @@ def run_case_input(
         _append_frame(frames, frames_need_comma, "uniaxial_copy_reset")
         _append_event(events, events_need_comma, "O", frame_total, 0)
         _append_event(events, events_need_comma, "O", frame_case_load_parse, 0)
-        _append_event(
-            events, events_need_comma, "C", frame_case_load_parse, safe_case_load_us
-        )
+        _append_event(events, events_need_comma, "C", frame_case_load_parse, safe_case_load_us)
         _append_event(events, events_need_comma, "O", frame_assemble, safe_case_load_us)
         _append_event(
             events,
@@ -257,9 +253,7 @@ def run_case_input(
     var steps = state.steps
     var modal_num_modes = state.modal_num_modes
     var has_transformation_mpc = state.has_transformation_mpc
-    var supports_linear_transient_fast_path = (
-        state.supports_linear_transient_fast_path
-    )
+    var supports_linear_transient_fast_path = state.supports_linear_transient_fast_path
     ref time_series = state.time_series
     ref time_series_values = state.time_series_values
     ref time_series_times = state.time_series_times
@@ -648,12 +642,9 @@ def run_case_input(
             )
         else:
             abort("unsupported static_nonlinear integrator: " + integrator_type)
-    elif (
-        analysis_type_tag == AnalysisTypeTag.TransientLinear
-        or (
-            analysis_type_tag == AnalysisTypeTag.TransientNonlinear
-            and supports_linear_transient_fast_path
-        )
+    elif analysis_type_tag == AnalysisTypeTag.TransientLinear or (
+        analysis_type_tag == AnalysisTypeTag.TransientNonlinear
+        and supports_linear_transient_fast_path
     ):
         run_transient_linear(
             analysis,
@@ -882,12 +873,8 @@ def run_case_input(
 
         for stage_idx in range(len(stages)):
             var stage = stages[stage_idx]
-            var stage_analysis_targets_pool = (
-                stage.analysis_integrator_targets_pool.copy()
-            )
-            var stage_analysis_solver_chain_pool = (
-                stage.analysis_solver_chain_pool.copy()
-            )
+            var stage_analysis_targets_pool = stage.analysis_integrator_targets_pool.copy()
+            var stage_analysis_solver_chain_pool = stage.analysis_solver_chain_pool.copy()
             var stage_analysis = stage.analysis
             var stage_type = stage_analysis.type
             var stage_type_tag = stage_analysis.type_tag
@@ -898,15 +885,9 @@ def run_case_input(
                 and stage_analysis.constraints != "Transformation"
                 and stage_analysis.constraints != "Lagrange"
             ):
-                abort(
-                    "unsupported staged constraints handler: "
-                    + stage_analysis.constraints
-                )
+                abort("unsupported staged constraints handler: " + stage_analysis.constraints)
             if stage_analysis.constraints != state.constraints_handler:
-                abort(
-                    "staged analysis requires a single constraints handler "
-                    "for all stages"
-                )
+                abort("staged analysis requires a single constraints handler for all stages")
 
             if len(stage.time_series) > 0:
                 _append_stage_time_series(
@@ -968,9 +949,7 @@ def run_case_input(
                         accel_tag = stage.pattern.time_series
                     else:
                         abort("UniformExcitation pattern missing accel time_series tag")
-                    stage_uniform_accel_ts_index = find_time_series_input(
-                        time_series, accel_tag
-                    )
+                    stage_uniform_accel_ts_index = find_time_series_input(time_series, accel_tag)
                     if stage_uniform_accel_ts_index < 0:
                         abort("UniformExcitation accel time_series tag not found")
                     stage_F = _zero_nodal_force_vector(total_dofs)
@@ -1309,16 +1288,10 @@ def run_case_input(
                         runtime_metrics,
                     )
                 else:
-                    abort(
-                        "unsupported static_nonlinear integrator: "
-                        + stage_integrator_type
-                    )
-            elif (
-                stage_type_tag == AnalysisTypeTag.TransientLinear
-                or (
-                    stage_type_tag == AnalysisTypeTag.TransientNonlinear
-                    and supports_linear_transient_fast_path
-                )
+                    abort("unsupported static_nonlinear integrator: " + stage_integrator_type)
+            elif stage_type_tag == AnalysisTypeTag.TransientLinear or (
+                stage_type_tag == AnalysisTypeTag.TransientNonlinear
+                and supports_linear_transient_fast_path
             ):
                 run_transient_linear(
                     stage_analysis,
@@ -1602,9 +1575,7 @@ def run_case_input(
 
             if stage.has_load_const:
                 if stage_pattern_type_tag == PatternTypeTag.Plain:
-                    F_const = build_active_nodal_load(
-                        F_const, stage_F, stage_final_pattern_scale
-                    )
+                    F_const = build_active_nodal_load(F_const, stage_F, stage_final_pattern_scale)
                     append_scaled_element_loads(
                         const_element_loads,
                         stage_element_loads,
@@ -1678,20 +1649,12 @@ def run_case_input(
     if (
         analysis_type_tag == AnalysisTypeTag.TransientLinear
         or analysis_type_tag == AnalysisTypeTag.TransientNonlinear
-        or (
-            analysis_type_tag == AnalysisTypeTag.Staged
-            and len(transient_output_files) > 0
-        )
+        or (analysis_type_tag == AnalysisTypeTag.Staged and len(transient_output_files) > 0)
     ):
-        _write_output_chunk_files(
-            out_dir, transient_output_files, transient_output_buffers
-        )
+        _write_output_chunk_files(out_dir, transient_output_files, transient_output_buffers)
     elif analysis_type_tag == AnalysisTypeTag.ModalEigen:
         _write_output_chunk_files(out_dir, static_output_files, static_output_buffers)
-    elif (
-        analysis_type_tag == AnalysisTypeTag.StaticNonlinear
-        and len(static_output_files) > 0
-    ):
+    elif analysis_type_tag == AnalysisTypeTag.StaticNonlinear and len(static_output_files) > 0:
         _write_output_chunk_files(out_dir, static_output_files, static_output_buffers)
     else:
         if has_transformation_mpc:
@@ -1955,14 +1918,7 @@ def run_case_input(
                 var i_node = rec.i_node
                 var j_node = rec.j_node
                 var value = _drift_value(rec, typed_nodes, id_to_index, ndf, u)
-                var filename = (
-                    rec.output
-                    + "_i"
-                    + String(i_node)
-                    + "_j"
-                    + String(j_node)
-                    + ".out"
-                )
+                var filename = rec.output + "_i" + String(i_node) + "_j" + String(j_node) + ".out"
                 var file_path = out_dir.joinpath(filename)
                 file_path.write_text(PythonObject(_format_values_line([value])))
             elif rec.type_tag == RecorderTypeTag.EnvelopeElementForce:
@@ -2089,12 +2045,7 @@ def run_case_input(
                             want_defo,
                         )
                         var filename = (
-                            rec.output
-                            + "_ele"
-                            + String(elem_id)
-                            + "_sec"
-                            + String(sec_no)
-                            + ".out"
+                            rec.output + "_ele" + String(elem_id) + "_sec" + String(sec_no) + ".out"
                         )
                         var file_path = out_dir.joinpath(filename)
                         file_path.write_text(PythonObject(_format_values_line(values)))
@@ -2128,84 +2079,52 @@ def run_case_input(
     var element_state_update_us = element_state_update_ns // 1000
     var phase_json = String()
     phase_json += "{\n"
-    phase_json += "  \"case_load_parse_us\": " + String(safe_case_load_us) + ",\n"
+    phase_json += '  "case_load_parse_us": ' + String(safe_case_load_us) + ",\n"
+    phase_json += '  "model_build_dof_map_us": ' + String(model_build_dof_map_us) + ",\n"
+    phase_json += '  "analysis_us": ' + String(analysis_us) + ",\n"
+    phase_json += '  "element_state_update_us": ' + String(element_state_update_us) + ",\n"
+    phase_json += '  "predictor_section_eval_us": ' + String(predictor_section_eval_us) + ",\n"
+    phase_json += '  "corrector_section_eval_us": ' + String(corrector_section_eval_us) + ",\n"
     phase_json += (
-        "  \"model_build_dof_map_us\": " + String(model_build_dof_map_us) + ",\n"
-    )
-    phase_json += "  \"analysis_us\": " + String(analysis_us) + ",\n"
-    phase_json += (
-        "  \"element_state_update_us\": " + String(element_state_update_us) + ",\n"
-    )
-    phase_json += (
-        "  \"predictor_section_eval_us\": "
-        + String(predictor_section_eval_us)
-        + ",\n"
-    )
-    phase_json += (
-        "  \"corrector_section_eval_us\": "
-        + String(corrector_section_eval_us)
-        + ",\n"
-    )
-    phase_json += (
-        "  \"local_flexibility_accumulation_us\": "
+        '  "local_flexibility_accumulation_us": '
         + String(local_flexibility_accumulation_us)
         + ",\n"
     )
+    phase_json += '  "local_3x3_solve_us": ' + String(local_3x3_solve_us) + ",\n"
+    phase_json += '  "local_commit_revert_us": ' + String(local_commit_revert_us) + ",\n"
+    phase_json += '  "solve_total_us": ' + String(analysis_us) + ",\n"
     phase_json += (
-        "  \"local_3x3_solve_us\": "
-        + String(local_3x3_solve_us)
-        + ",\n"
-    )
-    phase_json += (
-        "  \"local_commit_revert_us\": "
-        + String(local_commit_revert_us)
-        + ",\n"
-    )
-    phase_json += "  \"solve_total_us\": " + String(analysis_us) + ",\n"
-    phase_json += (
-        "  \"global_nonlinear_iterations\": "
+        '  "global_nonlinear_iterations": '
         + String(runtime_metrics.global_nonlinear_iterations)
         + ",\n"
     )
     phase_json += (
-        "  \"local_force_beam_column_iterations\": "
+        '  "local_force_beam_column_iterations": '
         + String(runtime_metrics.local_force_beam_column_iterations)
         + ",\n"
     )
     phase_json += (
-        "  \"subdivision_fallback_iterations\": "
+        '  "subdivision_fallback_iterations": '
         + String(runtime_metrics.subdivision_fallback_iterations)
         + ",\n"
     )
     phase_json += (
-        "  \"tangent_factorizations\": "
-        + String(runtime_metrics.tangent_factorizations)
-        + ",\n"
+        '  "tangent_factorizations": ' + String(runtime_metrics.tangent_factorizations) + ",\n"
     )
-    phase_json += (
-        "  \"section_evaluations\": "
-        + String(runtime_metrics.section_evaluations)
-        + ",\n"
-    )
-    phase_json += (
-        "  \"active_bandwidth\": " + String(runtime_metrics.active_bandwidth) + ",\n"
-    )
-    phase_json += "  \"active_nnz\": " + String(runtime_metrics.active_nnz) + ",\n"
-    phase_json += (
-        "  \"active_profile_size\": "
-        + String(runtime_metrics.active_profile_size)
-        + ",\n"
-    )
-    phase_json += "  \"output_write_us\": " + String(output_write_us) + ",\n"
-    phase_json += "  \"total_case_us\": " + String(total_us) + ",\n"
+    phase_json += '  "section_evaluations": ' + String(runtime_metrics.section_evaluations) + ",\n"
+    phase_json += '  "active_bandwidth": ' + String(runtime_metrics.active_bandwidth) + ",\n"
+    phase_json += '  "active_nnz": ' + String(runtime_metrics.active_nnz) + ",\n"
+    phase_json += '  "active_profile_size": ' + String(runtime_metrics.active_profile_size) + ",\n"
+    phase_json += '  "output_write_us": ' + String(output_write_us) + ",\n"
+    phase_json += '  "total_case_us": ' + String(total_us) + ",\n"
     if runtime_metrics.enabled:
         phase_json += (
-            "  \"shell_compute_us\": " + String(runtime_metrics.shell_compute_ns // 1000) + ",\n"
+            '  "shell_compute_us": ' + String(runtime_metrics.shell_compute_ns // 1000) + ",\n"
         )
         phase_json += (
-            "  \"shell_scatter_us\": " + String(runtime_metrics.shell_scatter_ns // 1000) + ",\n"
+            '  "shell_scatter_us": ' + String(runtime_metrics.shell_scatter_ns // 1000) + ",\n"
         )
-    phase_json += "  \"element_type_timing_us\": {\n"
+    phase_json += '  "element_type_timing_us": {\n'
     var need_elem_comma = False
     for element_type in range(len(runtime_metrics.element_type_total_ns)):
         var total_type_us = runtime_metrics.element_type_total_ns[element_type] // 1000
@@ -2214,15 +2133,10 @@ def run_case_input(
             continue
         if need_elem_comma:
             phase_json += ",\n"
-        phase_json += (
-            "    \""
-            + type_name
-            + "\": "
-            + String(total_type_us)
-        )
+        phase_json += '    "' + type_name + '": ' + String(total_type_us)
         need_elem_comma = True
     phase_json += "\n  },\n"
-    phase_json += "  \"element_type_call_counts\": {\n"
+    phase_json += '  "element_type_call_counts": {\n'
     need_elem_comma = False
     for element_type in range(len(runtime_metrics.element_type_call_counts)):
         var total_calls = runtime_metrics.element_type_call_counts[element_type]
@@ -2231,12 +2145,7 @@ def run_case_input(
             continue
         if need_elem_comma:
             phase_json += ",\n"
-        phase_json += (
-            "    \""
-            + type_name
-            + "\": "
-            + String(total_calls)
-        )
+        phase_json += '    "' + type_name + '": ' + String(total_calls)
         need_elem_comma = True
     phase_json += "\n  }\n"
     phase_json += "}\n"

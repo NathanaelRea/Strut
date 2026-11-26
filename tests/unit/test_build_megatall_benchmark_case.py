@@ -28,11 +28,24 @@ def test_elastic_surrogates_replace_plates_over_user_materials_only():
         {
             "id": 7,
             "type": "PlaneStressUserMaterial",
-            "params": {"nstatevs": 40, "nprops": 7, "props": [1.0, 2.0, 0.2], "rho": 2.5},
+            "params": {
+                "nstatevs": 40,
+                "nprops": 7,
+                "props": [1.0, 2.0, 0.2],
+                "rho": 2.5,
+            },
         },
-        {"id": 8, "type": "PlateFromPlaneStress", "params": {"material": 7, "gmod": 1.0e10}},
+        {
+            "id": 8,
+            "type": "PlateFromPlaneStress",
+            "params": {"material": 7, "gmod": 1.0e10},
+        },
         {"id": 9, "type": "ElasticIsotropic", "params": {"E": 3.0e10, "nu": 0.2}},
-        {"id": 10, "type": "PlateFromPlaneStress", "params": {"material": 9, "gmod": 1.25e10}},
+        {
+            "id": 10,
+            "type": "PlateFromPlaneStress",
+            "params": {"material": 9, "gmod": 1.25e10},
+        },
     ]
 
     result = builder._elastic_surrogates(materials)

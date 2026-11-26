@@ -8,6 +8,7 @@ from elements.shell4 import (
     shell4_layered_stiffness_and_residual,
 )
 from materials import UniMaterialDef, UniMaterialState
+from materials.concrete_s import ConcreteSState
 from sections import LayeredShellSectionDef
 from solver.assembly.shell_cache import ShellAssemblyCache, ShellAssemblyEntry
 from solver.assembly.stiffness_internal_shared import (
@@ -27,11 +28,14 @@ struct _ShellComputeData(ImplicitlyCopyable):
     var section_defs: UnsafePointer[LayeredShellSectionDef]
     var definitions: UnsafePointer[UniMaterialDef]
     var states: UnsafePointer[UniMaterialState]
+    var concrete_states: UnsafePointer[ConcreteSState]
     var geometry: UnsafePointer[Float64]
     var elastic: UnsafePointer[Float64]
 
     @always_inline
-    fn evaluate[tangent: Bool](
+    fn evaluate[
+        tangent: Bool
+    ](
         self,
         entry: ShellAssemblyEntry,
         u: UnsafePointer[Float64],
@@ -48,8 +52,12 @@ struct _ShellComputeData(ImplicitlyCopyable):
                 self.section_defs[entry.section],
                 self.definitions,
                 self.states + entry.state_offset,
+                self.concrete_states + entry.concrete_offset,
                 self.geometry + entry.offset,
-                u, matrix, force, scratch,
+                u,
+                matrix,
+                force,
+                scratch,
             )
 
 
@@ -90,7 +98,9 @@ struct _ShellComputeContext(ImplicitlyCopyable):
 
 
 @always_inline
-fn _compute_shell[tangent: Bool](
+fn _compute_shell[
+    tangent: Bool
+](
     ctx: _ShellComputeContext,
     idx: Int,
     matrix: UnsafePointer[Float64],
@@ -102,7 +112,11 @@ fn _compute_shell[tangent: Bool](
     for a in range(SHELL4_DOFS):
         scratch[a] = ctx.displacements[dofs[a]]
     ctx.data.evaluate[tangent](
-        ctx.maps.entry(e), scratch, matrix, force, scratch + SHELL4_DOFS,
+        ctx.maps.entry(e),
+        scratch,
+        matrix,
+        force,
+        scratch + SHELL4_DOFS,
     )
 
 
@@ -121,12 +135,9 @@ struct _ShellScatterContext[S: ElementMatrixSink](ImplicitlyCopyable):
 
 
 @always_inline
-fn _scatter_shell[S: ElementMatrixSink, dense: Bool](
-    ctx: _ShellScatterContext[S],
-    idx: Int,
-    matrix_offset: Int,
-    force_offset: Int,
-):
+fn _scatter_shell[
+    S: ElementMatrixSink, dense: Bool
+](ctx: _ShellScatterContext[S], idx: Int, matrix_offset: Int, force_offset: Int,):
     var e = ctx.maps.indices[idx]
     var dofs = ctx.maps.dofs(e)
     var result = ctx.forces + force_offset
@@ -137,18 +148,26 @@ fn _scatter_shell[S: ElementMatrixSink, dense: Bool](
         if entry.section < 0:
             matrix = ctx.elastic_results
             offset = entry.offset
+
         @parameter
         if dense:
             _scatter_shell_dense(ctx.dense_sink[], dofs, matrix[].unsafe_ptr() + offset)
         else:
             ctx.matrix_sink[].add_element_matrix_flat(
-                e, ctx.free_pool[], ctx.free_offsets[e], SHELL4_DOFS, matrix[], offset,
+                e,
+                ctx.free_pool[],
+                ctx.free_offsets[e],
+                SHELL4_DOFS,
+                matrix[],
+                offset,
             )
     for a in range(SHELL4_DOFS):
         ctx.force_out[dofs[a]] += result[a]
 
 
-fn _assemble_shell_soa[S: ElementMatrixSink, dense: Bool](
+fn _assemble_shell_soa[
+    S: ElementMatrixSink, dense: Bool
+](
     shell_indices: List[Int],
     elem_dof_offsets: List[Int],
     elem_dof_pool: List[Int],
@@ -168,12 +187,19 @@ fn _assemble_shell_soa[S: ElementMatrixSink, dense: Bool](
     if length == 0:
         return
     var data = _ShellComputeData(
-        section_defs.unsafe_ptr(), definitions.unsafe_ptr(), states.unsafe_ptr(),
-        cache.layered_geometry.unsafe_ptr(), cache.elastic_matrices.unsafe_ptr(),
+        section_defs.unsafe_ptr(),
+        definitions.unsafe_ptr(),
+        states.unsafe_ptr(),
+        cache.concrete_states.unsafe_ptr(),
+        cache.layered_geometry.unsafe_ptr(),
+        cache.elastic_matrices.unsafe_ptr(),
     )
     var maps = _ShellElementMaps(
-        shell_indices.unsafe_ptr(), cache.entry_by_element.unsafe_ptr(),
-        cache.entries.unsafe_ptr(), elem_dof_offsets.unsafe_ptr(), elem_dof_pool.unsafe_ptr(),
+        shell_indices.unsafe_ptr(),
+        cache.entry_by_element.unsafe_ptr(),
+        cache.entries.unsafe_ptr(),
+        elem_dof_offsets.unsafe_ptr(),
+        elem_dof_pool.unsafe_ptr(),
     )
     var tangent = dense or backend.accepts_element_matrices()
     var compute = _ShellComputeContext(maps, data, u.unsafe_ptr())
@@ -192,14 +218,18 @@ fn _assemble_shell_soa[S: ElementMatrixSink, dense: Bool](
         if runtime_metrics.enabled:
             scatter_start = Int(perf_counter_ns())
         var scatter = _ShellScatterContext[S](
-            maps, tangent, UnsafePointer(to=cache.work.matrices),
-            UnsafePointer(to=cache.elastic_matrices), cache.work.forces.unsafe_ptr(),
-            F_int.unsafe_ptr(), UnsafePointer(to=K), UnsafePointer(to=backend),
-            elem_free_offsets.unsafe_ptr(), UnsafePointer(to=elem_free_pool),
+            maps,
+            tangent,
+            UnsafePointer(to=cache.work.matrices),
+            UnsafePointer(to=cache.elastic_matrices),
+            cache.work.forces.unsafe_ptr(),
+            F_int.unsafe_ptr(),
+            UnsafePointer(to=K),
+            UnsafePointer(to=backend),
+            elem_free_offsets.unsafe_ptr(),
+            UnsafePointer(to=elem_free_pool),
         )
-        cache.work.scatter[_ShellScatterContext[S], _scatter_shell[S, dense]](
-            scatter, start, count
-        )
+        cache.work.scatter[_ShellScatterContext[S], _scatter_shell[S, dense]](scatter, start, count)
         if runtime_metrics.enabled:
             var end = Int(perf_counter_ns())
             runtime_metrics.shell_compute_ns += scatter_start - compute_start
@@ -208,7 +238,9 @@ fn _assemble_shell_soa[S: ElementMatrixSink, dense: Bool](
             runtime_metrics.element_type_total_ns[ElementTypeTag.Shell] += end - compute_start
 
 
-fn _assemble_surface_native_soa_indices[S: ElementMatrixSink](
+fn _assemble_surface_native_soa_indices[
+    S: ElementMatrixSink
+](
     quad_elem_indices: List[Int],
     shell_elem_indices: List[Int],
     node_x: List[Float64],
@@ -238,8 +270,18 @@ fn _assemble_surface_native_soa_indices[S: ElementMatrixSink](
             t_elem_start = Int(perf_counter_ns())
         var node_offset = elem_node_offsets[e]
         var mat = materials_by_id[elem_primary_material_ids[e]]
-        var x = [node_x[elem_node_pool[node_offset]], node_x[elem_node_pool[node_offset + 1]], node_x[elem_node_pool[node_offset + 2]], node_x[elem_node_pool[node_offset + 3]]]
-        var y = [node_y[elem_node_pool[node_offset]], node_y[elem_node_pool[node_offset + 1]], node_y[elem_node_pool[node_offset + 2]], node_y[elem_node_pool[node_offset + 3]]]
+        var x = [
+            node_x[elem_node_pool[node_offset]],
+            node_x[elem_node_pool[node_offset + 1]],
+            node_x[elem_node_pool[node_offset + 2]],
+            node_x[elem_node_pool[node_offset + 3]],
+        ]
+        var y = [
+            node_y[elem_node_pool[node_offset]],
+            node_y[elem_node_pool[node_offset + 1]],
+            node_y[elem_node_pool[node_offset + 2]],
+            node_y[elem_node_pool[node_offset + 3]],
+        ]
         var k_global = quad4_plane_stress_stiffness(mat.E, mat.nu, elem_thickness[e], x, y)
         var dof_offset = elem_dof_offsets[e]
         var free_offset = elem_free_offsets[e]
@@ -265,10 +307,20 @@ fn _assemble_surface_native_soa_indices[S: ElementMatrixSink](
 
     var unused_dense: List[List[Float64]] = []
     _assemble_shell_soa[S, False](
-        shell_elem_indices, elem_dof_offsets, elem_dof_pool,
-        elem_free_offsets, elem_free_pool, shell_cache,
-        layered_shell_section_defs, uniaxial_defs, uniaxial_states,
-        u, backend, unused_dense, F_int, runtime_metrics,
+        shell_elem_indices,
+        elem_dof_offsets,
+        elem_dof_pool,
+        elem_free_offsets,
+        elem_free_pool,
+        shell_cache,
+        layered_shell_section_defs,
+        uniaxial_defs,
+        uniaxial_states,
+        u,
+        backend,
+        unused_dense,
+        F_int,
+        runtime_metrics,
     )
 
 
@@ -300,8 +352,18 @@ fn _assemble_surface_soa_indices(
             t_elem_start = Int(perf_counter_ns())
         var node_offset = elem_node_offsets[e]
         var mat = materials_by_id[elem_primary_material_ids[e]]
-        var x = [node_x[elem_node_pool[node_offset]], node_x[elem_node_pool[node_offset + 1]], node_x[elem_node_pool[node_offset + 2]], node_x[elem_node_pool[node_offset + 3]]]
-        var y = [node_y[elem_node_pool[node_offset]], node_y[elem_node_pool[node_offset + 1]], node_y[elem_node_pool[node_offset + 2]], node_y[elem_node_pool[node_offset + 3]]]
+        var x = [
+            node_x[elem_node_pool[node_offset]],
+            node_x[elem_node_pool[node_offset + 1]],
+            node_x[elem_node_pool[node_offset + 2]],
+            node_x[elem_node_pool[node_offset + 3]],
+        ]
+        var y = [
+            node_y[elem_node_pool[node_offset]],
+            node_y[elem_node_pool[node_offset + 1]],
+            node_y[elem_node_pool[node_offset + 2]],
+            node_y[elem_node_pool[node_offset + 3]],
+        ]
         var k_global = quad4_plane_stress_stiffness(mat.E, mat.nu, elem_thickness[e], x, y)
         var dof_offset = elem_dof_offsets[e]
         var dof_map = [
@@ -327,10 +389,20 @@ fn _assemble_surface_soa_indices(
     var unused_sink = NullMatrixSink()
     var unused_free: List[Int] = []
     _assemble_shell_soa[NullMatrixSink, True](
-        shell_elem_indices, elem_dof_offsets, elem_dof_pool,
-        unused_free, unused_free, shell_cache,
-        layered_shell_section_defs, uniaxial_defs, uniaxial_states,
-        u, unused_sink, K, F_int, runtime_metrics,
+        shell_elem_indices,
+        elem_dof_offsets,
+        elem_dof_pool,
+        unused_free,
+        unused_free,
+        shell_cache,
+        layered_shell_section_defs,
+        uniaxial_defs,
+        uniaxial_states,
+        u,
+        unused_sink,
+        K,
+        F_int,
+        runtime_metrics,
     )
 
 
@@ -383,8 +455,11 @@ fn _assemble_surface_element(
 
     if elem.type_tag == ElementTypeTag.Shell:
         var data = _ShellComputeData(
-            layered_shell_section_defs.unsafe_ptr(), uniaxial_defs.unsafe_ptr(),
-            uniaxial_states.unsafe_ptr(), shell_cache.layered_geometry.unsafe_ptr(),
+            layered_shell_section_defs.unsafe_ptr(),
+            uniaxial_defs.unsafe_ptr(),
+            uniaxial_states.unsafe_ptr(),
+            shell_cache.concrete_states.unsafe_ptr(),
+            shell_cache.layered_geometry.unsafe_ptr(),
             shell_cache.elastic_matrices.unsafe_ptr(),
         )
         var entry = shell_cache.entries[shell_cache.entry_by_element[e]]

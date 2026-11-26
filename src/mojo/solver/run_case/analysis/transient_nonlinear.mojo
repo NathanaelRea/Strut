@@ -144,10 +144,7 @@ fn _has_nonparticipating_link_for_rayleigh(elements: List[ElementInput]) -> Bool
 fn _has_zero_length_damp_mats(elements: List[ElementInput]) -> Bool:
     for i in range(len(elements)):
         var elem = elements[i]
-        if (
-            elem.type_tag == ElementTypeTag.ZeroLength
-            and elem.damp_material_count > 0
-        ):
+        if elem.type_tag == ElementTypeTag.ZeroLength and elem.damp_material_count > 0:
             return True
     return False
 
@@ -225,9 +222,7 @@ fn _broyden_update_direction(
     if abs(current_p) >= eps:
         var current_sdotdu = dot_float64_contiguous(history_s[count], du, len(du))
         for j in range(len(du)):
-            du[j] += (
-                ((history_s[count][j] + current_z[j]) * current_sdotdu) / current_p
-            )
+            du[j] += ((history_s[count][j] + current_z[j]) * current_sdotdu) / current_p
 
 
 fn _transient_residual(
@@ -373,9 +368,7 @@ fn _transient_residual(
         force_beam_column3d_scratch,
     )
     if has_transformation_mpc:
-        F_int = _collapse_vector_by_mpc(
-            F_int, mpc_row_offsets, mpc_dof_pool, mpc_coeff_pool
-        )
+        F_int = _collapse_vector_by_mpc(F_int, mpc_row_offsets, mpc_dof_pool, mpc_coeff_pool)
     if has_zero_length_dampers:
         var F_zero_length_damp: List[Float64] = []
         F_zero_length_damp.resize(node_count * ndf, 0.0)
@@ -412,9 +405,7 @@ fn _transient_residual(
     else:
         for i in range(free_count):
             F_zero_length_damp_f[i] = 0.0
-    _build_trial_state_newmark_simd(
-        u_f, u_n, v_n, a_n, a0, a2, a3, gamma, dt, a_trial, v_trial
-    )
+    _build_trial_state_newmark_simd(u_f, u_n, v_n, a_n, a0, a2, a3, gamma, dt, a_trial, v_trial)
     _assemble_transient_residual(
         mats, P_ext_f, F_int, free, F_zero_length_damp_f, v_trial, a_trial, R_f
     )
@@ -470,9 +461,9 @@ fn _uniaxial_commit_active_states(
 
 
 @always_inline
-fn _scatter_free_vector_to_full_simd_impl[width: Int](
-    free: List[Int], src: List[Float64], mut dst: List[Float64]
-):
+fn _scatter_free_vector_to_full_simd_impl[
+    width: Int
+](free: List[Int], src: List[Float64], mut dst: List[Float64]):
     var n = len(free)
 
     @parameter
@@ -484,18 +475,14 @@ fn _scatter_free_vector_to_full_simd_impl[width: Int](
 
 
 @always_inline
-fn _scatter_free_vector_to_full(
-    free: List[Int], src: List[Float64], mut dst: List[Float64]
-):
-    _scatter_free_vector_to_full_simd_impl[simd_width_of[DType.float64]()](
-        free, src, dst
-    )
+fn _scatter_free_vector_to_full(free: List[Int], src: List[Float64], mut dst: List[Float64]):
+    _scatter_free_vector_to_full_simd_impl[simd_width_of[DType.float64]()](free, src, dst)
 
 
 @always_inline
-fn _gather_from_free_simd_impl[width: Int](
-    free: List[Int], src: List[Float64], mut dst: List[Float64]
-):
+fn _gather_from_free_simd_impl[
+    width: Int
+](free: List[Int], src: List[Float64], mut dst: List[Float64]):
     var n = len(free)
 
     @parameter
@@ -508,13 +495,13 @@ fn _gather_from_free_simd_impl[width: Int](
 
 @always_inline
 fn _gather_from_free_simd(free: List[Int], src: List[Float64], mut dst: List[Float64]):
-    _gather_from_free_simd_impl[simd_width_of[DType.float64]()](
-        free, src, dst
-    )
+    _gather_from_free_simd_impl[simd_width_of[DType.float64]()](free, src, dst)
 
 
 @always_inline
-fn _build_trial_state_newmark_simd_impl[width: Int](
+fn _build_trial_state_newmark_simd_impl[
+    width: Int
+](
     u_f: List[Float64],
     u_n: List[Float64],
     v_n: List[Float64],
@@ -571,7 +558,9 @@ fn _build_trial_state_newmark_simd(
 
 
 @always_inline
-fn _predict_displacement_newmark_simd_impl[width: Int](
+fn _predict_displacement_newmark_simd_impl[
+    width: Int
+](
     mut u_f: List[Float64],
     u_n: List[Float64],
     v_n: List[Float64],
@@ -612,7 +601,9 @@ fn _predict_displacement_newmark_simd(
 
 
 @always_inline
-fn _update_post_step_newmark_simd_impl[width: Int](
+fn _update_post_step_newmark_simd_impl[
+    width: Int
+](
     u_f: List[Float64],
     u_n: List[Float64],
     v_n: List[Float64],
@@ -668,9 +659,7 @@ fn _update_post_step_newmark_simd(
     )
 
 
-fn _transient_nonlinear_algorithm_mode(
-    algorithm_tag: Int, algorithm: String, label: String
-) -> Int:
+fn _transient_nonlinear_algorithm_mode(algorithm_tag: Int, algorithm: String, label: String) -> Int:
     if algorithm_tag == AnalysisAlgorithmTag.Newton:
         return NonlinearAlgorithmMode.Newton
     if algorithm_tag == AnalysisAlgorithmTag.ModifiedNewton:
@@ -689,9 +678,7 @@ fn _transient_nonlinear_algorithm_mode(
     return NonlinearAlgorithmMode.Unknown
 
 
-fn _transient_nonlinear_test_mode(
-    test_type_tag: Int, test_type: String, label: String
-) -> Int:
+fn _transient_nonlinear_test_mode(test_type_tag: Int, test_type: String, label: String) -> Int:
     if test_type_tag == NonlinearTestTypeTag.MaxDispIncr:
         return 0
     if test_type_tag == NonlinearTestTypeTag.NormDispIncr:
@@ -730,9 +717,7 @@ fn _append_transient_solver_attempt(
     retry_algorithm_modes.append(
         _transient_nonlinear_algorithm_mode(algorithm_tag, algorithm, label)
     )
-    retry_test_modes.append(
-        _transient_nonlinear_test_mode(test_type_tag, test_type, label)
-    )
+    retry_test_modes.append(_transient_nonlinear_test_mode(test_type_tag, test_type, label))
     if max_iters < 1:
         abort(label + "_max_iters must be >= 1")
     retry_max_iters.append(max_iters)
@@ -1157,8 +1142,8 @@ fn run_transient_nonlinear(
     var a3 = 1.0 / (2.0 * beta) - 1.0
     var beta_sum = rayleigh_beta_k + rayleigh_beta_k_init + rayleigh_beta_k_comm
     var need_comm_tangent = rayleigh_beta_k_comm != 0.0
-    var need_link_rayleigh_filter = (
-        beta_sum != 0.0 and _has_nonparticipating_link_for_rayleigh(typed_elements)
+    var need_link_rayleigh_filter = beta_sum != 0.0 and _has_nonparticipating_link_for_rayleigh(
+        typed_elements
     )
     var has_zero_length_damp_mats = _has_zero_length_damp_mats(typed_elements)
     var has_zero_length_dampers = _has_zero_length_dampers(typed_elements)
@@ -1169,21 +1154,16 @@ fn run_transient_nonlinear(
         or rayleigh_beta_k_comm != 0.0
         or has_zero_length_damp_mats
     )
-    var need_current_damp_tangent = (
-        need_link_rayleigh_filter and rayleigh_beta_k != 0.0
-    )
+    var need_current_damp_tangent = need_link_rayleigh_filter and rayleigh_beta_k != 0.0
     var need_initial_tangent = rayleigh_beta_k_init != 0.0
     for i in range(retry_attempt_count):
         if retry_algorithm_modes[i] == NonlinearAlgorithmMode.ModifiedNewtonInitial:
             need_initial_tangent = True
             break
-    var need_initial_damp_tangent = (
-        need_link_rayleigh_filter
-        and (rayleigh_beta_k_init != 0.0 or need_initial_tangent)
+    var need_initial_damp_tangent = need_link_rayleigh_filter and (
+        rayleigh_beta_k_init != 0.0 or need_initial_tangent
     )
-    var need_comm_damp_tangent = (
-        need_link_rayleigh_filter and rayleigh_beta_k_comm != 0.0
-    )
+    var need_comm_damp_tangent = need_link_rayleigh_filter and rayleigh_beta_k_comm != 0.0
     var backend = LinearSolverBackend()
     initialize_structure(backend, analysis, free_count)
     initialize_symbolic_from_pattern(backend, mats.pattern)
@@ -1224,9 +1204,7 @@ fn run_transient_nonlinear(
     if do_profile:
         var t_asm_start = Int(time.perf_counter_ns())
         var asm_start_us = (t_asm_start - t0) // 1000
-        _append_event(
-            events, events_need_comma, "O", frame_assemble_stiffness, asm_start_us
-        )
+        _append_event(events, events_need_comma, "O", frame_assemble_stiffness, asm_start_us)
     var initial_pattern_scale = 0.0
     if pattern_type_tag == PatternTypeTag.Plain:
         if ts_index >= 0:
@@ -1343,9 +1321,7 @@ fn run_transient_nonlinear(
     if do_profile:
         var t_asm_end = Int(time.perf_counter_ns())
         var asm_end_us = (t_asm_end - t0) // 1000
-        _append_event(
-            events, events_need_comma, "C", frame_assemble_stiffness, asm_end_us
-        )
+        _append_event(events, events_need_comma, "C", frame_assemble_stiffness, asm_end_us)
     if has_zero_length_damp_mats:
         swap(mats.assembler.values, mats.c_zero_length)
         assemble_zero_length_damping_sparse(
@@ -1466,9 +1442,9 @@ fn run_transient_nonlinear(
     lu_rhs.resize(free_count, 0.0)
 
     var record_reactions = _has_recorder_type(recorders, RecorderTypeTag.NodeReaction)
-    var record_any_element_force = (
-        _has_recorder_type(recorders, RecorderTypeTag.ElementForce) or _has_recorder_type(recorders, RecorderTypeTag.EnvelopeElementForce)
-    )
+    var record_any_element_force = _has_recorder_type(
+        recorders, RecorderTypeTag.ElementForce
+    ) or _has_recorder_type(recorders, RecorderTypeTag.EnvelopeElementForce)
     var elem_count = len(typed_elements)
     var elem_force_cached: List[Bool] = []
     var elem_force_values: List[List[Float64]] = []
@@ -1551,9 +1527,7 @@ fn run_transient_nonlinear(
                 for j in range(rec.dof_count):
                     var dof = recorder_dofs_pool[rec.dof_offset + j]
                     require_dof_in_range(dof, ndf, "recorder")
-                    recorder_node_dof_indices.append(
-                        node_dof_index(node_index, dof, ndf)
-                    )
+                    recorder_node_dof_indices.append(node_dof_index(node_index, dof, ndf))
 
         if (
             rec.type_tag == RecorderTypeTag.ElementForce
@@ -1570,9 +1544,7 @@ fn run_transient_nonlinear(
                 rec.type_tag != RecorderTypeTag.SectionForce
                 and rec.type_tag != RecorderTypeTag.SectionDeformation
             ):
-                recorder_element_file_index_offsets[r] = len(
-                    recorder_element_file_indices
-                )
+                recorder_element_file_index_offsets[r] = len(recorder_element_file_indices)
             for eidx in range(rec.element_count):
                 var elem_id = recorder_elements_pool[rec.element_offset + eidx]
                 if elem_id >= len(elem_id_to_index) or elem_id_to_index[elem_id] < 0:
@@ -1602,12 +1574,7 @@ fn run_transient_nonlinear(
                 for sidx in range(rec.section_count):
                     var sec_no = recorder_sections_pool[rec.section_offset + sidx]
                     var filename = (
-                        rec.output
-                        + "_ele"
-                        + String(elem_id)
-                        + "_sec"
-                        + String(sec_no)
-                        + ".out"
+                        rec.output + "_ele" + String(elem_id) + "_sec" + String(sec_no) + ".out"
                     )
                     var file_index = _output_buffer_index(
                         transient_output_files,
@@ -1645,14 +1612,7 @@ fn run_transient_nonlinear(
             recorder_drift_i_dof_index[r] = node_dof_index(i_idx, dof, ndf)
             recorder_drift_j_dof_index[r] = node_dof_index(j_idx, dof, ndf)
             recorder_drift_denominator[r] = dx
-            var filename = (
-                rec.output
-                + "_i"
-                + String(i_node)
-                + "_j"
-                + String(j_node)
-                + ".out"
-            )
+            var filename = rec.output + "_i" + String(i_node) + "_j" + String(j_node) + ".out"
             recorder_drift_file_index[r] = _output_buffer_index(
                 transient_output_files,
                 transient_output_buffers,
@@ -1673,12 +1633,8 @@ fn run_transient_nonlinear(
         if do_profile:
             var t_step_start = Int(time.perf_counter_ns())
             var step_start_us = (t_step_start - t0) // 1000
-            _append_event(
-                events, events_need_comma, "O", frame_transient_step, step_start_us
-            )
-            _append_event(
-                events, events_need_comma, "O", frame_nonlinear_step, step_start_us
-            )
+            _append_event(events, events_need_comma, "O", frame_transient_step, step_start_us)
+            _append_event(events, events_need_comma, "O", frame_nonlinear_step, step_start_us)
         if has_transformation_mpc:
             if do_profile:
                 var t_constraints_start = Int(time.perf_counter_ns())
@@ -1902,9 +1858,7 @@ fn run_transient_nonlinear(
                 attempt_max_iters = retry_max_iters[attempt]
                 attempt_tol = retry_tols[attempt]
                 attempt_broyden_count = retry_broyden_counts[attempt]
-                attempt_krylov_max_dim = default_krylov_max_dim(
-                    retry_krylov_max_dims[attempt]
-                )
+                attempt_krylov_max_dim = default_krylov_max_dim(retry_krylov_max_dims[attempt])
                 reaction_internal_current = False
 
             var tangent_initialized = False
@@ -2026,9 +1980,7 @@ fn run_transient_nonlinear(
                         frame_assemble_stiffness,
                         asm_end_us,
                     )
-                var broyden_refresh_interval = _default_broyden_count(
-                    attempt_broyden_count
-                )
+                var broyden_refresh_interval = _default_broyden_count(attempt_broyden_count)
                 var krylov_max_dim = attempt_krylov_max_dim
                 if krylov_max_dim > free_count:
                     krylov_max_dim = free_count
@@ -2042,8 +1994,7 @@ fn run_transient_nonlinear(
                         )
                     elif attempt_algorithm_tag == AnalysisAlgorithmTag.KrylovNewton:
                         need_tangent_matrix = (
-                            not tangent_initialized
-                            or len(krylov_history_v) > krylov_max_dim
+                            not tangent_initialized or len(krylov_history_v) > krylov_max_dim
                         )
                     else:
                         need_tangent_matrix = True
@@ -2051,7 +2002,10 @@ fn run_transient_nonlinear(
                     need_tangent_matrix = not tangent_initialized
                 else:
                     need_tangent_matrix = not tangent_initialized
-                if need_tangent_matrix and attempt_algorithm_tag == AnalysisAlgorithmTag.KrylovNewton:
+                if (
+                    need_tangent_matrix
+                    and attempt_algorithm_tag == AnalysisAlgorithmTag.KrylovNewton
+                ):
                     krylov_history_v = []
                     krylov_history_av = []
                 if has_transformation_mpc:
@@ -2123,9 +2077,7 @@ fn run_transient_nonlinear(
                 else:
                     if not tangent_initialized:
                         if not need_initial_tangent:
-                            abort(
-                                "transient_nonlinear initial tangent storage was not allocated"
-                            )
+                            abort("transient_nonlinear initial tangent storage was not allocated")
                         copy_values(mats.k_tangent, mats.k_init)
                         if need_current_damp_tangent:
                             copy_values(mats.k_damp, mats.k_init_damp)
@@ -2490,9 +2442,7 @@ fn run_transient_nonlinear(
                         var line_search_iter = 0
                         while r > line_search_tol and line_search_iter < 10:
                             line_search_iter += 1
-                            var eta = _update_initial_interpolated_eta(
-                                s0, s, r, r0, eta_prev
-                            )
+                            var eta = _update_initial_interpolated_eta(s0, s, r, r0, eta_prev)
                             if eta == eta_prev:
                                 break
                             var delta_eta = eta - eta_prev
@@ -2657,9 +2607,7 @@ fn run_transient_nonlinear(
                 if do_profile and not iter_closed:
                     var t_iter_end = Int(time.perf_counter_ns())
                     var iter_end_us = (t_iter_end - t0) // 1000
-                    _append_event(
-                        events, events_need_comma, "C", frame_nonlinear_iter, iter_end_us
-                    )
+                    _append_event(events, events_need_comma, "C", frame_nonlinear_iter, iter_end_us)
             if converged:
                 break
 
@@ -2802,6 +2750,7 @@ fn run_transient_nonlinear(
                 commit_start_us,
             )
         _uniaxial_commit_active_states(uniaxial_states, elem_uniaxial_state_ids)
+        shell_cache.commit_layered_states()
         fiber_section2d_commit_runtime_all(fiber_section_defs)
         fiber_section3d_commit_runtime_all(fiber_section3d_defs)
         if do_profile:
@@ -2824,9 +2773,7 @@ fn run_transient_nonlinear(
             force_basic_q,
         )
 
-        _update_post_step_newmark_simd(
-            u_f, u_n, v_n, a_n, a0, a2, a3, gamma, dt, v_f, a_f
-        )
+        _update_post_step_newmark_simd(u_f, u_n, v_n, a_n, a0, a2, a3, gamma, dt, v_f, a_f)
         _scatter_free_vector_to_full(free, u_f, u)
         _scatter_free_vector_to_full(free, v_f, v)
         _scatter_free_vector_to_full(free, a_f, a)
@@ -2973,9 +2920,7 @@ fn run_transient_nonlinear(
                                     time_series_times,
                                 )
                         values[j] = value
-                    var file_index = recorder_node_file_indices[
-                        node_file_index_offset + nidx
-                    ]
+                    var file_index = recorder_node_file_indices[node_file_index_offset + nidx]
                     if rec.type_tag == RecorderTypeTag.NodeDisplacement:
                         _append_output_at_index(
                             transient_output_buffers,
@@ -3002,7 +2947,9 @@ fn run_transient_nonlinear(
                             elem.type_tag == ElementTypeTag.ForceBeamColumn2d
                             and typed_sections_by_id[elem.section].type == "FiberSection2d"
                         ):
-                            elem_force_values[elem_index] = _force_beam_column2d_force_global_from_basic_state(
+                            elem_force_values[
+                                elem_index
+                            ] = _force_beam_column2d_force_global_from_basic_state(
                                 elem_index,
                                 elem,
                                 typed_nodes,
@@ -3163,7 +3110,9 @@ fn run_transient_nonlinear(
                             elem.type_tag == ElementTypeTag.ForceBeamColumn2d
                             and typed_sections_by_id[elem.section].type == "FiberSection2d"
                         ):
-                            elem_force_values[elem_index] = _force_beam_column2d_force_global_from_basic_state(
+                            elem_force_values[
+                                elem_index
+                            ] = _force_beam_column2d_force_global_from_basic_state(
                                 elem_index,
                                 elem,
                                 typed_nodes,
@@ -3206,9 +3155,7 @@ fn run_transient_nonlinear(
                                 force_basic_q,
                             )
                         elem_force_cached[elem_index] = True
-                    var file_index = recorder_element_file_indices[
-                        elem_file_index_offset + eidx
-                    ]
+                    var file_index = recorder_element_file_indices[elem_file_index_offset + eidx]
                     _update_envelope(
                         transient_output_files[file_index],
                         elem_force_values[elem_index],
@@ -3246,9 +3193,7 @@ fn run_transient_nonlinear(
                         force_basic_counts,
                         force_basic_q,
                     )
-                    var file_index = recorder_element_file_indices[
-                        elem_file_index_offset + eidx
-                    ]
+                    var file_index = recorder_element_file_indices[elem_file_index_offset + eidx]
                     _update_envelope(
                         transient_output_files[file_index],
                         values,
@@ -3332,12 +3277,8 @@ fn run_transient_nonlinear(
             var t_rec_end = Int(time.perf_counter_ns())
             var rec_end_us = (t_rec_end - t0) // 1000
             _append_event(events, events_need_comma, "C", frame_recorders, rec_end_us)
-            _append_event(
-                events, events_need_comma, "C", frame_nonlinear_step, rec_end_us
-            )
-            _append_event(
-                events, events_need_comma, "C", frame_transient_step, rec_end_us
-            )
+            _append_event(events, events_need_comma, "C", frame_nonlinear_step, rec_end_us)
+            _append_event(events, events_need_comma, "C", frame_transient_step, rec_end_us)
     clear(backend)
     _flush_envelope_outputs(
         envelope_files,

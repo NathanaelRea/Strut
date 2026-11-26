@@ -1761,7 +1761,8 @@ fn assemble_global_stiffness_and_internal_soa(
             k22 = resp.k22
         else:
             abort(
-                "zeroLengthSection requires FiberSection2d, ElasticSection2d, or AggregatorSection2d"
+                "zeroLengthSection requires FiberSection2d, ElasticSection2d, or"
+                " AggregatorSection2d"
             )
         _profile_scope_open(
             do_profile,
@@ -1842,9 +1843,9 @@ fn assemble_global_stiffness_and_internal_soa(
 
 
 @always_inline
-fn _truss_flat_stiffness[dim: Int](
-    k: Float64, cosines: SIMD[DType.float64, 4], mut k_flat: List[Float64]
-):
+fn _truss_flat_stiffness[
+    dim: Int
+](k: Float64, cosines: SIMD[DType.float64, 4], mut k_flat: List[Float64]):
     """Truss global stiffness into `k_flat` (row-major, 2*dim square).
 
     Entry (a, b) is `+-k * u[min] * u[max]` with `u` the direction cosines of
@@ -1866,7 +1867,9 @@ fn _truss_flat_stiffness[dim: Int](
             k_flat[a * count + b] = value
 
 
-fn assemble_global_stiffness_and_internal_native_soa[S: ElementMatrixSink](
+fn assemble_global_stiffness_and_internal_native_soa[
+    S: ElementMatrixSink
+](
     nodes: List[NodeInput],
     elements: List[ElementInput],
     node_x: List[Float64],
@@ -2404,7 +2407,8 @@ fn assemble_global_stiffness_and_internal_native_soa[S: ElementMatrixSink](
             k22 = resp.k22
         else:
             abort(
-                "zeroLengthSection requires FiberSection2d, ElasticSection2d, or AggregatorSection2d"
+                "zeroLengthSection requires FiberSection2d, ElasticSection2d, or"
+                " AggregatorSection2d"
             )
         var zls_row0 = SIMD[DType.float64, 8](k11, 0.0, k12, -k11, 0.0, -k12, 0.0, 0.0)
         var zls_row2 = SIMD[DType.float64, 8](k12, 0.0, k22, -k12, 0.0, -k22, 0.0, 0.0)
@@ -2946,9 +2950,7 @@ fn _assemble_global_stiffness_and_internal_filtered(
                     _elem_dof(elem, 2),
                     _elem_dof(elem, 3),
                 ]
-                var du = (u[dof_map[2]] - u[dof_map[0]]) * c + (
-                    u[dof_map[3]] - u[dof_map[1]]
-                ) * s
+                var du = (u[dof_map[2]] - u[dof_map[0]]) * c + (u[dof_map[3]] - u[dof_map[1]]) * s
                 var eps = du / L
                 uniaxial_set_trial_strain(mat_def, state, eps)
                 var N = state.sig_t * A
@@ -2986,9 +2988,11 @@ fn _assemble_global_stiffness_and_internal_filtered(
                     _elem_dof(elem, 4),
                     _elem_dof(elem, 5),
                 ]
-                var du = (u[dof_map[3]] - u[dof_map[0]]) * l + (
-                    u[dof_map[4]] - u[dof_map[1]]
-                ) * m + (u[dof_map[5]] - u[dof_map[2]]) * n
+                var du = (
+                    (u[dof_map[3]] - u[dof_map[0]]) * l
+                    + (u[dof_map[4]] - u[dof_map[1]]) * m
+                    + (u[dof_map[5]] - u[dof_map[2]]) * n
+                )
                 var eps = du / L
                 uniaxial_set_trial_strain(mat_def, state, eps)
                 var N = state.sig_t * A
@@ -3092,9 +3096,7 @@ fn _assemble_global_stiffness_and_internal_filtered(
                 var elem_state_count = elem_uniaxial_counts[e]
                 if elem_state_count != sec_def.fiber_count:
                     abort("zeroLengthSection fiber state count mismatch")
-                if elem_offset < 0 or elem_offset + elem_state_count > len(
-                    elem_uniaxial_state_ids
-                ):
+                if elem_offset < 0 or elem_offset + elem_state_count > len(elem_uniaxial_state_ids):
                     abort("zeroLengthSection fiber state range out of bounds")
                 var resp = fiber_section2d_set_trial_from_offset(
                     sec_def,
@@ -3111,7 +3113,8 @@ fn _assemble_global_stiffness_and_internal_filtered(
                 k22 = resp.k22
             else:
                 abort(
-                    "zeroLengthSection requires FiberSection2d, ElasticSection2d, or AggregatorSection2d"
+                    "zeroLengthSection requires FiberSection2d, ElasticSection2d, or"
+                    " AggregatorSection2d"
                 )
 
             var u1 = dof_map[0]
@@ -3143,10 +3146,7 @@ fn _assemble_global_stiffness_and_internal_filtered(
             F_int[r1] -= moment_z
             F_int[u2] += axial_force
             F_int[r2] += moment_z
-        elif (
-            elem_type == ElementTypeTag.FourNodeQuad
-            or elem_type == ElementTypeTag.Shell
-        ):
+        elif elem_type == ElementTypeTag.FourNodeQuad or elem_type == ElementTypeTag.Shell:
             _assemble_surface_element(
                 e,
                 elem,
@@ -3164,7 +3164,9 @@ fn _assemble_global_stiffness_and_internal_filtered(
             abort("unsupported element type tag")
 
 
-fn assemble_link_stiffness_native[S: ElementMatrixSink](
+fn assemble_link_stiffness_native[
+    S: ElementMatrixSink
+](
     nodes: List[NodeInput],
     elements: List[ElementInput],
     zero_length_elem_indices: List[Int],

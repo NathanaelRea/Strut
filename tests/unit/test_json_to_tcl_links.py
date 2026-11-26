@@ -99,7 +99,10 @@ def test_json_to_tcl_emits_zero_length_damp_command():
     text = _run_json_to_tcl(case)
 
     assert "timeSeries Linear 9 -factor 1.0\n" in text
-    assert "damping SecStif 3 0.2 -activateTime 0.1 -deactivateTime 1.5 -factor 9\n" in text
+    assert (
+        "damping SecStif 3 0.2 -activateTime 0.1 -deactivateTime 1.5 -factor 9\n"
+        in text
+    )
     assert "element zeroLength 1 1 2 -mat 1 -dir 1 -damp 3\n" in text
 
 
@@ -142,8 +145,7 @@ def test_json_to_tcl_emits_two_node_link_full_option_set():
         " -orient 0.0 1.0 0.0 1.0 0.0 0.0"
         " -pDelta 0.0 0.0 0.1 0.2"
         " -shearDist 0.25 0.5"
-        " -doRayleigh -mass 2.0\n"
-        in text
+        " -doRayleigh -mass 2.0\n" in text
     )
 
 

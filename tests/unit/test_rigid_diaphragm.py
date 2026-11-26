@@ -180,7 +180,12 @@ def test_rigid_diaphragm_static_linear_reaction_recorder_transfers_slave_loads()
         ],
         "loads": [{"node": 3, "dof": 2, "value": 20.0}],
         "recorders": [
-            {"type": "node_displacement", "nodes": [3], "dofs": [2, 3], "output": "disp"},
+            {
+                "type": "node_displacement",
+                "nodes": [3],
+                "dofs": [2, 3],
+                "output": "disp",
+            },
             {"type": "node_reaction", "nodes": [1], "dofs": [2, 3], "output": "react"},
         ],
     }
@@ -253,7 +258,7 @@ def test_rigid_diaphragm_modal_eigen_uses_reduced_mass_matrix():
 
     assert eigenvalues == [pytest.approx([0.25], abs=1e-12)]
     sign = 1.0 if node3_rows[0][0] >= 0.0 else -1.0
-    expected_theta = 1.0 / (32.0 ** 0.5)
+    expected_theta = 1.0 / (32.0**0.5)
     assert node2_rows == [pytest.approx([0.0, sign * expected_theta], abs=1e-12)]
     assert node3_rows == [
         pytest.approx([sign * 4.0 * expected_theta, sign * expected_theta], abs=1e-12)
@@ -303,7 +308,12 @@ def test_rigid_diaphragm_transient_linear_uses_slave_mass_inertia():
             }
         ],
         "recorders": [
-            {"type": "node_displacement", "nodes": [2, 3], "dofs": [2, 3], "output": "disp"}
+            {
+                "type": "node_displacement",
+                "nodes": [2, 3],
+                "dofs": [2, 3],
+                "output": "disp",
+            }
         ],
     }
 
@@ -315,4 +325,6 @@ def test_rigid_diaphragm_transient_linear_uses_slave_mass_inertia():
 
     expected_theta = -1.0 / 17.0
     assert node2_rows == [pytest.approx([0.0, expected_theta], abs=1e-12)]
-    assert node3_rows == [pytest.approx([4.0 * expected_theta, expected_theta], abs=1e-12)]
+    assert node3_rows == [
+        pytest.approx([4.0 * expected_theta, expected_theta], abs=1e-12)
+    ]

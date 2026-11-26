@@ -43,9 +43,9 @@ def test_native_decode_loads_inline_path_time_series_case():
     assert_equal(native_case.analysis.type, "static_linear")
 
 
-def test_native_precheck_allows_layered_shell_surrogate_material_path():
+def test_native_precheck_allows_layered_shell_concrete_s_material():
     var doc = parse_json_native(
-        "{\"model\":{\"ndm\":3,\"ndf\":6},\"nodes\":[],\"materials\":[{\"id\":1,\"type\":\"PlaneStressUserMaterial\",\"params\":{\"rho\":1.0,\"props\":[1.0,0.3]}},{\"id\":2,\"type\":\"PlateFromPlaneStress\",\"params\":{\"material\":1,\"gmod\":1.0}}],\"sections\":[{\"id\":10,\"type\":\"LayeredShellSection\",\"params\":{\"layers\":[{\"material\":2,\"thickness\":0.5}]}}],\"elements\":[],\"analysis\":{\"type\":\"static_linear\"}}"
+        '{"model":{"ndm":3,"ndf":6},"nodes":[],"materials":[{"id":1,"type":"ConcreteS","params":{"E":36e9,"nu":0.2,"fc":38.5e6,"ft":2.85e6,"Es":3.6e9}},{"id":2,"type":"PlateFromPlaneStress","params":{"material":1,"gmod":1.0}}],"sections":[{"id":10,"type":"LayeredShellSection","params":{"layers":[{"material":2,"thickness":0.5}]}}],"elements":[],"analysis":{"type":"static_linear"}}'
     )
 
     precheck_case_input_native(doc, True)
@@ -53,7 +53,7 @@ def test_native_precheck_allows_layered_shell_surrogate_material_path():
 
 def test_native_decode_preserves_equal_dof_and_rigid_diaphragm_payloads():
     var doc = parse_json_native(
-        "{\"model\":{\"ndm\":3,\"ndf\":6},\"nodes\":[{\"id\":10,\"x\":0.0,\"y\":0.0,\"z\":0.0},{\"id\":11,\"x\":4.0,\"y\":2.0,\"z\":0.5}],\"elements\":[],\"analysis\":{\"type\":\"static_linear\",\"constraints\":\"Transformation\"},\"mp_constraints\":[{\"type\":\"equalDOF\",\"retained_node\":10,\"constrained_node\":11,\"dofs\":[1,3]},{\"type\":\"rigidDiaphragm\",\"retained_node\":10,\"constrained_node\":11,\"perp_dirn\":3,\"constrained_dofs\":[1,2,6],\"retained_dofs\":[1,2,6],\"matrix\":[[1.0,0.0,-2.0],[0.0,1.0,4.0],[0.0,0.0,1.0]],\"dx\":4.0,\"dy\":2.0,\"dz\":0.5}]}"
+        '{"model":{"ndm":3,"ndf":6},"nodes":[{"id":10,"x":0.0,"y":0.0,"z":0.0},{"id":11,"x":4.0,"y":2.0,"z":0.5}],"elements":[],"analysis":{"type":"static_linear","constraints":"Transformation"},"mp_constraints":[{"type":"equalDOF","retained_node":10,"constrained_node":11,"dofs":[1,3]},{"type":"rigidDiaphragm","retained_node":10,"constrained_node":11,"perp_dirn":3,"constrained_dofs":[1,2,6],"retained_dofs":[1,2,6],"matrix":[[1.0,0.0,-2.0],[0.0,1.0,4.0],[0.0,0.0,1.0]],"dx":4.0,"dy":2.0,"dz":0.5}]}'
     )
     var native_case = parse_case_input_native(doc)
 
@@ -95,7 +95,7 @@ def test_native_decode_preserves_equal_dof_and_rigid_diaphragm_payloads():
 
 def test_native_decode_preserves_2d_rigid_diaphragm_single_dof_payload():
     var doc = parse_json_native(
-        "{\"model\":{\"ndm\":2,\"ndf\":3},\"nodes\":[{\"id\":1,\"x\":0.0,\"y\":0.0},{\"id\":2,\"x\":3.0,\"y\":0.0}],\"elements\":[],\"analysis\":{\"type\":\"static_linear\",\"constraints\":\"Transformation\"},\"mp_constraints\":[{\"type\":\"rigidDiaphragm\",\"retained_node\":1,\"constrained_node\":2,\"perp_dirn\":1,\"constrained_dofs\":[1],\"retained_dofs\":[1],\"matrix\":[[1.0]],\"dx\":3.0,\"dy\":0.0,\"dz\":0.0}]}"
+        '{"model":{"ndm":2,"ndf":3},"nodes":[{"id":1,"x":0.0,"y":0.0},{"id":2,"x":3.0,"y":0.0}],"elements":[],"analysis":{"type":"static_linear","constraints":"Transformation"},"mp_constraints":[{"type":"rigidDiaphragm","retained_node":1,"constrained_node":2,"perp_dirn":1,"constrained_dofs":[1],"retained_dofs":[1],"matrix":[[1.0]],"dx":3.0,"dy":0.0,"dz":0.0}]}'
     )
     var native_case = parse_case_input_native(doc)
     var rigid = native_case.mp_constraints[0]
