@@ -3286,6 +3286,25 @@ fn _collapse_vector_by_mpc(
     return out^
 
 
+fn _collapse_load_keeping_restrained(
+    values: List[Float64],
+    row_offsets: List[Int],
+    dof_pool: List[Int],
+    coeff_pool: List[Float64],
+) -> List[Float64]:
+    """Collapse a load vector through the constraints without losing restrained DOFs.
+
+    A restrained DOF has no representative, so `_collapse_vector_by_mpc` drops
+    its entry. The solve never reads those entries, but a reaction is the
+    internal force minus this load, so they have to survive.
+    """
+    var out = _collapse_vector_by_mpc(values, row_offsets, dof_pool, coeff_pool)
+    for i in range(len(values)):
+        if row_offsets[i] == row_offsets[i + 1]:
+            out[i] = values[i]
+    return out^
+
+
 fn _build_reduced_diagonal_matrix_by_mpc(
     diag_values: List[Float64],
     free_index_by_dof: List[Int],

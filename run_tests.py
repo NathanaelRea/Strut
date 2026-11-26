@@ -228,7 +228,15 @@ def main() -> int:
         parity_env["STRUT_PARITY_CASES"] = ",".join(_normalize_case_args(args.case))
     run(
         _add_pytest_workers(
-            ["uv", "run", "pytest", "-q", "tests/validation/test_parity_cases.py"],
+            [
+                "uv",
+                "run",
+                "pytest",
+                "-q",
+                "tests/validation/test_parity_cases.py",
+                # Slices of the mega-tall model; skipped when a case is named.
+                *([] if args.case else ["tests/validation/test_megatall_slices.py"]),
+            ],
             args.parity_workers,
         ),
         env=parity_env,

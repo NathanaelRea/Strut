@@ -1,0 +1,233 @@
+{
+  "schema_version": "1.0",
+  "enabled": true,
+  "benchmark_size": "small",
+  "metadata": {
+    "name": "disp_beam_column3d_quad_patch_cantilever",
+    "units": "kip-in"
+  },
+  "notes": "3D fiber column whose cover is four trapezoidal `quadr` patches around a square core, under axial load and bending about both axes. OpenSees puts each patch fiber at its cell's area centroid, which for a trapezoid is not the image of the cell's parametric centre. Catches a section that uses the parametric centre: the bending stiffness then differs by about 0.2%.",
+  "model": {
+    "ndm": 3,
+    "ndf": 6
+  },
+  "nodes": [
+    {
+      "id": 1,
+      "x": 0.0,
+      "y": 0.0,
+      "z": 0.0,
+      "constraints": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6
+      ]
+    },
+    {
+      "id": 2,
+      "x": 0.0,
+      "y": 0.0,
+      "z": 40.0
+    },
+    {
+      "id": 3,
+      "x": 0.0,
+      "y": 0.0,
+      "z": 80.0
+    },
+    {
+      "id": 4,
+      "x": 0.0,
+      "y": 0.0,
+      "z": 120.0
+    }
+  ],
+  "materials": [
+    {
+      "id": 1,
+      "type": "Elastic",
+      "params": {
+        "E": 4000.0
+      }
+    },
+    {
+      "id": 2,
+      "type": "Elastic",
+      "params": {
+        "E": 4000.0
+      }
+    }
+  ],
+  "sections": [
+    {
+      "id": 1,
+      "type": "FiberSection3d",
+      "params": {
+        "G": 1500.0,
+        "J": 20000.0,
+        "patches": [
+          {
+            "type": "quadr",
+            "material": 1,
+            "num_subdiv_y": 20,
+            "num_subdiv_z": 20,
+            "y_i": -9.5,
+            "z_i": 9.5,
+            "y_j": -9.5,
+            "z_j": -9.5,
+            "y_k": 9.5,
+            "z_k": -9.5,
+            "y_l": 9.5,
+            "z_l": 9.5
+          },
+          {
+            "type": "quadr",
+            "material": 2,
+            "num_subdiv_y": 2,
+            "num_subdiv_z": 20,
+            "y_i": -12.0,
+            "z_i": 12.0,
+            "y_j": -9.5,
+            "z_j": 9.5,
+            "y_k": 9.5,
+            "z_k": 9.5,
+            "y_l": 12.0,
+            "z_l": 12.0
+          },
+          {
+            "type": "quadr",
+            "material": 2,
+            "num_subdiv_y": 2,
+            "num_subdiv_z": 20,
+            "y_i": -9.5,
+            "z_i": -9.5,
+            "y_j": -12.0,
+            "z_j": -12.0,
+            "y_k": 12.0,
+            "z_k": -12.0,
+            "y_l": 9.5,
+            "z_l": -9.5
+          },
+          {
+            "type": "quadr",
+            "material": 2,
+            "num_subdiv_y": 20,
+            "num_subdiv_z": 2,
+            "y_i": -12.0,
+            "z_i": 12.0,
+            "y_j": -12.0,
+            "z_j": -12.0,
+            "y_k": -9.5,
+            "z_k": -9.5,
+            "y_l": -9.5,
+            "z_l": 9.5
+          },
+          {
+            "type": "quadr",
+            "material": 2,
+            "num_subdiv_y": 20,
+            "num_subdiv_z": 2,
+            "y_i": 9.5,
+            "z_i": 9.5,
+            "y_j": 9.5,
+            "z_j": -9.5,
+            "y_k": 12.0,
+            "z_k": -12.0,
+            "y_l": 12.0,
+            "z_l": 12.0
+          }
+        ],
+        "layers": []
+      }
+    }
+  ],
+  "elements": [
+    {
+      "id": 1,
+      "type": "dispBeamColumn3d",
+      "nodes": [
+        1,
+        2
+      ],
+      "section": 1,
+      "geomTransf": "Linear",
+      "integration": "Lobatto",
+      "num_int_pts": 5
+    },
+    {
+      "id": 2,
+      "type": "dispBeamColumn3d",
+      "nodes": [
+        2,
+        3
+      ],
+      "section": 1,
+      "geomTransf": "Linear",
+      "integration": "Lobatto",
+      "num_int_pts": 5
+    },
+    {
+      "id": 3,
+      "type": "dispBeamColumn3d",
+      "nodes": [
+        3,
+        4
+      ],
+      "section": 1,
+      "geomTransf": "Linear",
+      "integration": "Lobatto",
+      "num_int_pts": 5
+    }
+  ],
+  "loads": [
+    {
+      "node": 4,
+      "dof": 3,
+      "value": -200.0
+    },
+    {
+      "node": 4,
+      "dof": 1,
+      "value": 8.0
+    },
+    {
+      "node": 4,
+      "dof": 2,
+      "value": 5.0
+    }
+  ],
+  "analysis": {
+    "type": "static_nonlinear",
+    "steps": 5,
+    "max_iters": 50,
+    "tol": 1e-08
+  },
+  "recorders": [
+    {
+      "type": "node_displacement",
+      "nodes": [
+        2,
+        4
+      ],
+      "dofs": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6
+      ],
+      "output": "node_disp"
+    },
+    {
+      "type": "element_force",
+      "elements": [
+        1
+      ],
+      "output": "element_force"
+    }
+  ]
+}

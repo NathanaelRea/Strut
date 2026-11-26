@@ -4,26 +4,25 @@
 The full model (`dynamiccpu.tcl`) runs 10 gravity steps and 2000 transient steps,
 which takes hours in OpenSees. This writes the same model with the stages cut to
 `--gravity-steps` and `--transient-steps`, as a solver JSON that
-`scripts/run_benchmarks.py --cases <output>` times on every engine.
+`scripts/run_benchmarks.py --cases <output>` times on every engine. The three
+whole-model displacement recorders are dropped; the base reactions, story
+displacements and drifts stay.
 
-Three things differ from the converted Tcl, and all apply to every engine:
-
-* `PlateFromPlaneStress` over `PlaneStressUserMaterial` becomes the
-  `ElasticIsotropic` material with E = 2 G (1 + nu). The PSUMAT routine is not in
-  the reference OpenSees build, and Strut and the parity harness already use
-  this surrogate; writing it into the input makes that explicit.
-* 3D fiber sections with no torsional rigidity get GJ = 1e-12. OpenSees 3.7
-  rejects a 3D fiber section without one, and the parity harness injects the
-  same value.
-* Recorders are cut to the base reactions, story displacements and drifts. The
-  three whole-model displacement recorders are dropped; benchmark runs strip
-  recorders anyway.
+`--tight` writes the variant used to check that the engines agree: the same
+steps solved to `NormDispIncr 1e-7` with `UmfPack`. The model's own settings
+(`NormDispIncr 0.05`, `SparseSYM`) leave OpenSees a few percent from its own
+converged answer in the story displacements, because its `SparseSYM` is inexact
+on rigid-diaphragm systems, so they cannot show whether two engines match.
 
 Example:
   uv run scripts/build_megatall_benchmark_case.py
   uv run scripts/run_benchmarks.py --cases \
       benchmark/.tmp/megatall_model1_40steps/megatall_model1_40steps.json \
       --no-batch --strut-single-thread --no-archive
+
+  uv run scripts/build_megatall_benchmark_case.py --tight
+  uv run scripts/parity_report.py --strut-system SparseSYM \
+      benchmark/.tmp/megatall_model1_40steps_tight/megatall_model1_40steps_tight.json
 """
 
 from __future__ import annotations
@@ -54,44 +53,13 @@ ENTRY_TCL = FIXTURE_DIR / "dynamiccpu.tcl"
 GROUND_MOTION = FIXTURE_DIR / "GMX.txt"
 # Whole-model displacement dumps (one column per node); not worth comparing.
 WHOLE_MODEL_RECORDER_FILES = {"dispx.txt", "dispy.txt", "dispz.txt"}
-# Matches the -GJ the parity harness gives OpenSees for sections that omit it.
-MISSING_TORSION_GJ = 1.0e-12
+# Settings for `--tight`, loose enough for OpenSees to reach in a few iterations.
+TIGHT_TOLERANCE = 1.0e-7
+TIGHT_MAX_ITERS = 30
+TIGHT_SYSTEM = "UmfPack"
 
 
-def _elastic_surrogates(materials: list[dict]) -> list[dict]:
-    by_id = {int(material["id"]): material for material in materials}
-    user_ids = {
-        material_id
-        for material_id, material in by_id.items()
-        if material["type"] == "PlaneStressUserMaterial"
-    }
-    out = []
-    for material in materials:
-        material_id = int(material["id"])
-        if material_id in user_ids:
-            continue
-        base_id = material.get("params", {}).get("material")
-        if material["type"] == "PlateFromPlaneStress" and base_id in user_ids:
-            base = by_id[base_id]["params"]
-            nu = float(base["props"][-1])
-            gmod = float(material["params"]["gmod"])
-            out.append(
-                {
-                    "id": material_id,
-                    "type": "ElasticIsotropic",
-                    "params": {
-                        "E": 2.0 * gmod * (1.0 + nu),
-                        "nu": nu,
-                        "rho": float(base.get("rho", 0.0)),
-                    },
-                }
-            )
-            continue
-        out.append(material)
-    return out
-
-
-def build_case(gravity_steps: int, transient_steps: int) -> dict:
+def build_case(gravity_steps: int, transient_steps: int, tight: bool = False) -> dict:
     if not ENTRY_TCL.is_file():
         raise SystemExit(
             f"mega-tall model not installed at {ENTRY_TCL}; run:\n"
@@ -126,14 +94,12 @@ def build_case(gravity_steps: int, transient_steps: int) -> dict:
         data["analysis"]["stages"] = [stages[0]]
         name = f"megatall_model1_gravity{gravity_steps}"
 
-    data["materials"] = _elastic_surrogates(data["materials"])
-    for section in data["sections"]:
-        params = section["params"]
-        if section["type"] == "FiberSection3d" and not (
-            params.get("G", 0.0) > 0.0 and params.get("J", 0.0) > 0.0
-        ):
-            params["G"] = MISSING_TORSION_GJ
-            params["J"] = 1.0
+    if tight:
+        name += "_tight"
+        for stage in data["analysis"]["stages"]:
+            stage["analysis"]["tol"] = TIGHT_TOLERANCE
+            stage["analysis"]["max_iters"] = TIGHT_MAX_ITERS
+            stage["analysis"]["system"] = TIGHT_SYSTEM
     data["recorders"] = [
         recorder
         for recorder in data["recorders"]
@@ -151,9 +117,12 @@ def build_case(gravity_steps: int, transient_steps: int) -> dict:
         "name": name,
         "notes": (
             f"Mega-tall Model1 cut to {gravity_steps} gravity and {transient_steps} "
-            "transient steps. Every engine runs the same input, but the results are "
-            "not at parity: base reactions agree with OpenSees within 0.6% of the "
-            "peak reaction, lateral story displacements do not."
+            "transient steps"
+            + (
+                f", solved to NormDispIncr {TIGHT_TOLERANCE:g} with {TIGHT_SYSTEM}."
+                if tight
+                else ", with the model's own solver settings."
+            )
         ),
     }
     return data
@@ -167,12 +136,17 @@ def main() -> int:
     parser.add_argument(
         "--transient-steps", type=int, default=30, help="0 drops the transient stage."
     )
+    parser.add_argument(
+        "--tight",
+        action="store_true",
+        help="Tight tolerance and UmfPack, for checking that the engines agree.",
+    )
     parser.add_argument("--output", default="", help="Output JSON path.")
     args = parser.parse_args()
     if args.transient_steps < 0:
         raise SystemExit("--transient-steps must not be negative")
 
-    data = build_case(args.gravity_steps, args.transient_steps)
+    data = build_case(args.gravity_steps, args.transient_steps, args.tight)
     name = data["metadata"]["name"]
     output = (
         Path(args.output)

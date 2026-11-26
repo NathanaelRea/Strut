@@ -6,7 +6,7 @@ Current implementation status:
 - `FiberSection3d` infrastructure exists in Mojo and is available in 3D beam-column runtime paths.
 - Supported primitives:
   - `patch rect`
-  - `patch quadr`
+  - `patch quadr`, with each fiber at its cell's area centroid as in OpenSees `QuadCell` (for a trapezoidal cell that is not the image of the cell's parametric centre)
   - `layer straight`
 - Aggregation outputs:
   - 2D: axial force `N`, bending moment `Mz`, tangent terms `k11`, `k12`, `k22`

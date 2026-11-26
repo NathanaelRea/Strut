@@ -1,3 +1,4 @@
+from sections.patch_cells import quad_cell_centroid
 from collections import List
 from os import abort
 from python import PythonObject
@@ -2072,11 +2073,9 @@ fn _append_quadr_patch_cells(
     for iy in range(ny):
         var u0 = Float64(iy) / Float64(ny)
         var u1 = Float64(iy + 1) / Float64(ny)
-        var uc = 0.5 * (u0 + u1)
         for iz in range(nz):
             var v0 = Float64(iz) / Float64(nz)
             var v1 = Float64(iz + 1) / Float64(nz)
-            var vc = 0.5 * (v0 + v1)
 
             var y00 = (
                 (1.0 - u0) * (1.0 - v0) * y_i
@@ -2141,18 +2140,9 @@ fn _append_quadr_patch_cells(
             if area <= 0.0:
                 abort("FiberSection3d patch quadr generated zero-area cell")
 
-            var yc = (
-                (1.0 - uc) * (1.0 - vc) * y_i
-                + uc * (1.0 - vc) * y_j
-                + uc * vc * y_k
-                + (1.0 - uc) * vc * y_l
-            )
-            var zc = (
-                (1.0 - uc) * (1.0 - vc) * z_i
-                + uc * (1.0 - vc) * z_j
-                + uc * vc * z_k
-                + (1.0 - uc) * vc * z_l
-            )
+            var centroid = quad_cell_centroid(y00, z00, y10, z10, y11, z11, y01, z01)
+            var yc = centroid[0]
+            var zc = centroid[1]
             fibers.append(FiberCell(yc, zc, area, def_index))
             area_sum += area
             qy_sum += area * zc
@@ -2334,11 +2324,9 @@ fn _append_quadr_patch_cells_input(
     for iy in range(ny):
         var u0 = Float64(iy) / Float64(ny)
         var u1 = Float64(iy + 1) / Float64(ny)
-        var uc = 0.5 * (u0 + u1)
         for iz in range(nz):
             var v0 = Float64(iz) / Float64(nz)
             var v1 = Float64(iz + 1) / Float64(nz)
-            var vc = 0.5 * (v0 + v1)
 
             var y00 = (
                 (1.0 - u0) * (1.0 - v0) * y_i
@@ -2403,18 +2391,9 @@ fn _append_quadr_patch_cells_input(
             if area <= 0.0:
                 abort("FiberSection3d patch quadr generated zero-area cell")
 
-            var yc = (
-                (1.0 - uc) * (1.0 - vc) * y_i
-                + uc * (1.0 - vc) * y_j
-                + uc * vc * y_k
-                + (1.0 - uc) * vc * y_l
-            )
-            var zc = (
-                (1.0 - uc) * (1.0 - vc) * z_i
-                + uc * (1.0 - vc) * z_j
-                + uc * vc * z_k
-                + (1.0 - uc) * vc * z_l
-            )
+            var centroid = quad_cell_centroid(y00, z00, y10, z10, y11, z11, y01, z01)
+            var yc = centroid[0]
+            var zc = centroid[1]
             fibers.append(FiberCell(yc, zc, area, def_index))
             area_sum += area
             qy_sum += area * zc

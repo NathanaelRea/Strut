@@ -141,22 +141,46 @@ uv run scripts/run_benchmarks.py --engine both --no-batch --strut-single-thread 
 
 The runner takes a generated case only as `<name>/<name>.json`.
 
-How far these agree with OpenSees, measured with recorders on:
+### Do the large models match OpenSees?
 
-- **Synthetic frames:** roof displacement within 0.13% of its peak over the run, for
-  both elements, with and without P-Delta.
-- **Mega-tall:** not at parity. Every base reaction is within 0.6% of the peak
-  reaction, but lateral story displacements differ: under gravity Strut sways about
-  100 times more than OpenSees' (very small) value, and at step 40 the peak story
-  displacement is about 10% lower. The same holds against OpenSees solved with
-  `UmfPack` to `1e-7`, so it is a modelling difference. A four-by-two wall of the
-  model's layered shell section does not match OpenSees `ShellMITC4` either, and no
-  parity case covers layered shells. Read the mega-tall timing as the same input
-  and step count, not the same answer.
-- **Not comparable:** synthetic frames with `--rigid-diaphragm` and `SparseSYM`.
-  OpenSees' `SparseSYM` stalls on rigid-diaphragm systems: on a linear elastic frame
-  it never reaches `1e-8`, while its `UmfPack` converges and agrees with Strut to six
-  digits.
+Yes, to the six digits OpenSees prints. `scripts/parity_report.py` runs a case in
+both engines and prints, for every recorder group, the largest difference divided
+by the group's peak value:
+
+```bash
+uv run scripts/build_megatall_benchmark_case.py --tight
+uv run scripts/parity_report.py --strut-system SparseSYM \
+    benchmark/.tmp/megatall_model1_40steps_tight/megatall_model1_40steps_tight.json
+```
+
+| Check | Worst difference / peak |
+| --- | ---: |
+| Mega-tall, 10 gravity + 30 transient steps, tolerance `1e-7`: 116 base reactions, 128 story displacements, 127 drifts | 4e-6 |
+| Whole building, static gravity plus 2% lateral: 1,356 nodes on all six DOFs, 116 reactions | 4e-6 |
+| Seven slices of the model, static and under the strongest part of the record (`tests/validation/test_megatall_slices.py`) | 4e-6 |
+| Synthetic 3D frames, roof displacement over the run | 5e-6 |
+
+The mega-tall comparison runs OpenSees with `UmfPack` and a tolerance of `1e-7`
+instead of the model's own `SparseSYM` and `NormDispIncr 0.05`. With the model's own
+settings OpenSees stops 2.5% (story displacements) and 4.5% (drifts) away from its
+own converged answer, because its `SparseSYM` is inexact on rigid-diaphragm systems.
+Strut, with the same loose settings, is within 0.01% and 0.1% of that answer. The
+timings above use the model's own settings in both engines.
+
+`scripts/megatall_slice.py` cuts a few stories out of the model, with their real
+nodes, sections, beam orientations and diaphragms, fixes the lowest level and loads
+it, optionally followed by an earthquake stage. A slice runs in seconds, and
+`--types` narrows a mismatch to one element type:
+
+```bash
+uv run scripts/megatall_slice.py --z-min 0 --z-max 12 --transient-steps 60
+uv run scripts/parity_report.py \
+    benchmark/.tmp/megatall_slice_z0_12_eq60/megatall_slice_z0_12_eq60.json
+```
+
+Synthetic frames with `--rigid-diaphragm` and `SparseSYM` cannot be compared, for the
+same reason: OpenSees does not converge on them. With `--system UmfPack` they match
+to 1e-6.
 
 Optimization loop suites:
 

@@ -80,6 +80,7 @@ from solver.time_series import TimeSeriesInput, eval_time_series_input, find_tim
 
 from solver.run_case.helpers import (
     _append_output,
+    _collapse_load_keeping_restrained,
     _collapse_vector_by_mpc,
     _element_basic_force_for_recorder,
     _element_deformation_for_recorder,
@@ -108,6 +109,7 @@ fn _has_nonparticipating_link_for_rayleigh(elements: List[ElementInput]) -> Bool
         if (
             elem.type_tag == ElementTypeTag.ZeroLength
             or elem.type_tag == ElementTypeTag.TwoNodeLink
+            or elem.type_tag == ElementTypeTag.Truss
         ) and not elem.do_rayleigh:
             return True
     return False
@@ -837,7 +839,7 @@ fn run_transient_linear(
                 var dof_idx = uniform_excitation_dofs[i]
                 uniform_inertia_load[dof_idx] += -M_total[dof_idx] * ag
             if has_transformation_mpc:
-                uniform_inertia_load = _collapse_vector_by_mpc(
+                uniform_inertia_load = _collapse_load_keeping_restrained(
                     uniform_inertia_load,
                     mpc_row_offsets,
                     mpc_dof_pool,

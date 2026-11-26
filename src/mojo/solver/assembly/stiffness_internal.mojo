@@ -3186,7 +3186,7 @@ fn assemble_link_stiffness_native[
     mut sink: S,
     mut F_scratch: List[Float64],
 ):
-    """Link-element (zeroLength, twoNodeLink) tangent scattered into `sink`.
+    """Link-element (zeroLength, twoNodeLink, truss) tangent scattered into `sink`.
 
     Sparse counterpart of `assemble_link_stiffness_typed`: filter mode 1
     (all links) or 2 (links with `do_rayleigh`). Internal forces go to
@@ -3197,6 +3197,43 @@ fn assemble_link_stiffness_native[
         filter_mode = 2
     sink.zero_matrix()
     _zero_vector(F_scratch)
+    # Trusses use the tangent of their current trial state, which the main
+    # assembly has just set at this displacement.
+    var truss_k_flat: List[Float64] = []
+    truss_k_flat.resize(36, 0.0)
+    for e in range(len(elements)):
+        ref elem = elements[e]
+        if elem.type_tag != ElementTypeTag.Truss:
+            continue
+        if not _assembly_filter_accepts_element(elem, filter_mode):
+            continue
+        ref n1 = nodes[elem.node_index_1]
+        ref n2 = nodes[elem.node_index_2]
+        var dx = n2.x - n1.x
+        var dy = n2.y - n1.y
+        var state_index = elem_uniaxial_state_ids[elem_uniaxial_offsets[e]]
+        var tangent = uniaxial_states[state_index].tangent_t
+        if ndf == 2:
+            var L = hypot(dx, dy)
+            if L == 0.0:
+                abort("zero-length element")
+            _truss_flat_stiffness[2](
+                tangent * elem.area / L,
+                SIMD[DType.float64, 4](dx / L, dy / L, 0.0, 0.0),
+                truss_k_flat,
+            )
+            sink.add_element_matrix_flat(e, elem_free_pool, elem_free_offsets[e], 4, truss_k_flat)
+        else:
+            var dz = n2.z - n1.z
+            var L = sqrt(dx * dx + dy * dy + dz * dz)
+            if L == 0.0:
+                abort("zero-length element")
+            _truss_flat_stiffness[3](
+                tangent * elem.area / L,
+                SIMD[DType.float64, 4](dx / L, dy / L, dz / L, 0.0),
+                truss_k_flat,
+            )
+            sink.add_element_matrix_flat(e, elem_free_pool, elem_free_offsets[e], 6, truss_k_flat)
     for idx in range(len(zero_length_elem_indices)):
         var e = zero_length_elem_indices[idx]
         if not _assembly_filter_accepts_element(elements[e], filter_mode):

@@ -1063,3 +1063,58 @@ def test_json_to_tcl_emits_each_3d_beam_with_its_own_vecxz():
     assert "geomTransf Linear 2 0.0 1.0 0.0\n" in text
     assert "element elasticBeamColumn 4 1 2 7 1\n" in text
     assert "element elasticBeamColumn 5 2 3 7 2\n" in text
+
+
+def test_json_to_tcl_emits_beam_mass_density_and_truss_rayleigh_flag():
+    case_data = _base_case()
+    case_data["model"] = {"ndm": 3, "ndf": 6}
+    case_data["nodes"] = [
+        {"id": 1, "x": 0.0, "y": 0.0, "z": 0.0},
+        {"id": 2, "x": 0.0, "y": 0.0, "z": 1.0},
+        {"id": 3, "x": 0.0, "y": 0.0, "z": 2.0},
+    ]
+    case_data["materials"] = [
+        {"id": 1, "type": "Elastic", "params": {"E": 30000000000.0}}
+    ]
+    case_data["sections"] = [
+        {
+            "id": 7,
+            "type": "FiberSection3d",
+            "params": {
+                "G": 12000000000.0,
+                "J": 0.0002,
+                "fibers": [{"y": 0.0, "z": 0.0, "area": 0.01, "material": 1}],
+                "patches": [],
+                "layers": [],
+            },
+        }
+    ]
+    beam = {
+        "section": 7,
+        "geomTransf": "Linear",
+        "integration": "Lobatto",
+        "num_int_pts": 3,
+    }
+    case_data["elements"] = [
+        {"id": 1, "type": "dispBeamColumn3d", "nodes": [1, 2], "rho": 250.0, **beam},
+        {"id": 2, "type": "dispBeamColumn3d", "nodes": [2, 3], **beam},
+        {"id": 3, "type": "truss", "nodes": [1, 3], "area": 0.002, "material": 1},
+        {
+            "id": 4,
+            "type": "truss",
+            "nodes": [1, 3],
+            "area": 0.002,
+            "material": 1,
+            "doRayleigh": True,
+        },
+    ]
+
+    proc, text = _run_json_to_tcl(case_data)
+
+    assert proc.returncode == 0, proc.stderr
+    # Strut lumps rho onto the nodes, so OpenSees must be given the same mass.
+    assert "element dispBeamColumn 1 1 2 1 1 -mass 250.0\n" in text
+    assert "element dispBeamColumn 2 2 3 1 1\n" in text
+    # A truss takes part in Rayleigh damping only when asked to, in both engines.
+    assert "element truss 3 1 3 0.002 1\n" in text
+    assert "element truss 4 1 3 0.002 1 -doRayleigh 1\n" in text

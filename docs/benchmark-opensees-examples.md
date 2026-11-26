@@ -5,15 +5,13 @@
 Measured 2026-11-26 on AMD Ryzen 7 9800X3D 8-Core Processor (8 cores), OpenSees 3.7.1, Mojo 0.25.6.1 (4a162eab).
 Times are the analysis only (OpenSees `analyze`/`eigen`, Strut solve phase), with recorders removed.
 
-The machine was not idle: other programs held two to three of the eight cores throughout, so the 8-thread Strut times are on the slow side.
-
 ## Large models
 
 ### `megatall_model1_40steps`
 
 162,624 free DOFs. One run per engine.
 
-Mega-tall Model1 cut to 10 gravity and 30 transient steps. Every engine runs the same input, but the results are not at parity: base reactions agree with OpenSees within 0.6% of the peak reaction, lateral story displacements do not.
+Mega-tall Model1 cut to 10 gravity and 30 transient steps, with the model's own solver settings.
 
 ```mermaid
 ---
@@ -25,17 +23,17 @@ config:
 xychart-beta
     title "megatall_model1_40steps"
     x-axis ["OpenSees", "Strut, 1 thread", "Strut, 8 threads"]
-    y-axis "Analysis time (s)" 0 --> 1088.931
-    bar "OS" [989.937, 0.0, 0.0]
-    bar "STR1" [0.0, 66.747, 0.0]
-    bar "STR" [0.0, 0.0, 30.260]
+    y-axis "Analysis time (s)" 0 --> 916.884
+    bar "OS" [833.530, 0.0, 0.0]
+    bar "STR1" [0.0, 66.435, 0.0]
+    bar "STR" [0.0, 0.0, 27.474]
 ```
 
 | Engine | Analysis time (s) | vs OpenSees |
 | --- | ---: | ---: |
-| OpenSees | 989.937 | 1.0x |
-| Strut, 1 thread | 66.747 | 14.8x |
-| Strut, 8 threads | 30.260 | 32.7x |
+| OpenSees | 833.530 | 1.0x |
+| Strut, 1 thread | 66.435 | 12.5x |
+| Strut, 8 threads | 27.474 | 30.3x |
 
 ### `rc_frame3d_force_5x5x8`
 
@@ -51,17 +49,17 @@ config:
 xychart-beta
     title "rc_frame3d_force_5x5x8"
     x-axis ["OpenSees", "Strut, 1 thread", "Strut, 8 threads"]
-    y-axis "Analysis time (s)" 0 --> 6.412
-    bar "OS" [5.829, 0.0, 0.0]
-    bar "STR1" [0.0, 2.503, 0.0]
-    bar "STR" [0.0, 0.0, 1.155]
+    y-axis "Analysis time (s)" 0 --> 5.868
+    bar "OS" [5.334, 0.0, 0.0]
+    bar "STR1" [0.0, 2.124, 0.0]
+    bar "STR" [0.0, 0.0, 0.903]
 ```
 
 | Engine | Analysis time (s) | vs OpenSees |
 | --- | ---: | ---: |
-| OpenSees | 5.829 | 1.0x |
-| Strut, 1 thread | 2.503 | 2.3x |
-| Strut, 8 threads | 1.155 | 5.0x |
+| OpenSees | 5.334 | 1.0x |
+| Strut, 1 thread | 2.124 | 2.5x |
+| Strut, 8 threads | 0.903 | 5.9x |
 
 ### `rc_frame3d_disp_pdelta_5x5x8`
 
@@ -77,17 +75,17 @@ config:
 xychart-beta
     title "rc_frame3d_disp_pdelta_5x5x8"
     x-axis ["OpenSees", "Strut, 1 thread", "Strut, 8 threads"]
-    y-axis "Analysis time (s)" 0 --> 6.734
-    bar "OS" [6.122, 0.0, 0.0]
-    bar "STR1" [0.0, 1.737, 0.0]
-    bar "STR" [0.0, 0.0, 1.084]
+    y-axis "Analysis time (s)" 0 --> 6.069
+    bar "OS" [5.517, 0.0, 0.0]
+    bar "STR1" [0.0, 1.434, 0.0]
+    bar "STR" [0.0, 0.0, 0.885]
 ```
 
 | Engine | Analysis time (s) | vs OpenSees |
 | --- | ---: | ---: |
-| OpenSees | 6.122 | 1.0x |
-| Strut, 1 thread | 1.737 | 3.5x |
-| Strut, 8 threads | 1.084 | 5.6x |
+| OpenSees | 5.517 | 1.0x |
+| Strut, 1 thread | 1.434 | 3.8x |
+| Strut, 8 threads | 0.885 | 6.2x |
 
 Bar labels are case number plus engine: **O** OpenSees · **S1** Strut, 1 thread · **S** Strut, 8 threads.
 Median of 3 runs per engine.
@@ -105,19 +103,19 @@ config:
 xychart-beta
     title "Benchmark: Example 1"
     x-axis ["1O", "1S1", "1S", "1-", "2O", "2S1", "2S", "2-", "3O", "3S1", "3S", "3-", "4O", "4S1", "4S"]
-    y-axis "Analysis time (ms)" 0 --> 18.709
-    bar "OS" [1.906, 0.0, 0.0, 0.0, 2.855, 0.0, 0.0, 0.0, 3.734, 0.0, 0.0, 0.0, 0.477, 0.0, 0.0]
-    bar "STR1" [0.0, 0.479, 0.0, 0.0, 0.0, 16.500, 0.0, 0.0, 0.0, 0.737, 0.0, 0.0, 0.0, 2.371, 0.0]
-    bar "STR" [0.0, 0.0, 0.529, 0.0, 0.0, 0.0, 17.008, 0.0, 0.0, 0.0, 0.734, 0.0, 0.0, 0.0, 2.313]
+    y-axis "Analysis time (ms)" 0 --> 17.395
+    bar "OS" [1.853, 0.0, 0.0, 0.0, 2.813, 0.0, 0.0, 0.0, 3.444, 0.0, 0.0, 0.0, 0.476, 0.0, 0.0]
+    bar "STR1" [0.0, 0.474, 0.0, 0.0, 0.0, 15.813, 0.0, 0.0, 0.0, 0.684, 0.0, 0.0, 0.0, 2.273, 0.0]
+    bar "STR" [0.0, 0.0, 0.469, 0.0, 0.0, 0.0, 15.658, 0.0, 0.0, 0.0, 0.691, 0.0, 0.0, 0.0, 2.253]
     bar "mask" [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 ```
 
 | # | Label | OpenSees (ms) | Strut, 1 thread (ms) | Strut, 8 threads (ms) |
 | ---: | --- | ---: | ---: | ---: |
-| 1 | `ex1a_canti2d_eq` | 1.906 | 0.479 | 0.529 |
-| 2 | `ex1a_canti2d_push` | 2.855 | 16.500 | 17.008 |
-| 3 | `ex1b_portal2d_eq` | 3.734 | 0.737 | 0.734 |
-| 4 | `ex1b_portal2d_push` | 0.477 | 2.371 | 2.313 |
+| 1 | `ex1a_canti2d_eq` | 1.853 | 0.474 | 0.469 |
+| 2 | `ex1a_canti2d_push` | 2.813 | 15.813 | 15.658 |
+| 3 | `ex1b_portal2d_eq` | 3.444 | 0.684 | 0.691 |
+| 4 | `ex1b_portal2d_push` | 0.476 | 2.273 | 2.253 |
 
 ## ex2
 
@@ -131,17 +129,17 @@ config:
 xychart-beta
     title "Benchmark: Example 2"
     x-axis ["1O", "1S1", "1S", "1-", "2O", "2S1", "2S"]
-    y-axis "Analysis time (ms)" 0 --> 23.256
-    bar "OS" [2.242, 0.0, 0.0, 0.0, 11.591, 0.0, 0.0]
-    bar "STR1" [0.0, 16.100, 0.0, 0.0, 0.0, 20.084, 0.0]
-    bar "STR" [0.0, 0.0, 15.467, 0.0, 0.0, 0.0, 21.141]
+    y-axis "Analysis time (ms)" 0 --> 21.273
+    bar "OS" [2.153, 0.0, 0.0, 0.0, 11.266, 0.0, 0.0]
+    bar "STR1" [0.0, 14.757, 0.0, 0.0, 0.0, 19.322, 0.0]
+    bar "STR" [0.0, 0.0, 14.868, 0.0, 0.0, 0.0, 19.339]
     bar "mask" [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 ```
 
 | # | Label | OpenSees (ms) | Strut, 1 thread (ms) | Strut, 8 threads (ms) |
 | ---: | --- | ---: | ---: | ---: |
-| 1 | `ex2b_canti2d_inelasticsection_eq` | 2.242 | 16.100 | 15.467 |
-| 2 | `ex2c_canti2d_inelastic_fiber` | 11.591 | 20.084 | 21.141 |
+| 1 | `ex2b_canti2d_inelasticsection_eq` | 2.153 | 14.757 | 14.868 |
+| 2 | `ex2c_canti2d_inelastic_fiber` | 11.266 | 19.322 | 19.339 |
 
 ## ex3
 
@@ -155,19 +153,19 @@ config:
 xychart-beta
     title "Benchmark: Example 3"
     x-axis ["1O", "1S1", "1S", "1-", "2O", "2S1", "2S", "2-", "3O", "3S1", "3S", "3-", "4O", "4S1", "4S"]
-    y-axis "Analysis time (ms)" 0 --> 22.709
-    bar "OS" [12.797, 0.0, 0.0, 0.0, 0.026, 0.0, 0.0, 0.0, 0.374, 0.0, 0.0, 0.0, 0.026, 0.0, 0.0]
-    bar "STR1" [0.0, 20.644, 0.0, 0.0, 0.0, 0.243, 0.0, 0.0, 0.0, 0.343, 0.0, 0.0, 0.0, 0.244, 0.0]
-    bar "STR" [0.0, 0.0, 20.396, 0.0, 0.0, 0.0, 0.240, 0.0, 0.0, 0.0, 0.346, 0.0, 0.0, 0.0, 0.326]
+    y-axis "Analysis time (ms)" 0 --> 21.257
+    bar "OS" [12.430, 0.0, 0.0, 0.0, 0.032, 0.0, 0.0, 0.0, 0.371, 0.0, 0.0, 0.0, 0.024, 0.0, 0.0]
+    bar "STR1" [0.0, 19.324, 0.0, 0.0, 0.0, 0.217, 0.0, 0.0, 0.0, 0.316, 0.0, 0.0, 0.0, 0.217, 0.0]
+    bar "STR" [0.0, 0.0, 19.271, 0.0, 0.0, 0.0, 0.224, 0.0, 0.0, 0.0, 0.325, 0.0, 0.0, 0.0, 0.218]
     bar "mask" [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 ```
 
 | # | Label | OpenSees (ms) | Strut, 1 thread (ms) | Strut, 8 threads (ms) |
 | ---: | --- | ---: | ---: | ---: |
-| 1 | `analyze_dynamic_eq_uniform` | 12.797 | 20.644 | 20.396 |
-| 2 | `build_elasticelement` | 0.026 | 0.243 | 0.240 |
-| 3 | `build_inelasticfibersection` | 0.374 | 0.343 | 0.346 |
-| 4 | `build_inelasticsection` | 0.026 | 0.244 | 0.326 |
+| 1 | `analyze_dynamic_eq_uniform` | 12.430 | 19.324 | 19.271 |
+| 2 | `build_elasticelement` | 0.032 | 0.217 | 0.224 |
+| 3 | `build_inelasticfibersection` | 0.371 | 0.316 | 0.325 |
+| 4 | `build_inelasticsection` | 0.024 | 0.217 | 0.218 |
 
 ## ex4
 
@@ -181,20 +179,20 @@ config:
 xychart-beta
     title "Benchmark: Example 4"
     x-axis ["1O", "1S1", "1S", "1-", "2O", "2S1", "2S", "2-", "3O", "3S1", "3S", "3-", "4O", "4S1", "4S", "4-", "5O", "5S1", "5S"]
-    y-axis "Analysis time (ms)" 0 --> 55.361
-    bar "OS" [30.972, 0.0, 0.0, 0.0, 50.328, 0.0, 0.0, 0.0, 0.045, 0.0, 0.0, 0.0, 0.829, 0.0, 0.0, 0.0, 0.090, 0.0, 0.0]
-    bar "STR1" [0.0, 33.481, 0.0, 0.0, 0.0, 36.591, 0.0, 0.0, 0.0, 0.284, 0.0, 0.0, 0.0, 0.501, 0.0, 0.0, 0.0, 0.315, 0.0]
-    bar "STR" [0.0, 0.0, 33.579, 0.0, 0.0, 0.0, 36.829, 0.0, 0.0, 0.0, 0.311, 0.0, 0.0, 0.0, 0.559, 0.0, 0.0, 0.0, 0.288]
+    y-axis "Analysis time (ms)" 0 --> 53.024
+    bar "OS" [29.923, 0.0, 0.0, 0.0, 48.203, 0.0, 0.0, 0.0, 0.037, 0.0, 0.0, 0.0, 0.800, 0.0, 0.0, 0.0, 0.083, 0.0, 0.0]
+    bar "STR1" [0.0, 31.232, 0.0, 0.0, 0.0, 34.260, 0.0, 0.0, 0.0, 0.261, 0.0, 0.0, 0.0, 0.464, 0.0, 0.0, 0.0, 0.265, 0.0]
+    bar "STR" [0.0, 0.0, 31.062, 0.0, 0.0, 0.0, 34.415, 0.0, 0.0, 0.0, 0.261, 0.0, 0.0, 0.0, 0.471, 0.0, 0.0, 0.0, 0.263]
     bar "mask" [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 ```
 
 | # | Label | OpenSees (ms) | Strut, 1 thread (ms) | Strut, 8 threads (ms) |
 | ---: | --- | ---: | ---: | ---: |
-| 1 | `analyze_dynamic_eq_uniform` | 30.972 | 33.481 | 33.579 |
-| 2 | `analyze_dynamic_sine_uniform` | 50.328 | 36.591 | 36.829 |
-| 3 | `build_elasticelement` | 0.045 | 0.284 | 0.311 |
-| 4 | `build_inelasticfibersection` | 0.829 | 0.501 | 0.559 |
-| 5 | `build_inelasticsection` | 0.090 | 0.315 | 0.288 |
+| 1 | `analyze_dynamic_eq_uniform` | 29.923 | 31.232 | 31.062 |
+| 2 | `analyze_dynamic_sine_uniform` | 48.203 | 34.260 | 34.415 |
+| 3 | `build_elasticelement` | 0.037 | 0.261 | 0.261 |
+| 4 | `build_inelasticfibersection` | 0.800 | 0.464 | 0.471 |
+| 5 | `build_inelasticsection` | 0.083 | 0.265 | 0.263 |
 
 ## ex5
 
@@ -208,24 +206,24 @@ config:
 xychart-beta
     title "Benchmark: Example 5"
     x-axis ["1O", "1S1", "1S", "1-", "2O", "2S1", "2S", "2-", "3O", "3S1", "3S", "3-", "4O", "4S1", "4S", "4-", "5O", "5S1", "5S", "5-", "6O", "6S1", "6S", "6-", "7O", "7S1", "7S", "7-", "8O", "8S1", "8S", "8-", "9O", "9S1", "9S"]
-    y-axis "Analysis time (s)" 0 --> 5.368
-    bar "OS" [1.209, 0.0, 0.0, 0.0, 1.205, 0.0, 0.0, 0.0, 1.211, 0.0, 0.0, 0.0, 4.879, 0.0, 0.0, 0.0, 0.001, 0.0, 0.0, 0.0, 0.036, 0.0, 0.0, 0.0, 0.006, 0.0, 0.0, 0.0, 0.001, 0.0, 0.0, 0.0, 2.207, 0.0, 0.0]
-    bar "STR1" [0.0, 0.163, 0.0, 0.0, 0.0, 0.163, 0.0, 0.0, 0.0, 0.163, 0.0, 0.0, 0.0, 0.720, 0.0, 0.0, 0.0, 0.001, 0.0, 0.0, 0.0, 0.004, 0.0, 0.0, 0.0, 0.002, 0.0, 0.0, 0.0, 0.001, 0.0, 0.0, 0.0, 0.277, 0.0]
-    bar "STR" [0.0, 0.0, 0.163, 0.0, 0.0, 0.0, 0.162, 0.0, 0.0, 0.0, 0.162, 0.0, 0.0, 0.0, 0.721, 0.0, 0.0, 0.0, 0.001, 0.0, 0.0, 0.0, 0.004, 0.0, 0.0, 0.0, 0.002, 0.0, 0.0, 0.0, 0.001, 0.0, 0.0, 0.0, 0.281]
+    y-axis "Analysis time (s)" 0 --> 5.169
+    bar "OS" [1.171, 0.0, 0.0, 0.0, 1.163, 0.0, 0.0, 0.0, 1.166, 0.0, 0.0, 0.0, 4.699, 0.0, 0.0, 0.0, 0.001, 0.0, 0.0, 0.0, 0.034, 0.0, 0.0, 0.0, 0.006, 0.0, 0.0, 0.0, 0.001, 0.0, 0.0, 0.0, 2.132, 0.0, 0.0]
+    bar "STR1" [0.0, 0.155, 0.0, 0.0, 0.0, 0.155, 0.0, 0.0, 0.0, 0.154, 0.0, 0.0, 0.0, 0.701, 0.0, 0.0, 0.0, 0.001, 0.0, 0.0, 0.0, 0.004, 0.0, 0.0, 0.0, 0.002, 0.0, 0.0, 0.0, 0.001, 0.0, 0.0, 0.0, 0.270, 0.0]
+    bar "STR" [0.0, 0.0, 0.154, 0.0, 0.0, 0.0, 0.154, 0.0, 0.0, 0.0, 0.152, 0.0, 0.0, 0.0, 0.695, 0.0, 0.0, 0.0, 0.001, 0.0, 0.0, 0.0, 0.004, 0.0, 0.0, 0.0, 0.002, 0.0, 0.0, 0.0, 0.001, 0.0, 0.0, 0.0, 0.268]
     bar "mask" [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 ```
 
 | # | Label | OpenSees (s) | Strut, 1 thread (s) | Strut, 8 threads (s) |
 | ---: | --- | ---: | ---: | ---: |
-| 1 | `analyze_dynamic_eq_bidirect` | 1.209 | 0.163 | 0.163 |
-| 2 | `analyze_dynamic_eq_multiplesupport` | 1.205 | 0.163 | 0.162 |
-| 3 | `analyze_dynamic_sine_multiplesupport` | 1.211 | 0.163 | 0.162 |
-| 4 | `analyze_dynamic_sine_uniform` | 4.879 | 0.720 | 0.721 |
+| 1 | `analyze_dynamic_eq_bidirect` | 1.171 | 0.155 | 0.154 |
+| 2 | `analyze_dynamic_eq_multiplesupport` | 1.163 | 0.155 | 0.154 |
+| 3 | `analyze_dynamic_sine_multiplesupport` | 1.166 | 0.154 | 0.152 |
+| 4 | `analyze_dynamic_sine_uniform` | 4.699 | 0.701 | 0.695 |
 | 5 | `build_elasticsection` | 0.001 | 0.001 | 0.001 |
-| 6 | `build_inelasticfiberrcsection` | 0.036 | 0.004 | 0.004 |
+| 6 | `build_inelasticfiberrcsection` | 0.034 | 0.004 | 0.004 |
 | 7 | `build_inelasticfiberwsection` | 0.006 | 0.002 | 0.002 |
 | 8 | `build_inelasticsection` | 0.001 | 0.001 | 0.001 |
-| 9 | `eq_uniform_rc_fiber` | 2.207 | 0.277 | 0.281 |
+| 9 | `eq_uniform_rc_fiber` | 2.132 | 0.270 | 0.268 |
 
 ## ex6
 
@@ -239,20 +237,20 @@ config:
 xychart-beta
     title "Benchmark: Example 6"
     x-axis ["1O", "1S1", "1S", "1-", "2O", "2S1", "2S", "2-", "3O", "3S1", "3S", "3-", "4O", "4S1", "4S", "4-", "5O", "5S1", "5S", "5-", "6O", "6S1", "6S", "6-", "7O", "7S1", "7S", "7-", "8O", "8S1", "8S"]
-    y-axis "Analysis time (s)" 0 --> 2.545
-    bar "OS" [1.197, 0.0, 0.0, 0.0, 1.183, 0.0, 0.0, 0.0, 2.313, 0.0, 0.0, 0.0, 1.193, 0.0, 0.0, 0.0, 0.001, 0.0, 0.0, 0.0, 0.037, 0.0, 0.0, 0.0, 0.006, 0.0, 0.0, 0.0, 0.001, 0.0, 0.0]
-    bar "STR1" [0.0, 0.161, 0.0, 0.0, 0.0, 0.161, 0.0, 0.0, 0.0, 0.291, 0.0, 0.0, 0.0, 0.160, 0.0, 0.0, 0.0, 0.001, 0.0, 0.0, 0.0, 0.004, 0.0, 0.0, 0.0, 0.002, 0.0, 0.0, 0.0, 0.001, 0.0]
-    bar "STR" [0.0, 0.0, 0.161, 0.0, 0.0, 0.0, 0.161, 0.0, 0.0, 0.0, 0.294, 0.0, 0.0, 0.0, 0.161, 0.0, 0.0, 0.0, 0.001, 0.0, 0.0, 0.0, 0.004, 0.0, 0.0, 0.0, 0.002, 0.0, 0.0, 0.0, 0.001]
+    y-axis "Analysis time (s)" 0 --> 2.450
+    bar "OS" [1.151, 0.0, 0.0, 0.0, 1.148, 0.0, 0.0, 0.0, 2.227, 0.0, 0.0, 0.0, 1.150, 0.0, 0.0, 0.0, 0.001, 0.0, 0.0, 0.0, 0.035, 0.0, 0.0, 0.0, 0.006, 0.0, 0.0, 0.0, 0.001, 0.0, 0.0]
+    bar "STR1" [0.0, 0.153, 0.0, 0.0, 0.0, 0.157, 0.0, 0.0, 0.0, 0.281, 0.0, 0.0, 0.0, 0.155, 0.0, 0.0, 0.0, 0.001, 0.0, 0.0, 0.0, 0.004, 0.0, 0.0, 0.0, 0.002, 0.0, 0.0, 0.0, 0.001, 0.0]
+    bar "STR" [0.0, 0.0, 0.155, 0.0, 0.0, 0.0, 0.153, 0.0, 0.0, 0.0, 0.280, 0.0, 0.0, 0.0, 0.156, 0.0, 0.0, 0.0, 0.001, 0.0, 0.0, 0.0, 0.004, 0.0, 0.0, 0.0, 0.002, 0.0, 0.0, 0.0, 0.001]
     bar "mask" [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 ```
 
 | # | Label | OpenSees (s) | Strut, 1 thread (s) | Strut, 8 threads (s) |
 | ---: | --- | ---: | ---: | ---: |
-| 1 | `analyze_dynamic_eq_bidirect` | 1.197 | 0.161 | 0.161 |
-| 2 | `analyze_dynamic_eq_multiplesupport` | 1.183 | 0.161 | 0.161 |
-| 3 | `analyze_dynamic_eq_uniform` | 2.313 | 0.291 | 0.294 |
-| 4 | `analyze_dynamic_sine_multiplesupport` | 1.193 | 0.160 | 0.161 |
+| 1 | `analyze_dynamic_eq_bidirect` | 1.151 | 0.153 | 0.155 |
+| 2 | `analyze_dynamic_eq_multiplesupport` | 1.148 | 0.157 | 0.153 |
+| 3 | `analyze_dynamic_eq_uniform` | 2.227 | 0.281 | 0.280 |
+| 4 | `analyze_dynamic_sine_multiplesupport` | 1.150 | 0.155 | 0.156 |
 | 5 | `build_elasticsection` | 0.001 | 0.001 | 0.001 |
-| 6 | `build_inelasticfiberrcsection` | 0.037 | 0.004 | 0.004 |
+| 6 | `build_inelasticfiberrcsection` | 0.035 | 0.004 | 0.004 |
 | 7 | `build_inelasticfiberwsection` | 0.006 | 0.002 | 0.002 |
 | 8 | `build_inelasticsection` | 0.001 | 0.001 | 0.001 |

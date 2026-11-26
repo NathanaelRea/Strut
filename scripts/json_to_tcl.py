@@ -57,6 +57,18 @@ def _choose_vecxz(n1, n2):
     return (1.0, 0.0, 0.0)
 
 
+def _element_mass_option(elem):
+    """` -mass rho` for a beam-column that carries its own mass per length.
+
+    Strut lumps `rho` onto the element's end nodes. Leaving it out of the Tcl
+    gives OpenSees a lighter structure than Strut analyses.
+    """
+    rho = float(elem.get("rho", 0.0) or 0.0)
+    if rho == 0.0:
+        return ""
+    return f" -mass {rho}" + (" -cMass" if elem.get("cMass") else "")
+
+
 def _element_vecxz(elem, node_by_id):
     """The element's own `vecxz` when it has one, else the solver's default.
 
@@ -1358,7 +1370,8 @@ def main():
                 n1, n2 = elem["nodes"]
                 transf_tag = transf_tags[(elem.get("geomTransf", "Linear"), None)]
                 f.write(
-                    f"element elasticBeamColumn {elem['id']} {n1} {n2} {A} {E} {I} {transf_tag}\n"
+                    f"element elasticBeamColumn {elem['id']} {n1} {n2} {A} {E} {I} {transf_tag}"
+                    f"{_element_mass_option(elem)}\n"
                 )
             elif elem["type"] in (
                 "forceBeamColumn2d",
@@ -1398,7 +1411,8 @@ def main():
                 if elem_type in ("dispBeamColumn2d", "dispBeamColumn3d"):
                     element_cmd = "dispBeamColumn"
                 f.write(
-                    f"element {element_cmd} {elem['id']} {n1} {n2} {transf_tag} {int_tag}\n"
+                    f"element {element_cmd} {elem['id']} {n1} {n2} {transf_tag} {int_tag}"
+                    f"{_element_mass_option(elem)}\n"
                 )
             elif elem["type"] == "elasticBeamColumn3d":
                 sec = sections[elem["section"]]
@@ -1415,17 +1429,23 @@ def main():
                     Iz = params["Iz"]
                     f.write(
                         "element elasticBeamColumn "
-                        f"{elem['id']} {n1} {n2} {A} {E} {G} {J} {Iy} {Iz} {transf_tag}\n"
+                        f"{elem['id']} {n1} {n2} {A} {E} {G} {J} {Iy} {Iz} {transf_tag}"
+                        f"{_element_mass_option(elem)}\n"
                     )
                 else:
                     f.write(
-                        f"element elasticBeamColumn {elem['id']} {n1} {n2} {elem['section']} {transf_tag}\n"
+                        f"element elasticBeamColumn {elem['id']} {n1} {n2} {elem['section']} {transf_tag}"
+                        f"{_element_mass_option(elem)}\n"
                     )
             elif elem["type"] == "truss":
                 n1, n2 = elem["nodes"]
                 area = elem["area"]
                 mat_id = elem["material"]
-                f.write(f"element truss {elem['id']} {n1} {n2} {area} {mat_id}\n")
+                # OpenSees leaves a truss out of Rayleigh damping unless told otherwise.
+                do_rayleigh = " -doRayleigh 1" if elem.get("doRayleigh") else ""
+                f.write(
+                    f"element truss {elem['id']} {n1} {n2} {area} {mat_id}{do_rayleigh}\n"
+                )
             elif elem["type"] == "zeroLength":
                 n1, n2 = elem["nodes"]
                 mats = " ".join(str(mid) for mid in elem["materials"])
