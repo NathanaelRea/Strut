@@ -105,18 +105,6 @@
   ],
   "materials": [
     {
-      "id": 176,
-      "type": "Steel02",
-      "params": {
-        "Fy": 345000000.0,
-        "E0": 200000000000.0,
-        "b": 0.0,
-        "R0": 18.5,
-        "cR1": 0.925,
-        "cR2": 0.15
-      }
-    },
-    {
       "id": 179,
       "type": "Steel02",
       "params": {
@@ -150,7 +138,7 @@
       "type": "Steel02",
       "params": {
         "Fy": 400000000.0,
-        "E0": 199999995904.0,
+        "E0": 199999995900.0,
         "b": 0.0,
         "R0": 18.5,
         "cR1": 0.925,
@@ -168,87 +156,87 @@
   ],
   "sections": [
     {
-      "id": 1280,
-      "type": "ElasticSection3d",
-      "params": {
-        "E": 1.0,
-        "A": 16350000000.0,
-        "Iy": 789502807.6171874,
-        "Iz": 68696250.0,
-        "G": 1.0,
-        "J": 1.0
-      }
-    },
-    {
       "id": 15501,
       "type": "LayeredShellSection",
       "params": {
         "layers": [
           {
             "material": 7399,
-            "thickness": 0.0199979991
+            "thickness": 0.019998
           },
           {
             "material": 77998,
-            "thickness": 0.0089999996
+            "thickness": 0.009
           },
           {
             "material": 7798,
-            "thickness": 0.0067500002
+            "thickness": 0.00675
           },
           {
             "material": 7399,
-            "thickness": 0.0828540027
+            "thickness": 0.082854
           },
           {
             "material": 7399,
-            "thickness": 0.0828540027
+            "thickness": 0.082854
           },
           {
             "material": 7399,
-            "thickness": 0.0828540027
+            "thickness": 0.082854
           },
           {
             "material": 7399,
-            "thickness": 0.0828540027
+            "thickness": 0.082854
           },
           {
             "material": 7399,
-            "thickness": 0.0828540027
+            "thickness": 0.082854
           },
           {
             "material": 7399,
-            "thickness": 0.0828540027
+            "thickness": 0.082854
           },
           {
             "material": 7399,
-            "thickness": 0.0828540027
+            "thickness": 0.082854
           },
           {
             "material": 7399,
-            "thickness": 0.0828540027
+            "thickness": 0.082854
           },
           {
             "material": 7399,
-            "thickness": 0.0828540027
+            "thickness": 0.082854
           },
           {
             "material": 7399,
-            "thickness": 0.0828540027
+            "thickness": 0.082854
           },
           {
             "material": 7798,
-            "thickness": 0.0067500002
+            "thickness": 0.00675
           },
           {
             "material": 77998,
-            "thickness": 0.0089999996
+            "thickness": 0.009
           },
           {
             "material": 7399,
-            "thickness": 0.0199979991
+            "thickness": 0.019998
           }
         ]
+      }
+    },
+    {
+      "id": 20016423,
+      "type": "ElasticSection3d",
+      "params": {
+        "E": 2000000000000.0,
+        "A": 1.0,
+        "Iy": 0.0833333358,
+        "Iz": 0.0833333358,
+        "G": 769230000000.0,
+        "J": 0.1666666716
       }
     }
   ],
@@ -260,14 +248,13 @@
         5404,
         3174
       ],
-      "section": 1280,
+      "section": 20016423,
       "geomTransf": "PDelta",
       "vecxz": [
         0.0,
         0.0,
         1.0
-      ],
-      "rho": 1.0
+      ]
     },
     {
       "id": 18754,
@@ -295,7 +282,7 @@
     {
       "node": 5404,
       "dof": 3,
-      "value": 41021.2244987488
+      "value": 41021.3752825846
     }
   ],
   "time_series": [
@@ -342,22 +329,22 @@
           {
             "node": 5404,
             "dof": 3,
-            "value": -69996.984375
+            "value": -69997.8691406248
           },
           {
             "node": 5404,
             "dof": 3,
-            "value": -141696.578125
+            "value": -141697.2411781269
           },
           {
             "node": 5404,
             "dof": 3,
-            "value": -123126.9140625
+            "value": -67187.5
           },
           {
             "node": 5404,
             "dof": 3,
-            "value": -67187.5234375
+            "value": -123126.8674505775
           }
         ],
         "load_const": {
@@ -450,22 +437,22 @@
     {
       "node": 5404,
       "dof": 3,
-      "value": -69996.984375
+      "value": -69997.8691406248
     },
     {
       "node": 5404,
       "dof": 3,
-      "value": -141696.578125
+      "value": -141697.2411781269
     },
     {
       "node": 5404,
       "dof": 3,
-      "value": -123126.9140625
+      "value": -67187.5
     },
     {
       "node": 5404,
       "dof": 3,
-      "value": -67187.5234375
+      "value": -123126.8674505775
     }
   ],
   "mp_constraints": [

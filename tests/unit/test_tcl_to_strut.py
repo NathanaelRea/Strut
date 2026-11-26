@@ -861,7 +861,6 @@ def test_convert_rigid_diaphragm_preserves_opensees_small_rotation_mapping(
     ]
 
 
-@pytest.mark.requires_pinned_fixtures("OpenSeesExamples/MegaTallBuildingBenchmark")
 def test_convert_megatall_direct_tcl_completes_full_bundle_import():
     case = _convert_direct_tcl_manifest("opensees_megatall_building_model1_dynamiccpu")
 

@@ -15,7 +15,6 @@ CHECKED_IN_SMOKE_CASE = CASE_DIR / "megatall_smoke.json"
 RUN_STRUT_CASE = REPO_ROOT / "scripts" / "run_strut_case.py"
 
 
-@pytest.mark.requires_pinned_fixtures("OpenSeesExamples/MegaTallBuildingBenchmark")
 def test_megatall_smoke_case_builds_and_runs_natively(tmp_path: Path):
     generated_smoke_case = tmp_path / "smoke_case.json"
     subprocess.check_call(
