@@ -11,6 +11,7 @@ from materials import UniMaterialDef, UniMaterialState, uniaxial_commit_all
 from os import abort
 from python import Python
 from sections import (
+    layered_shell_commit_all,
     FiberCell,
     FiberSection2dDef,
     FiberSection3dDef,
@@ -1646,6 +1647,7 @@ fn run_transient_linear(
                     commit_start_us,
                 )
             uniaxial_commit_all(uniaxial_states)
+            layered_shell_commit_all(layered_shell_section_defs)
             fiber_section2d_commit_runtime_all(fiber_section_defs)
             if do_profile:
                 var t_commit_end = Int(time.perf_counter_ns())

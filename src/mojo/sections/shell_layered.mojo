@@ -7,12 +7,21 @@ from materials import (
     uni_mat_is_elastic,
     uniaxial_set_trial_strain,
 )
+from materials.concrete_s import (
+    ConcreteSDef,
+    ConcreteSState,
+    PlaneStressTangent,
+    PlaneStressVector,
+    concrete_s_set_trial_strain,
+)
 from os import abort
+from solver.eigen import jacobi_symmetric_eigen
 from solver.run_case.input_types import MaterialInput, SectionInput, ShellLayerInput
 
 
 alias SHELL_LAYER_KIND_ELASTIC_PLATE = 1
 alias SHELL_LAYER_KIND_REBAR = 2
+alias SHELL_LAYER_KIND_CONCRETE_S = 3
 
 
 struct LayeredShellSectionDef(Defaultable, ImplicitlyCopyable, Movable):
@@ -27,13 +36,16 @@ struct LayeredShellSectionDef(Defaultable, ImplicitlyCopyable, Movable):
     var elastic_E: List[Float64]
     var elastic_nu: List[Float64]
     var elastic_gmod: List[Float64]
-    var rebar_angle_deg: List[Float64]
     var rebar_cos: List[Float64]
     var rebar_sin: List[Float64]
     var rebar_slot: List[Int]
     var rebar_def_index: List[Int]
     var rebar_count: Int
     var runtime_instance_count: Int
+    var concrete_slot: List[Int]
+    var concrete_defs: List[ConcreteSDef]
+    var concrete_states: List[ConcreteSState]
+    var drill_stiffness: Float64
 
     fn __init__(out self):
         self.section_id = -1
@@ -47,13 +59,16 @@ struct LayeredShellSectionDef(Defaultable, ImplicitlyCopyable, Movable):
         self.elastic_E = []
         self.elastic_nu = []
         self.elastic_gmod = []
-        self.rebar_angle_deg = []
         self.rebar_cos = []
         self.rebar_sin = []
         self.rebar_slot = []
         self.rebar_def_index = []
         self.rebar_count = 0
         self.runtime_instance_count = 0
+        self.concrete_slot = []
+        self.concrete_defs = []
+        self.concrete_states = []
+        self.drill_stiffness = 0.0
 
     fn __copyinit__(out self, existing: Self):
         self.section_id = existing.section_id
@@ -67,13 +82,16 @@ struct LayeredShellSectionDef(Defaultable, ImplicitlyCopyable, Movable):
         self.elastic_E = existing.elastic_E.copy()
         self.elastic_nu = existing.elastic_nu.copy()
         self.elastic_gmod = existing.elastic_gmod.copy()
-        self.rebar_angle_deg = existing.rebar_angle_deg.copy()
         self.rebar_cos = existing.rebar_cos.copy()
         self.rebar_sin = existing.rebar_sin.copy()
         self.rebar_slot = existing.rebar_slot.copy()
         self.rebar_def_index = existing.rebar_def_index.copy()
         self.rebar_count = existing.rebar_count
         self.runtime_instance_count = existing.runtime_instance_count
+        self.concrete_slot = existing.concrete_slot.copy()
+        self.concrete_defs = existing.concrete_defs.copy()
+        self.concrete_states = existing.concrete_states.copy()
+        self.drill_stiffness = existing.drill_stiffness
 
 
 fn append_layered_shell_section_from_input(
@@ -82,7 +100,6 @@ fn append_layered_shell_section_from_input(
     shell_layers: List[ShellLayerInput],
     materials_by_id: List[MaterialInput],
     uniaxial_def_by_id: List[Int],
-    shell_material_props: List[Float64],
 ):
     if sec.type != "LayeredShellSection":
         abort("append_layered_shell_section_from_input requires LayeredShellSection")
@@ -99,10 +116,10 @@ fn append_layered_shell_section_from_input(
     sec_def.elastic_E.resize(sec.shell_layer_count, 0.0)
     sec_def.elastic_nu.resize(sec.shell_layer_count, 0.0)
     sec_def.elastic_gmod.resize(sec.shell_layer_count, 0.0)
-    sec_def.rebar_angle_deg.resize(sec.shell_layer_count, 0.0)
     sec_def.rebar_cos.resize(sec.shell_layer_count, 1.0)
     sec_def.rebar_sin.resize(sec.shell_layer_count, 0.0)
     sec_def.rebar_slot.resize(sec.shell_layer_count, -1)
+    sec_def.concrete_slot.resize(sec.shell_layer_count, -1)
 
     for i in range(sec.shell_layer_count):
         var layer = shell_layers[sec.shell_layer_offset + i]
@@ -118,26 +135,16 @@ fn append_layered_shell_section_from_input(
             if mat.base_material < 0 or mat.base_material >= len(materials_by_id):
                 abort("PlateFromPlaneStress base material not found")
             var base_mat = materials_by_id[mat.base_material]
-            if base_mat.type == "PlaneStressUserMaterial":
-                if (
-                    base_mat.props_count <= 0
-                    or base_mat.props_offset < 0
-                    or base_mat.props_offset + base_mat.props_count > len(shell_material_props)
-                ):
-                    abort("PlaneStressUserMaterial surrogate requires props data")
-                var nu = shell_material_props[base_mat.props_offset + base_mat.props_count - 1]
-                sec_def.layer_kind[i] = SHELL_LAYER_KIND_ELASTIC_PLATE
-                sec_def.elastic_E[i] = 2.0 * mat.gmod * (1.0 + nu)
-                sec_def.elastic_nu[i] = nu
+            if base_mat.type == "ConcreteS":
+                sec_def.layer_kind[i] = SHELL_LAYER_KIND_CONCRETE_S
+                sec_def.concrete_slot[i] = len(sec_def.concrete_defs)
+                sec_def.concrete_defs.append(
+                    ConcreteSDef(base_mat.E, base_mat.nu, base_mat.fc, base_mat.ft, base_mat.Es)
+                )
                 sec_def.elastic_gmod[i] = mat.gmod
-                sec_def.layer_rho[i] = base_mat.rho
-                sec_def.rho_area += base_mat.rho * layer.thickness
                 continue
             if base_mat.type != "ElasticIsotropic":
-                abort(
-                    "LayeredShellSection currently supports PlateFromPlaneStress only over"
-                    " ElasticIsotropic"
-                )
+                abort("PlateFromPlaneStress requires ElasticIsotropic or ConcreteS")
             sec_def.layer_kind[i] = SHELL_LAYER_KIND_ELASTIC_PLATE
             sec_def.elastic_E[i] = base_mat.E
             sec_def.elastic_nu[i] = base_mat.nu
@@ -168,7 +175,6 @@ fn append_layered_shell_section_from_input(
             sec_def.rebar_def_index.append(uniaxial_def_by_id[mat.base_material])
             sec_def.layer_kind[i] = SHELL_LAYER_KIND_REBAR
             sec_def.rebar_slot[i] = slot
-            sec_def.rebar_angle_deg[i] = mat.angle
             if mat.angle == 0.0:
                 sec_def.rebar_cos[i] = 1.0
                 sec_def.rebar_sin[i] = 0.0
@@ -194,9 +200,10 @@ fn append_layered_shell_section_from_input(
         abort("LayeredShellSection total thickness must be > 0")
 
     var curr_loc = 0.0
+    var inverse_thickness = 1.0 / sec_def.total_thickness
     for i in range(sec.shell_layer_count):
         curr_loc += sec_def.layer_thickness[i]
-        sec_def.layer_z[i] = curr_loc - 0.5 * sec_def.total_thickness
+        sec_def.layer_z[i] = 0.5 * sec_def.total_thickness * (curr_loc * inverse_thickness - 1.0)
         curr_loc += sec_def.layer_thickness[i]
     sec_def.rebar_count = len(sec_def.rebar_def_index)
 
@@ -222,6 +229,13 @@ fn layered_shell_runtime_alloc_instances(
     for s in range(len(defs)):
         ref sec_def = defs[s]
         sec_def.runtime_instance_count = instance_counts[s]
+        if sec_def.runtime_instance_count > 0:
+            sec_def.drill_stiffness = _initial_drill_stiffness(sec_def, uniaxial_defs)
+            if len(sec_def.concrete_defs) > 0:
+                sec_def.concrete_states.resize(
+                    sec_def.runtime_instance_count * len(sec_def.concrete_defs), ConcreteSState()
+                )
+                used_nonelastic = True
         section_uniaxial_offsets[s] = len(uniaxial_states)
         section_uniaxial_counts[s] = sec_def.runtime_instance_count * sec_def.rebar_count
 
@@ -238,8 +252,70 @@ fn layered_shell_runtime_alloc_instances(
     return used_nonelastic
 
 
+fn layered_shell_commit_all(mut defs: List[LayeredShellSectionDef]):
+    for section in range(len(defs)):
+        ref states = defs[section].concrete_states
+        for i in range(len(states)):
+            states[i].commit()
+
+
+fn _elastic_plane_tangent(E: Float64, nu: Float64) -> PlaneStressTangent:
+    var tangent = PlaneStressTangent(fill=0.0)
+    var factor = E / (1.0 - nu * nu)
+    tangent[0] = factor
+    tangent[1] = factor * nu
+    tangent[3] = tangent[1]
+    tangent[4] = factor
+    tangent[8] = factor * (1.0 - nu) * 0.5
+    return tangent
+
+
+fn _rebar_plane_tangent(tan: Float64, c: Float64, s: Float64) -> PlaneStressTangent:
+    var tangent = PlaneStressTangent(fill=0.0)
+    tangent[0] = tan * c * c * c * c
+    tangent[1] = tan * c * c * s * s
+    tangent[2] = tan * c * c * c * s
+    tangent[3] = tangent[1]
+    tangent[4] = tan * s * s * s * s
+    tangent[5] = tan * c * s * s * s
+    tangent[6] = tangent[2]
+    tangent[7] = tangent[5]
+    tangent[8] = tangent[1]
+    return tangent
+
+
+fn _initial_drill_stiffness(
+    sec_def: LayeredShellSectionDef, uniaxial_defs: List[UniMaterialDef]
+) -> Float64:
+    # ShellMITC4 fixes the drilling modulus at the smallest eigenvalue of
+    # the initial membrane tangent.
+    var membrane = _zero_matrix(3, 3)
+    for i in range(sec_def.layer_count):
+        var tangent: PlaneStressTangent
+        if sec_def.layer_kind[i] == SHELL_LAYER_KIND_CONCRETE_S:
+            tangent = sec_def.concrete_defs[sec_def.concrete_slot[i]].initial_tangent
+        elif sec_def.layer_kind[i] == SHELL_LAYER_KIND_REBAR:
+            var def_index = sec_def.rebar_def_index[sec_def.rebar_slot[i]]
+            # OpenSees LayeredShell's initial tangent reads each fresh
+            # layer's current tangent.
+            var state = UniMaterialState(uniaxial_defs[def_index])
+            tangent = _rebar_plane_tangent(
+                state.tangent_t, sec_def.rebar_cos[i], sec_def.rebar_sin[i]
+            )
+        else:
+            tangent = _elastic_plane_tangent(sec_def.elastic_E[i], sec_def.elastic_nu[i])
+        for p in range(3):
+            for q in range(3):
+                membrane[p][q] += tangent[3 * p + q] * sec_def.layer_thickness[i]
+
+    var eigenvalues: List[Float64] = []
+    var eigenvectors: List[List[Float64]] = []
+    jacobi_symmetric_eigen(membrane, eigenvalues, eigenvectors)
+    return min(eigenvalues[0], min(eigenvalues[1], eigenvalues[2]))
+
+
 fn layered_shell_set_trial_from_offset(
-    sec_def: LayeredShellSectionDef,
+    mut sec_def: LayeredShellSectionDef,
     uniaxial_defs: List[UniMaterialDef],
     mut uniaxial_states: List[UniMaterialState],
     section_state_offset: Int,
@@ -262,155 +338,60 @@ fn layered_shell_set_trial_from_offset(
     if section_state_count != sec_def.runtime_instance_count * sec_def.rebar_count:
         abort("LayeredShellSection state count mismatch")
 
-    var layer_strain: List[Float64] = []
-    layer_strain.resize(5, 0.0)
-    var layer_stress: List[Float64] = []
-    layer_stress.resize(5, 0.0)
-    var layer_tangent = _zero_matrix(5, 5)
-    var plane_tangent = _zero_matrix(3, 3)
-
     for i in range(sec_def.layer_count):
         var z = sec_def.layer_z[i]
         var weight = sec_def.layer_thickness[i]
-        layer_strain[0] = strain[0] - z * strain[3]
-        layer_strain[1] = strain[1] - z * strain[4]
-        layer_strain[2] = strain[2] - z * strain[5]
-        layer_strain[3] = strain[7]
-        layer_strain[4] = strain[6]
+        var x = strain[0] - z * strain[3]
+        var y = strain[1] - z * strain[4]
+        var xy = strain[2] - z * strain[5]
+        var layer_stress = PlaneStressVector(fill=0.0)
+        var tangent: PlaneStressTangent
+        var kind = sec_def.layer_kind[i]
 
-        for p in range(5):
-            layer_stress[p] = 0.0
-        _ensure_zero_matrix(layer_tangent, 5, 5)
-
-        if sec_def.layer_kind[i] == SHELL_LAYER_KIND_ELASTIC_PLATE:
-            var E = sec_def.elastic_E[i]
-            var nu = sec_def.elastic_nu[i]
-            var gmod = sec_def.elastic_gmod[i]
-            var factor = E / (1.0 - nu * nu)
-            plane_tangent[0][0] = factor
-            plane_tangent[0][1] = factor * nu
-            plane_tangent[0][2] = 0.0
-            plane_tangent[1][0] = factor * nu
-            plane_tangent[1][1] = factor
-            plane_tangent[1][2] = 0.0
-            plane_tangent[2][0] = 0.0
-            plane_tangent[2][1] = 0.0
-            plane_tangent[2][2] = factor * (1.0 - nu) * 0.5
-            for p in range(3):
-                for q in range(3):
-                    layer_tangent[p][q] = plane_tangent[p][q]
-            layer_tangent[3][3] = gmod
-            layer_tangent[4][4] = gmod
-            for p in range(5):
-                var sum = 0.0
-                for q in range(5):
-                    sum += layer_tangent[p][q] * layer_strain[q]
-                layer_stress[p] = sum
-        elif sec_def.layer_kind[i] == SHELL_LAYER_KIND_REBAR:
-            var rebar_slot = sec_def.rebar_slot[i]
-            if rebar_slot < 0:
-                abort("LayeredShellSection rebar slot missing")
-            var state_index = (
-                section_state_offset + instance_slot * sec_def.rebar_count + rebar_slot
+        if kind == SHELL_LAYER_KIND_ELASTIC_PLATE:
+            tangent = _elastic_plane_tangent(sec_def.elastic_E[i], sec_def.elastic_nu[i])
+            layer_stress[0] = tangent[0] * x + tangent[1] * y
+            layer_stress[1] = tangent[3] * x + tangent[4] * y
+            layer_stress[2] = tangent[8] * xy
+        elif kind == SHELL_LAYER_KIND_CONCRETE_S:
+            var slot = sec_def.concrete_slot[i]
+            var state_index = instance_slot * len(sec_def.concrete_defs) + slot
+            tangent = PlaneStressTangent(fill=0.0)
+            concrete_s_set_trial_strain(
+                sec_def.concrete_defs[slot],
+                sec_def.concrete_states[state_index],
+                x,
+                y,
+                xy,
+                layer_stress,
+                tangent,
             )
-            if state_index < section_state_offset or state_index >= (
-                section_state_offset + section_state_count
-            ):
-                abort("LayeredShellSection rebar state index out of range")
-            var def_index = sec_def.rebar_def_index[rebar_slot]
-            if def_index < 0 or def_index >= len(uniaxial_defs):
-                abort("LayeredShellSection rebar definition index out of range")
-            var mat_def = uniaxial_defs[def_index]
+        else:
+            var slot = sec_def.rebar_slot[i]
+            var state_index = section_state_offset + instance_slot * sec_def.rebar_count + slot
+            var def_index = sec_def.rebar_def_index[slot]
             ref state = uniaxial_states[state_index]
             var c = sec_def.rebar_cos[i]
             var s = sec_def.rebar_sin[i]
-            var axial_strain: Float64
-            if sec_def.rebar_angle_deg[i] == 0.0:
-                axial_strain = layer_strain[0]
-            elif sec_def.rebar_angle_deg[i] == 90.0:
-                axial_strain = layer_strain[1]
-            else:
-                axial_strain = (
-                    layer_strain[0] * c * c + layer_strain[1] * s * s + layer_strain[2] * c * s
-                )
-            uniaxial_set_trial_strain(mat_def, state, axial_strain)
-            var sig = state.sig_t
-            var tan = state.tangent_t
-            if sec_def.rebar_angle_deg[i] == 0.0:
-                layer_stress[0] = sig
-                layer_tangent[0][0] = tan
-            elif sec_def.rebar_angle_deg[i] == 90.0:
-                layer_stress[1] = sig
-                layer_tangent[1][1] = tan
-            else:
-                layer_stress[0] = sig * c * c
-                layer_stress[1] = sig * s * s
-                layer_stress[2] = sig * c * s
-                layer_tangent[0][0] = tan * c * c * c * c
-                layer_tangent[0][1] = tan * c * c * s * s
-                layer_tangent[0][2] = tan * c * c * c * s
-                layer_tangent[1][0] = layer_tangent[0][1]
-                layer_tangent[1][1] = tan * s * s * s * s
-                layer_tangent[1][2] = tan * c * s * s * s
-                layer_tangent[2][0] = layer_tangent[0][2]
-                layer_tangent[2][1] = layer_tangent[1][2]
-                layer_tangent[2][2] = layer_tangent[0][1]
-        else:
-            abort("unsupported LayeredShellSection layer kind")
+            var axial_strain = x * c * c + y * s * s + xy * c * s
+            uniaxial_set_trial_strain(uniaxial_defs[def_index], state, axial_strain)
+            layer_stress[0] = state.sig_t * c * c
+            layer_stress[1] = state.sig_t * s * s
+            layer_stress[2] = state.sig_t * c * s
+            tangent = _rebar_plane_tangent(state.tangent_t, c, s)
 
-        stress_out[0] += layer_stress[0] * weight
-        stress_out[1] += layer_stress[1] * weight
-        stress_out[2] += layer_stress[2] * weight
-        stress_out[3] += z * layer_stress[0] * weight
-        stress_out[4] += z * layer_stress[1] * weight
-        stress_out[5] += z * layer_stress[2] * weight
-        stress_out[6] += layer_stress[4] * weight
-        stress_out[7] += layer_stress[3] * weight
+        for p in range(3):
+            stress_out[p] += layer_stress[p] * weight
+            stress_out[p + 3] += (z * layer_stress[p]) * weight
+            for q in range(3):
+                var weighted = tangent[3 * p + q] * weight
+                tangent_out[p][q] += weighted
+                tangent_out[p][q + 3] -= z * weighted
+                tangent_out[p + 3][q] += z * weighted
+                tangent_out[p + 3][q + 3] -= z * z * weighted
 
-        tangent_out[0][0] += layer_tangent[0][0] * weight
-        tangent_out[0][1] += layer_tangent[0][1] * weight
-        tangent_out[0][2] += layer_tangent[0][2] * weight
-        tangent_out[0][3] -= z * layer_tangent[0][0] * weight
-        tangent_out[0][4] -= z * layer_tangent[0][1] * weight
-        tangent_out[0][5] -= z * layer_tangent[0][2] * weight
-
-        tangent_out[1][0] += layer_tangent[1][0] * weight
-        tangent_out[1][1] += layer_tangent[1][1] * weight
-        tangent_out[1][2] += layer_tangent[1][2] * weight
-        tangent_out[1][3] -= z * layer_tangent[1][0] * weight
-        tangent_out[1][4] -= z * layer_tangent[1][1] * weight
-        tangent_out[1][5] -= z * layer_tangent[1][2] * weight
-
-        tangent_out[2][0] += layer_tangent[2][0] * weight
-        tangent_out[2][1] += layer_tangent[2][1] * weight
-        tangent_out[2][2] += layer_tangent[2][2] * weight
-        tangent_out[2][3] -= z * layer_tangent[2][0] * weight
-        tangent_out[2][4] -= z * layer_tangent[2][1] * weight
-        tangent_out[2][5] -= z * layer_tangent[2][2] * weight
-
-        tangent_out[3][0] -= z * layer_tangent[0][0] * weight
-        tangent_out[3][1] -= z * layer_tangent[0][1] * weight
-        tangent_out[3][2] -= z * layer_tangent[0][2] * weight
-        tangent_out[3][3] += z * z * layer_tangent[0][0] * weight
-        tangent_out[3][4] += z * z * layer_tangent[0][1] * weight
-        tangent_out[3][5] += z * z * layer_tangent[0][2] * weight
-
-        tangent_out[4][0] -= z * layer_tangent[1][0] * weight
-        tangent_out[4][1] -= z * layer_tangent[1][1] * weight
-        tangent_out[4][2] -= z * layer_tangent[1][2] * weight
-        tangent_out[4][3] += z * z * layer_tangent[1][0] * weight
-        tangent_out[4][4] += z * z * layer_tangent[1][1] * weight
-        tangent_out[4][5] += z * z * layer_tangent[1][2] * weight
-
-        tangent_out[5][0] -= z * layer_tangent[2][0] * weight
-        tangent_out[5][1] -= z * layer_tangent[2][1] * weight
-        tangent_out[5][2] -= z * layer_tangent[2][2] * weight
-        tangent_out[5][3] += z * z * layer_tangent[2][0] * weight
-        tangent_out[5][4] += z * z * layer_tangent[2][1] * weight
-        tangent_out[5][5] += z * z * layer_tangent[2][2] * weight
-
-        tangent_out[6][6] += layer_tangent[4][4] * weight
-        tangent_out[7][7] += layer_tangent[3][3] * weight
-    for i in range(8):
-        for j in range(i):
-            tangent_out[i][j] = tangent_out[j][i]
+        # The plate wrapper supplies the two elastic transverse shear terms.
+        var gmod = sec_def.elastic_gmod[i]
+        for p in range(6, 8):
+            stress_out[p] += (gmod * strain[p]) * weight
+            tangent_out[p][p] += gmod * weight

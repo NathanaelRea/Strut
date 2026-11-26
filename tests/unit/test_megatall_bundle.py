@@ -29,6 +29,10 @@ def test_bundle_has_the_benchmark_model(tmp_path: Path):
     assert _count(tmp_path / "opensees.tcl", "node ") == 27220
     assert _count(tmp_path / "Hbeam.tcl", "element dispBeamColumn") == 28310
     assert _count(tmp_path / "layershell.tcl", "element ShellMITC4") == 16616
+    assert _count(tmp_path / "layershell.tcl", "nDMaterial ConcreteS") == 3
+    assert (
+        _count(tmp_path / "layershell.tcl", "nDMaterial PlaneStressUserMaterial") == 0
+    )
     assert _count(tmp_path / "truss.tcl", "element truss") == 3568
     assert _count(tmp_path / "truss.tcl", "element elasticBeamColumn") == 616
     assert _count(tmp_path / "rigiddigram.tcl", "rigidDiaphragm") == 128

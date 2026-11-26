@@ -124,11 +124,7 @@ def test_prepare_direct_tcl_entry_preserves_legacy_mass_arity_in_source(tmp_path
     wrapper_text = opensees_wrapper.read_text(encoding="utf-8")
     assert "rename section __strut_builtin_section" in wrapper_text
     assert "set args [linsert $args 2 -GJ 1.0e-12]" in wrapper_text
-    assert "rename nDMaterial __strut_builtin_nDMaterial" in wrapper_text
-    assert (
-        'if {[llength $args] == 4 && [lindex $args 0] eq "PlateFromPlaneStress"} {'
-        in wrapper_text
-    )
+    assert "rename nDMaterial" not in wrapper_text
     assert "rename mass __strut_builtin_mass" in wrapper_text
     assert f"source {{{runtime_entry.name}}}" in wrapper_text
 

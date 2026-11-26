@@ -68,6 +68,7 @@ fn _is_supported_material_type(type_name: String) -> Bool:
         or type_name == "PlateFromPlaneStress"
         or type_name == "PlateRebar"
         or type_name == "PlaneStressUserMaterial"
+        or type_name == "ConcreteS"
     )
 
 
@@ -295,20 +296,17 @@ fn _precheck_layered_shell_sections(
             if material_id < 0 or material_id >= len(material_types_by_id):
                 continue
             var material_type = material_types_by_id[material_id]
-            if material_type == "PlaneStressUserMaterial":
-                _precheck_abort(
-                    "LayeredShellSection runtime does not support PlaneStressUserMaterial because"
-                    " the OpenSees PSUMAT implementation is not present in the reference repo"
-                )
             if material_type == "PlateFromPlaneStress":
                 var base_id = material_base_by_id[material_id]
                 if base_id < 0 or base_id >= len(material_types_by_id):
                     continue
                 var base_type = material_types_by_id[base_id]
-                if base_type != "ElasticIsotropic" and base_type != "PlaneStressUserMaterial":
+                if base_type == "PlaneStressUserMaterial":
+                    _precheck_abort("PlaneStressUserMaterial requires the unreleased PSUMAT")
+                if base_type != "ElasticIsotropic" and base_type != "ConcreteS":
                     _precheck_abort(
                         "LayeredShellSection currently supports PlateFromPlaneStress only over"
-                        " ElasticIsotropic"
+                        " ElasticIsotropic or ConcreteS"
                     )
                 continue
             if material_type == "PlateRebar":
@@ -322,6 +320,8 @@ fn _precheck_layered_shell_sections(
                 continue
             if material_type == "ElasticIsotropic":
                 continue
+            if material_type == "PlaneStressUserMaterial":
+                _precheck_abort("PlaneStressUserMaterial requires the unreleased PSUMAT")
             if len(material_type) > 0:
                 _precheck_abort("unsupported LayeredShellSection material: " + material_type)
 

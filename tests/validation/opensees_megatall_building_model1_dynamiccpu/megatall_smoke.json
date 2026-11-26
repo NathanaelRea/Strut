@@ -2,7 +2,7 @@
   "schema_version": "1.0",
   "enabled": false,
   "status": "generated_smoke",
-  "notes": "Deterministic extracted megatall smoke case derived from the generated native case. It keeps one real megatall frame member on the staged gravity/transient path, plus fixed shell, truss, and rigidDiaphragm probes. The extracted FiberSection3d frame member is converted to a stiffness-equivalent ElasticSection3d surrogate so the reduced smoke path remains mechanically stable while still exercising shells, staged analysis, UniformExcitation, and rigidDiaphragm loading.",
+  "notes": "Deterministic extracted megatall smoke case derived from the generated native case. It keeps one real megatall frame member on the staged gravity/transient path, plus fixed ConcreteS shell, truss, and rigidDiaphragm probes. The extracted FiberSection3d frame member is converted to a stiffness-equivalent ElasticSection3d surrogate so the reduced smoke path remains mechanically stable while still exercising shells, staged analysis, UniformExcitation, and rigidDiaphragm loading.",
   "metadata": {
     "name": "strut_dynamiccpu_entry_smoke",
     "units": "unknown",
@@ -105,6 +105,17 @@
   ],
   "materials": [
     {
+      "id": 73,
+      "type": "ConcreteS",
+      "params": {
+        "E": 37999999200.0,
+        "nu": 0.2,
+        "fc": 50200000.0,
+        "ft": 3110000.0,
+        "Es": 3799999813.0
+      }
+    },
+    {
       "id": 179,
       "type": "Steel02",
       "params": {
@@ -118,11 +129,10 @@
     },
     {
       "id": 7399,
-      "type": "ElasticIsotropic",
+      "type": "PlateFromPlaneStress",
       "params": {
-        "E": 35466665920.0,
-        "nu": 0.12,
-        "rho": 0.0
+        "material": 73,
+        "gmod": 15833333000.0
       }
     },
     {
