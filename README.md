@@ -1,8 +1,8 @@
 # 🔥 Strut 🔥
 
-**Runs OpenSees models up to 30x faster, with matching results.**
+**Runs models up to 30x faster than OpenSees**
 
-Strut is a finite element engine for buildings under earthquake loading, written in [Mojo](https://www.modular.com/mojo). It reads OpenSees Tcl scripts, and its lead grows with the size of the model.
+Strut is a finite element engine for buildings under earthquake loading, written in [Mojo](https://www.modular.com/mojo). It can read OpenSees Tcl scripts, and it's faster the larger the model is.
 
 ```mermaid
 ---
@@ -28,7 +28,6 @@ xychart-beta
 | Mega-tall building, 162,624 DOFs | 833.5 s | 66.4 s (**12.5x**) | 27.5 s (**30x**) |
 | 3D fiber frame, displacement-based with P-Delta, 1,728 DOFs | 5.52 s | 1.43 s (**3.8x**) | 0.88 s (**6.2x**) |
 | 3D fiber frame, force-based, 1,728 DOFs | 5.33 s | 2.12 s (**2.5x**) | 0.90 s (**5.9x**) |
-| Nine OpenSees example analyses that take over a second | 16.0 s | 2.18 s (**7.4x**) | too small to thread |
 
 Analysis time against OpenSees 3.7.1 on the same machine (Ryzen 7 9800X3D). Every case is in the [full benchmarks](./docs/benchmark-opensees-examples.md).
 
@@ -38,7 +37,7 @@ Analysis time against OpenSees 3.7.1 on the same machine (Ryzen 7 9800X3D). Ever
 - **Tested against OpenSees on every run.** Over 90 comparisons, covering the OpenSees example suite through "Advanced Example 6" and slices cut from the mega-tall building.
 
 > [!NOTE]
-> Strut is new and has not yet been used on a real design or research project. As with any structural analysis software, validate it for your own use before relying on it. What it has today is close agreement with OpenSees on everything in the test suite. Models that finish in a few milliseconds are often slower in Strut than in OpenSees.
+> Strut is new and has not yet been used on a real design or research project. As with any structural analysis software, validate it for your own use before relying on it. What it has today is close agreement with OpenSees on everything in the test suite.
 
 ## Quick start
 
