@@ -7,9 +7,11 @@ machine instead, alternating them run by run, and compares their medians.
 
 `prepare` writes the suite: generated models sized to take about 0.1-2 s each
 and chosen to cover the element, section, transformation, constraint, solver
-and analysis paths, plus the validation cases. Seeded synthetic records stand in for the
-downloaded ground motions that timed cases read (`SYNTHETIC_RECORDS`). `compare` times the timed cases on both binaries, checks that every
-case's outputs match, and writes a markdown table.
+and analysis paths, plus the validation cases. Runners download no reference
+data, so `prepare --synthetic-records` writes a seeded synthetic stand-in for
+every pinned ground-motion record that is missing. `compare` times the timed
+cases on both binaries, checks that every case's outputs match, and writes a
+markdown table.
 
 `compare` fails when the candidate crashes on a case the baseline runs, or when
 a timed case is slower than `--max-regression-pct` both times it is measured. A
@@ -36,8 +38,9 @@ import statistics
 import subprocess
 import sys
 import tempfile
-from dataclasses import dataclass, field
+import zlib
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
 from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -246,33 +249,52 @@ TIMED_VALIDATION_CASES = (
 )
 
 
-# Runners have no downloaded reference data, so timed cases that read a recorded
-# ground motion get a seeded synthetic one instead: the same file name, format,
-# step and length, written into the staged copy of the script. Every machine
-# then times the same input. Paths are relative to the entry script's directory.
-SYNTHETIC_RECORDS: dict[str, list[dict]] = {
-    "opensees_example_ex6_genericframe2d_analyze_dynamic_eq_multiplesupport": [
-        # Stands in for PEER H-E12140 (Imperial Valley 1979): 7802 steps of 0.005 s.
-        {"path": "../GMfiles/H-e12140.dt2", "seed": 12140, "dt": 0.005, "npts": 7802},
-    ],
-}
+FIXTURES_ROOT = REPO_ROOT / "tests" / "fixtures" / "opensees"
+LOCK_PATH = FIXTURES_ROOT / "reference-data.lock.json"
+# Ground-motion records among the pinned files. `.tcl` files are mostly models,
+# so only the named value files count.
+RECORD_SUFFIXES = {".at2", ".dt2", ".acc", ".txt", ".th"}
+RECORD_TCL_NAMES = {"A10000.tcl"}
 
 
-def _with_synthetic_records(name: str, manifest_dir: Path) -> Path:
-    """The case's manifest, or a copy that writes its synthetic records."""
-    case_path = ab_compare._resolve_named_case(name)
-    records = SYNTHETIC_RECORDS.get(name)
-    if not records:
-        return case_path
-    data = json.loads(case_path.read_text(encoding="utf-8"))
-    data["synthetic_ground_motions"] = [
-        *data.get("synthetic_ground_motions", []),
-        *records,
-    ]
-    path = manifest_dir / name / "direct_tcl_case.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-    return path
+def _missing_records(lock_path: Path = LOCK_PATH) -> list[Path]:
+    lock = json.loads(lock_path.read_text(encoding="utf-8"))
+    paths = []
+    for entry in lock.get("files", []):
+        rel = Path(entry["path"])
+        if rel.suffix.lower() in RECORD_SUFFIXES or rel.name in RECORD_TCL_NAMES:
+            path = lock_path.parent / rel
+            if not path.exists():
+                paths.append(path)
+    return paths
+
+
+def _write_synthetic_record(path: Path) -> None:
+    """A seeded synthetic record in the layout the scripts read from `path`.
+
+    The length is only roughly the real record's: both binaries run the same
+    input, so a benchmark needs a valid record, not the recorded motion.
+    """
+    import synthetic_ground_motion as sgm
+
+    suffix = path.suffix.lower()
+    seed = zlib.crc32(path.name.encode("utf-8"))
+    if suffix in {".txt", ".th"}:
+        # One value per line, no header (tabasFN.txt, TakY.th, NR228.txt).
+        params = sgm.MotionParams(seed=seed, dt=0.01, npts=3000)
+        acc = sgm.generate_acceleration(params)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("".join(f"{value:.6f}\n" for value in acc), encoding="ascii")
+        return
+    dt = 0.005 if suffix in {".at2", ".dt2"} else 0.01
+    sgm.write_motion(path, sgm.MotionParams(seed=seed, dt=dt, npts=4000), fmt=None)
+
+
+def write_missing_synthetic_records(lock_path: Path = LOCK_PATH) -> list[Path]:
+    written = _missing_records(lock_path)
+    for path in written:
+        _write_synthetic_record(path)
+    return written
 
 
 # ---------------------------------------------------------------- prepare
@@ -366,6 +388,9 @@ def cmd_prepare(args: argparse.Namespace) -> int:
         shutil.rmtree(suite_dir)
     suite_dir.mkdir(parents=True)
     entries = []
+    if args.synthetic_records:
+        for path in write_missing_synthetic_records():
+            print(f"  synthetic record  {path.relative_to(FIXTURES_ROOT)}")
 
     for case in SYNTHETIC_CASES:
         path = _prepare_synthetic(case, suite_dir)
@@ -389,8 +414,7 @@ def cmd_prepare(args: argparse.Namespace) -> int:
         outcomes = list(
             pool.map(
                 lambda name: ab_compare._resolve_in_subprocess(
-                    _with_synthetic_records(name, suite_dir / "_manifests"),
-                    validation_dir,
+                    ab_compare._resolve_named_case(name), validation_dir
                 ),
                 names,
             )
@@ -738,6 +762,15 @@ def main() -> int:
 
     prepare = sub.add_parser("prepare", help="Write the benchmark suite inputs.")
     prepare.add_argument("--suite", type=Path, default=DEFAULT_SUITE_DIR)
+    prepare.add_argument(
+        "--synthetic-records",
+        action="store_true",
+        help=(
+            "Write a seeded synthetic record for every pinned ground motion that is "
+            "missing, into the fixtures tree. For CI runners, which download no "
+            "reference data; `setup_reference_data.py install` replaces them."
+        ),
+    )
     prepare.set_defaults(func=cmd_prepare)
 
     compare = sub.add_parser("compare", help="Time a baseline and a candidate binary.")
