@@ -28,11 +28,11 @@ jobs:
       BASE_SHA: ${{ github.event.pull_request.base.sha }}
     steps:
       # The default PR checkout is the merge commit: main plus this PR.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v10.4.0
         with:
           enable-cache: true
 
@@ -48,13 +48,13 @@ jobs:
         run: echo "features=$(grep -m1 '^flags' /proc/cpuinfo | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
 
       - name: Cache base Mojo build
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: .bench-base/build/strut
           key: mojo-bench-base-${{ runner.os }}-${{ steps.cpu.outputs.features }}-${{ hashFiles('.bench-base/uv.lock') }}-${{ hashFiles('.bench-base/src/mojo/**/*.mojo') }}
 
       - name: Cache PR Mojo build
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: build/strut
           key: mojo-build-${{ runner.os }}-${{ steps.cpu.outputs.features }}-${{ hashFiles('uv.lock') }}-${{ hashFiles('src/mojo/**/*.mojo') }}
@@ -89,7 +89,7 @@ jobs:
 
       - name: Upload results
         if: always() && hashFiles('benchmark.json') != ''
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: benchmark
           path: |
