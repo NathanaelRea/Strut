@@ -128,6 +128,66 @@ def _max_abs_vector(rows):
     return peaks
 
 
+def _load_history_envelope(path: Path):
+    minimum = []
+    maximum = []
+    count = 0
+    with path.open() as stream:
+        for line in stream:
+            row = _parse_line(line)
+            if not row:
+                continue
+            if not all(math.isfinite(value) for value in row):
+                raise ValueError(
+                    f"non-finite recorder value in {path}, row {count + 1}"
+                )
+            if count == 0:
+                minimum = row.copy()
+                maximum = row.copy()
+            elif len(row) != len(minimum):
+                raise ValueError(f"recorder width mismatch in {path}, row {count + 1}")
+            else:
+                for i, value in enumerate(row):
+                    minimum[i] = min(minimum[i], value)
+                    maximum[i] = max(maximum[i], value)
+            count += 1
+    if count == 0:
+        raise ValueError(f"empty output file: {path}")
+    peak = [max(abs(lo), abs(hi)) for lo, hi in zip(minimum, maximum)]
+    return count, (minimum, maximum, peak)
+
+
+def _compare_history_files(ref_file, strut_file, label, failures, rtol, atol, mode):
+    if mode != "envelope":
+        _compare_transient_rows(
+            _load_all_values(ref_file),
+            _load_all_values(strut_file),
+            label,
+            failures,
+            rtol,
+            atol,
+            mode,
+        )
+        return
+
+    try:
+        ref_count, ref_envelope = _load_history_envelope(ref_file)
+        strut_count, strut_envelope = _load_history_envelope(strut_file)
+    except ValueError as exc:
+        failures.append(f"{label}: {exc}")
+        return
+    if ref_count != strut_count:
+        failures.append(f"{label} step count mismatch: {ref_count} != {strut_count}")
+        return
+    for statistic, ref, got in zip(
+        ("minimum", "maximum", "peak absolute"), ref_envelope, strut_envelope
+    ):
+        ok, errors = _compare_vectors(ref, got, rtol=rtol, atol=atol)
+        if not ok:
+            failures.append(f"{label} envelope {statistic} mismatch")
+            failures.extend(f"  {err}" for err in errors)
+
+
 def _compare_transient_rows(
     ref_vals, strut_vals, label, failures, rtol, atol, parity_mode
 ):
@@ -235,6 +295,54 @@ def _load_direct_tcl_case_data(
 ) -> dict:
     import tcl_to_strut
 
+    manifest = (
+        direct_tcl_support.load_direct_tcl_manifest(manifest_path)
+        if manifest_path is not None and manifest_path.exists()
+        else {}
+    )
+    if manifest.get("replay_tcl"):
+        outputs = json.loads(
+            (case_root / "strut" / ".direct_tcl_recorders.json").read_text()
+        )
+        reference_dir = case_root / "reference"
+        if not (reference_dir / "__strut_replay_complete.out").is_file():
+            raise SystemExit("OpenSees did not complete the direct Tcl replay")
+        recorder_root = reference_dir / "__strut_domains"
+        reference_files = {
+            str(path.relative_to(reference_dir))
+            for path in recorder_root.rglob("*")
+            if path.is_file()
+        }
+        reference_files.update(
+            path.name for path in reference_dir.glob("__strut_query_*.out")
+        )
+        missing = reference_files - outputs.keys()
+        if missing:
+            raise SystemExit(f"Missing Strut Tcl outputs: {', '.join(sorted(missing))}")
+        if not outputs:
+            raise SystemExit(
+                "direct Tcl replay produced no recorders or solver queries"
+            )
+        return {
+            **manifest,
+            "recorders": [
+                {"type": "raw_table", "file": path, **recorder, "replay": True}
+                for path, recorder in outputs.items()
+            ],
+        }
+    if manifest.get("interactive_tcl"):
+        data = {
+            "analysis": {"type": "static_linear"},
+            "recorders": [
+                {"type": "raw_table", "file": str(path)}
+                for path in manifest["compare_files"]
+            ],
+        }
+        for key in ("parity_tolerance", "parity_tolerance_by_recorder", "comparison"):
+            if key in manifest:
+                data[key] = manifest[key]
+        return data
+
     mirror_root = case_root / "generated" / "_direct_tcl_context"
     parser_source = entry_tcl.resolve()
     if manifest_path is not None and manifest_path.exists():
@@ -267,6 +375,8 @@ def _load_direct_tcl_case_data(
         "parity_tolerance_by_category",
         "parity_tolerance_by_recorder",
         "parity_mode",
+        "comparison",
+        "parity_history",
     ):
         if key in manifest:
             data[key] = manifest[key]
@@ -275,24 +385,37 @@ def _load_direct_tcl_case_data(
 
 def _compare_output_dirs(data: dict, ref_dir: Path, strut_dir: Path) -> list[str]:
     recorders = data.get("recorders", [])
-    tol = data.get("parity_tolerance", {})
-    rtol = tol.get("rtol", REL_TOL)
-    atol = tol.get("atol", ABS_TOL)
-    has_global_tol_override = isinstance(tol, dict) and ("rtol" in tol or "atol" in tol)
-    tol_by_recorder = data.get("parity_tolerance_by_recorder", {})
-    if not isinstance(tol_by_recorder, dict):
-        tol_by_recorder = {}
-    tol_by_category = data.get("parity_tolerance_by_category", {})
-    if not isinstance(tol_by_category, dict):
-        tol_by_category = {}
+    comparison = data.get("comparison")
     parity_mode = str(data.get("parity_mode", "step")).strip().lower()
     if parity_mode not in ("step", "max_abs"):
         raise ValueError(
             f"unsupported parity_mode: {parity_mode} (expected step|max_abs)"
         )
+    if comparison is not None:
+        if comparison != "envelope":
+            raise ValueError(
+                f"unsupported comparison: {comparison!r} (expected envelope)"
+            )
+        parity_mode = comparison
+    tol = {} if comparison == "envelope" else data.get("parity_tolerance", {})
+    rtol = tol.get("rtol", REL_TOL)
+    atol = tol.get("atol", ABS_TOL)
+    has_global_tol_override = isinstance(tol, dict) and ("rtol" in tol or "atol" in tol)
+    tol_by_recorder = (
+        {} if comparison == "envelope" else data.get("parity_tolerance_by_recorder", {})
+    )
+    if not isinstance(tol_by_recorder, dict):
+        tol_by_recorder = {}
+    tol_by_category = (
+        {} if comparison == "envelope" else data.get("parity_tolerance_by_category", {})
+    )
+    if not isinstance(tol_by_category, dict):
+        tol_by_category = {}
     analysis = data.get("analysis", {})
     is_transient = _analysis_is_transient(analysis)
-    compare_history = is_transient or parity_mode == "max_abs"
+    compare_history = (
+        is_transient or parity_mode != "step" or data.get("parity_history", False)
+    )
 
     failures = []
     for rec in recorders:
@@ -300,15 +423,73 @@ def _compare_output_dirs(data: dict, ref_dir: Path, strut_dir: Path) -> list[str
             continue
         rec_type = rec["type"]
         rec_rtol, rec_atol = _resolve_recorder_tolerance(
-            rec_type,
+            rec.get("category", rec_type),
             rtol,
             atol,
             has_global_tol_override,
             tol_by_category,
             tol_by_recorder,
         )
-        if rec_type == "node_displacement":
-            output = rec.get("output", "node_disp")
+        if rec_type == "raw_table":
+            rel_file = rec["file"]
+            ref_file = ref_dir / rel_file
+            strut_file = strut_dir / rel_file
+            if not ref_file.exists():
+                failures.append(f"missing reference output: {ref_file}")
+                continue
+            if not strut_file.exists():
+                failures.append(f"missing strut output: {strut_file}")
+                continue
+            if parity_mode == "envelope":
+                _compare_history_files(
+                    ref_file,
+                    strut_file,
+                    rel_file,
+                    failures,
+                    rec_rtol,
+                    rec_atol,
+                    parity_mode,
+                )
+                continue
+            if rec.get("replay"):
+                ref_vals = [
+                    _parse_line(row)
+                    for row in ref_file.read_text().splitlines()
+                    if row.strip()
+                ]
+                strut_vals = [
+                    _parse_line(row)
+                    for row in strut_file.read_text().splitlines()
+                    if row.strip()
+                ]
+                if rec.get("include_time"):
+                    ref_vals = [row[1:] for row in ref_vals]
+                if not ref_vals and not strut_vals:
+                    continue
+            else:
+                ref_vals = _load_all_values(ref_file)
+                strut_vals = _load_all_values(strut_file)
+            if not ref_vals:
+                failures.append(f"empty reference output: {ref_file}")
+                continue
+            if len(ref_vals) != len(strut_vals):
+                failures.append(
+                    f"{rel_file} row count mismatch: {len(ref_vals)} != {len(strut_vals)}"
+                )
+                continue
+            for row_idx, (rvec, gvec) in enumerate(zip(ref_vals, strut_vals), start=1):
+                ok, errors = _compare_vectors(rvec, gvec, rtol=rec_rtol, atol=rec_atol)
+                if not ok:
+                    failures.append(f"{rel_file} mismatch at row {row_idx}")
+                    failures.extend([f"  {err}" for err in errors])
+                    break
+        elif rec_type in ("node_displacement", "node_velocity", "node_acceleration"):
+            default_output = {
+                "node_displacement": "node_disp",
+                "node_velocity": "node_velocity",
+                "node_acceleration": "node_accel",
+            }[rec_type]
+            output = rec.get("output", default_output)
             for node_id in rec["nodes"]:
                 ref_file = ref_dir / f"{output}_node{node_id}.out"
                 strut_file = strut_dir / f"{output}_node{node_id}.out"
@@ -319,11 +500,9 @@ def _compare_output_dirs(data: dict, ref_dir: Path, strut_dir: Path) -> list[str
                     failures.append(f"missing strut output: {strut_file}")
                     continue
                 if compare_history:
-                    ref_vals = _load_all_values(ref_file)
-                    strut_vals = _load_all_values(strut_file)
-                    _compare_transient_rows(
-                        ref_vals,
-                        strut_vals,
+                    _compare_history_files(
+                        ref_file,
+                        strut_file,
                         f"node {node_id}",
                         failures,
                         rec_rtol,
@@ -333,7 +512,14 @@ def _compare_output_dirs(data: dict, ref_dir: Path, strut_dir: Path) -> list[str
                 else:
                     ref_vals = _load_last_values(ref_file)
                     strut_vals = _load_last_values(strut_file)
-                    ok, errors = _compare_mode_shape_vectors(
+                    # Compare 3D displacements in their original units, including
+                    # near-zero displacements at supports enforced by Penalty.
+                    compare_vectors = (
+                        _compare_vectors
+                        if data.get("model", {}).get("ndm") == 3
+                        else _compare_mode_shape_vectors
+                    )
+                    ok, errors = compare_vectors(
                         ref_vals, strut_vals, rtol=rec_rtol, atol=rec_atol
                     )
                     if not ok:
@@ -351,11 +537,9 @@ def _compare_output_dirs(data: dict, ref_dir: Path, strut_dir: Path) -> list[str
                     failures.append(f"missing strut output: {strut_file}")
                     continue
                 if compare_history:
-                    ref_vals = _load_all_values(ref_file)
-                    strut_vals = _load_all_values(strut_file)
-                    _compare_transient_rows(
-                        ref_vals,
-                        strut_vals,
+                    _compare_history_files(
+                        ref_file,
+                        strut_file,
                         f"element {elem_id}",
                         failures,
                         rec_rtol,
@@ -383,11 +567,9 @@ def _compare_output_dirs(data: dict, ref_dir: Path, strut_dir: Path) -> list[str
                     failures.append(f"missing strut output: {strut_file}")
                     continue
                 if compare_history:
-                    ref_vals = _load_all_values(ref_file)
-                    strut_vals = _load_all_values(strut_file)
-                    _compare_transient_rows(
-                        ref_vals,
-                        strut_vals,
+                    _compare_history_files(
+                        ref_file,
+                        strut_file,
                         f"reaction node {node_id}",
                         failures,
                         rec_rtol,
@@ -416,11 +598,9 @@ def _compare_output_dirs(data: dict, ref_dir: Path, strut_dir: Path) -> list[str
                 failures.append(f"missing strut output: {strut_file}")
                 continue
             if compare_history:
-                ref_vals = _load_all_values(ref_file)
-                strut_vals = _load_all_values(strut_file)
-                _compare_transient_rows(
-                    ref_vals,
-                    strut_vals,
+                _compare_history_files(
+                    ref_file,
+                    strut_file,
                     f"drift i{i_node}-j{j_node}",
                     failures,
                     rec_rtol,
@@ -441,6 +621,13 @@ def _compare_output_dirs(data: dict, ref_dir: Path, strut_dir: Path) -> list[str
             "element_local_force",
             "element_basic_force",
             "element_deformation",
+            "quad_stress",
+            "quad_strain",
+            "quad_state",
+            "contact_secondary_force",
+            "contact_friction_force",
+            "contact_scalar_force",
+            "contact_primary_force",
         ):
             default_output = rec_type
             output = rec.get("output", default_output)
@@ -454,11 +641,9 @@ def _compare_output_dirs(data: dict, ref_dir: Path, strut_dir: Path) -> list[str
                     failures.append(f"missing strut output: {strut_file}")
                     continue
                 if compare_history:
-                    ref_vals = _load_all_values(ref_file)
-                    strut_vals = _load_all_values(strut_file)
-                    _compare_transient_rows(
-                        ref_vals,
-                        strut_vals,
+                    _compare_history_files(
+                        ref_file,
+                        strut_file,
                         f"{rec_type} element {elem_id}",
                         failures,
                         rec_rtol,
@@ -544,11 +729,9 @@ def _compare_output_dirs(data: dict, ref_dir: Path, strut_dir: Path) -> list[str
                         failures.append(f"missing strut output: {strut_file}")
                         continue
                     if compare_history:
-                        ref_vals = _load_all_values(ref_file)
-                        strut_vals = _load_all_values(strut_file)
-                        _compare_transient_rows(
-                            ref_vals,
-                            strut_vals,
+                        _compare_history_files(
+                            ref_file,
+                            strut_file,
                             f"{rec_type} element {elem_id} section {sec_no}",
                             failures,
                             rec_rtol,

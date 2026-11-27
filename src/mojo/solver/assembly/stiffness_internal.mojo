@@ -8,16 +8,18 @@ from elements import (
     truss_global_stiffness,
     truss3d_global_stiffness,
 )
+from elements.corot_truss import CorotTrussChord, TrussVector
 from materials import (
     UniMaterialDef,
     UniMaterialState,
     uni_mat_initial_tangent,
     uniaxial_set_trial_strain,
+    uniaxial_set_trial_strain_rate,
 )
 from solver.assembly.frame3d_scratch import (
     Frame3dAssemblyScratch,
 )
-from solver.assembly.shell_cache import ShellAssemblyCache
+from solver.assembly.surface_cache import SurfaceAssemblyCache
 from solver.assembly.stiffness_internal_frame2d import (
     _assemble_frame2d_element,
     _assemble_frame2d_native_soa_indices,
@@ -63,7 +65,10 @@ from solver.profile import (
     RuntimeProfileMetrics,
     _profile_metrics_note_element_timing,
 )
-from solver.run_case.helpers import aggregator_section2d_set_trial_from_offset
+from solver.run_case.helpers import (
+    aggregator_section2d_set_trial_from_offset,
+    aggregator_section3d_set_trial_from_offset,
+)
 from solver.sparse_pattern import ElementMatrixSink, NullMatrixSink
 from solver.run_case.input_types import (
     ElementInput,
@@ -78,8 +83,113 @@ from sections import (
     FiberSection3dDef,
     LayeredShellSectionDef,
     fiber_section2d_set_trial_from_offset,
+    fiber_section3d_set_trial_from_offset,
 )
 from tag_types import BeamIntegrationTag, ElementTypeTag, GeomTransfTag
+
+
+fn _eval_zero_length_section3d(
+    sec: SectionInput,
+    sec_id: Int,
+    uniaxial_defs: List[UniMaterialDef],
+    uniaxial_state_defs: List[Int],
+    mut uniaxial_states: List[UniMaterialState],
+    elem_uniaxial_state_ids: List[Int],
+    elem_offset: Int,
+    elem_state_count: Int,
+    fiber_section3d_index_by_id: List[Int],
+    mut fiber_section3d_defs: List[FiberSection3dDef],
+    delta_p: Float64,
+    delta_vy: Float64,
+    delta_vz: Float64,
+    delta_t: Float64,
+    delta_my: Float64,
+    delta_mz: Float64,
+    mut f_sec: List[Float64],
+    mut k_sec: List[Float64],
+) raises:
+    for i in range(6):
+        f_sec[i] = 0.0
+    for i in range(36):
+        k_sec[i] = 0.0
+    if sec.type == "ElasticSection3d":
+        var k_p = sec.E * sec.A
+        var k_t = sec.G * sec.J
+        var k_my = sec.E * sec.Iy
+        var k_mz = sec.E * sec.Iz
+        f_sec[0] = k_p * delta_p
+        f_sec[3] = k_t * delta_t
+        f_sec[4] = k_my * delta_my
+        f_sec[5] = k_mz * delta_mz
+        k_sec[0 * 6 + 0] = k_p
+        k_sec[3 * 6 + 3] = k_t
+        k_sec[4 * 6 + 4] = k_my
+        k_sec[5 * 6 + 5] = k_mz
+    elif sec.type == "AggregatorSection3d":
+        var resp = aggregator_section3d_set_trial_from_offset(
+            sec,
+            uniaxial_defs,
+            uniaxial_state_defs,
+            uniaxial_states,
+            elem_uniaxial_state_ids,
+            elem_offset,
+            elem_state_count,
+            delta_p,
+            delta_vy,
+            delta_vz,
+            delta_t,
+            delta_my,
+            delta_mz,
+        )
+        f_sec[0] = resp[0]
+        f_sec[1] = resp[1]
+        f_sec[2] = resp[2]
+        f_sec[3] = resp[3]
+        f_sec[4] = resp[4]
+        f_sec[5] = resp[5]
+        k_sec[0 * 6 + 0] = resp[6]
+        k_sec[1 * 6 + 1] = resp[7]
+        k_sec[2 * 6 + 2] = resp[8]
+        k_sec[3 * 6 + 3] = resp[9]
+        k_sec[4 * 6 + 4] = resp[10]
+        k_sec[5 * 6 + 5] = resp[11]
+    elif sec.type == "FiberSection3d":
+        var sec_index = fiber_section3d_index_by_id[sec_id]
+        if sec_index < 0 or sec_index >= len(fiber_section3d_defs):
+            abort("zeroLengthSection 3D fiber section not found")
+        ref sec_def = fiber_section3d_defs[sec_index]
+        if elem_state_count != sec_def.fiber_count:
+            abort("zeroLengthSection 3D fiber state count mismatch")
+        var resp = fiber_section3d_set_trial_from_offset(
+            sec_def,
+            uniaxial_states,
+            elem_offset,
+            elem_state_count,
+            delta_p,
+            delta_my,
+            delta_mz,
+        )
+        f_sec[0] = resp.axial_force
+        f_sec[4] = resp.moment_y
+        f_sec[5] = resp.moment_z
+        k_sec[0 * 6 + 0] = resp.k11
+        k_sec[0 * 6 + 4] = resp.k12
+        k_sec[0 * 6 + 5] = resp.k13
+        k_sec[4 * 6 + 0] = resp.k12
+        k_sec[4 * 6 + 4] = resp.k22
+        k_sec[4 * 6 + 5] = resp.k23
+        k_sec[5 * 6 + 0] = resp.k13
+        k_sec[5 * 6 + 4] = resp.k23
+        k_sec[5 * 6 + 5] = resp.k33
+        if sec.G > 0.0 and sec.J > 0.0:
+            var k_t = sec.G * sec.J
+            f_sec[3] = k_t * delta_t
+            k_sec[3 * 6 + 3] = k_t
+    else:
+        abort(
+            "zeroLengthSection (3D) requires FiberSection3d, ElasticSection3d, or"
+            " AggregatorSection3d"
+        )
 
 
 fn assemble_global_stiffness_typed(
@@ -108,7 +218,7 @@ fn assemble_global_stiffness_typed(
     fiber_section3d_cells: List[FiberCell],
     fiber_section3d_index_by_id: List[Int],
     layered_shell_section_defs: List[LayeredShellSectionDef],
-    mut shell_cache: ShellAssemblyCache,
+    mut shell_cache: SurfaceAssemblyCache,
 ) raises -> List[List[Float64]]:
     var empty_element_loads: List[ElementLoadInput] = []
     var empty_elem_load_offsets: List[Int] = []
@@ -177,7 +287,7 @@ fn assemble_global_stiffness_typed(
     fiber_section3d_cells: List[FiberCell],
     fiber_section3d_index_by_id: List[Int],
     layered_shell_section_defs: List[LayeredShellSectionDef],
-    mut shell_cache: ShellAssemblyCache,
+    mut shell_cache: SurfaceAssemblyCache,
 ) raises -> List[List[Float64]]:
     var total_dofs = node_count * ndf
     var K: List[List[Float64]] = []
@@ -250,7 +360,7 @@ fn assemble_link_stiffness_typed(
     fiber_section3d_cells: List[FiberCell],
     fiber_section3d_index_by_id: List[Int],
     layered_shell_section_defs: List[LayeredShellSectionDef],
-    mut shell_cache: ShellAssemblyCache,
+    mut shell_cache: SurfaceAssemblyCache,
     elem_dof_offsets: List[Int],
     elem_dof_pool: List[Int],
     mut dof_map6: List[Int],
@@ -359,7 +469,7 @@ fn assemble_internal_forces_typed_soa(
     fiber_section3d_cells: List[FiberCell],
     fiber_section3d_index_by_id: List[Int],
     layered_shell_section_defs: List[LayeredShellSectionDef],
-    mut shell_cache: ShellAssemblyCache,
+    mut shell_cache: SurfaceAssemblyCache,
 ) raises -> List[Float64]:
     var empty_element_loads: List[ElementLoadInput] = []
     var empty_elem_load_offsets: List[Int] = []
@@ -474,7 +584,7 @@ fn assemble_internal_forces_typed_soa(
     fiber_section3d_cells: List[FiberCell],
     fiber_section3d_index_by_id: List[Int],
     layered_shell_section_defs: List[LayeredShellSectionDef],
-    mut shell_cache: ShellAssemblyCache,
+    mut shell_cache: SurfaceAssemblyCache,
 ) raises -> List[Float64]:
     var force_beam_column2d_scratch = ForceBeamColumn2dScratch()
     var force_beam_column3d_scratch = Frame3dAssemblyScratch()
@@ -590,9 +700,11 @@ fn assemble_internal_forces_typed_soa(
     fiber_section3d_cells: List[FiberCell],
     fiber_section3d_index_by_id: List[Int],
     layered_shell_section_defs: List[LayeredShellSectionDef],
-    mut shell_cache: ShellAssemblyCache,
+    mut shell_cache: SurfaceAssemblyCache,
     mut force_beam_column2d_scratch: ForceBeamColumn2dScratch,
     mut force_beam_column3d_scratch: Frame3dAssemblyScratch,
+    v: List[Float64] = List[Float64](),
+    dt: Float64 = 0.0,
 ) raises -> List[Float64]:
     var total_dofs = node_count * ndf
     # No tangent is needed here, so element matrices go to a sink that drops
@@ -676,6 +788,8 @@ fn assemble_internal_forces_typed_soa(
         0,
         0,
         runtime_metrics,
+        v,
+        dt,
     )
     return F_int^
 
@@ -706,7 +820,7 @@ fn assemble_internal_forces_typed(
     fiber_section3d_cells: List[FiberCell],
     fiber_section3d_index_by_id: List[Int],
     layered_shell_section_defs: List[LayeredShellSectionDef],
-    mut shell_cache: ShellAssemblyCache,
+    mut shell_cache: SurfaceAssemblyCache,
 ) raises -> List[Float64]:
     var empty_element_loads: List[ElementLoadInput] = []
     var empty_elem_load_offsets: List[Int] = []
@@ -775,7 +889,7 @@ fn assemble_internal_forces_typed(
     fiber_section3d_cells: List[FiberCell],
     fiber_section3d_index_by_id: List[Int],
     layered_shell_section_defs: List[LayeredShellSectionDef],
-    mut shell_cache: ShellAssemblyCache,
+    mut shell_cache: SurfaceAssemblyCache,
 ) raises -> List[Float64]:
     var total_dofs = node_count * ndf
     var K_dummy: List[List[Float64]] = []
@@ -875,7 +989,7 @@ fn assemble_global_stiffness_typed_soa(
     fiber_section3d_cells: List[FiberCell],
     fiber_section3d_index_by_id: List[Int],
     layered_shell_section_defs: List[LayeredShellSectionDef],
-    mut shell_cache: ShellAssemblyCache,
+    mut shell_cache: SurfaceAssemblyCache,
 ) raises -> List[List[Float64]]:
     var force_beam_column2d_scratch = ForceBeamColumn2dScratch()
     var force_beam_column3d_scratch = Frame3dAssemblyScratch()
@@ -993,7 +1107,7 @@ fn assemble_global_stiffness_typed_soa(
     fiber_section3d_cells: List[FiberCell],
     fiber_section3d_index_by_id: List[Int],
     layered_shell_section_defs: List[LayeredShellSectionDef],
-    mut shell_cache: ShellAssemblyCache,
+    mut shell_cache: SurfaceAssemblyCache,
     mut force_beam_column2d_scratch: ForceBeamColumn2dScratch,
     mut force_beam_column3d_scratch: Frame3dAssemblyScratch,
     mut runtime_metrics: RuntimeProfileMetrics,
@@ -1136,7 +1250,7 @@ fn assemble_global_stiffness_and_internal_soa(
     fiber_section3d_cells: List[FiberCell],
     fiber_section3d_index_by_id: List[Int],
     layered_shell_section_defs: List[LayeredShellSectionDef],
-    mut shell_cache: ShellAssemblyCache,
+    mut shell_cache: SurfaceAssemblyCache,
     mut dof_map6: List[Int],
     mut dof_map12: List[Int],
     mut u_elem6: List[Float64],
@@ -1276,7 +1390,7 @@ fn assemble_global_stiffness_and_internal_soa(
     fiber_section3d_cells: List[FiberCell],
     fiber_section3d_index_by_id: List[Int],
     layered_shell_section_defs: List[LayeredShellSectionDef],
-    mut shell_cache: ShellAssemblyCache,
+    mut shell_cache: SurfaceAssemblyCache,
     mut force_beam_column2d_scratch: ForceBeamColumn2dScratch,
     mut force_beam_column3d_scratch: Frame3dAssemblyScratch,
     mut dof_map6: List[Int],
@@ -1417,7 +1531,31 @@ fn assemble_global_stiffness_and_internal_soa(
             frame_assemble_uniaxial,
             t0,
         )
-        if ndf == 2:
+        if elements[e].type == "corotTruss":
+            var dof_count = elements[e].dof_count
+            var k_flat: List[Float64] = []
+            k_flat.resize(dof_count * dof_count, 0.0)
+            _assemble_corot_truss(
+                ndm,
+                dof_count,
+                dof_offset,
+                elem_dof_pool,
+                TrussVector(x2 - x1, y2 - y1, z2 - z1, 0.0),
+                u,
+                List[Float64](),
+                0.0,
+                A,
+                mat_def,
+                state,
+                k_flat,
+                F_int,
+            )
+            for i in range(dof_count):
+                var row = elem_dof_pool[dof_offset + i]
+                for j in range(dof_count):
+                    var col = elem_dof_pool[dof_offset + j]
+                    K[row][col] += k_flat[i * dof_count + j]
+        elif ndf == 2:
             var d0 = elem_dof_pool[dof_offset]
             var d1 = elem_dof_pool[dof_offset + 1]
             var d2 = elem_dof_pool[dof_offset + 2]
@@ -1622,6 +1760,10 @@ fn assemble_global_stiffness_and_internal_soa(
             elem_uniaxial_state_ids,
             K,
             F_int,
+            element_loads=element_loads,
+            elem_load_offsets=elem_load_offsets,
+            elem_load_pool=elem_load_pool,
+            load_scale=load_scale,
         )
         _profile_scope_close(
             do_profile,
@@ -1644,6 +1786,11 @@ fn assemble_global_stiffness_and_internal_soa(
                 Int(perf_counter_ns()) - t_elem_start,
             )
 
+    var zls_f_sec6: List[Float64] = []
+    var zls_k_sec36: List[Float64] = []
+    if len(zero_length_section_elem_indices) > 0:
+        zls_f_sec6.resize(6, 0.0)
+        zls_k_sec36.resize(36, 0.0)
     for idx in range(len(zero_length_section_elem_indices)):
         var e = zero_length_section_elem_indices[idx]
         var t_elem_start = 0
@@ -1657,20 +1804,90 @@ fn assemble_global_stiffness_and_internal_soa(
             t0,
         )
         var dof_offset = elem_dof_offsets[e]
-        var u1 = elem_dof_pool[dof_offset]
-        var r1 = elem_dof_pool[dof_offset + 2]
-        var u2 = elem_dof_pool[dof_offset + 3]
-        var r2 = elem_dof_pool[dof_offset + 5]
-        var delta_axial = u[u2] - u[u1]
-        var delta_curv = u[r2] - u[r1]
-        var sec = sections_by_id[elem_section_ids[e]]
+        var elem_ndof = elem_dof_offsets[e + 1] - dof_offset
+        var sec_id = elem_section_ids[e]
+        var sec = sections_by_id[sec_id]
         var elem_offset = elem_uniaxial_offsets[e]
         var elem_state_count = elem_uniaxial_counts[e]
+        if elem_ndof == 12:
+            var d0 = elem_dof_pool[dof_offset]
+            var d1 = elem_dof_pool[dof_offset + 1]
+            var d2 = elem_dof_pool[dof_offset + 2]
+            var d3 = elem_dof_pool[dof_offset + 3]
+            var d4 = elem_dof_pool[dof_offset + 4]
+            var d5 = elem_dof_pool[dof_offset + 5]
+            var d6 = elem_dof_pool[dof_offset + 6]
+            var d7 = elem_dof_pool[dof_offset + 7]
+            var d8 = elem_dof_pool[dof_offset + 8]
+            var d9 = elem_dof_pool[dof_offset + 9]
+            var d10 = elem_dof_pool[dof_offset + 10]
+            var d11 = elem_dof_pool[dof_offset + 11]
+            _profile_scope_close(
+                do_profile,
+                events,
+                events_need_comma,
+                PROFILE_FRAME_ASSEMBLE_FIBER_GEOMETRY,
+                t0,
+            )
+            _eval_zero_length_section3d(
+                sec,
+                sec_id,
+                uniaxial_defs,
+                uniaxial_state_defs,
+                uniaxial_states,
+                elem_uniaxial_state_ids,
+                elem_offset,
+                elem_state_count,
+                fiber_section3d_index_by_id,
+                fiber_section3d_defs,
+                u[d6] - u[d0],
+                u[d7] - u[d1],
+                u[d8] - u[d2],
+                u[d9] - u[d3],
+                u[d10] - u[d4],
+                u[d11] - u[d5],
+                zls_f_sec6,
+                zls_k_sec36,
+            )
+            for a in range(6):
+                var da1 = elem_dof_pool[dof_offset + a]
+                var da2 = elem_dof_pool[dof_offset + 6 + a]
+                for b in range(6):
+                    var kab = zls_k_sec36[a * 6 + b]
+                    if kab != 0.0:
+                        var db1 = elem_dof_pool[dof_offset + b]
+                        var db2 = elem_dof_pool[dof_offset + 6 + b]
+                        K[da1][db1] += kab
+                        K[da1][db2] -= kab
+                        K[da2][db1] -= kab
+                        K[da2][db2] += kab
+                var fa = zls_f_sec6[a]
+                F_int[da1] -= fa
+                F_int[da2] += fa
+            if runtime_metrics.enabled:
+                _profile_metrics_note_element_timing(
+                    runtime_metrics,
+                    ElementTypeTag.ZeroLengthSection,
+                    Int(perf_counter_ns()) - t_elem_start,
+                )
+            continue
+
+        var u1 = elem_dof_pool[dof_offset]
+        var v1 = elem_dof_pool[dof_offset + 1]
+        var r1 = elem_dof_pool[dof_offset + 2]
+        var u2 = elem_dof_pool[dof_offset + 3]
+        var v2 = elem_dof_pool[dof_offset + 4]
+        var r2 = elem_dof_pool[dof_offset + 5]
+        var delta_axial = u[u2] - u[u1]
+        var delta_shear_y = u[v2] - u[v1]
+        var delta_curv = u[r2] - u[r1]
         var axial_force = 0.0
+        var shear_y = 0.0
         var moment_z = 0.0
         var k11 = 0.0
         var k12 = 0.0
         var k22 = 0.0
+        var k_vy = 0.0
         _profile_scope_close(
             do_profile,
             events,
@@ -1691,7 +1908,14 @@ fn assemble_global_stiffness_and_internal_soa(
                 PROFILE_FRAME_UNIAXIAL_TRIAL_UPDATE,
                 t0,
             )
-            (axial_force, moment_z, k11, k12, k22) = aggregator_section2d_set_trial_from_offset(
+            (
+                axial_force,
+                shear_y,
+                moment_z,
+                k11,
+                k_vy,
+                k22,
+            ) = aggregator_section2d_set_trial_from_offset(
                 sec,
                 uniaxial_defs,
                 uniaxial_state_defs,
@@ -1700,6 +1924,7 @@ fn assemble_global_stiffness_and_internal_soa(
                 elem_offset,
                 elem_state_count,
                 delta_axial,
+                delta_shear_y,
                 delta_curv,
             )
             _profile_scope_close(
@@ -1710,12 +1935,10 @@ fn assemble_global_stiffness_and_internal_soa(
                 t0,
             )
         elif sec.type == "FiberSection2d":
-            var sec_index = fiber_section_index_by_id[elem_section_ids[e]]
+            var sec_index = fiber_section_index_by_id[sec_id]
             if sec_index < 0 or sec_index >= len(fiber_section_defs):
                 abort("zeroLengthSection fiber section not found")
             ref sec_def = fiber_section_defs[sec_index]
-            var elem_offset = elem_uniaxial_offsets[e]
-            var elem_state_count = elem_uniaxial_counts[e]
             if elem_state_count != sec_def.fiber_count:
                 abort("zeroLengthSection fiber state count mismatch")
             _profile_scope_open(
@@ -1787,6 +2010,11 @@ fn assemble_global_stiffness_and_internal_soa(
         K[r2][r1] -= k22
         K[r2][u2] += k12
         K[r2][r2] += k22
+        if k_vy != 0.0:
+            K[v1][v1] += k_vy
+            K[v1][v2] -= k_vy
+            K[v2][v1] -= k_vy
+            K[v2][v2] += k_vy
         _profile_scope_close(
             do_profile,
             events,
@@ -1802,8 +2030,10 @@ fn assemble_global_stiffness_and_internal_soa(
             t0,
         )
         F_int[u1] -= axial_force
+        F_int[v1] -= shear_y
         F_int[r1] -= moment_z
         F_int[u2] += axial_force
+        F_int[v2] += shear_y
         F_int[r2] += moment_z
         _profile_scope_close(
             do_profile,
@@ -1820,6 +2050,7 @@ fn assemble_global_stiffness_and_internal_soa(
             )
 
     _assemble_surface_soa_indices(
+        elements,
         quad_elem_indices,
         shell_elem_indices,
         node_x,
@@ -1865,6 +2096,54 @@ fn _truss_flat_stiffness[
             if (a < dim) != (b < dim):
                 value = -value
             k_flat[a * count + b] = value
+
+
+fn _assemble_corot_truss(
+    ndm: Int,
+    dof_count: Int,
+    dof_offset: Int,
+    elem_dof_pool: List[Int],
+    reference: TrussVector,
+    u: List[Float64],
+    v: List[Float64],
+    dt: Float64,
+    area: Float64,
+    mat_def: UniMaterialDef,
+    mut state: UniMaterialState,
+    mut k_flat: List[Float64],
+    mut F_int: List[Float64],
+):
+    var stride = dof_count // 2
+    var relative_disp = TrussVector(0.0)
+    var relative_vel = TrussVector(0.0)
+    for i in range(ndm):
+        var node_i_dof = elem_dof_pool[dof_offset + i]
+        var node_j_dof = elem_dof_pool[dof_offset + stride + i]
+        relative_disp[i] = u[node_j_dof] - u[node_i_dof]
+        if len(v) == len(u):
+            relative_vel[i] = v[node_j_dof] - v[node_i_dof]
+    var chord = CorotTrussChord(reference, relative_disp)
+    uniaxial_set_trial_strain_rate(
+        mat_def, state, chord.strain(), chord.strain_rate(relative_vel), dt
+    )
+    var force = area * state.sig_t
+    var axial = area * state.tangent_t / chord.initial_length
+    var geometric = force / chord.length
+    for row in range(dof_count):
+        for col in range(dof_count):
+            k_flat[row * dof_count + col] = 0.0
+    for i in range(ndm):
+        var fi = force * chord.direction[i]
+        F_int[elem_dof_pool[dof_offset + i]] -= fi
+        F_int[elem_dof_pool[dof_offset + stride + i]] += fi
+        for j in range(ndm):
+            var kij = (axial - geometric) * chord.direction[i] * chord.direction[j]
+            if i == j:
+                kij += geometric
+            k_flat[i * dof_count + j] = kij
+            k_flat[i * dof_count + stride + j] = -kij
+            k_flat[(i + stride) * dof_count + j] = -kij
+            k_flat[(i + stride) * dof_count + stride + j] = kij
 
 
 fn assemble_global_stiffness_and_internal_native_soa[
@@ -1924,7 +2203,7 @@ fn assemble_global_stiffness_and_internal_native_soa[
     fiber_section3d_cells: List[FiberCell],
     fiber_section3d_index_by_id: List[Int],
     layered_shell_section_defs: List[LayeredShellSectionDef],
-    mut shell_cache: ShellAssemblyCache,
+    mut shell_cache: SurfaceAssemblyCache,
     mut force_beam_column2d_scratch: ForceBeamColumn2dScratch,
     mut force_beam_column3d_scratch: Frame3dAssemblyScratch,
     mut dof_map6: List[Int],
@@ -1939,6 +2218,10 @@ fn assemble_global_stiffness_and_internal_native_soa[
     frame_assemble_uniaxial: Int,
     frame_assemble_fiber: Int,
     mut runtime_metrics: RuntimeProfileMetrics,
+    v: List[Float64] = List[Float64](),
+    dt: Float64 = 0.0,
+    initial_wall_tangent: Bool = False,
+    initial_frame_tangent: Bool = False,
 ) raises:
     _zero_vector(F_int)
     backend.zero_matrix()
@@ -1960,7 +2243,7 @@ fn assemble_global_stiffness_and_internal_native_soa[
         u_elem6.resize(6, 0.0)
     # Flat element-matrix scratch reused by the truss and zeroLengthSection loops.
     var k_flat: List[Float64] = []
-    k_flat.resize(36, 0.0)
+    k_flat.resize(144, 0.0)
 
     _assemble_frame2d_native_soa_indices(
         frame2d_elem_indices,
@@ -2006,6 +2289,7 @@ fn assemble_global_stiffness_and_internal_native_soa[
         events_need_comma,
         frame_assemble_fiber,
         runtime_metrics,
+        initial_frame_tangent,
     )
 
     _assemble_frame3d_native_soa_indices(
@@ -2082,7 +2366,25 @@ fn assemble_global_stiffness_and_internal_native_soa[
             frame_assemble_uniaxial,
             t0,
         )
-        if ndf == 2:
+        if elements[e].type == "corotTruss":
+            var dof_count = elements[e].dof_count
+            _assemble_corot_truss(
+                ndm,
+                dof_count,
+                dof_offset,
+                elem_dof_pool,
+                TrussVector(x2 - x1, y2 - y1, z2 - z1, 0.0),
+                u,
+                v,
+                dt,
+                A,
+                mat_def,
+                state,
+                k_flat,
+                F_int,
+            )
+            backend.add_element_matrix_flat(e, elem_free_pool, free_offset, dof_count, k_flat)
+        elif ndf == 2:
             var d0 = elem_dof_pool[dof_offset]
             var d1 = elem_dof_pool[dof_offset + 1]
             var d2 = elem_dof_pool[dof_offset + 2]
@@ -2270,6 +2572,13 @@ fn assemble_global_stiffness_and_internal_native_soa[
             elem_free_pool,
             backend,
             F_int,
+            v,
+            dt,
+            initial_wall_tangent,
+            element_loads,
+            elem_load_offsets,
+            elem_load_pool,
+            load_scale,
         )
         _profile_scope_close(
             do_profile,
@@ -2292,6 +2601,11 @@ fn assemble_global_stiffness_and_internal_native_soa[
                 Int(perf_counter_ns()) - t_elem_start,
             )
 
+    var zls_f_sec6: List[Float64] = []
+    var zls_k_sec36: List[Float64] = []
+    if len(zero_length_section_elem_indices) > 0:
+        zls_f_sec6.resize(6, 0.0)
+        zls_k_sec36.resize(36, 0.0)
     for idx in range(len(zero_length_section_elem_indices)):
         var e = zero_length_section_elem_indices[idx]
         var t_elem_start = 0
@@ -2305,21 +2619,90 @@ fn assemble_global_stiffness_and_internal_native_soa[
             t0,
         )
         var dof_offset = elem_dof_offsets[e]
+        var elem_ndof = elem_dof_offsets[e + 1] - dof_offset
         var free_offset = elem_free_offsets[e]
-        var u1 = elem_dof_pool[dof_offset]
-        var r1 = elem_dof_pool[dof_offset + 2]
-        var u2 = elem_dof_pool[dof_offset + 3]
-        var r2 = elem_dof_pool[dof_offset + 5]
-        var delta_axial = u[u2] - u[u1]
-        var delta_curv = u[r2] - u[r1]
-        var sec = sections_by_id[elem_section_ids[e]]
+        var sec_id = elem_section_ids[e]
+        var sec = sections_by_id[sec_id]
         var elem_offset = elem_uniaxial_offsets[e]
         var elem_state_count = elem_uniaxial_counts[e]
+        if elem_ndof == 12:
+            var d0 = elem_dof_pool[dof_offset]
+            var d1 = elem_dof_pool[dof_offset + 1]
+            var d2 = elem_dof_pool[dof_offset + 2]
+            var d3 = elem_dof_pool[dof_offset + 3]
+            var d4 = elem_dof_pool[dof_offset + 4]
+            var d5 = elem_dof_pool[dof_offset + 5]
+            var d6 = elem_dof_pool[dof_offset + 6]
+            var d7 = elem_dof_pool[dof_offset + 7]
+            var d8 = elem_dof_pool[dof_offset + 8]
+            var d9 = elem_dof_pool[dof_offset + 9]
+            var d10 = elem_dof_pool[dof_offset + 10]
+            var d11 = elem_dof_pool[dof_offset + 11]
+            _profile_scope_close(
+                do_profile,
+                events,
+                events_need_comma,
+                PROFILE_FRAME_ASSEMBLE_FIBER_GEOMETRY,
+                t0,
+            )
+            _eval_zero_length_section3d(
+                sec,
+                sec_id,
+                uniaxial_defs,
+                uniaxial_state_defs,
+                uniaxial_states,
+                elem_uniaxial_state_ids,
+                elem_offset,
+                elem_state_count,
+                fiber_section3d_index_by_id,
+                fiber_section3d_defs,
+                u[d6] - u[d0],
+                u[d7] - u[d1],
+                u[d8] - u[d2],
+                u[d9] - u[d3],
+                u[d10] - u[d4],
+                u[d11] - u[d5],
+                zls_f_sec6,
+                zls_k_sec36,
+            )
+            for a in range(6):
+                for b in range(6):
+                    var kab = zls_k_sec36[a * 6 + b]
+                    k_flat[a * 12 + b] = kab
+                    k_flat[a * 12 + (b + 6)] = -kab
+                    k_flat[(a + 6) * 12 + b] = -kab
+                    k_flat[(a + 6) * 12 + (b + 6)] = kab
+            backend.add_element_matrix_flat(e, elem_free_pool, free_offset, 12, k_flat)
+            for a in range(6):
+                var da1 = elem_dof_pool[dof_offset + a]
+                var da2 = elem_dof_pool[dof_offset + 6 + a]
+                var fa = zls_f_sec6[a]
+                F_int[da1] -= fa
+                F_int[da2] += fa
+            if runtime_metrics.enabled:
+                _profile_metrics_note_element_timing(
+                    runtime_metrics,
+                    ElementTypeTag.ZeroLengthSection,
+                    Int(perf_counter_ns()) - t_elem_start,
+                )
+            continue
+
+        var u1 = elem_dof_pool[dof_offset]
+        var v1 = elem_dof_pool[dof_offset + 1]
+        var r1 = elem_dof_pool[dof_offset + 2]
+        var u2 = elem_dof_pool[dof_offset + 3]
+        var v2 = elem_dof_pool[dof_offset + 4]
+        var r2 = elem_dof_pool[dof_offset + 5]
+        var delta_axial = u[u2] - u[u1]
+        var delta_shear_y = u[v2] - u[v1]
+        var delta_curv = u[r2] - u[r1]
         var axial_force = 0.0
+        var shear_y = 0.0
         var moment_z = 0.0
         var k11 = 0.0
         var k12 = 0.0
         var k22 = 0.0
+        var k_vy = 0.0
         _profile_scope_close(
             do_profile,
             events,
@@ -2340,7 +2723,14 @@ fn assemble_global_stiffness_and_internal_native_soa[
                 PROFILE_FRAME_UNIAXIAL_TRIAL_UPDATE,
                 t0,
             )
-            (axial_force, moment_z, k11, k12, k22) = aggregator_section2d_set_trial_from_offset(
+            (
+                axial_force,
+                shear_y,
+                moment_z,
+                k11,
+                k_vy,
+                k22,
+            ) = aggregator_section2d_set_trial_from_offset(
                 sec,
                 uniaxial_defs,
                 uniaxial_state_defs,
@@ -2349,6 +2739,7 @@ fn assemble_global_stiffness_and_internal_native_soa[
                 elem_offset,
                 elem_state_count,
                 delta_axial,
+                delta_shear_y,
                 delta_curv,
             )
             _profile_scope_close(
@@ -2359,7 +2750,7 @@ fn assemble_global_stiffness_and_internal_native_soa[
                 t0,
             )
         elif sec.type == "FiberSection2d":
-            var sec_index = fiber_section_index_by_id[elem_section_ids[e]]
+            var sec_index = fiber_section_index_by_id[sec_id]
             if sec_index < 0 or sec_index >= len(fiber_section_defs):
                 abort("zeroLengthSection fiber section not found")
             ref sec_def = fiber_section_defs[sec_index]
@@ -2412,13 +2803,14 @@ fn assemble_global_stiffness_and_internal_native_soa[
                 " AggregatorSection2d"
             )
         var zls_row0 = SIMD[DType.float64, 8](k11, 0.0, k12, -k11, 0.0, -k12, 0.0, 0.0)
+        var zls_row1 = SIMD[DType.float64, 8](0.0, k_vy, 0.0, 0.0, -k_vy, 0.0, 0.0, 0.0)
         var zls_row2 = SIMD[DType.float64, 8](k12, 0.0, k22, -k12, 0.0, -k22, 0.0, 0.0)
         for b in range(6):
             k_flat[0 * 6 + b] = zls_row0[b]
-            k_flat[1 * 6 + b] = 0.0
+            k_flat[1 * 6 + b] = zls_row1[b]
             k_flat[2 * 6 + b] = zls_row2[b]
             k_flat[3 * 6 + b] = -zls_row0[b]
-            k_flat[4 * 6 + b] = 0.0
+            k_flat[4 * 6 + b] = -zls_row1[b]
             k_flat[5 * 6 + b] = -zls_row2[b]
         _profile_scope_open(
             do_profile,
@@ -2443,8 +2835,10 @@ fn assemble_global_stiffness_and_internal_native_soa[
             t0,
         )
         F_int[u1] -= axial_force
+        F_int[v1] -= shear_y
         F_int[r1] -= moment_z
         F_int[u2] += axial_force
+        F_int[v2] += shear_y
         F_int[r2] += moment_z
         _profile_scope_close(
             do_profile,
@@ -2461,6 +2855,7 @@ fn assemble_global_stiffness_and_internal_native_soa[
             )
 
     _assemble_surface_native_soa_indices(
+        elements,
         quad_elem_indices,
         shell_elem_indices,
         node_x,
@@ -2511,7 +2906,7 @@ fn assemble_global_stiffness_and_internal(
     fiber_section3d_cells: List[FiberCell],
     fiber_section3d_index_by_id: List[Int],
     layered_shell_section_defs: List[LayeredShellSectionDef],
-    mut shell_cache: ShellAssemblyCache,
+    mut shell_cache: SurfaceAssemblyCache,
     mut K: List[List[Float64]],
     mut F_int: List[Float64],
 ) raises:
@@ -2584,7 +2979,7 @@ fn assemble_global_stiffness_and_internal(
     fiber_section3d_cells: List[FiberCell],
     fiber_section3d_index_by_id: List[Int],
     layered_shell_section_defs: List[LayeredShellSectionDef],
-    mut shell_cache: ShellAssemblyCache,
+    mut shell_cache: SurfaceAssemblyCache,
     mut K: List[List[Float64]],
     mut F_int: List[Float64],
 ) raises:
@@ -2661,7 +3056,7 @@ fn assemble_global_stiffness_and_internal(
     fiber_section3d_cells: List[FiberCell],
     fiber_section3d_index_by_id: List[Int],
     layered_shell_section_defs: List[LayeredShellSectionDef],
-    mut shell_cache: ShellAssemblyCache,
+    mut shell_cache: SurfaceAssemblyCache,
     elem_dof_offsets: List[Int],
     elem_dof_pool: List[Int],
     mut dof_map6: List[Int],
@@ -2744,7 +3139,7 @@ fn assemble_global_stiffness_and_internal(
     fiber_section3d_cells: List[FiberCell],
     fiber_section3d_index_by_id: List[Int],
     layered_shell_section_defs: List[LayeredShellSectionDef],
-    mut shell_cache: ShellAssemblyCache,
+    mut shell_cache: SurfaceAssemblyCache,
     elem_dof_offsets: List[Int],
     elem_dof_pool: List[Int],
     mut dof_map6: List[Int],
@@ -2825,7 +3220,7 @@ fn _assemble_global_stiffness_and_internal_filtered(
     fiber_section3d_cells: List[FiberCell],
     fiber_section3d_index_by_id: List[Int],
     layered_shell_section_defs: List[LayeredShellSectionDef],
-    mut shell_cache: ShellAssemblyCache,
+    mut shell_cache: SurfaceAssemblyCache,
     elem_dof_offsets: List[Int],
     elem_dof_pool: List[Int],
     mut dof_map6: List[Int],
@@ -3034,7 +3429,12 @@ fn _assemble_global_stiffness_and_internal_filtered(
                 K,
                 F_int,
             )
-        elif elem_type == ElementTypeTag.TwoNodeLink:
+        elif (
+            elem_type == ElementTypeTag.TwoNodeLink
+            or elem_type == ElementTypeTag.MVLEM
+            or elem_type == ElementTypeTag.SFIMVLEM
+            or elem_type == ElementTypeTag.CatenaryCable
+        ):
             _assemble_two_node_link_element(
                 e,
                 elem,
@@ -3050,8 +3450,71 @@ fn _assemble_global_stiffness_and_internal_filtered(
                 elem_uniaxial_state_ids,
                 K,
                 F_int,
+                element_loads=element_loads,
+                elem_load_offsets=elem_load_offsets,
+                elem_load_pool=elem_load_pool,
+                load_scale=load_scale,
             )
         elif elem_type == ElementTypeTag.ZeroLengthSection:
+            var sec = sections_by_id[elem.section]
+            var elem_offset = elem_uniaxial_offsets[e]
+            var elem_state_count = elem_uniaxial_counts[e]
+            if elem.dof_count == 12:
+                var d = [
+                    _elem_dof(elem, 0),
+                    _elem_dof(elem, 1),
+                    _elem_dof(elem, 2),
+                    _elem_dof(elem, 3),
+                    _elem_dof(elem, 4),
+                    _elem_dof(elem, 5),
+                    _elem_dof(elem, 6),
+                    _elem_dof(elem, 7),
+                    _elem_dof(elem, 8),
+                    _elem_dof(elem, 9),
+                    _elem_dof(elem, 10),
+                    _elem_dof(elem, 11),
+                ]
+                var f_sec6: List[Float64] = []
+                var k_sec36: List[Float64] = []
+                f_sec6.resize(6, 0.0)
+                k_sec36.resize(36, 0.0)
+                _eval_zero_length_section3d(
+                    sec,
+                    elem.section,
+                    uniaxial_defs,
+                    uniaxial_state_defs,
+                    uniaxial_states,
+                    elem_uniaxial_state_ids,
+                    elem_offset,
+                    elem_state_count,
+                    fiber_section3d_index_by_id,
+                    fiber_section3d_defs,
+                    u[d[6]] - u[d[0]],
+                    u[d[7]] - u[d[1]],
+                    u[d[8]] - u[d[2]],
+                    u[d[9]] - u[d[3]],
+                    u[d[10]] - u[d[4]],
+                    u[d[11]] - u[d[5]],
+                    f_sec6,
+                    k_sec36,
+                )
+                for a in range(6):
+                    var da1 = d[a]
+                    var da2 = d[6 + a]
+                    for b in range(6):
+                        var kab = k_sec36[a * 6 + b]
+                        if kab != 0.0:
+                            var db1 = d[b]
+                            var db2 = d[6 + b]
+                            K[da1][db1] += kab
+                            K[da1][db2] -= kab
+                            K[da2][db1] -= kab
+                            K[da2][db2] += kab
+                    var fa = f_sec6[a]
+                    F_int[da1] -= fa
+                    F_int[da2] += fa
+                continue
+
             var dof_map = [
                 _elem_dof(elem, 0),
                 _elem_dof(elem, 1),
@@ -3061,23 +3524,30 @@ fn _assemble_global_stiffness_and_internal_filtered(
                 _elem_dof(elem, 5),
             ]
             var delta_axial = u[dof_map[3]] - u[dof_map[0]]
+            var delta_shear_y = u[dof_map[4]] - u[dof_map[1]]
             var delta_curv = u[dof_map[5]] - u[dof_map[2]]
 
-            var sec = sections_by_id[elem.section]
-            var elem_offset = elem_uniaxial_offsets[e]
-            var elem_state_count = elem_uniaxial_counts[e]
             var axial_force = 0.0
+            var shear_y = 0.0
             var moment_z = 0.0
             var k11 = 0.0
             var k12 = 0.0
             var k22 = 0.0
+            var k_vy = 0.0
             if sec.type == "ElasticSection2d":
                 k11 = sec.E * sec.A
                 k22 = sec.E * sec.I
                 axial_force = k11 * delta_axial
                 moment_z = k22 * delta_curv
             elif sec.type == "AggregatorSection2d":
-                (axial_force, moment_z, k11, k12, k22) = aggregator_section2d_set_trial_from_offset(
+                (
+                    axial_force,
+                    shear_y,
+                    moment_z,
+                    k11,
+                    k_vy,
+                    k22,
+                ) = aggregator_section2d_set_trial_from_offset(
                     sec,
                     uniaxial_defs,
                     uniaxial_state_defs,
@@ -3086,6 +3556,7 @@ fn _assemble_global_stiffness_and_internal_filtered(
                     elem_offset,
                     elem_state_count,
                     delta_axial,
+                    delta_shear_y,
                     delta_curv,
                 )
             elif sec.type == "FiberSection2d":
@@ -3093,8 +3564,6 @@ fn _assemble_global_stiffness_and_internal_filtered(
                 if sec_index < 0 or sec_index >= len(fiber_section_defs):
                     abort("zeroLengthSection fiber section not found")
                 ref sec_def = fiber_section_defs[sec_index]
-                var elem_offset = elem_uniaxial_offsets[e]
-                var elem_state_count = elem_uniaxial_counts[e]
                 if elem_state_count != sec_def.fiber_count:
                     abort("zeroLengthSection fiber state count mismatch")
                 if elem_offset < 0 or elem_offset + elem_state_count > len(elem_uniaxial_state_ids):
@@ -3119,8 +3588,10 @@ fn _assemble_global_stiffness_and_internal_filtered(
                 )
 
             var u1 = dof_map[0]
+            var v1 = dof_map[1]
             var r1 = dof_map[2]
             var u2 = dof_map[3]
+            var v2 = dof_map[4]
             var r2 = dof_map[5]
 
             K[u1][u1] += k11
@@ -3143,11 +3614,28 @@ fn _assemble_global_stiffness_and_internal_filtered(
             K[r2][u2] += k12
             K[r2][r2] += k22
 
+            if k_vy != 0.0:
+                K[v1][v1] += k_vy
+                K[v1][v2] -= k_vy
+                K[v2][v1] -= k_vy
+                K[v2][v2] += k_vy
+
             F_int[u1] -= axial_force
+            F_int[v1] -= shear_y
             F_int[r1] -= moment_z
             F_int[u2] += axial_force
+            F_int[v2] += shear_y
             F_int[r2] += moment_z
-        elif elem_type == ElementTypeTag.FourNodeQuad or elem_type == ElementTypeTag.Shell:
+        elif elem_type == ElementTypeTag.Continuum:
+            shell_cache.continuum.assemble_dense_element(e, u, K, F_int)
+        elif (
+            elem_type == ElementTypeTag.FourNodeQuad
+            or elem_type == ElementTypeTag.BeamContact2D
+            or elem_type == ElementTypeTag.QuadUP
+            or elem_type == ElementTypeTag.SSPBrickUP
+            or elem_type == ElementTypeTag.Tri31
+            or elem_type == ElementTypeTag.Shell
+        ):
             _assemble_surface_element(
                 e,
                 elem,

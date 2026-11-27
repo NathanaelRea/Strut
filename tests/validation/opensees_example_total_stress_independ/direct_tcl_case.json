@@ -1,0 +1,10 @@
+{
+  "name": "opensees_example_total_stress_independ",
+  "entry_tcl": "tests/fixtures/opensees/OpenSeesExamplesPractical/site_response_analysis_of_a_layered_soil_column_total_stress_analysis/siteResponseAnalysis/freeFieldIndepend.tcl",
+  "tcl_source_version": "3.7.1",
+  "enabled": true,
+  "benchmark_size": "large",
+  "source_url": "https://opensees.berkeley.edu/wiki/index.php?title=Site_Response_Analysis_of_a_Layered_Soil_Column_(Total_Stress_Analysis)",
+  "reference": "Site Response Analysis of a Layered Soil Column, Chris McGann, HyungSuk Shin, Pedro Arduino, and Peter Mackenzie-Helnwein, University of Washington.",
+  "recorder_sample_dt": 0.1
+}

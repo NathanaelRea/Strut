@@ -59,13 +59,19 @@ fn _json_int_key(
 
 fn _is_supported_material_type(type_name: String) -> Bool:
     return (
-        type_name == "Elastic"
-        or type_name == "Steel01"
-        or type_name == "Concrete01"
-        or type_name == "Steel02"
-        or type_name == "Concrete02"
+        type_name == "FSAM"
+        or _is_supported_uniaxial_material(type_name)
         or type_name == "ElasticIsotropic"
+        or type_name == "ElasticCrossAnisotropic"
+        or type_name == "DruckerPrager"
+        or type_name == "PressureIndependMultiYield"
+        or type_name == "PressureDependMultiYield"
+        or type_name == "PressureDependMultiYield02"
+        or type_name == "InitialStateAnalysisWrapper"
+        or type_name == "ContactMaterial2D"
+        or type_name == "Viscous"
         or type_name == "PlateFromPlaneStress"
+        or type_name == "PlateFiber"
         or type_name == "PlateRebar"
         or type_name == "PlaneStressUserMaterial"
         or type_name == "ConcreteS"
@@ -79,7 +85,10 @@ fn _is_supported_section_type(type_name: String) -> Bool:
         or type_name == "FiberSection2d"
         or type_name == "FiberSection3d"
         or type_name == "AggregatorSection2d"
+        or type_name == "AggregatorSection3d"
+        or type_name == "HingeRadauSection2d"
         or type_name == "ElasticMembranePlateSection"
+        or type_name == "PlateFiber"
         or type_name == "LayeredShellSection"
     )
 
@@ -87,10 +96,29 @@ fn _is_supported_section_type(type_name: String) -> Bool:
 fn _is_supported_uniaxial_material(type_name: String) -> Bool:
     return (
         type_name == "Elastic"
+        or type_name == "ElasticPP"
+        or type_name == "ElasticBilin"
+        or type_name == "MinMax"
+        or type_name == "Ratchet"
         or type_name == "Steel01"
+        or type_name == "Steel01Thermal"
         or type_name == "Concrete01"
         or type_name == "Steel02"
         or type_name == "Concrete02"
+        or type_name == "Bilin"
+        or type_name == "ModIMKPeakOriented"
+        or type_name == "Hysteretic"
+        or type_name == "PySimple1"
+        or type_name == "TzSimple1"
+        or type_name == "QzSimple1"
+        or type_name == "ViscousDamper"
+        or type_name == "Fatigue"
+        or type_name == "HystereticSmooth"
+        or type_name == "HystereticAsym"
+        or type_name == "ENT"
+        or type_name == "Parallel"
+        or type_name == "ConcreteCM"
+        or type_name == "SteelMPF"
     )
 
 
@@ -326,7 +354,7 @@ fn _precheck_layered_shell_sections(
                         "PlateRebar base material must be a supported uniaxial material"
                     )
                 continue
-            if material_type == "ElasticIsotropic":
+            if material_type == "ElasticIsotropic" or material_type == "PlateFiber":
                 continue
             if material_type == "PlaneStressUserMaterial":
                 _precheck_abort("PlaneStressUserMaterial requires the unreleased PSUMAT")
@@ -398,9 +426,10 @@ fn precheck_case_input_native(doc: JsonDocument, include_recorders: Bool) raises
         if (
             constraints_tag != ConstraintHandlerTag.Transformation
             and constraints_tag != ConstraintHandlerTag.Lagrange
+            and constraints_tag != ConstraintHandlerTag.Penalty
         ):
             _precheck_abort(
-                "mp_constraints require analysis.constraints=Transformation or Lagrange"
+                "mp_constraints require analysis.constraints=Transformation, Lagrange, or Penalty"
             )
         for i in range(doc.node_len(mpc_index)):
             var constraint_index = doc.array_item(mpc_index, i)

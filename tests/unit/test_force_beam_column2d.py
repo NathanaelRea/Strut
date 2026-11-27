@@ -346,6 +346,89 @@ def test_force_beam_column2d_displacement_control_broyden_matches_newton_on_elas
             assert got_row == pytest.approx(ref_row, abs=1e-12, rel=1e-12)
 
 
+def test_displacement_control_broyden_solves_nonlinear_correction(tmp_path: Path):
+    case = _base_force_beam_case(
+        {
+            "id": 1,
+            "type": "Steel01",
+            "params": {"Fy": 2.5e8, "E0": 2.0e11, "b": 0.02},
+        }
+    )
+    case["analysis"] = {
+        "type": "static_nonlinear",
+        "algorithm": "Broyden",
+        "algorithm_options": {"max_iters": 8},
+        "steps": 3,
+        "max_iters": 30,
+        "tol": 1e-10,
+        "integrator": {
+            "type": "DisplacementControl",
+            "node": 2,
+            "dof": 2,
+            "targets": [0.01, 0.045, -0.02],
+        },
+    }
+    case["recorders"] = [
+        {"type": "node_displacement", "nodes": [2], "dofs": [2], "output": "disp"}
+    ]
+    _run_strut_case(case, tmp_path)
+    assert [row[0] for row in _read_rows(tmp_path / "disp_node2.out")] == pytest.approx(
+        [0.01, 0.045, -0.02]
+    )
+
+
+def test_displacement_control_energy_incr_checks_updated_equilibrium(tmp_path: Path):
+    case = _base_force_beam_case(
+        {
+            "id": 1,
+            "type": "Steel01",
+            "params": {"Fy": 2.5e8, "E0": 2.0e11, "b": 0.02},
+        }
+    )
+    case["analysis"] = {
+        "type": "static_nonlinear",
+        "algorithm": "Newton",
+        "test_type": "EnergyIncr",
+        "tol": 1e-8,
+        "integrator": {
+            "type": "DisplacementControl",
+            "node": 2,
+            "dof": 2,
+            "targets": [0.045],
+        },
+    }
+    case["recorders"] = [
+        {
+            "type": "section_force",
+            "elements": [1],
+            "section": 3,
+            "output": "tip_section",
+        }
+    ]
+    _run_strut_case(case, tmp_path)
+    [(axial, moment)] = _read_rows(tmp_path / "tip_section_ele1_sec3.out")
+    assert axial == pytest.approx(0.0, abs=1e-6)
+    assert moment == pytest.approx(0.0, abs=1e-6)
+
+
+def test_force_beam_column2d_local_recorder_uses_loaded_equilibrium(tmp_path: Path):
+    case = _base_force_beam_case({"id": 1, "type": "Elastic", "params": {"E": 3.0e10}})
+    case["loads"] = []
+    case["element_loads"] = [{"element": 1, "type": "beamUniform", "wy": -1000.0}]
+    case["analysis"] = {"type": "static_nonlinear", "steps": 1}
+    case["recorders"] = [
+        {"type": "element_local_force", "elements": [1], "output": "local"},
+        {"type": "section_force", "elements": [1], "section": 3, "output": "tip"},
+    ]
+
+    _run_strut_case(case, tmp_path)
+
+    [local] = _read_rows(tmp_path / "local_ele1.out")
+    assert local == pytest.approx([0, 3000, 4500, 0, 0, 0], abs=1e-6)
+    [tip] = _read_rows(tmp_path / "tip_ele1_sec3.out")
+    assert tip == pytest.approx([0, 0], abs=1e-6)
+
+
 def test_force_beam_column2d_section_recorders_emit_force_and_deformation():
     case_data = _base_force_beam_case(
         {"id": 1, "type": "Elastic", "params": {"E": 30000000000.0}}

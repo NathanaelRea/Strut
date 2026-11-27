@@ -7,7 +7,7 @@ from solver.assembly.frame3d_scratch import (
     Frame3dAssemblyScratch,
     reset_frame3d_assembly_scratch,
 )
-from solver.assembly.shell_cache import ShellAssemblyCache
+from solver.assembly.surface_cache import SurfaceAssemblyCache
 from solver.run_case.input_types import ElementLoadInput
 from materials import UniMaterialDef, UniMaterialState
 from python import Python
@@ -109,7 +109,7 @@ fn run_static_linear(
     fiber_section3d_cells: List[FiberCell],
     fiber_section3d_index_by_id: List[Int],
     layered_shell_section_defs: List[LayeredShellSectionDef],
-    mut shell_cache: ShellAssemblyCache,
+    mut shell_cache: SurfaceAssemblyCache,
     analysis: AnalysisInput,
     free_index: List[Int],
     free: List[Int],
@@ -204,7 +204,7 @@ fn run_static_linear(
         analysis.system_tag == AnalysisSystemTag.BandGeneral and not has_transformation_mpc
     )
     if use_bandgeneral_banded:
-        bw = estimate_bandwidth_typed(typed_elements, free_index)
+        bw = estimate_bandwidth_typed(elem_dof_offsets, elem_dof_pool, free_index)
         if bw > free_count - 1:
             bw = free_count - 1
         if runtime_metrics.enabled:

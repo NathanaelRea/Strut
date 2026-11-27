@@ -20,6 +20,9 @@ and the effective Newmark matrix is
 """
 
 from collections import List
+
+from solver.run_case.analysis.penalty import PenaltyConstraints
+from solver.run_case.analysis.support_motion import SupportKinematics
 from os import abort
 
 from solver.run_case.linear_solver_backend import (
@@ -45,9 +48,21 @@ struct TransientSparseMatrices(Movable):
     var mass: List[Float64]
     var mass_rayleigh: List[Float64]
     var c_zero_length: List[Float64]
+    var c_coupled: List[Float64]
+    var penalty: PenaltyConstraints
+    var supports: SupportKinematics
+    var support_k_current: List[Float64]
+    var support_k_init: List[Float64]
+    var support_k_comm: List[Float64]
+    var support_mass: List[Float64]
+    var support_mass_rayleigh: List[Float64]
+    var regional_damping: List[Float64]
+    var modal_damping: List[Float64]
     var k_zero_length_damp: List[Float64]
     var k_link_all: List[Float64]
     var k_link_rayleigh: List[Float64]
+    # C, formed once by `freeze_damping` for analyses whose matrices stay fixed.
+    var frozen_damping: List[Float64]
     # Scratch.
     var k_effective: List[Float64]
     var damping_force: List[Float64]
@@ -58,6 +73,7 @@ struct TransientSparseMatrices(Movable):
     var beta_k_init: Float64
     var beta_k_comm: Float64
     var use_k_damp: Bool
+    var use_current_k_damp: Bool
     var use_k_init_damp: Bool
     var use_k_comm_damp: Bool
     var has_c_zero_length: Bool
@@ -76,9 +92,20 @@ struct TransientSparseMatrices(Movable):
         self.mass = []
         self.mass_rayleigh = []
         self.c_zero_length = []
+        self.c_coupled = []
+        self.penalty = PenaltyConstraints()
+        self.supports = SupportKinematics([], [], [], 0, [])
+        self.support_k_current = []
+        self.support_k_init = []
+        self.support_k_comm = []
+        self.support_mass = []
+        self.support_mass_rayleigh = []
+        self.regional_damping = []
+        self.modal_damping = []
         self.k_zero_length_damp = []
         self.k_link_all = []
         self.k_link_rayleigh = []
+        self.frozen_damping = []
         self.k_effective = []
         self.damping_force = []
         self.inertia_force = []
@@ -87,6 +114,7 @@ struct TransientSparseMatrices(Movable):
         self.beta_k_init = 0.0
         self.beta_k_comm = 0.0
         self.use_k_damp = False
+        self.use_current_k_damp = False
         self.use_k_init_damp = False
         self.use_k_comm_damp = False
         self.has_c_zero_length = False
@@ -99,12 +127,14 @@ struct TransientSparseMatrices(Movable):
         return self.pattern.nnz()
 
     @always_inline
-    fn damping_value(self, s: Int) -> Float64:
+    fn damping_value(self, s: Int, use_trial_stiffness: Bool = False) -> Float64:
         var c = 0.0
         if self.alpha_m != 0.0:
             c = self.alpha_m * self.mass_rayleigh[s]
         if self.beta_k != 0.0:
-            if self.use_k_damp:
+            if use_trial_stiffness and self.use_current_k_damp:
+                c += self.beta_k * self.k_current_damp[s]
+            elif self.use_k_damp:
                 c += self.beta_k * self.k_damp[s]
             else:
                 c += self.beta_k * self.k_tangent[s]
@@ -120,6 +150,12 @@ struct TransientSparseMatrices(Movable):
                 c += self.beta_k_comm * self.k_comm[s]
         if self.has_c_zero_length:
             c += self.c_zero_length[s]
+        if len(self.c_coupled) > 0:
+            c += self.c_coupled[s]
+        if len(self.regional_damping) > 0:
+            c += self.regional_damping[s]
+        if len(self.modal_damping) > 0:
+            c += self.modal_damping[s]
         return c
 
     fn compute_damping_force(mut self, v: List[Float64]):
@@ -132,8 +168,43 @@ struct TransientSparseMatrices(Movable):
         for i in range(n):
             var sum = 0.0
             for s in range(self.pattern.row_start[i], self.pattern.row_start[i + 1]):
-                sum += self.damping_value(s) * v[self.pattern.col_index[s]]
+                sum += self.damping_value(s, True) * v[self.pattern.col_index[s]]
             self.damping_force[i] = sum
+
+    fn freeze_damping(mut self):
+        """Form C slot-wise once, for `newmark_residual_frozen`."""
+        var nnz = self.pattern.nnz()
+        self.frozen_damping.resize(nnz, 0.0)
+        for s in range(nnz):
+            self.frozen_damping[s] = self.damping_value(
+                s, True
+            ) if self.has_effective_damping else 0.0
+
+    fn newmark_residual_frozen(
+        self,
+        free: List[Int],
+        F_ext: List[Float64],
+        u: List[Float64],
+        v: List[Float64],
+        a: List[Float64],
+        mut residual: List[Float64],
+    ):
+        """residual = F_ext[free] - K u - C v - M a in one pass over the pattern.
+
+        The same result as `compute_inertia_force` and `compute_damping_force`
+        followed by a K u product, but it reads the pattern once, and C comes
+        from `freeze_damping` instead of being rebuilt per slot.
+        """
+        for i in range(self.pattern.n):
+            var resisting = 0.0
+            var damping = 0.0
+            var inertia = 0.0
+            for s in range(self.pattern.row_start[i], self.pattern.row_start[i + 1]):
+                var col = self.pattern.col_index[s]
+                resisting += self.k_tangent[s] * u[col]
+                damping += self.frozen_damping[s] * v[col]
+                inertia += self.mass[s] * a[col]
+            residual[i] = F_ext[free[i]] - resisting - damping - inertia
 
     fn compute_inertia_force(mut self, a: List[Float64]):
         """inertia_force = M a."""
@@ -158,6 +229,8 @@ struct TransientSparseMatrices(Movable):
             abort("transient sparse matrices not initialized")
         for s in range(nnz):
             var value = self.k_tangent[s]
+            if len(self.penalty.stiffness) > 0:
+                value += self.penalty.stiffness[s]
             if include_zero_length_damp:
                 value += self.k_zero_length_damp[s]
             if self.has_effective_damping:

@@ -1,0 +1,1031 @@
+####################################################################
+#  This file was made using the nineFour2Dup problem type in GiD.  #
+#  Created by:  Chris McGann and Pedro Arduino                     #
+#              -University of Washington-                          #
+####################################################################
+
+wipe
+
+#-----------------------------------------------------------------------------------------
+#  1. CREATE PORE PRESSURE NODES AND FIXITIES
+#-----------------------------------------------------------------------------------------
+model BasicBuilder -ndm 2 -ndf 3
+
+# define pore pressure nodes:
+@PRESSURE_NODES@
+
+set ppNodesInfo [open nodeInfo.dat w]
+@PORE_PRESSURE_INFO@
+close $ppNodesInfo
+puts "Finished creating all -ndf 3 nodes..."
+
+# define fixities for pore pressure nodes:
+fix     1   0   1   0
+fix    78   0   0   1
+fix    84   0   1   0
+fix   139   0   1   0
+fix   210   0   0   1
+fix   227   0   1   0
+fix   283   0   0   1
+fix   321   0   1   0
+fix   356   0   0   1
+fix   411   0   1   0
+fix   436   0   0   1
+fix   500   0   1   0
+fix   515   0   0   1
+fix   589   0   0   1
+fix   591   0   1   0
+fix   674   0   0   1
+fix   678   0   1   0
+fix   759   0   0   1
+fix   765   0   1   0
+fix   843   0   0   1
+fix   852   0   1   0
+fix   926   0   0   1
+fix   939   0   1   0
+fix  1009   0   0   1
+fix  1026   0   1   0
+fix  1105   0   0   1
+fix  1117   0   1   0
+fix  1201   0   0   1
+fix  1212   0   1   0
+fix  1301   0   0   1
+fix  1315   0   1   0
+fix  1377   0   0   1
+fix  1418   0   1   0
+fix  1449   0   0   1
+fix  1456   0   0   1
+fix  1513   0   0   1
+fix  1524   0   1   0
+fix  1533   0   0   1
+fix  1579   0   0   1
+fix  1597   0   0   1
+fix  1621   0   0   1
+fix  1637   0   1   0
+fix  1662   0   0   1
+fix  1666   0   0   1
+fix  1680   0   0   1
+fix  1708   0   0   1
+fix  1733   0   0   1
+fix  1742   0   0   1
+fix  1744   0   0   1
+fix  1755   0   0   1
+fix  1760   0   1   0
+fix  1803   0   0   1
+fix  1808   0   0   1
+fix  1810   0   0   1
+fix  1821   0   0   1
+fix  1822   0   0   1
+fix  1874   0   0   1
+fix  1877   0   0   1
+fix  1884   0   0   1
+fix  1887   0   1   0
+fix  1904   0   0   1
+fix  1923   0   0   1
+fix  1942   0   0   1
+fix  1947   0   0   1
+fix  1948   0   0   1
+fix  2004   0   0   1
+fix  2007   0   0   1
+fix  2010   0   0   1
+fix  2012   0   0   1
+fix  2014   0   0   1
+fix  2016   0   1   0
+fix  2072   0   0   1
+fix  2074   0   0   1
+fix  2085   0   0   1
+fix  2100   0   0   1
+fix  2110   0   0   1
+fix  2135   0   0   1
+fix  2141   0   0   1
+fix  2143   0   1   0
+fix  2180   0   0   1
+fix  2183   0   0   1
+fix  2200   0   0   1
+fix  2201   0   0   1
+fix  2214   0   0   1
+fix  2254   0   0   1
+fix  2263   0   0   1
+fix  2264   0   0   1
+fix  2269   0   1   0
+fix  2289   0   0   1
+fix  2309   0   0   1
+fix  2327   0   0   1
+fix  2328   0   0   1
+fix  2356   0   0   1
+fix  2366   0   0   1
+fix  2390   0   0   1
+fix  2394   0   0   1
+fix  2396   0   0   1
+fix  2397   0   1   0
+fix  2436   0   0   1
+fix  2447   0   0   1
+fix  2455   0   0   1
+fix  2484   0   0   1
+fix  2506   0   0   1
+fix  2509   0   0   1
+fix  2519   0   0   1
+fix  2522   0   0   1
+fix  2523   0   1   0
+fix  2564   0   0   1
+fix  2576   0   0   1
+fix  2583   0   0   1
+fix  2606   0   0   1
+fix  2626   0   0   1
+fix  2639   0   0   1
+fix  2643   0   0   1
+fix  2648   0   0   1
+fix  2650   0   1   0
+fix  2705   0   0   1
+fix  2707   0   0   1
+fix  2709   0   0   1
+fix  2711   0   0   1
+fix  2713   0   0   1
+fix  2771   0   1   0
+fix  2819   0   0   1
+fix  2821   0   0   1
+fix  2823   0   0   1
+fix  2825   0   0   1
+fix  2827   0   0   1
+fix  2885   0   1   0
+fix  2933   0   0   1
+fix  2935   0   0   1
+fix  2937   0   0   1
+fix  2939   0   0   1
+fix  2941   0   0   1
+fix  2999   0   1   0
+fix  3047   0   0   1
+fix  3049   0   0   1
+fix  3051   0   0   1
+fix  3053   0   0   1
+fix  3055   0   0   1
+fix  3113   0   1   0
+fix  3161   0   0   1
+fix  3163   0   0   1
+fix  3165   0   0   1
+fix  3167   0   0   1
+fix  3169   0   0   1
+fix  3227   0   1   0
+fix  3275   0   0   1
+fix  3277   0   0   1
+fix  3279   0   0   1
+fix  3281   0   0   1
+fix  3283   0   0   1
+fix  3341   0   1   0
+fix  3389   0   0   1
+fix  3391   0   0   1
+fix  3393   0   0   1
+fix  3395   0   0   1
+fix  3397   0   0   1
+fix  3455   0   1   0
+fix  3503   0   0   1
+fix  3505   0   0   1
+fix  3507   0   0   1
+fix  3509   0   0   1
+fix  3511   0   0   1
+fix  3569   0   1   0
+fix  3617   0   0   1
+fix  3619   0   0   1
+fix  3621   0   0   1
+fix  3623   0   0   1
+fix  3625   0   0   1
+fix  3683   0   1   0
+fix  3731   0   0   1
+fix  3733   0   0   1
+fix  3735   0   0   1
+fix  3737   0   0   1
+fix  3739   0   0   1
+fix  3797   0   1   0
+fix  3845   0   0   1
+fix  3847   0   0   1
+fix  3849   0   0   1
+fix  3851   0   0   1
+fix  3853   0   0   1
+fix  3911   0   1   0
+fix  3959   0   0   1
+fix  3961   0   0   1
+fix  3963   0   0   1
+fix  3965   0   0   1
+fix  3967   0   0   1
+puts "Finished creating all -ndf 3 boundary conditions..."
+
+# define equal degrees of freedom for pore pressure nodes
+equalDOF 3911 3797  1 2
+equalDOF 3913 3799  1 2
+equalDOF 3915 3801  1 2
+equalDOF 3917 3803  1 2
+equalDOF 3919 3805  1 2
+equalDOF 3921 3807  1 2
+equalDOF 3923 3809  1 2
+equalDOF 3925 3811  1 2
+equalDOF 3927 3813  1 2
+equalDOF 3929 3815  1 2
+equalDOF 3931 3817  1 2
+equalDOF 3933 3819  1 2
+equalDOF 3935 3821  1 2
+equalDOF 3937 3823  1 2
+equalDOF 3939 3825  1 2
+equalDOF 3941 3827  1 2
+equalDOF 3943 3829  1 2
+equalDOF 3945 3831  1 2
+equalDOF 3947 3833  1 2
+equalDOF 3949 3835  1 2
+equalDOF 3951 3837  1 2
+equalDOF 3953 3839  1 2
+equalDOF 3955 3841  1 2
+equalDOF 3957 3843  1 2
+equalDOF 3959 3845  1 2
+equalDOF 3961 3847  1 2
+equalDOF 3963 3849  1 2
+equalDOF 3965 3851  1 2
+equalDOF 3967 3853  1 2
+
+equalDOF 1 84  1 2
+equalDOF 3 86  1 2
+equalDOF 5 88  1 2
+equalDOF 7 91  1 2
+equalDOF 9 94  1 2
+equalDOF 11 97  1 2
+equalDOF 13 99  1 2
+equalDOF 15 101  1 2
+equalDOF 17 103  1 2
+equalDOF 19 105  1 2
+equalDOF 21 111  1 2
+equalDOF 26 117  1 2
+equalDOF 31 120  1 2
+equalDOF 36 124  1 2
+equalDOF 42 131  1 2
+equalDOF 49 137  1 2
+equalDOF 55 152  1 2
+equalDOF 62 163  1 2
+equalDOF 67 174  1 2
+equalDOF 70 187  1 2
+equalDOF 74 198  1 2
+equalDOF 78 210  1 2
+puts "Finished creating equalDOF for pore pressure nodes..."
+
+#-----------------------------------------------------------------------------------------
+#  2. CREATE INTERIOR NODES AND FIXITIES
+#-----------------------------------------------------------------------------------------
+model BasicBuilder -ndm 2 -ndf 2
+
+# define interior nodes
+@SOLID_NODES@
+puts "Finished creating all -ndf 2 nodes..."
+
+# define fixities for interior nodes:
+fix   107   0   1
+fix   179   0   1
+fix   274   0   1
+fix   365   0   1
+fix   456   0   1
+fix   545   0   1
+fix   634   0   1
+fix   721   0   1
+fix   808   0   1
+fix   895   0   1
+fix   983   0   1
+fix  1071   0   1
+fix  1164   0   1
+fix  1261   0   1
+fix  1366   0   1
+fix  1469   0   1
+fix  1580   0   1
+fix  1696   0   1
+fix  1823   0   1
+fix  1952   0   1
+fix  2078   0   1
+fix  2207   0   1
+fix  2334   0   1
+fix  2460   0   1
+fix  2585   0   1
+fix  2714   0   1
+fix  2828   0   1
+fix  2942   0   1
+fix  3056   0   1
+fix  3170   0   1
+fix  3284   0   1
+fix  3398   0   1
+fix  3512   0   1
+fix  3626   0   1
+fix  3740   0   1
+fix    23   0   1
+fix  3854   0   1
+puts "Finished creating all -ndf 2 boundary conditions..."
+
+# define equal degrees of freedom which have not yet been defined
+equalDOF 3911 3854  1 2
+equalDOF 3912 3798  1 2
+equalDOF 3912 3855  1 2
+equalDOF 3913 3856  1 2
+equalDOF 3914 3800  1 2
+equalDOF 3914 3857  1 2
+equalDOF 3915 3858  1 2
+equalDOF 3916 3802  1 2
+equalDOF 3916 3859  1 2
+equalDOF 3917 3860  1 2
+equalDOF 3918 3804  1 2
+equalDOF 3918 3861  1 2
+equalDOF 3919 3862  1 2
+equalDOF 3920 3806  1 2
+equalDOF 3920 3863  1 2
+equalDOF 3921 3864  1 2
+equalDOF 3922 3808  1 2
+equalDOF 3922 3865  1 2
+equalDOF 3923 3866  1 2
+equalDOF 3924 3810  1 2
+equalDOF 3924 3867  1 2
+equalDOF 3925 3868  1 2
+equalDOF 3926 3812  1 2
+equalDOF 3926 3869  1 2
+equalDOF 3927 3870  1 2
+equalDOF 3928 3814  1 2
+equalDOF 3928 3871  1 2
+equalDOF 3929 3872  1 2
+equalDOF 3930 3816  1 2
+equalDOF 3930 3873  1 2
+equalDOF 3931 3874  1 2
+equalDOF 3932 3818  1 2
+equalDOF 3932 3875  1 2
+equalDOF 3933 3876  1 2
+equalDOF 3934 3820  1 2
+equalDOF 3934 3877  1 2
+equalDOF 3935 3878  1 2
+equalDOF 3936 3822  1 2
+equalDOF 3936 3879  1 2
+equalDOF 3937 3880  1 2
+equalDOF 3938 3824  1 2
+equalDOF 3938 3881  1 2
+equalDOF 3939 3882  1 2
+equalDOF 3940 3826  1 2
+equalDOF 3940 3883  1 2
+equalDOF 3941 3884  1 2
+equalDOF 3942 3828  1 2
+equalDOF 3942 3885  1 2
+equalDOF 3943 3886  1 2
+equalDOF 3944 3830  1 2
+equalDOF 3944 3887  1 2
+equalDOF 3945 3888  1 2
+equalDOF 3946 3832  1 2
+equalDOF 3946 3889  1 2
+equalDOF 3947 3890  1 2
+equalDOF 3948 3834  1 2
+equalDOF 3948 3891  1 2
+equalDOF 3949 3892  1 2
+equalDOF 3950 3836  1 2
+equalDOF 3950 3893  1 2
+equalDOF 3951 3894  1 2
+equalDOF 3952 3838  1 2
+equalDOF 3952 3895  1 2
+equalDOF 3953 3896  1 2
+equalDOF 3954 3840  1 2
+equalDOF 3954 3897  1 2
+equalDOF 3955 3898  1 2
+equalDOF 3956 3842  1 2
+equalDOF 3956 3899  1 2
+equalDOF 3957 3900  1 2
+equalDOF 3958 3844  1 2
+equalDOF 3958 3901  1 2
+equalDOF 3959 3902  1 2
+equalDOF 3960 3846  1 2
+equalDOF 3960 3903  1 2
+equalDOF 3961 3904  1 2
+equalDOF 3962 3848  1 2
+equalDOF 3962 3905  1 2
+equalDOF 3963 3906  1 2
+equalDOF 3964 3850  1 2
+equalDOF 3964 3907  1 2
+equalDOF 3965 3908  1 2
+equalDOF 3966 3852  1 2
+equalDOF 3966 3909  1 2
+equalDOF 3967 3910  1 2
+
+equalDOF 1 23  1 2
+equalDOF 2 24  1 2
+equalDOF 2 85  1 2
+equalDOF 3 25  1 2
+equalDOF 4 27  1 2
+equalDOF 4 87  1 2
+equalDOF 5 28  1 2
+equalDOF 6 30  1 2
+equalDOF 6 90  1 2
+equalDOF 7 32  1 2
+equalDOF 8 33  1 2
+equalDOF 8 92  1 2
+equalDOF 9 35  1 2
+equalDOF 10 37  1 2
+equalDOF 10 95  1 2
+equalDOF 11 39  1 2
+equalDOF 12 40  1 2
+equalDOF 12 98  1 2
+equalDOF 13 41  1 2
+equalDOF 14 43  1 2
+equalDOF 14 100  1 2
+equalDOF 15 44  1 2
+equalDOF 16 46  1 2
+equalDOF 16 102  1 2
+equalDOF 17 47  1 2
+equalDOF 18 48  1 2
+equalDOF 18 104  1 2
+equalDOF 19 50  1 2
+equalDOF 20 51  1 2
+equalDOF 20 106  1 2
+equalDOF 21 53  1 2
+equalDOF 22 54  1 2
+equalDOF 22 114  1 2
+equalDOF 26 56  1 2
+equalDOF 29 57  1 2
+equalDOF 29 119  1 2
+equalDOF 31 58  1 2
+equalDOF 34 60  1 2
+equalDOF 34 122  1 2
+equalDOF 36 61  1 2
+equalDOF 38 63  1 2
+equalDOF 38 128  1 2
+equalDOF 42 65  1 2
+equalDOF 45 66  1 2
+equalDOF 45 134  1 2
+equalDOF 49 69  1 2
+equalDOF 52 71  1 2
+equalDOF 52 145  1 2
+equalDOF 55 73  1 2
+equalDOF 59 75  1 2
+equalDOF 59 158  1 2
+equalDOF 62 77  1 2
+equalDOF 64 79  1 2
+equalDOF 64 169  1 2
+equalDOF 67 80  1 2
+equalDOF 68 81  1 2
+equalDOF 68 177  1 2
+equalDOF 70 82  1 2
+equalDOF 72 83  1 2
+equalDOF 72 193  1 2
+equalDOF 74 89  1 2
+equalDOF 76 93  1 2
+equalDOF 76 204  1 2
+equalDOF 78 96  1 2
+puts "Finished creating equalDOF constraints..."
+
+equalDOF 3911 1  1
+equalDOF 3911 23  1
+equalDOF 3911 84  1
+equalDOF 3911 107  1
+equalDOF 3911 139  1
+equalDOF 3911 179  1
+equalDOF 3911 227  1
+equalDOF 3911 274  1
+equalDOF 3911 321  1
+equalDOF 3911 365  1
+equalDOF 3911 411  1
+equalDOF 3911 456  1
+equalDOF 3911 500  1
+equalDOF 3911 545  1
+equalDOF 3911 591  1
+equalDOF 3911 634  1
+equalDOF 3911 678  1
+equalDOF 3911 721  1
+equalDOF 3911 765  1
+equalDOF 3911 808  1
+equalDOF 3911 852  1
+equalDOF 3911 895  1
+equalDOF 3911 939  1
+equalDOF 3911 983  1
+equalDOF 3911 1026  1
+equalDOF 3911 1071  1
+equalDOF 3911 1117  1
+equalDOF 3911 1164  1
+equalDOF 3911 1212  1
+equalDOF 3911 1261  1
+equalDOF 3911 1315  1
+equalDOF 3911 1366  1
+equalDOF 3911 1418  1
+equalDOF 3911 1469  1
+equalDOF 3911 1524  1
+equalDOF 3911 1580  1
+equalDOF 3911 1637  1
+equalDOF 3911 1696  1
+equalDOF 3911 1760  1
+equalDOF 3911 1823  1
+equalDOF 3911 1887  1
+equalDOF 3911 1952  1
+equalDOF 3911 2016  1
+equalDOF 3911 2078  1
+equalDOF 3911 2143  1
+equalDOF 3911 2207  1
+equalDOF 3911 2269  1
+equalDOF 3911 2334  1
+equalDOF 3911 2397  1
+equalDOF 3911 2460  1
+equalDOF 3911 2523  1
+equalDOF 3911 2585  1
+equalDOF 3911 2650  1
+equalDOF 3911 2714  1
+equalDOF 3911 2771  1
+equalDOF 3911 2828  1
+equalDOF 3911 2885  1
+equalDOF 3911 2942  1
+equalDOF 3911 2999  1
+equalDOF 3911 3056  1
+equalDOF 3911 3113  1
+equalDOF 3911 3170  1
+equalDOF 3911 3227  1
+equalDOF 3911 3284  1
+equalDOF 3911 3341  1
+equalDOF 3911 3398  1
+equalDOF 3911 3455  1
+equalDOF 3911 3512  1
+equalDOF 3911 3569  1
+equalDOF 3911 3626  1
+equalDOF 3911 3683  1
+equalDOF 3911 3740  1
+equalDOF 3911 3797  1
+equalDOF 3911 3854  1
+puts "Finished creating equalDOF for base..."
+
+#-----------------------------------------------------------------------------------------
+#  3. CREATE SOIL MATERIALS
+#-----------------------------------------------------------------------------------------
+
+nDMaterial PressureIndependMultiYield 1 2 1.68 14046.9 42140.7 35.9 0.1 0.0 100.0 0.0 30
+set thick1 1.0
+set xWgt1  0.0
+set yWgt1  -9.81
+set uBulk1 2.2e5
+set hPerm1 1.0e-5
+set vPerm1 1.0e-5
+nDMaterial PressureIndependMultiYield 2 2 1.68 39020.0 117060.0 183.8 0.1 0.0 100.0 0.0 30
+set thick2 1.0
+set xWgt2  0.0
+set yWgt2  -9.81
+set uBulk2 6.0e6
+set hPerm2 1.0e-5
+set vPerm2 1.0e-5
+nDMaterial PressureIndependMultiYield 3 2 1.68 87793.4 263380.0 183.8 0.1 0.0 100.0 0.0 30
+set thick3 1.0
+set xWgt3  0.0
+set yWgt3  -9.81
+set uBulk3 6.0e6
+set hPerm3 1.0e-5
+set vPerm3 1.0e-5
+nDMaterial PressureDependMultiYield02 4 2 1.84 42735.4 128206.2 33 0.1 \
+                                      100.0 0.5 26 0.067 0.23 0.06 \
+                                      0.27 30 5.0 3.0 1.0 \
+                                      0.0 0.73 0.9 0.02 0.7 101.0
+set thick4 1.0
+set xWgt4  0.0
+set yWgt4  -9.81
+set uBulk4 5.2e6
+set hPerm4 1.0e-4
+set vPerm4 1.0e-4
+nDMaterial PressureDependMultiYield02 5 2 2.24 42735.4 128206.2 40 0.1 \
+                                      100.0 0.5 26 0.013 0.0 0.3 \
+                                      0.0 30 5.0 3.0 1.0 \
+                                      0.0 0.532 0.9 0.02 0.7 101.0
+set thick5 1.0
+set xWgt5  0.0
+set yWgt5  -9.81
+set uBulk5 6.3e6
+set hPerm5 1.0e-3
+set vPerm5 1.0e-3
+nDMaterial PressureDependMultiYield02 6 2 2.24 42735.4 128206.2 40 0.1 \
+                                      100.0 0.5 26 0.013 0.0 0.3 \
+                                      0.0 30 5.0 3.0 1.0 \
+                                      0.0 0.49 0.9 0.02 0.7 101.0
+set thick6 1.0
+set xWgt6  0.0
+set yWgt6  -9.81
+set uBulk6 6.7e6
+set hPerm6 1.0e-3
+set vPerm6 1.0e-3
+nDMaterial PressureDependMultiYield02 7 2 2.24 42735.4 128206.2 40 0.1 \
+                                      100.0 0.5 26 0.013 0.0 0.3 \
+                                      0.0 30 5.0 3.0 1.0 \
+                                      0.0 0.49 0.9 0.02 0.7 101.0
+set thick7 1.0
+set xWgt7  0.0
+set yWgt7  -9.81
+set uBulk7 6.7e6
+set hPerm7 1.0e-3
+set vPerm7 1.0e-3
+nDMaterial PressureIndependMultiYield 8 2 1.68 14046.9 42140.7 35.9 0.1 0.0 100.0 0.0 30
+set thick8 10000.0
+set xWgt8  .00
+set yWgt8  -9.81
+set uBulk8 2.2e5
+set hPerm8 1.0e-5
+set vPerm8 1.0e-5
+nDMaterial PressureDependMultiYield02 9 2 1.84 42735.4 128206.2 33 0.1 \
+                                      100.0 0.5 26 0.067 0.23 0.06 \
+                                      0.27 30 5.0 3.0 1.0 \
+                                      0.0 0.73 0.9 0.02 0.7 101.0
+set thick9 10000.0
+set xWgt9  0.0
+set yWgt9  -9.81
+set uBulk9 5.2e6
+set hPerm9 1.0e-4
+set vPerm9 1.0e-4
+nDMaterial PressureIndependMultiYield 10 2 1.68 39020.0 117060.0 183.8 0.1 0.0 100.0 0.0 30
+set thick10 10000.0
+set xWgt10  0.0
+set yWgt10  -9.81
+set uBulk10 6.0e6
+set hPerm10 1.0e-5
+set vPerm10 1.0e-5
+nDMaterial PressureIndependMultiYield 11 2 1.68 87793.4 263380.0 183.8 0.1 0.0 100.0 0.0 30
+set thick11 10000.0
+set xWgt11  0.0
+set yWgt11  -9.81
+set uBulk11 6.0e6
+set hPerm11 1.0e-5
+set vPerm11 1.0e-5
+nDMaterial PressureDependMultiYield02 12 2 2.24 42735.4 128206.2 40 0.1 \
+                                      100.0 0.5 26 0.013 0.0 0.3 \
+                                      0.0 30 5.0 3.0 1.0 \
+                                      0.0 0.532 0.9 0.02 0.7 101.0
+set thick12 10000.0
+set xWgt12  0.0
+set yWgt12  -9.81
+set uBulk12 6.3e6
+set hPerm12 1.0e-3
+set vPerm12 1.0e-3
+nDMaterial PressureDependMultiYield02 13 2 2.24 42735.4 128206.2 40 0.1 \
+                                      100.0 0.5 26 0.013 0.0 0.3 \
+                                      0.0 30 5.0 3.0 1.0 \
+                                      0.0 0.49 0.9 0.02 0.7 101.0
+set thick13 10000.0
+set xWgt13  0.0
+set yWgt13  -9.81
+set uBulk13 6.7e6
+set hPerm13 1.0e-3
+set vPerm13 1.0e-3
+nDMaterial PressureDependMultiYield02 14 2 2.24 42735.4 128206.2 40 0.1 \
+                                      100.0 0.5 26 0.013 0.0 0.3 \
+                                      0.0 30 5.0 3.0 1.0 \
+                                      0.0 0.49 0.9 0.02 0.7 101.0
+set thick14 10000.0
+set xWgt14  0.0
+set yWgt14  -9.81
+set uBulk14 6.7e6
+set hPerm14 1.0e-3
+set vPerm14 1.0e-3
+puts "Finished creating all soil materials..."
+
+#-----------------------------------------------------------------------------------------
+#  4. CREATE SOIL ELEMENTS
+#-----------------------------------------------------------------------------------------
+
+# permeabilities are initial set at 1.0 m/s for gravity analysis, values are updated after gravity
+@ELEMENTS@
+puts "Finished creating all soil elements..."
+
+#-----------------------------------------------------------------------------------------
+#  5. LYSMER DASHPOT
+#-----------------------------------------------------------------------------------------
+
+# define dashpot nodes
+node     4067     -60.960     -68.580
+node     4068     -60.960     -68.580
+
+# define fixities for dashpot nodes
+fix 4067  1 1
+fix 4068  0 1
+
+# define equal DOF for dashpot and base soil node
+equalDOF 3911 4068  1
+puts "Finished creating dashpot nodes and boundary conditions..."
+
+# define dashpot material
+set baseArea      1219631.1
+set dashpotCoeff  1750.00
+uniaxialMaterial Viscous 15 [expr $dashpotCoeff*$baseArea] 1
+
+# define dashpot element
+element zeroLength 960 4067 4068 -mat 15 -dir 1
+puts "Finished creating dashpot material and element..."
+
+#-----------------------------------------------------------------------------------------
+#  6. DEFINE NODAL MASSES FOR MODELING WATER
+#-----------------------------------------------------------------------------------------
+
+# define nodal masses for 3 dof nodes
+model BasicBuilder -ndm 2 -ndf 3
+mass       78       0.000      1952305.0   0.000
+mass      210       0.000      2342766.0   0.000
+mass      283       0.000      78.092      0.000
+mass      356       0.000      78.092      0.000
+mass      436       0.000      78.092      0.000
+mass      515       0.000      78.092      0.000
+mass      589       0.000      78.092      0.000
+mass      674       0.000      78.092      0.000
+mass      759       0.000      78.092      0.000
+mass      843       0.000      78.092      0.000
+mass      926       0.000      78.092      0.000
+mass     1009       0.000      81.951      0.000
+mass     1105       10.95      69.301      0.000
+mass     1201       8.499      53.824      0.000
+mass     1301       6.053      38.354      0.000
+mass     1449       3.030      19.177      0.000
+puts "Finished creating -ndf 3 nodal masses..."
+
+# define nodal masses for 2 dof nodes
+model BasicBuilder -ndm 2 -ndf 2
+mass       96       0.000      3904610.0
+mass      245       0.000      78.092
+mass      316       0.000      78.092
+mass      396       0.000      78.092
+mass      475       0.000      78.092
+mass      554       0.000      78.092
+mass      632       0.000      78.092
+mass      717       0.000      78.092
+mass      801       0.000      78.092
+mass      885       0.000      78.092
+mass      968       0.000      78.092
+mass     1057       12.16      77.043
+mass     1153       9.719      61.566
+mass     1251       7.279      46.089
+mass     1372       4.544      28.762
+mass     1517       1.515       9.585
+puts "Finished creating -ndf 2 nodal masses..."
+
+#-----------------------------------------------------------------------------------------
+#  7. CREATE GRAVITY RECORDERS
+#-----------------------------------------------------------------------------------------
+
+# create list for pore pressure nodes
+set nodeList3 {}
+set channel [open "nodeInfo.dat" r]
+set count 0;
+foreach line [split [read -nonewline $channel] \n] {
+set count [expr $count+1];
+set lineData($count) $line
+set nodeNumber [lindex $lineData($count) 0]
+lappend nodeList3 $nodeNumber
+}
+close $channel
+
+# record nodal displacment, acceleration, and porepressure
+eval "recorder Node -file Gdisplacement.out -time -node $nodeList3 -dof 1 2  disp"
+eval "recorder Node -file Gacceleration.out -time -node $nodeList3 -dof 1 2  accel"
+eval "recorder Node -file GporePressure.out -time -node $nodeList3 -dof 3 vel"
+# record elemental stress and strain
+recorder Element -file Gstress1.out   -time  -eleRange 1 959  material 1 stress
+recorder Element -file Gstress2.out   -time  -eleRange 1 959  material 2 stress
+recorder Element -file Gstress3.out   -time  -eleRange 1 959  material 3 stress
+recorder Element -file Gstress4.out   -time  -eleRange 1 959  material 4 stress
+recorder Element -file Gstress5.out   -time  -eleRange 1 959  material 5 stress
+recorder Element -file Gstress6.out   -time  -eleRange 1 959  material 6 stress
+recorder Element -file Gstress7.out   -time  -eleRange 1 959  material 7 stress
+recorder Element -file Gstress8.out   -time  -eleRange 1 959  material 8 stress
+recorder Element -file Gstress9.out   -time  -eleRange 1 959  material 9 stress
+recorder Element -file Gstrain1.out   -time  -eleRange 1 959  material 1 strain
+recorder Element -file Gstrain2.out   -time  -eleRange 1 959  material 2 strain
+recorder Element -file Gstrain3.out   -time  -eleRange 1 959  material 3 strain
+recorder Element -file Gstrain4.out   -time  -eleRange 1 959  material 4 strain
+recorder Element -file Gstrain5.out   -time  -eleRange 1 959  material 5 strain
+recorder Element -file Gstrain6.out   -time  -eleRange 1 959  material 6 strain
+recorder Element -file Gstrain7.out   -time  -eleRange 1 959  material 7 strain
+recorder Element -file Gstrain8.out   -time  -eleRange 1 959  material 8 strain
+recorder Element -file Gstrain9.out   -time  -eleRange 1 959  material 9 strain
+puts "Finished creating gravity recorders..."
+
+#-----------------------------------------------------------------------------------------
+#  8. CREATE FILES FOR POSTPROCESSING IN GiD
+#-----------------------------------------------------------------------------------------
+
+set meshFile [open renameMe.flavia.msh w]
+puts $meshFile "MESH 94quad dimension 2 ElemType Quadrilateral Nnode 4"
+puts $meshFile "Coordinates"
+puts $meshFile "#node_number   coord_x   coord_y"
+@MESH_NODES@
+puts $meshFile "end coordinates"
+puts $meshFile "Elements"
+puts $meshFile "# element   node1   node2   node3   node4"
+@MESH_ELEMENTS@
+puts $meshFile "end elements"
+close $meshFile
+
+set eleFile [open elementInfo.dat w]
+@ELEMENT_INFO@
+close $eleFile
+
+#-----------------------------------------------------------------------------------------
+#  9. DEFINE ANALYSIS PARAMETERS
+#-----------------------------------------------------------------------------------------
+
+#---GROUND MOTION PARAMETERS
+# time step in ground motion record
+set motionDT     0.005
+# number of steps in ground motion record
+set motionSteps  5000
+
+#---RAYLEIGH DAMPING PARAMETERS
+set pi      3.141592654
+# damping ratio
+set damp    0.02
+# lower frequency
+set omega1  [expr 2*$pi*0.2]
+# upper frequency
+set omega2  [expr 2*$pi*20]
+# damping coefficients
+set a0      [expr 2*$damp*$omega1*$omega2/($omega1 + $omega2)]
+set a1      [expr 2*$damp/($omega1 + $omega2)]
+puts "damping coefficients: a_0 = $a0;  a_1 = $a1"
+
+#---DETERMINE STABLE ANALYSIS TIME STEP USING CFL CONDITION
+# maximum shear wave velocity (m/s)
+set vsMax       250.0
+# element size (m)
+set eleSize     3.6576
+# duration of ground motion (s)
+set duration    [expr $motionDT*$motionSteps]
+# trial analysis time step
+set kTrial      [expr $eleSize/(pow($vsMax,0.5))]
+# define time step and number of steps for analysis
+if { $motionDT <= $kTrial } {
+    set nSteps  $motionSteps
+    set dT      $motionDT
+} else {
+    set nSteps  [expr int(floor($duration/$kTrial)+1)]
+    set dT      [expr $duration/$nSteps]
+}
+puts "number of steps in analysis: $nSteps"
+puts "analysis time step: $dT"
+
+#---ANALYSIS PARAMETERS
+# Newmark parameters
+set gamma  0.5
+set beta   0.25
+
+#-----------------------------------------------------------------------------------------
+#  10. GRAVITY ANALYSIS
+#-----------------------------------------------------------------------------------------
+
+# update materials to ensure elastic behavior
+updateMaterialStage -material 1 -stage 0
+updateMaterialStage -material 2 -stage 0
+updateMaterialStage -material 3 -stage 0
+updateMaterialStage -material 4 -stage 0
+updateMaterialStage -material 5 -stage 0
+updateMaterialStage -material 6 -stage 0
+updateMaterialStage -material 7 -stage 0
+updateMaterialStage -material 8 -stage 0
+updateMaterialStage -material 9 -stage 0
+updateMaterialStage -material 10 -stage 0
+updateMaterialStage -material 11 -stage 0
+updateMaterialStage -material 12 -stage 0
+updateMaterialStage -material 13 -stage 0
+updateMaterialStage -material 14 -stage 0
+
+constraints Penalty 1.e18 1.e18
+test        NormDispIncr 1e-3 35 1
+algorithm   Newton
+numberer    RCM
+system      ProfileSPD
+integrator  Newmark $gamma $beta
+analysis    Transient
+
+set startT  [clock seconds]
+analyze     10 5.0e2
+analyze     10 5.0e3
+puts "Finished with elastic gravity analysis..."
+
+# update materials to consider plastic behavior
+updateMaterialStage -material 1 -stage 1
+updateMaterialStage -material 2 -stage 1
+updateMaterialStage -material 3 -stage 1
+updateMaterialStage -material 4 -stage 1
+updateMaterialStage -material 5 -stage 1
+updateMaterialStage -material 6 -stage 1
+updateMaterialStage -material 7 -stage 1
+updateMaterialStage -material 8 -stage 1
+updateMaterialStage -material 9 -stage 1
+updateMaterialStage -material 10 -stage 1
+updateMaterialStage -material 11 -stage 1
+updateMaterialStage -material 12 -stage 1
+updateMaterialStage -material 13 -stage 1
+updateMaterialStage -material 14 -stage 1
+
+# plastic gravity loading
+analyze     10 5.0e-3
+puts "Finished with plastic gravity analysis..."
+
+#-----------------------------------------------------------------------------------------
+#  11. UPDATE ELEMENT PERMEABILITY VALUES FOR POST-GRAVITY ANALYSIS
+#-----------------------------------------------------------------------------------------
+
+# choose base number for parameter IDs which is higer than other tags used in analysis
+set ctr 10000.0
+# loop over elements to define parameter IDs
+for {set i 1} {$i<=959} {incr i 1} {
+    parameter [expr int($ctr+1.0)] element $i vPerm
+        parameter [expr int($ctr+2.0)] element $i hPerm
+        set ctr [expr $ctr+2.0]
+}
+
+# update permeability parameters for each element
+@PERMEABILITY_UPDATES@
+
+#-----------------------------------------------------------------------------------------
+#  12. CREATE POST-GRAVITY RECORDERS
+#-----------------------------------------------------------------------------------------
+
+# reset time and analysis
+setTime 0.0
+wipeAnalysis
+remove recorders
+
+# recorder time step
+set recDT  [expr 2*$motionDT]
+
+# record nodal displacment, acceleration, and porepressure
+eval "recorder Node -file displacement.out -time -dT $recDT -node $nodeList3 -dof 1 2  disp"
+eval "recorder Node -file acceleration.out -time -dT $recDT -node $nodeList3 -dof 1 2  accel"
+eval "recorder Node -file porePressure.out -time -dT $recDT -node $nodeList3 -dof 3 vel"
+# record elemental stress and strain
+recorder Element -file stress1.out   -time -dT $recDT  -eleRange 1 959  material 1 stress
+recorder Element -file stress2.out   -time -dT $recDT  -eleRange 1 959  material 2 stress
+recorder Element -file stress3.out   -time -dT $recDT  -eleRange 1 959  material 3 stress
+recorder Element -file stress4.out   -time -dT $recDT  -eleRange 1 959  material 4 stress
+recorder Element -file stress5.out   -time -dT $recDT  -eleRange 1 959  material 5 stress
+recorder Element -file stress6.out   -time -dT $recDT  -eleRange 1 959  material 6 stress
+recorder Element -file stress7.out   -time -dT $recDT  -eleRange 1 959  material 7 stress
+recorder Element -file stress8.out   -time -dT $recDT  -eleRange 1 959  material 8 stress
+recorder Element -file stress9.out   -time -dT $recDT  -eleRange 1 959  material 9 stress
+recorder Element -file strain1.out   -time -dT $recDT  -eleRange 1 959  material 1 strain
+recorder Element -file strain2.out   -time -dT $recDT  -eleRange 1 959  material 2 strain
+recorder Element -file strain3.out   -time -dT $recDT  -eleRange 1 959  material 3 strain
+recorder Element -file strain4.out   -time -dT $recDT  -eleRange 1 959  material 4 strain
+recorder Element -file strain5.out   -time -dT $recDT  -eleRange 1 959  material 5 strain
+recorder Element -file strain6.out   -time -dT $recDT  -eleRange 1 959  material 6 strain
+recorder Element -file strain7.out   -time -dT $recDT  -eleRange 1 959  material 7 strain
+recorder Element -file strain8.out   -time -dT $recDT  -eleRange 1 959  material 8 strain
+recorder Element -file strain9.out   -time -dT $recDT  -eleRange 1 959  material 9 strain
+puts "Finished creating all recorders..."
+
+#-----------------------------------------------------------------------------------------
+#  13. DYNAMIC ANALYSIS
+#-----------------------------------------------------------------------------------------
+
+model BasicBuilder -ndm 2 -ndf 3
+
+# define constant scaling factor for applied velocity
+set cFactor [expr $baseArea*$dashpotCoeff]
+
+# define velocity time history file
+set velocityFile velocityHistory.out
+
+# timeseries object for force history
+set mSeries "Path -dt $motionDT -filePath $velocityFile -factor $cFactor"
+
+# loading object
+pattern Plain 10 $mSeries {
+    load 3911 1.0 0.0 0.0
+}
+puts "Dynamic loading created..."
+
+constraints Penalty 1.e20 1.e20
+test        NormDispIncr 1.0e-3 35 1
+algorithm   Newton
+numberer    RCM
+system      ProfileSPD
+integrator  Newmark $gamma $beta
+rayleigh    $a0 $a1 0.0 0.0
+analysis    Transient
+
+# perform analysis with timestep reduction loop
+set ok [analyze $nSteps  $dT]
+
+# if analysis fails, reduce timestep and continue with analysis
+if {$ok != 0} {
+    puts "did not converge, reducing time step"
+    set curTime  [getTime]
+    puts "curTime: $curTime"
+    set curStep  [expr $curTime/$dT]
+    puts "curStep: $curStep"
+    set remStep  [expr int(($nSteps-$curStep)*2.0)]
+    puts "remStep: $remStep"
+    set dT       [expr $dT/2.0]
+    puts "dT: $dT"
+
+    set ok [analyze  $remStep  $dT]
+
+    # if analysis fails again, reduce timestep and continue with analysis
+    if {$ok != 0} {
+        puts "did not converge, reducing time step"
+        set curTime  [getTime]
+        puts "curTime: $curTime"
+        set curStep  [expr $curTime/$dT]
+        puts "curStep: $curStep"
+        set remStep  [expr int(($remStep-$curStep)*2.0)]
+        puts "remStep: $remStep"
+        set dT       [expr $dT/2.0]
+        puts "dT: $dT"
+
+        analyze  $remStep  $dT
+    }
+}
+set endT    [clock seconds]
+puts "Finished with dynamic analysis..."
+puts "Analysis execution time: [expr $endT-$startT] seconds"
+
+wipe

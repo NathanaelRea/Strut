@@ -1,0 +1,25 @@
+{
+  "schema_version": "1.0",
+  "metadata": {
+    "description": "3D shell modes with consistent element mass and massless rotations"
+  },
+  "model": {"ndm": 3, "ndf": 6},
+  "nodes": [
+    {"id": 1, "x": 0.0, "y": 0.0, "z": 0.0, "constraints": [1, 2, 3, 4, 5, 6]},
+    {"id": 2, "x": 1.4, "y": 0.1, "z": 0.0},
+    {"id": 3, "x": 1.2, "y": 1.0, "z": 0.0},
+    {"id": 4, "x": -0.07, "y": 0.8, "z": 0.0, "constraints": [1, 2, 3, 4, 5, 6]}
+  ],
+  "sections": [
+    {
+      "id": 1,
+      "type": "ElasticMembranePlateSection",
+      "params": {"E": 30000.0, "nu": 0.23, "h": 0.24, "rho": 2.1}
+    }
+  ],
+  "elements": [{"id": 1, "type": "shell", "nodes": [1, 2, 3, 4], "section": 1}],
+  "analysis": {"type": "modal_eigen", "num_modes": 1},
+  "recorders": [
+    {"type": "modal_eigen", "output": "modal", "nodes": [2, 3], "dofs": [1, 2, 3, 4, 5, 6], "modes": [1]}
+  ]
+}

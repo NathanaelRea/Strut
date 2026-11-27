@@ -1,3 +1,4 @@
+from sections.plate_fiber import elastic_plate_fiber_base
 from collections import InlineArray, List
 from elements.utils import _zero_matrix
 from math import cos, sin
@@ -186,16 +187,17 @@ fn append_layered_shell_section_from_input(
             sec_def.rho_area += base_mat.rho * weight
             continue
 
-        if mat.type == "ElasticIsotropic":
+        if mat.type == "ElasticIsotropic" or mat.type == "PlateFiber":
+            var base_mat = elastic_plate_fiber_base(layer.material, materials_by_id)
             _add_elastic_plate(
                 sec_def.elastic_tangent,
-                mat.E,
-                mat.nu,
-                mat.E / (2.0 * (1.0 + mat.nu)),
+                base_mat.E,
+                base_mat.nu,
+                base_mat.E / (2.0 * (1.0 + base_mat.nu)),
                 weight,
                 z,
             )
-            sec_def.rho_area += mat.rho * weight
+            sec_def.rho_area += base_mat.rho * weight
             continue
 
         if mat.type == "PlateRebar":

@@ -1,0 +1,8 @@
+{
+  "enabled": false,
+  "entry_tcl": "tests/fixtures/opensees/STAIRlabGallery/content/en/examples/thermalExamples/thermalexample5/files/Example5.tcl",
+  "tcl_source_version": "3.7.1",
+  "source_url": "https://github.com/peer-open-source/opensees-gallery/blob/fd3958fde8a3d0a350321b3fbdd3f415ee16e2a2/content/en/examples/thermalExamples/thermalexample5/files/Example5.tcl",
+  "disabled_reason": "The OpenSees 3.7.1 run timed out. Strut lacks thermal beam loads and sections.",
+  "reference": "European Committee for Standardization, Eurocode 3: Design of Steel Structures, Part 1.2, General Rules \u2013 Structural Fire Design (2005). A. Rubert and P. Schaumann, Structural steel and plane frame assemblies under fire action, Fire Safety Journal 10 (1986), 173\u2013184."
+}

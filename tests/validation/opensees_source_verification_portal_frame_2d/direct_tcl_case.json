@@ -1,0 +1,11 @@
+{
+  "name": "opensees_source_verification_portal_frame_2d",
+  "entry_tcl": "tests/fixtures/opensees/OpenSeesSource/EXAMPLES/verification/PortalFrame2d.tcl",
+  "tcl_source_version": "3.7.1",
+  "source_url": "https://github.com/OpenSees/OpenSees/blob/v3.7.1/EXAMPLES/verification/PortalFrame2d.tcl",
+  "enabled": true,
+  "parity_tolerance": {},
+  "parity_tolerance_by_category": {},
+  "parity_tolerance_by_recorder": {},
+  "parity_mode": "step"
+}

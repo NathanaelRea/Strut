@@ -176,16 +176,25 @@ _SYSTEM_NAME_ALIASES = {
     "BandGen": "BandGeneral",
     "SparseGeneral": "SuperLU",
     "SparseGEN": "SuperLU",
+    "Mumps": "SuperLU",
     "SparseSPD": "SparseSYM",
     "Umfpack": "UmfPack",
 }
+
+
+def _constraints_line(analysis, handler):
+    if handler == "Penalty":
+        return f"constraints Penalty {analysis['penalty_sp']} {analysis['penalty_mp']}"
+    if handler not in {"Plain", "Transformation", "Lagrange"}:
+        raise ValueError(f"unsupported constraints handler: {handler}")
+    return f"constraints {handler}"
 
 
 def _canonicalize_system_name(system):
     if not isinstance(system, str) or not system:
         raise ValueError("analysis system must be a non-empty string")
     canonical = _SYSTEM_NAME_ALIASES.get(system, system)
-    if canonical == "Mumps" or canonical not in _SUPPORTED_SYSTEM_NAMES:
+    if canonical not in _SUPPORTED_SYSTEM_NAMES:
         supported = ", ".join(sorted(_SUPPORTED_SYSTEM_NAMES))
         raise ValueError(
             f"unsupported analysis system `{system}` (supported: {supported})"
@@ -336,7 +345,15 @@ def _load_path_time_series_values(ts, case_dir: Path, case_data: dict):
 def _material_dependency_ids(material):
     mat_type = material.get("type")
     params = material.get("params", {})
-    if mat_type in {"PlateFromPlaneStress", "PlateRebar"}:
+    if mat_type == "Parallel":
+        return params["materials"]
+    if mat_type in {
+        "Fatigue",
+        "MinMax",
+        "PlateFiber",
+        "PlateFromPlaneStress",
+        "PlateRebar",
+    }:
         dep_id = params.get("material")
         if isinstance(dep_id, int):
             return [dep_id]
@@ -443,9 +460,58 @@ def _emit_damping(f, damping):
     f.write(line + "\n")
 
 
+def _emit_uniform_excitations(f, pattern, ndm, ts_tags):
+    excitations = pattern.get("excitations", [pattern])
+    if not excitations:
+        raise ValueError("UniformExcitation requires at least one excitation")
+    for index, excitation in enumerate(excitations, start=1):
+        pattern_tag = int(excitation.get("tag", index))
+        direction = int(excitation.get("direction", 0))
+        if direction < 1 or direction > ndm:
+            raise ValueError("UniformExcitation direction out of range 1..ndm")
+        accel_tag = excitation.get("accel", excitation.get("time_series"))
+        if accel_tag is None or int(accel_tag) not in ts_tags:
+            raise ValueError(
+                f"UniformExcitation accel time_series tag {accel_tag} not found"
+            )
+        velocity = float(excitation.get("vel0", 0.0))
+        options = f" -vel0 {velocity}" if velocity else ""
+        f.write(
+            f"pattern UniformExcitation {pattern_tag} {direction} -accel {int(accel_tag)}{options}\n"
+        )
+
+
+def _emit_rayleigh(f, rayleigh):
+    alpha_m, beta_k, beta_init, beta_comm = (
+        float(rayleigh.get(key, 0.0))
+        for key in ("alphaM", "betaK", "betaKInit", "betaKComm")
+    )
+    f.write(f"rayleigh {alpha_m} {beta_k} {beta_init} {beta_comm}\n")
+    for entry in rayleigh.get("node_alpha_m", []):
+        coefficient = entry["coefficient"]
+        # OpenSees skips an all-zero region assignment. On a node-only
+        # region, betaK can be nonzero without changing any damping force.
+        beta = 1.0 if coefficient == 0.0 else 0.0
+        f.write(
+            f"region [incr __strut_rayleigh_region] -nodeOnly {entry['tag']} "
+            f"-rayleigh {coefficient} {beta} 0.0 0.0\n"
+        )
+    for entry in rayleigh.get("element_beta_k_init", []):
+        f.write(
+            f"setElementRayleighDampingFactors {entry['tag']} "
+            f"{alpha_m} {beta_k} {entry['coefficient']} {beta_comm}\n"
+        )
+
+
 def _emit_element_load(f, elem_load, ndm):
     elem_id = _require_field(elem_load, "element")
     load_type = _require_field(elem_load, "type")
+
+    if load_type == "beamThermal":
+        pairs = zip(elem_load["temperatures"], elem_load["locations"], strict=True)
+        values = " ".join(str(value) for pair in pairs for value in pair)
+        f.write(f"  eleLoad -ele {elem_id} -type -beamThermal {values}\n")
+        return
 
     if load_type == "beamUniform":
         if ndm == 2:
@@ -716,16 +782,21 @@ def _static_nonlinear_displacement_control_post_lines(
     max_cutbacks,
     min_du,
     solver_chain,
+    *,
+    relative=False,
+    displacement_limit=None,
 ):
+    offset = f"[nodeDisp {int(node)} {int(dof)}]" if relative else "0.0"
     lines = [
         "set strut_dc_targets {" + " ".join(str(float(val)) for val in targets) + "}",
+        f"set strut_dc_start {offset}",
         f"set strut_dc_cutback {cutback}",
         f"set strut_dc_max_cutbacks {max_cutbacks}",
         f"set strut_dc_min_du {min_du}",
         "foreach strut_dc_targ $strut_dc_targets {",
         "  while {1} {",
         f"    set strut_dc_curr [nodeDisp {int(node)} {int(dof)}]",
-        "    set strut_dc_remaining [expr {$strut_dc_targ - $strut_dc_curr}]",
+        "    set strut_dc_remaining [expr {$strut_dc_start + $strut_dc_targ - $strut_dc_curr}]",
         "    if {[expr abs($strut_dc_remaining)] <= $strut_dc_min_du} {",
         "      break",
         "    }",
@@ -735,6 +806,12 @@ def _static_nonlinear_displacement_control_post_lines(
         f"      {integrator_line}",
         "      set strut_dc_ok [analyze 1]",
     ]
+    if displacement_limit is not None:
+        operator = ">=" if float(targets[0]) > 0.0 else "<="
+        lines.insert(
+            6,
+            f"  if {{[nodeDisp {int(node)} {int(dof)}] {operator} {float(displacement_limit)}}} {{break}}",
+        )
     _append_solver_chain_retry_lines(
         lines,
         "strut_dc_ok",
@@ -763,42 +840,94 @@ def _static_nonlinear_displacement_control_post_lines(
     return lines
 
 
-def _emit_recorders(f, recorders, node_by_id, ndf):
+def _emit_recorders(f, recorders, node_by_id, ndf, ssp_quad_tags):
     for rec in recorders:
         rec_type = rec["type"]
+        # Direct Tcl imports emit canonical recorder files with values only.
+        time_flag = (
+            "-time " if rec.get("include_time") and not rec.get("raw_path") else ""
+        )
+        sampling = f"-dT {rec['delta_t']} " if "delta_t" in rec else ""
+        precision_flag = (
+            f"-precision {int(rec['precision'])} " if "precision" in rec else ""
+        )
         if rec_type == "node_displacement":
             dofs = rec["dofs"]
             output = rec.get("output", "node_disp")
             for node_id in rec["nodes"]:
                 filename = f"{output}_node{node_id}.out"
                 f.write(
-                    f"recorder Node -file {filename} -node {node_id} -dof {' '.join(str(d) for d in dofs)} disp\n"
+                    f"recorder Node {precision_flag}-file {filename} {sampling}-node {node_id} -dof {' '.join(str(d) for d in dofs)} disp\n"
+                )
+        elif rec_type == "node_acceleration":
+            dofs = rec["dofs"]
+            output = rec.get("output", "node_accel")
+            time_series_flag = ""
+            if "time_series" in rec:
+                time_series_flag = f"-timeSeries {int(rec['time_series'])} "
+            for node_id in rec["nodes"]:
+                filename = f"{output}_node{node_id}.out"
+                f.write(
+                    f"recorder Node {precision_flag}-file {filename} {sampling}{time_series_flag}-node {node_id} -dof {' '.join(str(d) for d in dofs)} accel\n"
                 )
         elif rec_type == "element_force":
             output = rec.get("output", "element_force")
-            for elem_id in rec["elements"]:
-                filename = f"{output}_ele{elem_id}.out"
-                f.write(f"recorder Element -file {filename} -ele {elem_id} force\n")
-        elif rec_type == "element_local_force":
-            output = rec.get("output", "element_local_force")
+            dof_flag = ""
+            if rec.get("dofs"):
+                dof_flag = f"-dof {' '.join(str(d) for d in rec['dofs'])} "
             for elem_id in rec["elements"]:
                 filename = f"{output}_ele{elem_id}.out"
                 f.write(
-                    f"recorder Element -file {filename} -ele {elem_id} localForce\n"
+                    f"recorder Element {precision_flag}-file {filename} {sampling}-ele {elem_id} {dof_flag}force\n"
+                )
+        elif rec_type in {"quad_stress", "quad_strain", "quad_state"}:
+            output = rec.get("output", rec_type)
+            point = rec.get("integration_point", 1)
+            response = rec_type.removeprefix("quad_")
+            suffix = (
+                f" {rec['stress_components']}" if "stress_components" in rec else ""
+            )
+            for elem_id in rec["elements"]:
+                filename = f"{output}_ele{elem_id}.out"
+                material_prefix = (
+                    "" if elem_id in ssp_quad_tags else f"material {point} "
+                )
+                f.write(
+                    f"recorder Element {precision_flag}-file {filename} {sampling}"
+                    f"-ele {elem_id} {material_prefix}{response}{suffix}\n"
+                )
+        elif rec_type == "element_local_force":
+            output = rec.get("output", "element_local_force")
+            dof_flag = ""
+            if rec.get("dofs"):
+                dof_flag = f"-dof {' '.join(str(d) for d in rec['dofs'])} "
+            for elem_id in rec["elements"]:
+                filename = f"{output}_ele{elem_id}.out"
+                f.write(
+                    f"recorder Element -file {filename} -ele {elem_id} {dof_flag}localForce\n"
                 )
         elif rec_type == "element_basic_force":
             output = rec.get("output", "element_basic_force")
+            dof_flag = ""
+            if rec.get("dofs"):
+                dof_flag = f"-dof {' '.join(str(d) for d in rec['dofs'])} "
+            response = {"material": "material stress", "axialForce": "axialForce"}.get(
+                rec.get("truss_response"), "basicForce"
+            )
             for elem_id in rec["elements"]:
                 filename = f"{output}_ele{elem_id}.out"
                 f.write(
-                    f"recorder Element -file {filename} -ele {elem_id} basicForce\n"
+                    f"recorder Element -file {filename} -ele {elem_id} {dof_flag}{response}\n"
                 )
         elif rec_type == "element_deformation":
             output = rec.get("output", "element_deformation")
+            dof_flag = ""
+            if rec.get("dofs"):
+                dof_flag = f"-dof {' '.join(str(d) for d in rec['dofs'])} "
             for elem_id in rec["elements"]:
                 filename = f"{output}_ele{elem_id}.out"
                 f.write(
-                    f"recorder Element -file {filename} -ele {elem_id} deformation\n"
+                    f"recorder Element -file {filename} -ele {elem_id} {dof_flag}deformation\n"
                 )
         elif rec_type == "node_reaction":
             dofs = rec["dofs"]
@@ -806,7 +935,7 @@ def _emit_recorders(f, recorders, node_by_id, ndf):
             for node_id in rec["nodes"]:
                 filename = f"{output}_node{node_id}.out"
                 f.write(
-                    f"recorder Node -file {filename} -node {node_id} -dof {' '.join(str(d) for d in dofs)} reaction\n"
+                    f"recorder Node {precision_flag}-file {filename} {sampling}-node {node_id} -dof {' '.join(str(d) for d in dofs)} reaction\n"
                 )
         elif rec_type == "drift":
             i_node = rec["i_node"]
@@ -822,7 +951,6 @@ def _emit_recorders(f, recorders, node_by_id, ndf):
             output = rec.get("output", "envelope_element_force")
             for elem_id in rec["elements"]:
                 filename = f"{output}_ele{elem_id}.out"
-                time_flag = "-time " if rec.get("include_time") else ""
                 f.write(
                     f"recorder EnvelopeElement {time_flag}-file {filename} -ele {elem_id} forces\n"
                 )
@@ -830,7 +958,6 @@ def _emit_recorders(f, recorders, node_by_id, ndf):
             output = rec.get("output", "envelope_element_local_force")
             for elem_id in rec["elements"]:
                 filename = f"{output}_ele{elem_id}.out"
-                time_flag = "-time " if rec.get("include_time") else ""
                 f.write(
                     f"recorder EnvelopeElement {time_flag}-file {filename} -ele {elem_id} localForce\n"
                 )
@@ -839,7 +966,6 @@ def _emit_recorders(f, recorders, node_by_id, ndf):
             output = rec.get("output", "envelope_node_displacement")
             for node_id in rec["nodes"]:
                 filename = f"{output}_node{node_id}.out"
-                time_flag = "-time " if rec.get("include_time") else ""
                 f.write(
                     f"recorder EnvelopeNode {time_flag}-file {filename} -node {node_id} -dof {' '.join(str(d) for d in dofs)} disp\n"
                 )
@@ -851,7 +977,6 @@ def _emit_recorders(f, recorders, node_by_id, ndf):
                 time_series_flag = f"-timeSeries {int(rec['time_series'])} "
             for node_id in rec["nodes"]:
                 filename = f"{output}_node{node_id}.out"
-                time_flag = "-time " if rec.get("include_time") else ""
                 f.write(
                     f"recorder EnvelopeNode {time_flag}-file {filename} {time_series_flag}-node {node_id} -dof {' '.join(str(d) for d in dofs)} accel\n"
                 )
@@ -900,6 +1025,9 @@ def main():
 
     nodes = _require_field(data, "nodes")
     elements = _require_field(data, "elements")
+    ssp_quad_tags = {
+        element["id"] for element in elements if element["type"] == "SSPquad"
+    }
     sections = {sec["id"]: sec for sec in data.get("sections", [])}
     materials = {mat["id"]: mat for mat in data.get("materials", [])}
     node_by_id = {node["id"]: node for node in nodes}
@@ -915,16 +1043,22 @@ def main():
 
         for node in nodes:
             node_id = node["id"]
-            if ndm == 2:
-                f.write(f"node {node_id} {node['x']} {node['y']}\n")
+            node_ndf = node.get("ndf", ndf)
+            ndf_option = f" -ndf {node_ndf}" if node_ndf != ndf else ""
+            if ndm == 1:
+                f.write(f"node {node_id} {node['x']}{ndf_option}\n")
+            elif ndm == 2:
+                f.write(f"node {node_id} {node['x']} {node['y']}{ndf_option}\n")
             elif ndm == 3:
                 if "z" not in node:
                     raise ValueError(f"ndm=3 node {node_id} missing z coordinate")
-                f.write(f"node {node_id} {node['x']} {node['y']} {node['z']}\n")
+                f.write(
+                    f"node {node_id} {node['x']} {node['y']} {node['z']}{ndf_option}\n"
+                )
             else:
-                raise ValueError("ndm must be 2 or 3")
+                raise ValueError("ndm must be 1, 2, or 3")
 
-            fix = _constraints_to_fix(ndf, node.get("constraints"))
+            fix = _constraints_to_fix(node_ndf, node.get("constraints"))
             if fix is not None:
                 f.write(f"fix {node_id} {' '.join(str(v) for v in fix)}\n")
 
@@ -983,11 +1117,89 @@ def main():
             if mat["type"] == "Elastic":
                 E = params["E"]
                 f.write(f"uniaxialMaterial Elastic {mat['id']} {E}\n")
-            elif mat["type"] == "Steel01":
+            elif mat["type"] in {"HystereticSmooth", "HystereticAsym"}:
+                keys = (
+                    ("ka", "kb", "fbar", "beta")
+                    if mat["type"] == "HystereticSmooth"
+                    else ("ka", "kb", "fbar", "beta1", "beta2", "gamma")
+                )
+                values = " ".join(
+                    str(_require_field(mat["params"], key)) for key in keys
+                )
+                f.write(f"uniaxialMaterial {mat['type']} {mat['id']} {values}\n")
+            elif mat["type"] == "ENT":
+                f.write(
+                    f"uniaxialMaterial ENT {mat['id']} {params['E']} "
+                    f"{params.get('a', 0.0)} {params.get('b', 1.0)}\n"
+                )
+            elif mat["type"] == "ElasticPP":
+                E, positive = params["E"], params["epsyP"]
+                negative, offset = (
+                    params.get("epsyN", -positive),
+                    params.get("eps0", 0.0),
+                )
+                f.write(
+                    f"uniaxialMaterial ElasticPP {mat['id']} {E} {positive} {negative} {offset}\n"
+                )
+            elif mat["type"] == "ElasticBilin":
+                positive = [params[key] for key in ("E1P", "E2P", "eps2P")]
+                keys = ("E1N", "E2N", "eps2N")
+                if any(key in params for key in keys):
+                    positive.extend(params[key] for key in keys)
+                f.write(
+                    f"uniaxialMaterial ElasticBilin {mat['id']} "
+                    + " ".join(map(str, positive))
+                    + "\n"
+                )
+            elif mat["type"] == "Ratchet":
+                values = [
+                    params[key]
+                    for key in ("E", "freeTravel", "freeTravelInitial", "RatType")
+                ]
+                f.write(
+                    f"uniaxialMaterial Ratchet {mat['id']} "
+                    + " ".join(map(str, values))
+                    + "\n"
+                )
+            elif mat["type"] == "MinMax":
+                flags = "".join(
+                    f" -{key} {params[key]}" for key in ("min", "max") if key in params
+                )
+                f.write(
+                    f"uniaxialMaterial MinMax {mat['id']} {params['material']}{flags}\n"
+                )
+            elif mat["type"] == "Parallel":
+                children = params["materials"]
+                if not children or any(child not in materials for child in children):
+                    raise ValueError("Parallel requires existing child materials")
+                factors = params.get("factors")
+                suffix = ""
+                if factors is not None:
+                    if len(factors) != len(children):
+                        raise ValueError("Parallel requires one factor per material")
+                    suffix = " -factors " + " ".join(map(str, factors))
+                f.write(
+                    f"uniaxialMaterial Parallel {mat['id']} "
+                    + " ".join(map(str, children))
+                    + suffix
+                    + "\n"
+                )
+            elif mat["type"] in {"Steel01", "Steel01Thermal"}:
                 fy = params["Fy"]
                 E0 = params["E0"]
                 b = params["b"]
-                f.write(f"uniaxialMaterial Steel01 {mat['id']} {fy} {E0} {b}\n")
+                f.write(f"uniaxialMaterial {mat['type']} {mat['id']} {fy} {E0} {b}\n")
+            elif mat["type"] in {"PySimple1", "TzSimple1", "QzSimple1"}:
+                required, optional = {
+                    "PySimple1": (("soilType", "pult", "y50", "Cd"), ("c",)),
+                    "TzSimple1": (("tzType", "tult", "z50"), ("c",)),
+                    "QzSimple1": (("qzType", "qult", "z50"), ("suction", "c")),
+                }[mat["type"]]
+                values = [params[name] for name in required]
+                values.extend(params.get(name, 0.0) for name in optional)
+                f.write(
+                    f"uniaxialMaterial {mat['type']} {mat['id']} {_format_list(values)}\n"
+                )
             elif mat["type"] == "Steel02":
                 fy = params["Fy"]
                 E0 = params["E0"]
@@ -1028,6 +1240,56 @@ def main():
                     )
                 else:
                     f.write(f"uniaxialMaterial Steel02 {mat['id']} {fy} {E0} {b}\n")
+            elif mat["type"] == "SteelMPF":
+                required = ("fyp", "fyn", "E0", "bp", "bn", "R0", "cR1", "cR2")
+                optional = {"a1": 0.0, "a2": 1.0, "a3": 0.0, "a4": 1.0}
+                values = [params[key] for key in required]
+                if any(key in params for key in optional):
+                    values.extend(
+                        params.get(key, default) for key, default in optional.items()
+                    )
+                f.write(
+                    f"uniaxialMaterial SteelMPF {mat['id']} {_format_list(values)}\n"
+                )
+            elif mat["type"] == "FSAM":
+                values = [
+                    params[key]
+                    for key in (
+                        "rho",
+                        "steel_x",
+                        "steel_y",
+                        "concrete",
+                        "rho_x",
+                        "rho_y",
+                        "friction",
+                        "dowel",
+                    )
+                ]
+                f.write(f"nDMaterial FSAM {mat['id']} {_format_list(values)}\n")
+            elif mat["type"] == "ConcreteCM":
+                required = (
+                    "fpcc",
+                    "epcc",
+                    "Ec",
+                    "rc",
+                    "xcrn",
+                    "ft",
+                    "et",
+                    "rt",
+                    "xcrp",
+                )
+                values = _format_list(params[key] for key in required)
+                gap = int(params.get("gap_close", 0))
+                monotonic = int(params.get("monotonic", 0))
+                if gap and monotonic:
+                    raise ValueError(
+                        "OpenSees ConcreteCM accepts either monotonic mode or -GapClose"
+                    )
+                if gap:
+                    values += f" -GapClose {gap}"
+                if monotonic:
+                    values += f" {monotonic}"
+                f.write(f"uniaxialMaterial ConcreteCM {mat['id']} {values}\n")
             elif mat["type"] == "Concrete01":
                 fpc = params["fpc"]
                 epsc0 = params["epsc0"]
@@ -1056,11 +1318,65 @@ def main():
                     f.write(
                         f"uniaxialMaterial Concrete02 {mat['id']} {fpc} {epsc0} {fpcu} {epscu}\n"
                     )
+            elif mat["type"] in {"Bilin", "Hysteretic", "ModIMKPeakOriented"}:
+                values = " ".join(map(str, params["values"]))
+                f.write(f"uniaxialMaterial {mat['type']} {mat['id']} {values}\n")
+            elif mat["type"] == "Fatigue":
+                options = "".join(
+                    f" -{key} {params[key]}"
+                    for key in ("Dmax", "E0", "m", "min", "max")
+                    if key in params
+                )
+                f.write(
+                    f"uniaxialMaterial Fatigue {mat['id']} {params['material']}{options}\n"
+                )
+            elif mat["type"] == "ViscousDamper":
+                K = params["K"]
+                C = params["C"]
+                alpha = params.get("alpha", params.get("Alpha", 1.0))
+                if any(key in params for key in ("NM", "RelTol", "AbsTol", "MaxHalf")):
+                    lgap = params.get("LGap", 0.0)
+                    nm = params.get("NM", 1.0)
+                    reltol = params.get("RelTol", 1.0e-6)
+                    abstol = params.get("AbsTol", 1.0e-10)
+                    maxhalf = params.get("MaxHalf", 15.0)
+                    f.write(
+                        f"uniaxialMaterial ViscousDamper {mat['id']} {K} {C} {alpha} "
+                        f"{lgap} {nm} {reltol} {abstol} {maxhalf}\n"
+                    )
+                elif "LGap" in params:
+                    f.write(
+                        f"uniaxialMaterial ViscousDamper {mat['id']} {K} {C} {alpha} {params['LGap']}\n"
+                    )
+                else:
+                    f.write(
+                        f"uniaxialMaterial ViscousDamper {mat['id']} {K} {C} {alpha}\n"
+                    )
             elif mat["type"] == "ElasticIsotropic":
                 E = params["E"]
                 nu = params["nu"]
                 rho = params.get("rho", 0.0)
                 f.write(f"nDMaterial ElasticIsotropic {mat['id']} {E} {nu} {rho}\n")
+            elif mat["type"] == "DruckerPrager":
+                keys = (
+                    "bulk",
+                    "shear",
+                    "yield_stress",
+                    "friction",
+                    "dilation",
+                    "saturation",
+                    "initial_hardening",
+                    "saturation_rate",
+                    "tension_rate",
+                    "hardening",
+                    "isotropic_fraction",
+                )
+                values = " ".join(str(params[key]) for key in keys)
+                density = params.get("rho", 0.0)
+                pressure = params.get("atmospheric_pressure", 101.0)
+                f.write(
+                    f"nDMaterial DruckerPrager {mat['id']} {values} {density} {pressure}\n"
+                )
             elif mat["type"] == "ConcreteS":
                 values = " ".join(
                     str(params[key]) for key in ("E", "nu", "fc", "ft", "Es")
@@ -1078,6 +1394,9 @@ def main():
                 f.write(
                     f"nDMaterial PlaneStressUserMaterial {mat['id']} {nstatevs} {nprops} {prop_text}\n"
                 )
+            elif mat["type"] == "PlateFiber":
+                material = int(params["material"])
+                f.write(f"nDMaterial PlateFiber {mat['id']} {material}\n")
             elif mat["type"] == "PlateFromPlaneStress":
                 material = params["material"]
                 gmod = params["gmod"]
@@ -1091,14 +1410,57 @@ def main():
             else:
                 raise ValueError(f"unsupported material type: {mat['type']}")
 
-        # Sections (elastic, membrane/plate, or FiberSection2d/FiberSection3d subset)
+        # Reconstruct both torsion responses from the flattened beam section.
+        # Sliced models may contain only the resulting section and its fibers.
+        emitted_sections = []
+        next_section_tag = max(sections, default=0) + 1
+        next_material_tag = max(materials, default=0) + 1
         for sec in sections.values():
+            params = sec["params"]
+            added = params.get("added_torsional_rigidity", 0.0)
+            if added > 0.0:
+                f.write(f"uniaxialMaterial Elastic {next_material_tag} {added}\n")
+                materials[next_material_tag] = {
+                    "id": next_material_tag,
+                    "type": "Elastic",
+                    "params": {"E": added},
+                }
+                emitted_sections.append(
+                    {
+                        **sec,
+                        "id": next_section_tag,
+                        "params": {
+                            **params,
+                            "G": params["base_torsional_rigidity"],
+                            "J": 1.0,
+                        },
+                    }
+                )
+                emitted_sections.append(
+                    {
+                        "id": sec["id"],
+                        "type": "AggregatorSection3d",
+                        "params": {
+                            "torsion_material": next_material_tag,
+                            "base_section": next_section_tag,
+                        },
+                    }
+                )
+                next_section_tag += 1
+                next_material_tag += 1
+            else:
+                emitted_sections.append(sec)
+        for sec in emitted_sections:
             params = sec["params"]
             if sec["type"] == "ElasticSection2d":
                 E = params["E"]
                 A = params["A"]
                 I = params["I"]
-                f.write(f"section Elastic {sec['id']} {E} {A} {I}\n")
+                shear = ""
+                if params.get("shear_rigidity_y", 0.0) != 0.0:
+                    G = params.get("G", 1.0)
+                    shear = f" {G} {params['shear_rigidity_y'] / (G * A)}"
+                f.write(f"section Elastic {sec['id']} {E} {A} {I}{shear}\n")
             elif sec["type"] == "ElasticSection3d":
                 E = params["E"]
                 A = params["A"]
@@ -1106,14 +1468,30 @@ def main():
                 Iy = params["Iy"]
                 G = params["G"]
                 J = params["J"]
-                f.write(f"section Elastic {sec['id']} {E} {A} {Iz} {Iy} {G} {J}\n")
+                shear = ""
+                if "shear_rigidity_y" in params and "shear_rigidity_z" in params:
+                    shear = (
+                        f" {params['shear_rigidity_y'] / (G * A)}"
+                        f" {params['shear_rigidity_z'] / (G * A)}"
+                    )
+                f.write(
+                    f"section Elastic {sec['id']} {E} {A} {Iz} {Iy} {G} {J}{shear}\n"
+                )
+            elif sec["type"] == "PlateFiber":
+                material = int(params["material"])
+                h = float(params["h"])
+                integration = params.get("integration", "Lobatto")
+                f.write(
+                    f"section PlateFiber {sec['id']} {material} {h} {integration}\n"
+                )
             elif sec["type"] == "ElasticMembranePlateSection":
                 E = params["E"]
                 nu = params["nu"]
                 h = params["h"]
                 rho = params.get("rho", 0.0)
+                plate_mod = f" {params['Ep_mod']}" if "Ep_mod" in params else ""
                 f.write(
-                    f"section ElasticMembranePlateSection {sec['id']} {E} {nu} {h} {rho}\n"
+                    f"section ElasticMembranePlateSection {sec['id']} {E} {nu} {h} {rho}{plate_mod}\n"
                 )
             elif sec["type"] == "LayeredShellSection":
                 layers = params.get("layers", [])
@@ -1124,7 +1502,8 @@ def main():
                     tokens.append(str(layer["material"]))
                     tokens.append(str(layer["thickness"]))
                 f.write(" ".join(tokens) + "\n")
-            elif sec["type"] == "AggregatorSection2d":
+            elif sec["type"] in ("AggregatorSection2d", "AggregatorSection3d"):
+                sec_type = sec["type"]
                 response_order = (
                     ("axial_material", "P"),
                     ("flexural_material", "Mz"),
@@ -1139,20 +1518,16 @@ def main():
                     if material_id < 0:
                         continue
                     if material_id not in materials:
-                        raise ValueError(
-                            f"AggregatorSection2d material {material_id} not found"
-                        )
+                        raise ValueError(f"{sec_type} material {material_id} not found")
                     if materials[material_id]["type"] == "ElasticIsotropic":
-                        raise ValueError(
-                            "AggregatorSection2d requires uniaxial materials"
-                        )
+                        raise ValueError(f"{sec_type} requires uniaxial materials")
                     tokens.extend((str(material_id), response_name))
                 base_section = int(params.get("base_section", -1))
                 if base_section >= 0:
                     tokens.extend(("-section", str(base_section)))
                 if not tokens:
                     raise ValueError(
-                        "AggregatorSection2d requires at least one uniaxial response"
+                        f"{sec_type} requires at least one uniaxial response"
                     )
                 f.write(f"section Aggregator {sec['id']} {' '.join(tokens)}\n")
             elif sec["type"] in ("FiberSection2d", "FiberSection3d"):
@@ -1172,7 +1547,8 @@ def main():
                     else:
                         f.write(f"section Fiber {sec['id']} {{\n")
                 else:
-                    f.write(f"section Fiber {sec['id']} {{\n")
+                    kind = "FiberThermal" if params.get("thermal") else "Fiber"
+                    f.write(f"section {kind} {sec['id']} {{\n")
                 for patch in patches:
                     patch_type = patch.get("type")
                     if patch_type == "quad":
@@ -1184,6 +1560,25 @@ def main():
                         raise ValueError(
                             f"{sec_type} patch requires uniaxial material (not ElasticIsotropic)"
                         )
+                    if patch_type == "circ":
+                        n_circ = patch["num_subdiv_circ"]
+                        n_rad = patch["num_subdiv_rad"]
+                        if n_circ <= 0 or n_rad <= 0:
+                            raise ValueError(
+                                f"{sec_type} patch circ requires num_subdiv_circ and num_subdiv_rad > 0"
+                            )
+                        yc = patch["y_center"]
+                        zc = patch["z_center"]
+                        int_rad = patch["int_rad"]
+                        ext_rad = patch["ext_rad"]
+                        start_ang = patch.get("start_ang", 0.0)
+                        end_ang = patch.get("end_ang", 360.0)
+                        f.write(
+                            "  patch circ "
+                            f"{mat} {n_circ} {n_rad} "
+                            f"{yc} {zc} {int_rad} {ext_rad} {start_ang} {end_ang}\n"
+                        )
+                        continue
                     ny = patch["num_subdiv_y"]
                     nz = patch["num_subdiv_z"]
                     if ny <= 0 or nz <= 0:
@@ -1216,7 +1611,7 @@ def main():
                         )
                 for layer in layers:
                     layer_type = layer.get("type")
-                    if layer_type != "straight":
+                    if layer_type not in ("straight", "circ"):
                         raise ValueError(
                             f"unsupported {sec_type} layer type: {layer_type}"
                         )
@@ -1229,23 +1624,40 @@ def main():
                         )
                     num_bars = layer["num_bars"]
                     bar_area = layer["bar_area"]
-                    y_start = layer["y_start"]
-                    z_start = layer["z_start"]
-                    y_end = layer["y_end"]
-                    z_end = layer["z_end"]
                     if num_bars <= 0:
                         raise ValueError(
-                            f"{sec_type} layer straight requires num_bars > 0"
+                            f"{sec_type} layer {layer_type} requires num_bars > 0"
                         )
                     if bar_area <= 0:
                         raise ValueError(
-                            f"{sec_type} layer straight requires bar_area > 0"
+                            f"{sec_type} layer {layer_type} requires bar_area > 0"
                         )
-                    f.write(
-                        "  layer straight "
-                        f"{mat} {num_bars} {bar_area} "
-                        f"{y_start} {z_start} {y_end} {z_end}\n"
-                    )
+                    if layer_type == "circ":
+                        yc = layer["y_center"]
+                        zc = layer["z_center"]
+                        radius = layer["radius"]
+                        if "start_ang" in layer and "end_ang" in layer:
+                            f.write(
+                                "  layer circ "
+                                f"{mat} {num_bars} {bar_area} "
+                                f"{yc} {zc} {radius} {layer['start_ang']} {layer['end_ang']}\n"
+                            )
+                        else:
+                            f.write(
+                                "  layer circ "
+                                f"{mat} {num_bars} {bar_area} "
+                                f"{yc} {zc} {radius}\n"
+                            )
+                    else:
+                        y_start = layer["y_start"]
+                        z_start = layer["z_start"]
+                        y_end = layer["y_end"]
+                        z_end = layer["z_end"]
+                        f.write(
+                            "  layer straight "
+                            f"{mat} {num_bars} {bar_area} "
+                            f"{y_start} {z_start} {y_end} {z_end}\n"
+                        )
                 for fiber in fibers:
                     mat = fiber["material"]
                     if mat not in materials:
@@ -1259,7 +1671,7 @@ def main():
                         raise ValueError(f"{sec_type} fiber area must be > 0")
                     f.write(f"  fiber {fiber['y']} {fiber['z']} {area} {mat}\n")
                 f.write("}\n")
-            else:
+            elif sec["type"] != "HingeRadauSection2d":
                 raise ValueError(f"unsupported section type: {sec['type']}")
 
         # Geometric transformations (only for beam-column elements)
@@ -1307,11 +1719,17 @@ def main():
             ):
                 continue
             sec = sections[elem["section"]]
+            if sec["type"] == "HingeRadauSection2d":
+                continue
             is_3d = elem_type in ("forceBeamColumn3d", "dispBeamColumn3d")
             if is_3d:
-                if sec["type"] not in ("ElasticSection3d", "FiberSection3d"):
+                if sec["type"] not in (
+                    "ElasticSection3d",
+                    "FiberSection3d",
+                    "AggregatorSection3d",
+                ):
                     raise ValueError(
-                        f"{elem_type} requires ElasticSection3d or FiberSection3d"
+                        f"{elem_type} requires ElasticSection3d, FiberSection3d, or AggregatorSection3d"
                     )
             elif sec["type"] not in (
                 "FiberSection2d",
@@ -1354,7 +1772,22 @@ def main():
 
         # Elements (elasticBeamColumn2d, truss, zeroLength, zeroLengthSection, twoNodeLink, fourNodeQuad/bbarQuad, shell)
         for elem in elements:
-            if elem["type"] == "elasticBeamColumn2d":
+            if (
+                elem["type"] == "forceBeamColumn2d"
+                and elem.get("integration") == "HingeRadau"
+            ):
+                params = sections[elem["section"]]["params"]
+                n1, n2 = elem["nodes"]
+                transf = transf_tags[(elem.get("geomTransf", "Linear"), None)]
+                f.write(
+                    f"element beamWithHinges {elem['id']} {n1} {n2} "
+                    f"{params['section_i']} {params['length_i']} "
+                    f"{params['section_j']} {params['length_j']} "
+                    f"{params['E']} {params['A']} {params['I']} {transf}"
+                    f"{_element_mass_option(elem)} "
+                    f"-iter {params.get('max_iters', 10)} {params.get('tol', 1.0e-10)}\n"
+                )
+            elif elem["type"] == "elasticBeamColumn2d":
                 sec = sections[elem["section"]]
                 if sec["type"] == "FiberSection2d":
                     raise ValueError(
@@ -1383,7 +1816,11 @@ def main():
                 sec = sections[elem["section"]]
                 is_3d = elem_type in ("forceBeamColumn3d", "dispBeamColumn3d")
                 if is_3d:
-                    if sec["type"] not in ("ElasticSection3d", "FiberSection3d"):
+                    if sec["type"] not in (
+                        "ElasticSection3d",
+                        "FiberSection3d",
+                        "AggregatorSection3d",
+                    ):
                         raise ValueError(
                             f"{elem_type} requires ElasticSection3d or FiberSection3d"
                         )
@@ -1410,6 +1847,10 @@ def main():
                 element_cmd = "forceBeamColumn"
                 if elem_type in ("dispBeamColumn2d", "dispBeamColumn3d"):
                     element_cmd = "dispBeamColumn"
+                if elem.get("thermal"):
+                    element_cmd = "dispBeamColumnThermal"
+                if elem.get("cbdi"):
+                    element_cmd = "forceBeamColumnCBDI"
                 f.write(
                     f"element {element_cmd} {elem['id']} {n1} {n2} {transf_tag} {int_tag}"
                     f"{_element_mass_option(elem)}\n"
@@ -1437,14 +1878,25 @@ def main():
                         f"element elasticBeamColumn {elem['id']} {n1} {n2} {elem['section']} {transf_tag}"
                         f"{_element_mass_option(elem)}\n"
                     )
-            elif elem["type"] == "truss":
+            elif elem["type"] in {"truss", "corotTruss"}:
                 n1, n2 = elem["nodes"]
                 area = elem["area"]
                 mat_id = elem["material"]
                 # OpenSees leaves a truss out of Rayleigh damping unless told otherwise.
                 do_rayleigh = " -doRayleigh 1" if elem.get("doRayleigh") else ""
                 f.write(
-                    f"element truss {elem['id']} {n1} {n2} {area} {mat_id}{do_rayleigh}\n"
+                    f"element {elem['type']} {elem['id']} {n1} {n2} {area} {mat_id}{do_rayleigh}\n"
+                )
+            elif elem["type"] == "CoupledZeroLength":
+                values = [
+                    elem["id"],
+                    *elem["nodes"],
+                    *elem["dirs"],
+                    *elem["materials"],
+                    int(elem.get("doRayleigh", False)),
+                ]
+                f.write(
+                    "element CoupledZeroLength " + " ".join(map(str, values)) + "\n"
                 )
             elif elem["type"] == "zeroLength":
                 n1, n2 = elem["nodes"]
@@ -1468,11 +1920,67 @@ def main():
                 if sec_id not in sections:
                     raise ValueError("zeroLengthSection section not found")
                 sec_type = sections[sec_id]["type"]
-                if sec_type not in ("FiberSection2d", "ElasticSection2d"):
+                if ndm == 2 and ndf == 3:
+                    allowed_sec_types = (
+                        "FiberSection2d",
+                        "ElasticSection2d",
+                        "AggregatorSection2d",
+                    )
+                elif ndm == 3 and ndf == 6:
+                    allowed_sec_types = (
+                        "FiberSection3d",
+                        "ElasticSection3d",
+                        "AggregatorSection3d",
+                    )
+                else:
                     raise ValueError(
-                        "zeroLengthSection requires FiberSection2d or ElasticSection2d"
+                        "zeroLengthSection requires (ndm=2, ndf=3) or (ndm=3, ndf=6)"
+                    )
+                if sec_type not in allowed_sec_types:
+                    raise ValueError(
+                        f"zeroLengthSection requires one of {', '.join(allowed_sec_types)}"
                     )
                 f.write(f"element zeroLengthSection {elem['id']} {n1} {n2} {sec_id}\n")
+            elif elem["type"] == "CatenaryCable":
+                n1, n2 = elem["nodes"]
+                keys = (
+                    "weight",
+                    "E",
+                    "A",
+                    "L0",
+                    "alpha",
+                    "temperature_change",
+                    "rho",
+                    "error_tol",
+                    "substeps",
+                    "mass_type",
+                )
+                values = _format_list(elem[key] for key in keys)
+                f.write(f"element CatenaryCable {elem['id']} {n1} {n2} {values}\n")
+            elif elem["type"] == "SFI_MVLEM":
+                n1, n2 = elem["nodes"]
+                panels = elem["panels"]
+                line = f"element SFI_MVLEM {elem['id']} {n1} {n2} {len(panels)} {elem['c']}"
+                for flag, key in (
+                    ("-thick", "thickness"),
+                    ("-width", "width"),
+                    ("-mat", "material"),
+                ):
+                    line += f" {flag} {_format_list(panel[key] for panel in panels)}"
+                f.write(line + "\n")
+            elif elem["type"] == "MVLEM":
+                n1, n2 = elem["nodes"]
+                fibers = elem["fibers"]
+                line = f"element MVLEM {elem['id']} {elem['density']} {n1} {n2} {len(fibers)} {elem['c']}"
+                for flag, key in (
+                    ("thick", "thickness"),
+                    ("width", "width"),
+                    ("rho", "rho"),
+                    ("matConcrete", "concrete"),
+                    ("matSteel", "steel"),
+                ):
+                    line += f" -{flag} {_format_list(fiber[key] for fiber in fibers)}"
+                f.write(f"{line} -matShear {elem['shear_material']}\n")
             elif elem["type"] == "twoNodeLink":
                 n1, n2 = elem["nodes"]
                 mats = " ".join(str(mid) for mid in elem["materials"])
@@ -1494,19 +2002,62 @@ def main():
                 if mass != 0.0:
                     line += f" -mass {mass}"
                 f.write(line + "\n")
-            elif elem["type"] == "fourNodeQuad" or elem["type"] == "bbarQuad":
-                n1, n2, n3, n4 = elem["nodes"]
-                t = elem["thickness"]
-                mat_id = elem["material"]
+            elif elem["type"] in {
+                "stdBrick",
+                "bbarBrick",
+                "SSPbrick",
+                "SSPquad",
+                "fourNodeQuad",
+                "enhancedQuad",
+                "bbarQuad",
+                "quad3d",
+                "quad8n",
+                "quad9n",
+            }:
+                kind = elem["type"]
+                command = "quad" if kind == "fourNodeQuad" else kind
+                nodes = _format_list(elem["nodes"])
+                material = elem["material"]
+                body = _format_list([elem.get("body_x", 0.0), elem.get("body_y", 0.0)])
+                if kind in {"stdBrick", "bbarBrick", "SSPbrick"}:
+                    options = f"{material} {body} {elem.get('body_z', 0.0)}"
+                elif kind == "bbarQuad":
+                    options = f"{elem['thickness']} {material}"
+                else:
+                    thickness = elem["thickness"]
+                    formulation = elem.get("formulation", "PlaneStress")
+                    if kind == "SSPquad":
+                        options = f"{material} {formulation} {thickness} {body}"
+                    else:
+                        options = f"{thickness} {formulation} {material}"
+                        if kind != "enhancedQuad":
+                            options += f" {elem.get('pressure', 0.0)} {elem.get('rho', 0.0)} {body}"
+                f.write(f"element {command} {elem['id']} {nodes} {options}\n")
+            elif elem["type"] == "tri31":
+                nodes = _format_list(elem["nodes"])
                 formulation = elem.get("formulation", "PlaneStress")
                 f.write(
-                    f'element quad {elem["id"]} {n1} {n2} {n3} {n4} {t} "{formulation}" {mat_id}\n'
+                    f'element tri31 {elem["id"]} {nodes} {elem["thickness"]} "{formulation}" {elem["material"]}\n'
                 )
-            elif elem["type"] == "shell":
-                n1, n2, n3, n4 = elem["nodes"]
-                sec_id = elem["section"]
+            elif elem["type"] in {
+                "shell",
+                "ShellDKGT",
+                "ShellDKGQ",
+                "ShellNLDKGQ",
+                "ASDShellQ4",
+            }:
+                shell_type = "ShellMITC4" if elem["type"] == "shell" else elem["type"]
+                shell_nodes = " ".join(str(node) for node in elem["nodes"])
+                options = ""
+                if shell_type == "ASDShellQ4":
+                    if elem.get("geomTransf") == "Corotational":
+                        options += " -corotational"
+                    if not elem.get("eas", True):
+                        options += " -noeas"
+                    if "drilling_stab" in elem:
+                        options += f" -drillingStab {elem['drilling_stab']}"
                 f.write(
-                    f"element ShellMITC4 {elem['id']} {n1} {n2} {n3} {n4} {sec_id}\n"
+                    f"element {shell_type} {elem['id']} {shell_nodes} {elem['section']}{options}\n"
                 )
             else:
                 raise ValueError(f"unsupported element type: {elem['type']}")
@@ -1571,41 +2122,20 @@ def main():
                         f.write(f"  load {node_id} {' '.join(str(v) for v in vec)}\n")
                 for elem_load in element_loads:
                     _emit_element_load(f, elem_load, ndm)
+                for sp in pattern.get("sp_constraints", []):
+                    f.write(f"  sp {sp['node']} {sp['dof']} {sp['value']}\n")
                 f.write("}\n")
             elif pattern_type == "UniformExcitation":
                 if loads or element_loads:
                     raise ValueError(
                         "UniformExcitation does not support nodal/element loads"
                     )
-                pattern_tag = pattern.get("tag", 1)
-                direction = pattern.get("direction")
-                if direction is None:
-                    raise ValueError("UniformExcitation pattern missing direction")
-                direction = int(direction)
-                if direction < 1 or direction > ndm:
-                    raise ValueError("UniformExcitation direction out of range 1..ndm")
-                accel_tag = pattern.get("accel", pattern.get("time_series"))
-                if accel_tag is None:
-                    raise ValueError(
-                        "UniformExcitation pattern missing accel time_series tag"
-                    )
-                accel_tag = int(accel_tag)
-                if accel_tag not in ts_tags:
-                    raise ValueError(
-                        f"UniformExcitation accel time_series tag {accel_tag} not found"
-                    )
-                f.write(
-                    f"pattern UniformExcitation {pattern_tag} {direction} -accel {accel_tag}\n"
-                )
+                _emit_uniform_excitations(f, pattern, ndm, ts_tags)
             else:
                 raise ValueError(f"unsupported pattern type: {pattern_type}")
         rayleigh = data.get("rayleigh")
         if rayleigh is not None:
-            alpha_m = float(rayleigh.get("alphaM", 0.0))
-            beta_k = float(rayleigh.get("betaK", 0.0))
-            beta_k_init = float(rayleigh.get("betaKInit", 0.0))
-            beta_k_comm = float(rayleigh.get("betaKComm", 0.0))
-            f.write(f"rayleigh {alpha_m} {beta_k} {beta_k_init} {beta_k_comm}\n")
+            _emit_rayleigh(f, rayleigh)
 
         # Analysis setup
         steps = analysis.get("steps", 1)
@@ -1618,21 +2148,49 @@ def main():
             stages = analysis.get("stages", [])
             if not isinstance(stages, list) or len(stages) == 0:
                 raise ValueError("staged analysis requires non-empty analysis.stages")
-            if constraints_handler not in ("Plain", "Transformation", "Lagrange"):
+            if constraints_handler not in (
+                "Plain",
+                "Transformation",
+                "Lagrange",
+                "Penalty",
+            ):
                 raise ValueError(
                     f"unsupported constraints handler: {constraints_handler}"
                 )
             if mp_constraints and constraints_handler not in (
                 "Transformation",
                 "Lagrange",
+                "Penalty",
             ):
                 raise ValueError(
-                    "mp_constraints require analysis.constraints=Transformation or Lagrange"
+                    "mp_constraints require Transformation, Lagrange, or Penalty"
                 )
 
-            _emit_recorders(f, recorders, node_by_id, ndf)
-
+            used_pattern_tags = {
+                int(excitation.get("tag", 1))
+                for stage in stages
+                for staged_pattern in [stage.get("pattern") or pattern or {}]
+                for excitation in [
+                    staged_pattern,
+                    *staged_pattern.get("excitations", []),
+                ]
+            }
+            next_constant_tag = max(used_pattern_tags, default=0) + 1
+            active_constant_tag = None
+            previous_stage_constants = ([], [])
+            previous_plain_pattern = None
             for stage_idx, stage in enumerate(stages):
+                _emit_recorders(
+                    f,
+                    [
+                        rec
+                        for rec in recorders
+                        if rec.get("start_stage", 0) == stage_idx
+                    ],
+                    node_by_id,
+                    ndf,
+                    ssp_quad_tags,
+                )
                 if not isinstance(stage, dict):
                     raise ValueError("analysis.stages entries must be objects")
                 stage_analysis = stage.get("analysis", stage)
@@ -1655,8 +2213,17 @@ def main():
                     "element_loads",
                     element_loads if stage_idx == 0 else [],
                 )
-                if stage_pattern is not None:
+                # Successive Tcl analyses can reuse the same active Plain pattern.
+                # OpenSees rejects a second definition with the same tag.
+                pattern_snapshot = (stage_pattern, stage_loads, stage_element_loads)
+                if (
+                    stage_pattern is not None
+                    and pattern_snapshot != previous_plain_pattern
+                ):
                     stage_pattern_type = stage_pattern.get("type", "Plain")
+                    previous_plain_pattern = (
+                        pattern_snapshot if stage_pattern_type == "Plain" else None
+                    )
                     if stage_pattern_type in {None, "None"}:
                         if stage_loads or stage_element_loads:
                             raise ValueError(
@@ -1689,64 +2256,65 @@ def main():
                                 )
                         for elem_load in stage_element_loads:
                             _emit_element_load(f, elem_load, ndm)
+                        for sp in stage_pattern.get("sp_constraints", []):
+                            f.write(f"  sp {sp['node']} {sp['dof']} {sp['value']}\n")
                         f.write("}\n")
                     elif stage_pattern_type == "UniformExcitation":
                         if stage_loads or stage_element_loads:
                             raise ValueError(
                                 "UniformExcitation does not support nodal/element loads"
                             )
-                        pattern_tag = stage_pattern.get("tag", 1)
-                        direction = stage_pattern.get("direction")
-                        if direction is None:
-                            raise ValueError(
-                                "UniformExcitation pattern missing direction"
-                            )
-                        direction = int(direction)
-                        if direction < 1 or direction > ndm:
-                            raise ValueError(
-                                "UniformExcitation direction out of range 1..ndm"
-                            )
-                        accel_tag = stage_pattern.get(
-                            "accel", stage_pattern.get("time_series")
-                        )
-                        if accel_tag is None:
-                            raise ValueError(
-                                "UniformExcitation pattern missing accel time_series tag"
-                            )
-                        accel_tag = int(accel_tag)
-                        if accel_tag not in ts_tags:
-                            raise ValueError(
-                                f"UniformExcitation accel time_series tag {accel_tag} not found"
-                            )
-                        f.write(
-                            f"pattern UniformExcitation {pattern_tag} {direction} -accel {accel_tag}\n"
-                        )
+                        _emit_uniform_excitations(f, stage_pattern, ndm, ts_tags)
                     else:
                         raise ValueError(
                             f"unsupported staged pattern type: {stage_pattern_type}"
                         )
-                elif stage_idx > 0 and (stage_loads or stage_element_loads):
+                elif (
+                    stage_pattern is None
+                    and stage_idx > 0
+                    and (stage_loads or stage_element_loads)
+                ):
                     raise ValueError(
                         "staged analysis stage loads require an explicit stage pattern"
                     )
 
+                stage_constants = (
+                    stage.get("constant_loads", []),
+                    stage.get("constant_element_loads", []),
+                )
+                if stage_constants != previous_stage_constants:
+                    if active_constant_tag is not None:
+                        f.write(f"remove loadPattern {active_constant_tag}\n")
+                        active_constant_tag = None
+                    if any(stage_constants):
+                        active_constant_tag = next_constant_tag
+                        next_constant_tag += 1
+                        f.write(f"pattern Plain {active_constant_tag} Constant {{\n")
+                        constant_nodes = {}
+                        for load in stage_constants[0]:
+                            dof = int(load["dof"])
+                            if not 1 <= dof <= ndf:
+                                raise ValueError(
+                                    f"load dof {dof} out of range 1..{ndf}"
+                                )
+                            values = constant_nodes.setdefault(
+                                load["node"], [0.0] * ndf
+                            )
+                            values[dof - 1] += load["value"]
+                        for node_id, values in constant_nodes.items():
+                            f.write(f"  load {node_id} {' '.join(map(str, values))}\n")
+                        for element_load in stage_constants[1]:
+                            _emit_element_load(f, element_load, ndm)
+                        f.write("}\n")
+                    previous_stage_constants = stage_constants
+
                 stage_rayleigh = stage.get("rayleigh")
                 if stage_rayleigh is not None:
-                    alpha_m = float(stage_rayleigh.get("alphaM", 0.0))
-                    beta_k = float(stage_rayleigh.get("betaK", 0.0))
-                    beta_k_init = float(stage_rayleigh.get("betaKInit", 0.0))
-                    beta_k_comm = float(stage_rayleigh.get("betaKComm", 0.0))
-                    f.write(
-                        f"rayleigh {alpha_m} {beta_k} {beta_k_init} {beta_k_comm}\n"
-                    )
+                    _emit_rayleigh(f, stage_rayleigh)
 
                 stage_constraints = stage_analysis.get(
                     "constraints", constraints_handler
                 )
-                if stage_constraints not in ("Plain", "Transformation", "Lagrange"):
-                    raise ValueError(
-                        f"unsupported constraints handler: {stage_constraints}"
-                    )
                 stage_numberer = _analysis_numberer(
                     stage_analysis,
                     analysis.get("numberer", "RCM"),
@@ -1758,11 +2326,34 @@ def main():
                 )
                 if bool(stage.get("initialize", False)):
                     f.write("initialize\n")
-                f.write(f"constraints {stage_constraints}\n")
+                f.write(_constraints_line(stage_analysis, stage_constraints) + "\n")
                 f.write(f"numberer {stage_numberer}\n")
                 f.write(stage_system_line + "\n")
 
                 stage_steps = int(stage_analysis.get("steps", 1))
+                if "start_time" in stage_analysis:
+                    f.write(f"setTime {stage_analysis['start_time']}\n")
+                explicit_samples = stage.get("sample_before", [])
+                if explicit_samples:
+                    active_displacements = [
+                        index
+                        for index, recorder in enumerate(recorders)
+                        if recorder["type"] == "node_displacement"
+                        and recorder.get("start_stage", 0) <= stage_idx
+                    ]
+                    if not active_displacements:
+                        raise ValueError(
+                            "explicit record requires active displacement recorders"
+                        )
+                    sample_count, extra = divmod(
+                        len(explicit_samples), len(active_displacements)
+                    )
+                    if extra or explicit_samples != active_displacements * sample_count:
+                        raise ValueError(
+                            "Tcl record samples all active displacement recorders"
+                        )
+                    f.write("record\n" * sample_count)
+
                 if stage_steps < 1:
                     raise ValueError("analysis steps must be >= 1")
                 stage_dt = None
@@ -1801,10 +2392,13 @@ def main():
                     )
                     integrator_type = integrator.get("type", "LoadControl")
                     if integrator_type == "LoadControl":
-                        f.write(
-                            _load_control_integrator_line(integrator, 1.0 / stage_steps)
-                            + "\n"
-                        )
+                        if not stage.get("resume_load_control", False):
+                            f.write(
+                                _load_control_integrator_line(
+                                    integrator, 1.0 / stage_steps
+                                )
+                                + "\n"
+                            )
                         f.write("analysis Static\n")
                         if len(solver_chain) > 1:
                             stage_static_nl_post_lines = [
@@ -1827,6 +2421,15 @@ def main():
                                     "}",
                                 ]
                             )
+                    elif integrator_type == "HSConstraint":
+                        arc = integrator["arc_length"]
+                        psi_u = integrator.get("psi_u", 1.0)
+                        psi_f = integrator.get("psi_f", 1.0)
+                        u_ref = integrator.get("u_ref", 1.0)
+                        f.write(
+                            f"integrator HSConstraint {arc} {psi_u} {psi_f} {u_ref}\n"
+                        )
+                        f.write("analysis Static\n")
                     elif integrator_type == "DisplacementControl":
                         node = integrator.get("node")
                         dof = integrator.get("dof")
@@ -1883,6 +2486,10 @@ def main():
                                     max_cutbacks,
                                     min_du,
                                     solver_chain,
+                                    relative=True,
+                                    displacement_limit=integrator.get(
+                                        "displacement_limit"
+                                    ),
                                 )
                             )
                     else:
@@ -1974,7 +2581,12 @@ def main():
                     f.write(f"analyze {stage_steps} {stage_dt}\n")
                 elif stage_type == "modal_eigen":
                     num_modes = int(stage_analysis.get("num_modes", 0))
-                    f.write(f"set strut_modal_lambda [eigen {num_modes}]\n")
+                    standard = (
+                        "-standard -symmBandLapack "
+                        if stage_analysis.get("standard_eigen")
+                        else ""
+                    )
+                    f.write(f"set strut_modal_lambda [eigen {standard}{num_modes}]\n")
                 elif stage_type == "static_nonlinear":
                     integrator = stage_analysis.get(
                         "integrator", {"type": "LoadControl"}
@@ -2005,21 +2617,25 @@ def main():
                     else:
                         lc_time = float(load_const)
                     f.write(f"loadConst -time {lc_time}\n")
+                    active_constant_tag = None
+                    previous_stage_constants = ([], [])
             return
 
         if steps < 1:
             raise ValueError("analysis steps must be >= 1")
-        if constraints_handler not in ("Plain", "Transformation", "Lagrange"):
-            raise ValueError(f"unsupported constraints handler: {constraints_handler}")
-        if mp_constraints and constraints_handler not in ("Transformation", "Lagrange"):
+        if mp_constraints and constraints_handler not in (
+            "Transformation",
+            "Lagrange",
+            "Penalty",
+        ):
             raise ValueError(
-                "mp_constraints require analysis.constraints=Transformation or Lagrange"
+                "mp_constraints require Transformation, Lagrange, or Penalty"
             )
         numberer = _analysis_numberer(analysis)
         system_line = _analysis_system_line(analysis)
         if bool(data.get("initialize", False)):
             f.write("initialize\n")
-        f.write(f"constraints {constraints_handler}\n")
+        f.write(_constraints_line(analysis, constraints_handler) + "\n")
         f.write(f"numberer {numberer}\n")
         f.write(system_line + "\n")
         if analysis_type == "static_linear":
@@ -2076,6 +2692,13 @@ def main():
                             "}",
                         ]
                     )
+            elif integrator_type == "HSConstraint":
+                arc = integrator["arc_length"]
+                psi_u = integrator.get("psi_u", 1.0)
+                psi_f = integrator.get("psi_f", 1.0)
+                u_ref = integrator.get("u_ref", 1.0)
+                f.write(f"integrator HSConstraint {arc} {psi_u} {psi_f} {u_ref}\n")
+                f.write("analysis Static\n")
             elif integrator_type == "DisplacementControl":
                 node = integrator.get("node")
                 dof = integrator.get("dof")
@@ -2126,6 +2749,7 @@ def main():
                             max_cutbacks,
                             min_du,
                             solver_chain,
+                            relative=True,
                         )
                     )
             else:
@@ -2207,7 +2831,7 @@ def main():
             raise ValueError(f"unsupported analysis type: {analysis_type}")
 
         # Recorders
-        _emit_recorders(f, recorders, node_by_id, ndf)
+        _emit_recorders(f, recorders, node_by_id, ndf, ssp_quad_tags)
 
         if analysis_type == "transient_linear" or (
             analysis_type == "transient_nonlinear" and transient_nonlinear_emits_analyze
@@ -2215,7 +2839,10 @@ def main():
             f.write(f"analyze {steps} {dt}\n")
         elif analysis_type == "modal_eigen":
             num_modes = int(analysis.get("num_modes", 0))
-            f.write(f"set strut_modal_lambda [eigen {num_modes}]\n")
+            standard = (
+                "-standard -symmBandLapack " if analysis.get("standard_eigen") else ""
+            )
+            f.write(f"set strut_modal_lambda [eigen {standard}{num_modes}]\n")
             modal_outputs = {}
             for rec in recorders:
                 if rec.get("type") != "modal_eigen":
@@ -2267,6 +2894,8 @@ def main():
                         f.write("close $strut_modal_file\n")
         elif analysis_type == "static_nonlinear":
             integrator = analysis.get("integrator", {"type": "LoadControl"})
+            if "start_time" in analysis:
+                f.write(f"setTime {analysis['start_time']}\n")
             if static_nl_post_lines is not None:
                 for line in static_nl_post_lines:
                     f.write(line + "\n")

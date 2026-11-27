@@ -265,6 +265,73 @@ def test_rigid_diaphragm_modal_eigen_uses_reduced_mass_matrix():
     ]
 
 
+def test_displacement_control_on_offset_3d_diaphragm_node(tmp_path: Path):
+    case_data = {
+        "model": {"ndm": 3, "ndf": 6},
+        "nodes": [
+            {"id": 1, "x": 0, "y": 0, "z": 0, "constraints": [1, 2, 3, 4, 5, 6]},
+            {"id": 2, "x": 3, "y": 0, "z": 0, "constraints": [1, 3, 4, 5]},
+            {"id": 3, "x": 7, "y": 0, "z": 0, "constraints": [3, 4, 5]},
+        ],
+        "sections": [
+            {
+                "id": 1,
+                "type": "ElasticSection3d",
+                "params": {"E": 12, "A": 2, "Iz": 2, "Iy": 1, "G": 4, "J": 1},
+            }
+        ],
+        "elements": [
+            {
+                "id": 1,
+                "type": "elasticBeamColumn3d",
+                "nodes": [1, 2],
+                "section": 1,
+                "geomTransf": "Linear",
+                "vecxz": [0, 0, 1],
+            }
+        ],
+        "mp_constraints": [
+            {
+                "type": "rigidDiaphragm",
+                "perp_dirn": 3,
+                "retained_node": 2,
+                "constrained_node": 3,
+                "constrained_dofs": [1, 2, 6],
+                "retained_dofs": [1, 2, 6],
+                "matrix": [[1, 0, 0], [0, 1, 4], [0, 0, 1]],
+            }
+        ],
+        "loads": [{"node": 3, "dof": 2, "value": 1.0}],
+        "analysis": {
+            "type": "static_nonlinear",
+            "steps": 2,
+            "constraints": "Transformation",
+            "integrator": {
+                "type": "DisplacementControl",
+                "node": 3,
+                "dof": 2,
+                "du": 0.1,
+            },
+        },
+        "recorders": [
+            {
+                "type": "node_displacement",
+                "nodes": [2, 3],
+                "dofs": [2, 6],
+                "output": "disp",
+            }
+        ],
+    }
+
+    _run_strut_case(case_data, tmp_path)
+
+    master = _read_rows(tmp_path / "disp_node2.out")
+    slave = _read_rows(tmp_path / "disp_node3.out")
+    assert [row[0] for row in slave] == pytest.approx([0.1, 0.2])
+    for (translation, rotation), (slave_translation, _) in zip(master, slave):
+        assert translation + 4 * rotation == pytest.approx(slave_translation)
+
+
 def test_rigid_diaphragm_transient_linear_uses_slave_mass_inertia():
     case_data = {
         "model": {"ndm": 2, "ndf": 3},

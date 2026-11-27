@@ -1,0 +1,18 @@
+{
+  "name": "purr_wall_concrete_monotonic",
+  "entry_tcl": "tests/fixtures/opensees/OpenSeesWallExamples/PURR4348/concrete_monotonic.tcl",
+  "tcl_source_version": "3.7.1",
+  "enabled": true,
+  "source_url": "https://purr.purdue.edu/publications/4348/1",
+  "reference": "Morgan Broberg and Amit Varma (2023), OpenSees Models for C-PSW/CF Archetype Structures, v1.0, doi:10.4231/9H4P-Z894.",
+  "notes": "Concrete02 monotonic response check from the published PG-1B workflow.",
+  "source_files": [
+    "RunCW_Planar.tcl",
+    "concrete_monotonic.tcl"
+  ],
+  "parity_mode": "step",
+  "parity_tolerance": {},
+  "parity_tolerance_by_category": {},
+  "parity_tolerance_by_recorder": {},
+  "parity_history": true
+}

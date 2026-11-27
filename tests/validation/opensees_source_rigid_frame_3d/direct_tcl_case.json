@@ -1,0 +1,12 @@
+{
+  "name": "opensees_source_rigid_frame_3d",
+  "entry_tcl": "tests/fixtures/opensees/OpenSeesSource/EXAMPLES/ExampleScripts/RigidFrame3D.tcl",
+  "tcl_source_version": "3.7.1",
+  "source_url": "https://github.com/OpenSees/OpenSees/blob/v3.7.1/EXAMPLES/ExampleScripts/RigidFrame3D.tcl",
+  "enabled": false,
+  "disabled_reason": "The entry calls RCsection without the required GJ argument.",
+  "parity_tolerance": {},
+  "parity_tolerance_by_category": {},
+  "parity_tolerance_by_recorder": {},
+  "parity_mode": "step"
+}

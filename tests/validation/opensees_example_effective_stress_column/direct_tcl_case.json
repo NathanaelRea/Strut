@@ -1,0 +1,11 @@
+{
+  "name": "opensees_example_effective_stress_column",
+  "entry_tcl": "tests/fixtures/opensees/OpenSeesExamplesPractical/effective_stress_site_response_analysis_of_a_layered_soil_column/freeFieldEffective.tcl",
+  "tcl_source_version": "3.7.1",
+  "enabled": false,
+  "benchmark_size": "large",
+  "disabled_reason": "Both engines complete the run. Displacements and stresses diverge during plastic gravity. A material-point replay matches the recorded OpenSees stresses, but rounding at zero strain increment selects different tangents at some integration points.",
+  "source_url": "https://opensees.berkeley.edu/wiki/index.php/Effective_Stress_Site_Response_Analysis_of_a_Layered_Soil_Column",
+  "reference": "Effective Stress Site Response Analysis of a Layered Soil Column, Christopher McGann and Pedro Arduino, University of Washington.",
+  "notes": "The published effective-stress archive omits velocityHistory.out. This case uses the 7,990-sample, 0.005-second Gilroy velocity history from the companion total-stress example."
+}

@@ -1,0 +1,8 @@
+{
+  "enabled": false,
+  "entry_tcl": "tests/fixtures/opensees/STAIRlabGallery/content/en/examples/thermalExamples/thermalexample4/files/Example4.tcl",
+  "tcl_source_version": "3.7.1",
+  "source_url": "https://github.com/peer-open-source/opensees-gallery/blob/fd3958fde8a3d0a350321b3fbdd3f415ee16e2a2/content/en/examples/thermalExamples/thermalexample4/files/Example4.tcl",
+  "disabled_reason": "The gallery does not include BeamTemp.txt, Column1Temp.txt or Column2Temp.txt for the thermal loads.",
+  "reference": "European Committee for Standardization, Eurocode 3: Design of Steel Structures, Part 1.2, General Rules \u2013 Structural Fire Design (2005). W. Maddalozzo and E. C. Fischer, Post-earthquake fire performance of steel buildings, 17th World Conference on Earthquake Engineering, Sendai, Japan (2020)."
+}

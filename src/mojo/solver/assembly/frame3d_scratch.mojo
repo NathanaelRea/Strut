@@ -76,6 +76,14 @@ struct Frame3dAssemblyScratch(Movable):
             self.matrices.resize(FRAME3D_BATCH * FRAME3D_MATRIX_SIZE, 0.0)
             self.forces.resize(FRAME3D_BATCH * FRAME3D_DOFS, 0.0)
 
+    fn commit_corotational(mut self):
+        for i in range(len(self.main.corotational_states)):
+            self.main.corotational_states[i].commit()
+
+    fn revert_corotational(mut self):
+        for i in range(len(self.main.corotational_states)):
+            self.main.corotational_states[i].revert()
+
 
 fn reset_frame3d_assembly_scratch(mut scratch: Frame3dAssemblyScratch):
     reset_force_beam_column3d_scratch(scratch.main)

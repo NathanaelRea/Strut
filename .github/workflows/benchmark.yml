@@ -69,7 +69,7 @@ jobs:
         run: uv run python scripts/build_mojo_solver.py
 
       - name: Prepare benchmark suite
-        run: uv run scripts/ci_benchmark.py prepare
+        run: uv run scripts/ci_benchmark.py prepare --synthetic-records
 
       - name: Compare
         id: compare

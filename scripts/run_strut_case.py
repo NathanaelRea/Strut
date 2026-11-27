@@ -188,15 +188,48 @@ def _warn_zero_length_node_separation(case_data: dict) -> None:
             )
 
 
+def _lower_one_dimensional_case(case_data: dict) -> bool:
+    """Constrain the unused transverse DOF in the planar solver."""
+    model = case_data.get("model")
+    if model != {"ndm": 1, "ndf": 1}:
+        return False
+    for element in case_data["elements"]:
+        if element["type"] not in {"truss", "corotTruss", "zeroLength"}:
+            raise ValueError(f"unsupported 1D element {element['type']}")
+        if any(direction != 1 for direction in element.get("dirs", [])):
+            raise ValueError("1D zeroLength requires direction 1")
+        if element["type"] == "zeroLength" and "orient" in element:
+            x = element["orient"]["x"]
+            norm = math.sqrt(sum(component * component for component in x))
+            cosine = x[0] / norm
+            element["orient"] = {
+                "x": [cosine, math.sqrt(max(0.0, 1.0 - cosine * cosine)), 0.0],
+                "y": [-math.sqrt(max(0.0, 1.0 - cosine * cosine)), cosine, 0.0],
+            }
+    case_data["model"] = {"ndm": 2, "ndf": 2}
+    for node in case_data["nodes"]:
+        node["y"] = 0.0
+        node.pop("ndf", None)
+        node["constraints"] = [*node.get("constraints", []), 2]
+    return True
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--input")
     parser.add_argument("--input-tcl")
+    parser.add_argument("--interactive-tcl")
+    parser.add_argument("--replay-mode", choices=("domains", "live"))
     parser.add_argument("--output", required=True)
     parser.add_argument("--compute-only", action="store_true")
     args = parser.parse_args()
-    if bool(args.input) == bool(args.input_tcl):
-        raise SystemExit("exactly one of --input or --input-tcl is required")
+    provided_inputs = sum(
+        bool(v) for v in (args.input, args.input_tcl, args.interactive_tcl)
+    )
+    if provided_inputs != 1:
+        raise SystemExit(
+            "exactly one of --input, --input-tcl, or --interactive-tcl is required"
+        )
 
     repo_root = Path(__file__).resolve().parents[1]
     uv = shutil.which("uv")
@@ -237,6 +270,18 @@ def main():
             verbose=verbose,
         )
 
+    if args.interactive_tcl:
+        import interactive_tcl_runner
+
+        interactive_tcl_runner.run_interactive_tcl_case(
+            Path(args.interactive_tcl).resolve(),
+            Path(args.output).resolve(),
+            repo_root=repo_root,
+            solver_path=solver_path,
+            replay_mode=args.replay_mode,
+        )
+        return
+
     normalized_input = None
     tmp_path = None
     input_cache_json = None
@@ -245,6 +290,7 @@ def main():
         case_data = __import__("tcl_to_strut").convert_tcl_to_solver_input(
             input_tcl, repo_root, args.compute_only
         )
+        _lower_one_dimensional_case(case_data)
         tmp = tempfile.NamedTemporaryFile(
             mode="w",
             suffix=".json",
@@ -263,7 +309,8 @@ def main():
         case_data = json.loads(input_path.read_text(encoding="utf-8"))
         _warn_zero_length_node_separation(case_data)
         normalized_input = input_path
-        if _normalize_time_series_paths(case_data, input_path, repo_root):
+        paths_changed = _normalize_time_series_paths(case_data, input_path, repo_root)
+        if _lower_one_dimensional_case(case_data) or paths_changed:
             tmp = tempfile.NamedTemporaryFile(
                 mode="w",
                 suffix=".json",

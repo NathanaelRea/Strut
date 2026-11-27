@@ -161,3 +161,33 @@ def test_new_case_the_baseline_cannot_run_passes(tmp_path, monkeypatch):
 
     assert _compare(monkeypatch, suite, base, cand) == 0
     assert _results(suite)["timed_case"]["status"] == "NEW"
+
+
+def test_missing_pinned_records_get_synthetic_stand_ins(tmp_path: Path):
+    (tmp_path / "GM").mkdir()
+    (tmp_path / "GM" / "present.at2").write_text("real\n", encoding="ascii")
+    lock = {
+        "files": [
+            {"path": "GM/present.at2"},
+            {"path": "GM/H-e12140.dt2"},
+            {"path": "Ex/BM68elc.acc"},
+            {"path": "Ex/tabasFN.txt"},
+            {"path": "Ex/A10000.tcl"},
+            {"path": "Ex/Model.tcl"},
+            {"path": "Ex/run.m"},
+        ]
+    }
+    lock_path = tmp_path / "reference-data.lock.json"
+    lock_path.write_text(json.dumps(lock), encoding="utf-8")
+    written = ci_benchmark.write_missing_synthetic_records(lock_path)
+    names = sorted(path.name for path in written)
+    assert names == ["A10000.tcl", "BM68elc.acc", "H-e12140.dt2", "tabasFN.txt"]
+    assert (tmp_path / "GM" / "present.at2").read_text(encoding="ascii") == "real\n"
+    assert "NPTS=" in (tmp_path / "GM" / "H-e12140.dt2").read_text(encoding="ascii")
+    values = (tmp_path / "Ex" / "tabasFN.txt").read_text(encoding="ascii").split()
+    assert len(values) == 3000 and all(float(v) == float(v) for v in values)
+    # Seeded: a second run writes the same bytes.
+    first = (tmp_path / "Ex" / "BM68elc.acc").read_bytes()
+    (tmp_path / "Ex" / "BM68elc.acc").unlink()
+    ci_benchmark.write_missing_synthetic_records(lock_path)
+    assert (tmp_path / "Ex" / "BM68elc.acc").read_bytes() == first

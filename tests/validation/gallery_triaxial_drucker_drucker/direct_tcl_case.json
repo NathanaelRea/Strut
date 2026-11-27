@@ -1,0 +1,11 @@
+{
+  "enabled": false,
+  "entry_tcl": "tests/fixtures/opensees/STAIRlabGallery/content/en/examples/triaxial-drucker/drucker.tcl",
+  "tcl_source_version": "openseesrt-fd3958f",
+  "tcl_upgrade_note": "Translates keyword DruckerPrager parameters to the OpenSees 3.7.1 order.",
+  "tcl_prelude": [
+    "file mkdir out"
+  ],
+  "source_url": "https://github.com/peer-open-source/opensees-gallery/blob/fd3958fde8a3d0a350321b3fbdd3f415ee16e2a2/content/en/examples/triaxial-drucker/drucker.tcl",
+  "disabled_reason": "The translated original produces OpenSees recorder output. Generated Tcl diverges in stress and material state, and the Strut nonlinear solve does not converge."
+}

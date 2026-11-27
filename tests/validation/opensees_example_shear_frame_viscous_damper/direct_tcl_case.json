@@ -1,0 +1,15 @@
+{
+  "enabled": true,
+  "status": "enabled",
+  "entry_tcl": "tests/fixtures/opensees/OpenSeesExamplesPractical/dynamic_analyses_of_1_story_moment_frame_with_viscous_dampers/ShearFrameVD.tcl",
+  "tcl_source_version": "3.7.1",
+  "source_files": [
+    "ShearFrameVD.tcl"
+  ],
+  "file_aliases": {
+    "TAKY.th": "TakY.th"
+  },
+  "benchmark_size": "medium",
+  "source_url": "https://opensees.berkeley.edu/wiki/index.php/Dynamic_Analyses_of_1-Story_Moment_Frame_with_Viscous_Dampers",
+  "reference": "Sarven Akcelyan and Dimitrios G. Lignos, McGill University"
+}

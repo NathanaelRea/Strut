@@ -1,0 +1,99 @@
+{
+  "schema_version": "1.0",
+  "enabled": true,
+  "interactive_tcl": true,
+  "name": "opensees_example_parameter_study_parallel",
+  "entry_tcl": "tests/fixtures/opensees/OpenSeesExamplesPractical/parameter_study_using_parallel_processing/ExampleSP1.tcl",
+  "tcl_source_version": "3.7.1",
+  "source_files": [
+    "ExampleSP1.tcl"
+  ],
+  "file_aliases": {
+    "model.tcl": "ModelSP1.tcl",
+    "analysis.tcl": "AnalysisSP1.tcl"
+  },
+  "extra_files": {
+    "peerRecords.txt": "SYNTH1/REC1.AT2\nSYNTH2/REC2.AT2"
+  },
+  "synthetic_ground_motions": [
+    {
+      "path": "SYNTH1/REC1.AT2",
+      "dt": 0.02,
+      "npts": 21,
+      "pga": 0.25,
+      "seed": 101
+    },
+    {
+      "path": "SYNTH2/REC2.AT2",
+      "dt": 0.02,
+      "npts": 21,
+      "pga": 0.35,
+      "seed": 202
+    }
+  ],
+  "compare_files": [
+    "SYNTH1REC1.out",
+    "SYNTH2REC2.out"
+  ],
+  "tcl_prelude": [
+    "proc _strut_pattern_wrapper {args} {",
+    "    if {[lindex $args 0] eq \"UniformExcitation\"} {",
+    "        set idx [lsearch -exact $args \"-accel\"]",
+    "        if {$idx >= 0} {",
+    "            set spec [lindex $args [expr {$idx + 1}]]",
+    "            if {[lindex $spec 0] eq \"PeerDatabase\"} {",
+    "                set gmDir [lindex $spec 1]",
+    "                set gmName [lindex $spec 2]",
+    "                set factor 1.0",
+    "                set dtVar \"\"",
+    "                set nptsVar \"\"",
+    "                for {set i 3} {$i < [llength $spec]} {incr i} {",
+    "                    set tok [lindex $spec $i]",
+    "                    if {$tok eq \"-accel\"} { incr i; set factor [lindex $spec $i] }",
+    "                    if {$tok eq \"-dT\"} { incr i; set dtVar [lindex $spec $i] }",
+    "                    if {$tok eq \"-nPts\"} { incr i; set nptsVar [lindex $spec $i] }",
+    "                }",
+    "                set at2 \"${gmDir}/${gmName}.AT2\"",
+    "                set f [open $at2 r]",
+    "                set lines [split [read $f] \"\\n\"]",
+    "                close $f",
+    "                set hdr [lindex $lines 3]",
+    "                regexp {NPTS=\\s*([0-9]+)} $hdr -> npts",
+    "                regexp {DT=\\s*([0-9.eE+-]+)} $hdr -> dt",
+    "                set vals {}",
+    "                foreach ln [lrange $lines 4 end] {",
+    "                    foreach v $ln {",
+    "                        if {$v ne \"\"} { lappend vals $v }",
+    "                    }",
+    "                }",
+    "                set plain \"${gmDir}_${gmName}.th\"",
+    "                set fo [open $plain w]",
+    "                foreach v $vals { puts $fo $v }",
+    "                close $fo",
+    "                if {$dtVar ne \"\"} { upvar 1 $dtVar _dt; set _dt $dt }",
+    "                if {$nptsVar ne \"\"} { upvar 1 $nptsVar _npts; set _npts $npts }",
+    "                set pathTag [expr {1000000000 + [incr ::__strut_legacy_path_tag]}]",
+    "                timeSeries Path $pathTag -dt $dt -filePath $plain -factor $factor",
+    "                set args [lreplace $args [expr {$idx + 1}] [expr {$idx + 1}] $pathTag]",
+    "            }",
+    "        }",
+    "    }",
+    "    uplevel 1 [linsert $args 0 _strut_orig_pattern]",
+    "}",
+    "rename model _strut_orig_model",
+    "proc model {args} {",
+    "    set res [uplevel 1 [linsert $args 0 _strut_orig_model]]",
+    "    if {[info commands pattern] ne \"\" && [info procs pattern] eq \"\"} {",
+    "        if {[info commands _strut_orig_pattern] ne \"\"} {",
+    "            rename _strut_orig_pattern \"\"",
+    "        }",
+    "        rename pattern _strut_orig_pattern",
+    "        proc pattern {args} {",
+    "            uplevel 1 [linsert $args 0 _strut_pattern_wrapper]",
+    "        }",
+    "    }",
+    "    return $res",
+    "}"
+  ],
+  "source_url": "https://opensees.berkeley.edu/wiki/index.php/Parameter_Study_using_Parallel_Processing"
+}

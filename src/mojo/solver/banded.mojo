@@ -5,7 +5,6 @@ from solver.simd_contiguous import (
     dot_float64_segments,
     scale_float64_segment,
 )
-from solver.run_case.input_types import ElementInput
 
 
 fn banded_matrix(n: Int, bw: Int) -> List[List[Float64]]:
@@ -95,70 +94,21 @@ fn banded_gaussian_elimination(
     return x^
 
 
-fn _elem_dof(elem: ElementInput, idx: Int) -> Int:
-    if idx == 0:
-        return elem.dof_1
-    if idx == 1:
-        return elem.dof_2
-    if idx == 2:
-        return elem.dof_3
-    if idx == 3:
-        return elem.dof_4
-    if idx == 4:
-        return elem.dof_5
-    if idx == 5:
-        return elem.dof_6
-    if idx == 6:
-        return elem.dof_7
-    if idx == 7:
-        return elem.dof_8
-    if idx == 8:
-        return elem.dof_9
-    if idx == 9:
-        return elem.dof_10
-    if idx == 10:
-        return elem.dof_11
-    if idx == 11:
-        return elem.dof_12
-    if idx == 12:
-        return elem.dof_13
-    if idx == 13:
-        return elem.dof_14
-    if idx == 14:
-        return elem.dof_15
-    if idx == 15:
-        return elem.dof_16
-    if idx == 16:
-        return elem.dof_17
-    if idx == 17:
-        return elem.dof_18
-    if idx == 18:
-        return elem.dof_19
-    if idx == 19:
-        return elem.dof_20
-    if idx == 20:
-        return elem.dof_21
-    if idx == 21:
-        return elem.dof_22
-    if idx == 22:
-        return elem.dof_23
-    return elem.dof_24
-
-
-fn estimate_bandwidth_typed(elements: List[ElementInput], free_index: List[Int]) -> Int:
+fn estimate_bandwidth_typed(
+    dof_offsets: List[Int], dof_pool: List[Int], free_index: List[Int]
+) -> Int:
     var max_bw = 0
-    for e in range(len(elements)):
-        var elem = elements[e]
-        var dof_count = elem.dof_count
-        for a in range(dof_count):
-            var dof_a = _elem_dof(elem, a)
+    for e in range(len(dof_offsets) - 1):
+        var stop = dof_offsets[e + 1]
+        for a in range(dof_offsets[e], stop):
+            var dof_a = dof_pool[a]
             if dof_a < 0 or dof_a >= len(free_index):
                 continue
             var ia = free_index[dof_a]
             if ia < 0:
                 continue
-            for b in range(a + 1, dof_count):
-                var dof_b = _elem_dof(elem, b)
+            for b in range(a + 1, stop):
+                var dof_b = dof_pool[b]
                 if dof_b < 0 or dof_b >= len(free_index):
                     continue
                 var ib = free_index[dof_b]

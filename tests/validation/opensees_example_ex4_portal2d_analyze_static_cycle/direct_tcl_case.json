@@ -2,7 +2,7 @@
   "name": "opensees_example_ex4_portal2d_analyze_static_cycle",
   "entry_tcl": "tests/fixtures/opensees/OpenSeesExamplesAdvanced/opensees_example_4_portal_frame/Ex4.Portal2D.analyze.Static.Cycle.tcl",
   "tcl_source_version": "3.7.1",
-  "enabled": false,
+  "enabled": true,
   "source_files": [
     "Ex4.Portal2D.build.InelasticFiberSection.tcl",
     "Ex4.Portal2D.analyze.Static.Cycle.tcl"

@@ -1,0 +1,11 @@
+{
+  "name": "opensees_wall_sfi_mvlem_five_story",
+  "entry_tcl": "tests/fixtures/opensees/OpenSeesWallExamples/SFI_MVLEM_FiveStory/Dynamic.tcl",
+  "tcl_source_version": "3.7.1",
+  "enabled": false,
+  "source_url": "https://opensees.berkeley.edu/wiki/index.php/SFI_MVLEM_-_Cyclic_Shear-Flexure_Interaction_Model_for_RC_Walls",
+  "reference": "Kolozvari, Orakcal and Wallace (2015), Journal of Structural Engineering 141(5), 04014135, doi:10.1061/(ASCE)ST.1943-541X.0001059. Kolozvari, Tran, Orakcal and Wallace (2015), 04014136, doi:10.1061/(ASCE)ST.1943-541X.0001083. PEER Report 2015/12.",
+  "notes": "Five-story wall-frame subjected to the published MCEScaledEQ1X acceleration. Requires FSAM, SFI_MVLEM and ModIMKPeakOriented. The original acceleration is pinned.",
+  "disabled_reason": "The display procs are headless. In live replay, the initial transient solve stops at 35.16 s in Strut and 27.92 s in OpenSees. Strut also skips the SFI curvature, shear deformation, and RCPanel recorder responses required by this case.",
+  "replay_tcl": "live"
+}

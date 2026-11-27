@@ -1118,3 +1118,139 @@ def test_json_to_tcl_emits_beam_mass_density_and_truss_rayleigh_flag():
     # A truss takes part in Rayleigh damping only when asked to, in both engines.
     assert "element truss 3 1 3 0.002 1\n" in text
     assert "element truss 4 1 3 0.002 1 -doRayleigh 1\n" in text
+
+
+def test_json_to_tcl_emits_circ_patch_and_layer_with_zero_length_section3d():
+    case_data = {
+        "schema_version": "1.0",
+        "metadata": {"name": "circ_zls3d_unit", "units": "SI"},
+        "model": {"ndm": 3, "ndf": 6},
+        "nodes": [
+            {"id": 1, "x": 0.0, "y": 0.0, "z": 0.0, "constraints": [1, 2, 3, 4, 5, 6]},
+            {"id": 2, "x": 0.0, "y": 0.0, "z": 0.0, "constraints": [2, 3, 4, 5]},
+        ],
+        "materials": [
+            {"id": 1, "type": "Elastic", "params": {"E": 3.0e10}},
+            {"id": 2, "type": "Elastic", "params": {"E": 2.0e11}},
+            {"id": 3, "type": "Elastic", "params": {"E": 1.0e10}},
+        ],
+        "sections": [
+            {
+                "id": 1,
+                "type": "FiberSection3d",
+                "params": {
+                    "patches": [
+                        {
+                            "type": "circ",
+                            "material": 1,
+                            "num_subdiv_circ": 8,
+                            "num_subdiv_rad": 4,
+                            "y_center": 0.0,
+                            "z_center": 0.0,
+                            "int_rad": 0.0,
+                            "ext_rad": 0.3,
+                            "start_ang": 0.0,
+                            "end_ang": 360.0,
+                        }
+                    ],
+                    "layers": [
+                        {
+                            "type": "circ",
+                            "material": 2,
+                            "num_bars": 8,
+                            "bar_area": 0.0002,
+                            "y_center": 0.0,
+                            "z_center": 0.0,
+                            "radius": 0.25,
+                            "start_ang": 0.0,
+                            "end_ang": 315.0,
+                        }
+                    ],
+                },
+            },
+            {
+                "id": 2,
+                "type": "AggregatorSection3d",
+                "params": {
+                    "axial_material": -1,
+                    "flexural_material": -1,
+                    "moment_y_material": -1,
+                    "torsion_material": 3,
+                    "shear_y_material": -1,
+                    "shear_z_material": -1,
+                    "base_section": 1,
+                },
+            },
+        ],
+        "elements": [
+            {"id": 10, "type": "zeroLengthSection", "nodes": [1, 2], "section": 2}
+        ],
+        "recorders": [],
+        "analysis": {"type": "static_linear", "steps": 1},
+    }
+
+    proc, text = _run_json_to_tcl(case_data)
+    assert proc.returncode == 0, proc.stderr
+    assert "  patch circ 1 8 4 0.0 0.0 0.0 0.3 0.0 360.0\n" in text
+    assert "  layer circ 2 8 0.0002 0.0 0.0 0.25 0.0 315.0\n" in text
+    assert "section Aggregator 2 3 T -section 1\n" in text
+    assert "element zeroLengthSection 10 1 2 2\n" in text
+
+
+def test_json_to_tcl_allows_zero_length_section_with_aggregator2d_and_elastic3d():
+    case_2d = _base_case()
+    case_2d["nodes"][1] = {"id": 2, "x": 0.0, "y": 0.0, "constraints": [2]}
+    case_2d["sections"] = [
+        {
+            "id": 5,
+            "type": "AggregatorSection2d",
+            "params": {
+                "axial_material": 1,
+                "flexural_material": 2,
+                "moment_y_material": -1,
+                "torsion_material": -1,
+                "shear_y_material": -1,
+                "shear_z_material": -1,
+                "base_section": -1,
+            },
+        }
+    ]
+    case_2d["elements"] = [
+        {"id": 1, "type": "zeroLengthSection", "nodes": [1, 2], "section": 5}
+    ]
+    proc2d, text2d = _run_json_to_tcl(case_2d)
+    assert proc2d.returncode == 0, proc2d.stderr
+    assert "element zeroLengthSection 1 1 2 5\n" in text2d
+
+    case_3d = {
+        "schema_version": "1.0",
+        "metadata": {"name": "zls_elastic3d_unit", "units": "SI"},
+        "model": {"ndm": 3, "ndf": 6},
+        "nodes": [
+            {"id": 1, "x": 0.0, "y": 0.0, "z": 0.0, "constraints": [1, 2, 3, 4, 5, 6]},
+            {"id": 2, "x": 0.0, "y": 0.0, "z": 0.0},
+        ],
+        "materials": [],
+        "sections": [
+            {
+                "id": 6,
+                "type": "ElasticSection3d",
+                "params": {
+                    "E": 2.0e11,
+                    "A": 0.01,
+                    "Iy": 1.0e-4,
+                    "Iz": 2.0e-4,
+                    "G": 8.0e10,
+                    "J": 1.5e-4,
+                },
+            }
+        ],
+        "elements": [
+            {"id": 1, "type": "zeroLengthSection", "nodes": [1, 2], "section": 6}
+        ],
+        "recorders": [],
+        "analysis": {"type": "static_linear", "steps": 1},
+    }
+    proc3d, text3d = _run_json_to_tcl(case_3d)
+    assert proc3d.returncode == 0, proc3d.stderr
+    assert "element zeroLengthSection 1 1 2 6\n" in text3d

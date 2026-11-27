@@ -1,0 +1,14 @@
+{
+  "name": "opensees_wall_mvlem_rw2",
+  "entry_tcl": "tests/fixtures/opensees/OpenSeesWallExamples/MVLEM_RW2/dispControl.tcl",
+  "tcl_source_version": "3.7.1",
+  "enabled": true,
+  "source_url": "https://opensees.berkeley.edu/wiki/index.php/MVLEM_-_Multiple-Vertical-Line-Element-Model_for_RC_Walls",
+  "reference": "Thomsen and Wallace (1995), wall RW2. Orakcal, Conte and Wallace (2004), ACI Structural Journal 101(5), 688\u2013698. Orakcal and Wallace (2006), ACI Structural Journal 103(2), 196\u2013206.",
+  "notes": "Gravity and both full cycles at the first published drift level (0.000330792). The mirrored fixture tightens the analysis convergence test and compares each displacement and global force step at the harness defaults.",
+  "parity_tolerance": {},
+  "parity_tolerance_by_category": {},
+  "parity_tolerance_by_recorder": {},
+  "parity_mode": "step",
+  "parity_history": true
+}

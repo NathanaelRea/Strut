@@ -5,19 +5,24 @@ from time import perf_counter_ns
 
 from elements.beam_loads import beam2d_basic_fixed_end_and_reactions, beam2d_section_load_response
 from elements.beam_integration import BeamIntegrationCache, beam_integration_cache_ensure
+from elements.hinge_radau2d import HingeRadau2d
+from elements.force_beam_column_cbdi import cbdi_elastic_basic_state
 from elements.utils import (
     _beam2d_transform_force_local_to_global_in_place,
     _beam2d_transform_stiffness_local_to_global_in_place,
     _beam2d_transform_u_global_to_local,
     _ensure_zero_matrix,
     _ensure_zero_vector,
+    _invert_3x3_values,
 )
 from materials import (
     UniMaterialDef,
     UniMaterialState,
+    uni_mat_initial_tangent,
+    uniaxial_set_trial_strain,
 )
 from solver.profile import RuntimeProfileMetrics
-from solver.run_case.input_types import ElementLoadInput
+from solver.run_case.input_types import ElementLoadInput, SectionInput
 from sections import (
     FIBER_SECTION2D_BATCH_FLAG_CORRECTOR,
     FIBER_SECTION2D_BATCH_FLAG_PREDICTOR,
@@ -193,9 +198,43 @@ fn _append_force_beam_column2d_section_batch_point(
 
 fn _evaluate_force_beam_column2d_section_batch(
     mut sec_def: FiberSection2dDef,
+    hinges: HingeRadau2d,
+    uniaxial_defs: List[UniMaterialDef],
     mut uniaxial_states: List[UniMaterialState],
+    elem_state_ids: List[Int],
+    elem_state_offset: Int,
     mut scratch: ForceBeamColumn2dScratch,
 ) -> Bool:
+    if hinges.is_defined():
+        for ip in range(len(scratch.section_batch_points)):
+            ref point = scratch.section_batch_points[ip]
+            var ea = hinges.elastic_ea
+            var ei = hinges.elastic_ei
+            var axial_force = ea * point.eps0
+            var bending_moment = ei * point.kappa
+            if ip == 0 or ip == 5:
+                var material = hinges.material_indices(ip)
+                var offset = elem_state_offset + (0 if ip == 0 else 2)
+                ref axial = uniaxial_states[elem_state_ids[offset]]
+                ref flexural = uniaxial_states[elem_state_ids[offset + 1]]
+                uniaxial_set_trial_strain(uniaxial_defs[material[0]], axial, point.eps0)
+                uniaxial_set_trial_strain(uniaxial_defs[material[1]], flexural, point.kappa)
+                axial_force = axial.sig_t
+                bending_moment = flexural.sig_t
+                ea = axial.tangent_t
+                ei = flexural.tangent_t
+            if ea == 0.0 or ei == 0.0:
+                return False
+            scratch.section_batch_results.append(
+                FiberSection2dBatchResult(
+                    FiberSection2dResponse(axial_force, bending_moment, ea, 0.0, ei),
+                    True,
+                    1.0 / ea,
+                    0.0,
+                    1.0 / ei,
+                )
+            )
+        return True
     return fiber_section2d_batch_eval_same_def(
         sec_def,
         uniaxial_states,
@@ -218,46 +257,6 @@ fn _beam2d_local_basic_map(col: Int, inv_L: Float64) -> (Float64, Float64, Float
     if col == 4:
         return (0.0, -inv_L, -inv_L)
     return (0.0, 0.0, 1.0)
-
-
-fn _invert_3x3_values(
-    a: Float64,
-    b: Float64,
-    c: Float64,
-    d: Float64,
-    e: Float64,
-    f: Float64,
-    g: Float64,
-    h: Float64,
-    i: Float64,
-) -> (Bool, Float64, Float64, Float64, Float64, Float64, Float64, Float64, Float64, Float64,):
-    var co00 = e * i - f * h
-    var co01 = -(d * i - f * g)
-    var co02 = d * h - e * g
-    var co10 = -(b * i - c * h)
-    var co11 = a * i - c * g
-    var co12 = -(a * h - b * g)
-    var co20 = b * f - c * e
-    var co21 = -(a * f - c * d)
-    var co22 = a * e - b * d
-
-    var det = a * co00 + b * co01 + c * co02
-    if abs(det) <= 1.0e-40:
-        return (False, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-
-    var inv_det = 1.0 / det
-    return (
-        True,
-        co00 * inv_det,
-        co10 * inv_det,
-        co20 * inv_det,
-        co01 * inv_det,
-        co11 * inv_det,
-        co21 * inv_det,
-        co02 * inv_det,
-        co12 * inv_det,
-        co22 * inv_det,
-    )
 
 
 @always_inline
@@ -412,7 +411,6 @@ fn _ensure_force_beam_column2d_geometry_cache(
 
 fn _ensure_force_beam_column2d_load_cache(
     elem_index: Int,
-    integration: String,
     num_int_pts: Int,
     element_loads: List[ElementLoadInput],
     elem_load_offsets: List[Int],
@@ -425,7 +423,6 @@ fn _ensure_force_beam_column2d_load_cache(
     _ensure_force_beam_column2d_cache_slot(scratch, elem_index)
     if scratch.load_valid[elem_index]:
         return
-    beam_integration_cache_ensure(scratch.integration_cache, integration, num_int_pts)
     var L = scratch.cached_length[elem_index]
     var axial = scratch.section_load_axial_cache[elem_index].copy()
     var moment = scratch.section_load_moment_cache[elem_index].copy()
@@ -779,9 +776,76 @@ fn _force_beam_column2d_initial_basic_tangent(
     )
 
 
+fn force_beam_column2d_fiber_state_count(num_points: Int) -> Int:
+    # Forces, section deformations, previous basic displacement, tangent, initialized.
+    return 3 + 2 * num_points + 3 + 7 + 1
+
+
+fn force_beam_column2d_basic_displacement(
+    length: Float64, local_u: List[Float64], corotational: Bool
+) -> (Float64, Float64, Float64):
+    var axial = local_u[3] - local_u[0]
+    var transverse = local_u[4] - local_u[1]
+    var rotation = transverse / length
+    if corotational:
+        var chord_x = length + axial
+        axial = sqrt(chord_x * chord_x + transverse * transverse) - length
+        rotation = atan2(transverse, chord_x)
+    return (axial, local_u[2] - rotation, local_u[5] - rotation)
+
+
+fn force_beam_column2d_initial_global_stiffness(
+    x1: Float64,
+    y1: Float64,
+    x2: Float64,
+    y2: Float64,
+    integration: String,
+    num_points: Int,
+    mut section: FiberSection2dDef,
+    fibers: List[FiberCell],
+    uniaxial_defs: List[UniMaterialDef],
+    mut scratch: ForceBeamColumn2dScratch,
+    mut stiffness: List[List[Float64]],
+):
+    var length = hypot(x2 - x1, y2 - y1)
+    beam_integration_cache_ensure(scratch.integration_cache, integration, num_points)
+    var basic = _force_beam_column2d_initial_basic_tangent(
+        length,
+        scratch.integration_cache.xis,
+        scratch.integration_cache.weights,
+        section,
+        fibers,
+        uniaxial_defs,
+    )
+    if not basic[0]:
+        abort("forceBeamColumn2d initial flexibility is singular")
+    var zero = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    var force: List[Float64] = []
+    _force_beam_column2d_corotational_basic_to_global(
+        length,
+        (x2 - x1) / length,
+        (y2 - y1) / length,
+        zero,
+        0.0,
+        0.0,
+        0.0,
+        basic[1],
+        basic[2],
+        basic[3],
+        basic[4],
+        basic[5],
+        basic[6],
+        basic[8],
+        (0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        stiffness,
+        force,
+    )
+
+
 fn _force_beam_column2d_try_increment(
     L: Float64,
     mut sec_def: FiberSection2dDef,
+    hinges: HingeRadau2d,
     fibers: List[FiberCell],
     uniaxial_defs: List[UniMaterialDef],
     mut uniaxial_states: List[UniMaterialState],
@@ -823,8 +887,8 @@ fn _force_beam_column2d_try_increment(
     ref section_load_axial = scratch.section_load_axial
     ref section_load_moment = scratch.section_load_moment
 
-    var elem_tol = 1.0e-12
-    var max_elem_iters = 10
+    var elem_tol = hinges.tolerance if hinges.is_defined() else 1.0e-12
+    var max_elem_iters = hinges.max_iters if hinges.is_defined() else 10
 
     var target_v0 = base_v0 + dv_trial0
     var target_v1 = base_v1 + dv_trial1
@@ -841,7 +905,7 @@ fn _force_beam_column2d_try_increment(
     var k22: Float64
 
     var initial_sec_flex = _fiber_section2d_initial_flexibility(sec_def)
-    if not initial_sec_flex[0]:
+    if not initial_sec_flex[0] and not hinges.is_defined():
         return (False, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
     _ensure_force_beam_column2d_section_history_capacity(scratch, num_int_pts)
@@ -877,7 +941,11 @@ fn _force_beam_column2d_try_increment(
         t_predictor_eval_start = Int(perf_counter_ns())
     if not _evaluate_force_beam_column2d_section_batch(
         sec_def,
+        hinges,
+        uniaxial_defs,
         uniaxial_states,
+        elem_state_ids,
+        elem_state_offset,
         scratch,
     ):
         return (False, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
@@ -995,7 +1063,17 @@ fn _force_beam_column2d_try_increment(
             var solve_f00: Float64
             var solve_f01: Float64
             var solve_f11: Float64
-            if use_initial_flex:
+            if use_initial_flex and hinges.is_defined():
+                var ea = hinges.elastic_ea
+                var ei = hinges.elastic_ei
+                if ip == 0 or ip == 5:
+                    var material = hinges.material_indices(ip)
+                    ea = uni_mat_initial_tangent(uniaxial_defs[material[0]])
+                    ei = uni_mat_initial_tangent(uniaxial_defs[material[1]])
+                solve_f00 = 1.0 / ea
+                solve_f01 = 0.0
+                solve_f11 = 1.0 / ei
+            elif use_initial_flex:
                 solve_f00 = initial_sec_flex[1]
                 solve_f01 = initial_sec_flex[2]
                 solve_f11 = initial_sec_flex[3]
@@ -1027,7 +1105,11 @@ fn _force_beam_column2d_try_increment(
             t_corrector_eval_start = Int(perf_counter_ns())
         if not _evaluate_force_beam_column2d_section_batch(
             sec_def,
+            hinges,
+            uniaxial_defs,
             uniaxial_states,
+            elem_state_ids,
+            elem_state_offset,
             scratch,
         ):
             return (False, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
@@ -1273,6 +1355,7 @@ fn force_beam_column2d_global_tangent_and_internal(
     force_basic_q_count: Int,
     mut k_global_out: List[List[Float64]],
     mut f_global_out: List[Float64],
+    hinges: HingeRadau2d = HingeRadau2d(),
 ):
     var scratch = ForceBeamColumn2dScratch()
     var runtime_metrics = RuntimeProfileMetrics()
@@ -1304,6 +1387,7 @@ fn force_beam_column2d_global_tangent_and_internal(
         scratch,
         k_global_out,
         f_global_out,
+        hinges,
     )
 
 
@@ -1334,6 +1418,7 @@ fn force_beam_column2d_global_tangent_and_internal(
     mut scratch: ForceBeamColumn2dScratch,
     mut k_global_out: List[List[Float64]],
     mut f_global_out: List[Float64],
+    hinges: HingeRadau2d = HingeRadau2d(),
 ):
     var runtime_metrics = RuntimeProfileMetrics()
     force_beam_column2d_global_tangent_and_internal(
@@ -1364,6 +1449,7 @@ fn force_beam_column2d_global_tangent_and_internal(
         scratch,
         k_global_out,
         f_global_out,
+        hinges,
     )
 
 
@@ -1395,18 +1481,9 @@ fn force_beam_column2d_global_tangent_and_internal(
     mut scratch: ForceBeamColumn2dScratch,
     mut k_global_out: List[List[Float64]],
     mut f_global_out: List[Float64],
+    hinges: HingeRadau2d = HingeRadau2d(),
 ):
     _ensure_force_beam_column2d_geometry_cache(elem_index, x1, y1, x2, y2, scratch)
-    _ensure_force_beam_column2d_load_cache(
-        elem_index,
-        integration,
-        num_int_pts,
-        element_loads,
-        elem_load_offsets,
-        elem_load_pool,
-        load_scale,
-        scratch,
-    )
     var dx = x2 - x1
     var dy = y2 - y1
     var L = hypot(dx, dy)
@@ -1416,10 +1493,28 @@ fn force_beam_column2d_global_tangent_and_internal(
         abort("zero-length element")
 
     var fibers_per_section = sec_def.fiber_count
-    var required_state_count = num_int_pts * fibers_per_section
+    var required_state_count = 4 if hinges.is_defined() else num_int_pts * fibers_per_section
     if elem_state_count != required_state_count:
         abort("forceBeamColumn2d element state count mismatch")
-    beam_integration_cache_ensure(scratch.integration_cache, integration, num_int_pts)
+    if hinges.is_defined():
+        scratch.integration_cache.is_valid = False
+        scratch.integration_cache.xis.resize(6, 0.0)
+        scratch.integration_cache.weights.resize(6, 0.0)
+        for ip in range(6):
+            var point = hinges.xi_weight(ip, L)
+            scratch.integration_cache.xis[ip] = point[0]
+            scratch.integration_cache.weights[ip] = point[1]
+    else:
+        beam_integration_cache_ensure(scratch.integration_cache, integration, num_int_pts)
+    _ensure_force_beam_column2d_load_cache(
+        elem_index,
+        num_int_pts,
+        element_loads,
+        elem_load_offsets,
+        elem_load_pool,
+        load_scale,
+        scratch,
+    )
     scratch.section_load_axial.resize(num_int_pts, 0.0)
     scratch.section_load_moment.resize(num_int_pts, 0.0)
     if elem_index >= 0 and elem_index < len(scratch.section_load_axial_cache):
@@ -1451,7 +1546,7 @@ fn force_beam_column2d_global_tangent_and_internal(
     _beam2d_transform_u_global_to_local(c, s, u_elem_global, scratch.u_local)
 
     var predictor_state_count = 3 + 2 * num_int_pts
-    var active_basic_count = predictor_state_count + 3
+    var active_basic_count = force_beam_column2d_fiber_state_count(num_int_pts)
     if force_basic_q_count < active_basic_count:
         abort("forceBeamColumn2d basic force state count mismatch")
     if force_basic_q_offset < 0 or force_basic_q_offset + active_basic_count > len(
@@ -1461,27 +1556,15 @@ fn force_beam_column2d_global_tangent_and_internal(
     var eps0_offset = force_basic_q_offset + 3
     var kappa_offset = eps0_offset + num_int_pts
     var basic_state_offset = force_basic_q_offset + predictor_state_count
+    var tangent_offset = basic_state_offset + 3
+    var initialized_offset = tangent_offset + 7
 
-    var v_basic_0: Float64
-    var v_basic_1: Float64
-    var v_basic_2: Float64
-    if geom_transf == "Corotational":
-        var dulx = scratch.u_local[3] - scratch.u_local[0]
-        var duly = scratch.u_local[4] - scratch.u_local[1]
-        var Lx = L + dulx
-        var Ly = duly
-        var Ln = sqrt(Lx * Lx + Ly * Ly)
-        if Ln == 0.0:
-            abort("zero-length element")
-        var alpha = atan2(Ly, Lx)
-        v_basic_0 = Ln - L
-        v_basic_1 = scratch.u_local[2] - alpha
-        v_basic_2 = scratch.u_local[5] - alpha
-    else:
-        var chord_rotation = (scratch.u_local[4] - scratch.u_local[1]) / L
-        v_basic_0 = scratch.u_local[3] - scratch.u_local[0]
-        v_basic_1 = scratch.u_local[2] - chord_rotation
-        v_basic_2 = scratch.u_local[5] - chord_rotation
+    var basic = force_beam_column2d_basic_displacement(
+        L, scratch.u_local, geom_transf == "Corotational"
+    )
+    var v_basic_0 = basic[0]
+    var v_basic_1 = basic[1]
+    var v_basic_2 = basic[2]
     var basic_prev_0 = force_basic_q_state[basic_state_offset]
     var basic_prev_1 = force_basic_q_state[basic_state_offset + 1]
     var basic_prev_2 = force_basic_q_state[basic_state_offset + 2]
@@ -1504,8 +1587,9 @@ fn force_beam_column2d_global_tangent_and_internal(
     var attempt_0 = remaining_0
     var attempt_1 = remaining_1
     var attempt_2 = remaining_2
-    var converged = False
-    var all_materials_elastic = _fiber_section2d_all_materials_elastic(sec_def)
+    var all_materials_elastic = not hinges.is_defined() and _fiber_section2d_all_materials_elastic(
+        sec_def
+    )
     var best_solved = (
         False,
         0.0,
@@ -1520,12 +1604,39 @@ fn force_beam_column2d_global_tangent_and_internal(
         0.0,
     )
 
+    var has_element_loads = (
+        elem_index >= 0
+        and elem_index + 1 < len(elem_load_offsets)
+        and elem_load_offsets[elem_index] < elem_load_offsets[elem_index + 1]
+    )
+    var converged = (
+        not has_element_loads
+        and not hinges.is_defined()
+        and force_basic_q_state[initialized_offset] == 1.0
+        and sqrt(remaining_0 * remaining_0 + remaining_1 * remaining_1 + remaining_2 * remaining_2)
+        <= 2.220446049250313e-16
+    )
+    if converged:
+        best_solved = (
+            True,
+            accepted_q0,
+            accepted_q1,
+            accepted_q2,
+            force_basic_q_state[tangent_offset],
+            force_basic_q_state[tangent_offset + 1],
+            force_basic_q_state[tangent_offset + 2],
+            force_basic_q_state[tangent_offset + 3],
+            force_basic_q_state[tangent_offset + 4],
+            force_basic_q_state[tangent_offset + 5],
+            force_basic_q_state[tangent_offset + 6],
+        )
+
     var tolerance = 1.0e-12
     var max_subdivisions = 4
     var num_subdivide = 1
     var cutback_factor = 10.0
 
-    if all_materials_elastic:
+    if all_materials_elastic and not converged:
         var solved = _force_beam_column2d_exact_elastic_state(
             L,
             scratch.integration_cache.xis,
@@ -1591,6 +1702,7 @@ fn force_beam_column2d_global_tangent_and_internal(
             var solved = _force_beam_column2d_try_increment(
                 L,
                 sec_def,
+                hinges,
                 fibers,
                 uniaxial_defs,
                 uniaxial_states,
@@ -1646,6 +1758,7 @@ fn force_beam_column2d_global_tangent_and_internal(
                 var solved = _force_beam_column2d_try_increment(
                     L,
                     sec_def,
+                    hinges,
                     fibers,
                     uniaxial_defs,
                     uniaxial_states,
@@ -1770,6 +1883,15 @@ fn force_beam_column2d_global_tangent_and_internal(
             fallback_tangent[6],
             fallback_tangent[8],
         )
+    if converged:
+        force_basic_q_state[tangent_offset] = best_solved[4]
+        force_basic_q_state[tangent_offset + 1] = best_solved[5]
+        force_basic_q_state[tangent_offset + 2] = best_solved[6]
+        force_basic_q_state[tangent_offset + 3] = best_solved[7]
+        force_basic_q_state[tangent_offset + 4] = best_solved[8]
+        force_basic_q_state[tangent_offset + 5] = best_solved[9]
+        force_basic_q_state[tangent_offset + 6] = best_solved[10]
+        force_basic_q_state[initialized_offset] = -1.0 if has_element_loads else 1.0
     var q0 = best_solved[1]
     var q1 = best_solved[2]
     var q2 = best_solved[3]
@@ -1783,12 +1905,62 @@ fn force_beam_column2d_global_tangent_and_internal(
     var k21 = k12
     var k22 = best_solved[10]
 
+    _force_beam_column2d_basic_to_global(
+        elem_index,
+        L,
+        c,
+        s,
+        scratch.u_local,
+        geom_transf,
+        q0,
+        q1,
+        q2,
+        k00,
+        k01,
+        k02,
+        k10,
+        k11,
+        k12,
+        k20,
+        k21,
+        k22,
+        fixed_end,
+        scratch.basic_map_cache,
+        k_global_out,
+        f_global_out,
+    )
+
+
+fn _force_beam_column2d_basic_to_global(
+    elem_index: Int,
+    L: Float64,
+    c: Float64,
+    s: Float64,
+    u_local: List[Float64],
+    geom_transf: String,
+    q0: Float64,
+    q1: Float64,
+    q2: Float64,
+    k00: Float64,
+    k01: Float64,
+    k02: Float64,
+    k10: Float64,
+    k11: Float64,
+    k12: Float64,
+    k20: Float64,
+    k21: Float64,
+    k22: Float64,
+    fixed_end: (Float64, Float64, Float64, Float64, Float64, Float64),
+    basic_map_cache: List[List[Float64]],
+    mut k_global_out: List[List[Float64]],
+    mut f_global_out: List[Float64],
+):
     if geom_transf == "Corotational":
         _force_beam_column2d_corotational_basic_to_global(
             L,
             c,
             s,
-            scratch.u_local,
+            u_local,
             q0,
             q1,
             q2,
@@ -1806,13 +1978,11 @@ fn force_beam_column2d_global_tangent_and_internal(
         return
 
     var inv_L = 1.0 / L
-    if elem_index >= 0 and elem_index < len(scratch.cached_inv_length):
-        inv_L = scratch.cached_inv_length[elem_index]
     _ensure_zero_matrix(k_global_out, 6, 6)
     var use_cached_basic_map = (
         elem_index >= 0
-        and elem_index < len(scratch.basic_map_cache)
-        and len(scratch.basic_map_cache[elem_index]) == 18
+        and elem_index < len(basic_map_cache)
+        and len(basic_map_cache[elem_index]) == 18
     )
     for a in range(6):
         var a_offset = 3 * a
@@ -1820,9 +1990,9 @@ fn force_beam_column2d_global_tangent_and_internal(
         var a1: Float64
         var a2: Float64
         if use_cached_basic_map:
-            a0 = scratch.basic_map_cache[elem_index][a_offset]
-            a1 = scratch.basic_map_cache[elem_index][a_offset + 1]
-            a2 = scratch.basic_map_cache[elem_index][a_offset + 2]
+            a0 = basic_map_cache[elem_index][a_offset]
+            a1 = basic_map_cache[elem_index][a_offset + 1]
+            a2 = basic_map_cache[elem_index][a_offset + 2]
         else:
             (a0, a1, a2) = _beam2d_local_basic_map(a, inv_L)
         for b in range(6):
@@ -1831,9 +2001,9 @@ fn force_beam_column2d_global_tangent_and_internal(
             var b1: Float64
             var b2: Float64
             if use_cached_basic_map:
-                b0 = scratch.basic_map_cache[elem_index][b_offset]
-                b1 = scratch.basic_map_cache[elem_index][b_offset + 1]
-                b2 = scratch.basic_map_cache[elem_index][b_offset + 2]
+                b0 = basic_map_cache[elem_index][b_offset]
+                b1 = basic_map_cache[elem_index][b_offset + 1]
+                b2 = basic_map_cache[elem_index][b_offset + 2]
             else:
                 (b0, b1, b2) = _beam2d_local_basic_map(b, inv_L)
             k_global_out[a][b] = (
@@ -1859,9 +2029,193 @@ fn force_beam_column2d_global_tangent_and_internal(
     f_global_out[1] += fixed_end[4]
     f_global_out[4] += fixed_end[5]
     if geom_transf == "PDelta":
-        var pdelta_shear = (scratch.u_local[1] - scratch.u_local[4]) * q0 * inv_L
+        var pdelta_shear = (u_local[1] - u_local[4]) * q0 * inv_L
         f_global_out[1] += pdelta_shear
         f_global_out[4] -= pdelta_shear
 
     _beam2d_transform_stiffness_local_to_global_in_place(k_global_out, c, s)
     _beam2d_transform_force_local_to_global_in_place(f_global_out, c, s)
+
+
+fn elastic_beam_column2d_global_tangent_and_internal(
+    elem_index: Int,
+    x1: Float64,
+    y1: Float64,
+    x2: Float64,
+    y2: Float64,
+    u_global: List[Float64],
+    geom_transf: String,
+    integration: String,
+    num_int_pts: Int,
+    sec: SectionInput,
+    force_based: Bool,
+    element_loads: List[ElementLoadInput],
+    elem_load_offsets: List[Int],
+    elem_load_pool: List[Int],
+    load_scale: Float64,
+    mut scratch: ForceBeamColumn2dScratch,
+    mut k_global: List[List[Float64]],
+    mut f_global: List[Float64],
+) -> (Float64, Float64, Float64):
+    var dx = x2 - x1
+    var dy = y2 - y1
+    var length = hypot(dx, dy)
+    if length == 0.0:
+        abort("zero-length element")
+    var inv_length = 1.0 / length
+    var c = dx * inv_length
+    var s = dy * inv_length
+    _beam2d_transform_u_global_to_local(c, s, u_global, scratch.u_local)
+    var axial = scratch.u_local[3] - scratch.u_local[0]
+    var transverse = scratch.u_local[4] - scratch.u_local[1]
+    var chord_rotation = transverse * inv_length
+    if geom_transf == "Corotational":
+        axial = hypot(length + axial, transverse) - length
+        chord_rotation = atan2(transverse, length + scratch.u_local[3] - scratch.u_local[0])
+    var v1 = scratch.u_local[2] - chord_rotation
+    var v2 = scratch.u_local[5] - chord_rotation
+    var fixed = beam2d_basic_fixed_end_and_reactions(
+        element_loads, elem_load_offsets, elem_load_pool, elem_index, load_scale, length
+    )
+    var ea = sec.E * sec.A
+    var ei = sec.E * sec.I
+    if sec.cbdi.enabled():
+        beam_integration_cache_ensure(scratch.integration_cache, integration, num_int_pts)
+        var loads: List[List[Float64]] = []
+        _ensure_zero_matrix(loads, 2, num_int_pts)
+        # OpenSees CBDI2d includes fixed-end reactions in the transform,
+        # while its section equilibrium omits the applied element load.
+        var q: List[Float64] = []
+        var k: List[List[Float64]] = []
+        cbdi_elastic_basic_state(
+            length,
+            ea,
+            [ei],
+            scratch.integration_cache,
+            loads,
+            [axial, v1, v2],
+            sec.cbdi,
+            q,
+            k,
+        )
+        _force_beam_column2d_basic_to_global(
+            -1,
+            length,
+            c,
+            s,
+            scratch.u_local,
+            geom_transf,
+            q[0],
+            q[1],
+            q[2],
+            k[0][0],
+            k[0][1],
+            k[0][2],
+            k[1][0],
+            k[1][1],
+            k[1][2],
+            k[2][0],
+            k[2][1],
+            k[2][2],
+            fixed,
+            scratch.basic_map_cache,
+            k_global,
+            f_global,
+        )
+        return (q[0], q[1], q[2])
+    var ka = ea * inv_length
+    var k11 = 4.0 * ei * inv_length
+    var k12 = 2.0 * ei * inv_length
+    var k22 = k11
+    var q0 = fixed[0]
+    var q1 = fixed[1]
+    var q2 = fixed[2]
+    if force_based:
+        var f00 = 0.0
+        var f11 = 0.0
+        var f12 = 0.0
+        var f22 = 0.0
+        var v0_load = 0.0
+        var v1_load = 0.0
+        var v2_load = 0.0
+        var hinge = sec.hinge_radau
+        if not hinge.is_defined():
+            beam_integration_cache_ensure(scratch.integration_cache, integration, num_int_pts)
+        for ip in range(num_int_pts):
+            var xi: Float64
+            var weight: Float64
+            var point_ea = ea
+            var point_ei = ei
+            var point_ga = sec.shear_rigidity_y
+            if hinge.is_defined():
+                (xi, weight) = hinge.xi_weight(ip, length)
+                if ip == 0 or ip == num_int_pts - 1:
+                    var end = hinge.elastic_end_i if ip == 0 else hinge.elastic_end_j
+                    point_ea = end[0]
+                    point_ei = end[1]
+                    point_ga = end[2]
+            else:
+                xi = scratch.integration_cache.xis[ip]
+                weight = scratch.integration_cache.weights[ip]
+            var wL = weight * length
+            var b1 = xi - 1.0
+            var b2 = xi
+            var flexibility_a = wL / point_ea
+            var flexibility_m = wL / point_ei
+            var flexibility_v = 0.0 if point_ga == 0.0 else wL / point_ga
+            var shear_term = flexibility_v * inv_length * inv_length
+            var load = beam2d_section_load_response(
+                element_loads,
+                elem_load_offsets,
+                elem_load_pool,
+                elem_index,
+                load_scale,
+                xi * length,
+                length,
+            )
+            f00 += flexibility_a
+            f11 += flexibility_m * b1 * b1 + shear_term
+            f12 += flexibility_m * b1 * b2 + shear_term
+            f22 += flexibility_m * b2 * b2 + shear_term
+            v0_load += flexibility_a * load[0]
+            v1_load += flexibility_m * b1 * load[1] + flexibility_v * inv_length * load[2]
+            v2_load += flexibility_m * b2 * load[1] + flexibility_v * inv_length * load[2]
+        var det = f11 * f22 - f12 * f12
+        if f00 == 0.0 or det == 0.0:
+            abort("elastic forceBeamColumn2d flexibility is singular")
+        ka = 1.0 / f00
+        k11 = f22 / det
+        k12 = -f12 / det
+        k22 = f11 / det
+        q0 = -ka * v0_load
+        q1 = -k11 * v1_load - k12 * v2_load
+        q2 = -k12 * v1_load - k22 * v2_load
+
+    q0 += ka * axial
+    q1 += k11 * v1 + k12 * v2
+    q2 += k12 * v1 + k22 * v2
+    _force_beam_column2d_basic_to_global(
+        -1,
+        length,
+        c,
+        s,
+        scratch.u_local,
+        geom_transf,
+        q0,
+        q1,
+        q2,
+        ka,
+        0.0,
+        0.0,
+        0.0,
+        k11,
+        k12,
+        0.0,
+        k12,
+        k22,
+        fixed,
+        scratch.basic_map_cache,
+        k_global,
+        f_global,
+    )
+    return (q0, q1, q2)

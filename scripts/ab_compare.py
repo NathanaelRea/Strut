@@ -18,12 +18,13 @@ from __future__ import annotations
 import argparse
 import json
 import math
-import os
+import resource
 import shutil
 import subprocess
 import sys
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -96,6 +97,35 @@ def _resolved_input(case_path: Path, work_dir: Path) -> tuple[str, Path]:
     out_json.parent.mkdir(parents=True, exist_ok=True)
     out_json.write_text(json.dumps(case_data), encoding="utf-8")
     return name, out_json
+
+
+SETUP_MEMORY_LIMIT_BYTES = 4 * 1024**3
+
+
+def _cap_worker_memory() -> None:
+    resource.setrlimit(
+        resource.RLIMIT_AS, (SETUP_MEMORY_LIMIT_BYTES, SETUP_MEMORY_LIMIT_BYTES)
+    )
+
+
+def _resolve_in_subprocess(case_path: Path, work_dir: Path) -> tuple[str, Path] | str:
+    """(name, input JSON) from a fresh, memory-capped process, or an error message."""
+    proc = subprocess.run(
+        [sys.executable, __file__, "--resolve-one", str(case_path), str(work_dir)],
+        capture_output=True,
+        text=True,
+        preexec_fn=_cap_worker_memory,
+        check=False,
+    )
+    if proc.returncode != 0:
+        output = proc.stderr or proc.stdout
+        if "MemoryError" in output:
+            limit_gb = SETUP_MEMORY_LIMIT_BYTES // 1024**3
+            return f"conversion needs more than {limit_gb} GB (static unroll of a live-replay script)"
+        lines = output.strip().splitlines()
+        return lines[-1] if lines else f"exit {proc.returncode}"
+    name, path = json.loads(proc.stdout.strip().splitlines()[-1])
+    return name, Path(path)
 
 
 def _run_solver(
@@ -192,6 +222,10 @@ def _compare_outputs(
 
 
 def main() -> int:
+    if len(sys.argv) == 4 and sys.argv[1] == "--resolve-one":
+        name, path = _resolved_input(Path(sys.argv[2]), Path(sys.argv[3]))
+        print(json.dumps([name, str(path)]))
+        return 0
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
@@ -250,17 +284,29 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="run_", dir=scratch_root) as tmp:
         work_dir = Path(tmp)
         inputs: list[tuple[str, Path]] = []
-        for case_path in case_paths:
-            try:
-                inputs.append(_resolved_input(case_path, work_dir))
-            except (Exception, SystemExit) as exc:  # noqa: BLE001 - report and continue
+        # Convert each case in its own short-lived process: the Tcl converter keeps
+        # interpreter state alive, which grows to many gigabytes over a full suite.
+        # Each conversion runs in its own capped subprocess: the Tcl converter keeps
+        # interpreter state alive, and a live-replay script whose analyze loop unrolls
+        # into thousands of stages can need many gigabytes. Over the cap, the case is
+        # reported as SETUP instead of swapping the host.
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            outcomes = list(
+                pool.map(
+                    lambda path: _resolve_in_subprocess(path, work_dir), case_paths
+                )
+            )
+        for case_path, outcome in zip(case_paths, outcomes):
+            if isinstance(outcome, str):
                 results.append(
                     {
                         "case": case_path.parent.name,
                         "status": "SETUP",
-                        "detail": str(exc)[:160],
+                        "detail": outcome[:160],
                     }
                 )
+            else:
+                inputs.append(outcome)
         for extra in args.extra_json:
             extra_path = Path(extra).resolve()
             inputs.append((extra_path.stem, extra_path))

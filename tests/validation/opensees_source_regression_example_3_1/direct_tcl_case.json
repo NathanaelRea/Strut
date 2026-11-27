@@ -1,0 +1,11 @@
+{
+  "name": "opensees_source_regression_example_3_1",
+  "entry_tcl": "tests/fixtures/opensees/OpenSeesSource/EXAMPLES/ExamplesForTesting/Test.Example3.1.ops",
+  "tcl_source_version": "3.7.1",
+  "source_url": "https://github.com/OpenSees/OpenSees/blob/v3.7.1/EXAMPLES/ExamplesForTesting/Test.Example3.1.ops",
+  "enabled": true,
+  "parity_tolerance": {},
+  "parity_tolerance_by_category": {},
+  "parity_tolerance_by_recorder": {},
+  "parity_mode": "step"
+}

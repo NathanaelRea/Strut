@@ -1,3 +1,5 @@
+from solver.assembly.shell_mass import add_shell_mass_sparse, shell_excitation_mass
+from solver.run_case.analysis.transient_state import TransientState
 from algorithm import vectorize
 from collections import Dict, List
 from elements import (
@@ -31,7 +33,7 @@ from solver.assembly.frame3d_scratch import (
     invalidate_frame3d_assembly_load_cache,
     reset_frame3d_assembly_scratch,
 )
-from solver.assembly.shell_cache import ShellAssemblyCache
+from solver.assembly.surface_cache import SurfaceAssemblyCache
 from solver.run_case.linear_solver_backend import (
     LinearSolverBackend,
     clear,
@@ -57,8 +59,13 @@ from solver.sparse_pattern import (
     sparse_values_any_nonzero,
     zero_values,
 )
+from solver.run_case.analysis.modal_damping import build_modal_damping
+from solver.run_case.analysis.penalty import append_penalty_pairs
+from solver.run_case.analysis.support_motion import SupportKinematics
 from solver.run_case.analysis.transient_sparse import TransientSparseMatrices
+from solver.run_case.analysis.regional_rayleigh import assemble_regional_rayleigh
 from solver.dof import node_dof_index, require_dof_in_range
+from solver.reorder import opensees_rcm_node_order
 from solver.profile import (
     PROFILE_FRAME_UNIAXIAL_COPY_RESET,
     RuntimeProfileMetrics,
@@ -81,15 +88,23 @@ from solver.run_case.input_types import (
     ElementLoadInput,
     ElementInput,
     MaterialInput,
+    MassInput,
+    NodalLoadInput,
     NodeInput,
     RecorderInput,
+    RayleighInput,
     SectionInput,
+    UniformExcitationInput,
     SolverAttemptInput,
+    PrescribedPressureInput,
 )
 from solver.run_case.load_state import (
+    add_uniform_excitation_load,
+    set_uniform_excitation_initial_velocity,
     build_active_element_load_state,
     build_active_nodal_load,
 )
+from solver.run_case.nonlinear_krylov_qr import krylov_apply_qr_acceleration
 from solver.run_case.nonlinear_krylov import (
     copy_krylov_vector,
     default_krylov_max_dim,
@@ -102,10 +117,9 @@ from solver.run_case.helpers import (
     _append_output_at_index,
     _element_basic_force_for_recorder,
     _element_deformation_for_recorder,
-    _collapse_load_keeping_restrained,
     _collapse_vector_by_mpc,
     _element_force_global_for_recorder,
-    _force_beam_column2d_force_global_from_basic_state,
+    _force_beam_column2d_end_forces_from_basic_state,
     _force_beam_column2d_section_response_from_basic_state,
     _element_local_force_for_recorder,
     _enforce_mpc_values,
@@ -114,19 +128,22 @@ from solver.run_case.helpers import (
     _has_recorder_type,
     _output_buffer_index,
     _section_response_for_recorder,
+    _select_element_recorder_dofs,
     _sync_force_beam_column2d_committed_basic_states,
     _write_run_progress_throttled,
     _update_envelope,
 )
 from tag_types import (
     AnalysisAlgorithmTag,
-    AnalysisSystemTag,
+    ConstraintHandlerTag,
+    NumbererTag,
     ElementTypeTag,
     IntegratorTypeTag,
     NonlinearAlgorithmMode,
     NonlinearTestTypeTag,
     PatternTypeTag,
     RecorderTypeTag,
+    UniMaterialTypeTag,
 )
 
 
@@ -146,7 +163,9 @@ fn _has_nonparticipating_link_for_rayleigh(elements: List[ElementInput]) -> Bool
 fn _has_zero_length_damp_mats(elements: List[ElementInput]) -> Bool:
     for i in range(len(elements)):
         var elem = elements[i]
-        if elem.type_tag == ElementTypeTag.ZeroLength and elem.damp_material_count > 0:
+        if elem.type_tag == ElementTypeTag.ZeroLength and (
+            elem.damp_material_count > 0 or elem.has_viscous_material
+        ):
             return True
     return False
 
@@ -292,10 +311,12 @@ fn _transient_residual(
     fiber_section3d_cells: List[FiberCell],
     fiber_section3d_index_by_id: List[Int],
     layered_shell_section_defs: List[LayeredShellSectionDef],
-    mut shell_cache: ShellAssemblyCache,
+    mut shell_cache: SurfaceAssemblyCache,
     mut force_beam_column2d_scratch: ForceBeamColumn2dScratch,
     mut force_beam_column3d_scratch: Frame3dAssemblyScratch,
     has_transformation_mpc: Bool,
+    constrained: List[Bool],
+    mpc_slave_dof: List[Bool],
     mpc_row_offsets: List[Int],
     mpc_dof_pool: List[Int],
     mpc_coeff_pool: List[Float64],
@@ -307,68 +328,177 @@ fn _transient_residual(
     time_series_times: List[Float64],
     t: Float64,
     has_zero_length_dampers: Bool,
+    mut v_full: List[Float64],
     mut R_f: List[Float64],
     mut a_trial: List[Float64],
     mut v_trial: List[Float64],
     mut F_zero_length_damp_f: List[Float64],
+    use_incremental_newmark: Bool,
+    assemble_tangent: Bool,
+    mut asm_dof_map6: List[Int],
+    mut asm_dof_map12: List[Int],
+    mut asm_u_elem6: List[Float64],
+    mut F_int_full: List[Float64],
+    mut runtime_metrics: RuntimeProfileMetrics,
 ) raises:
-    var F_int = assemble_internal_forces_typed_soa(
-        typed_nodes,
-        typed_elements,
-        node_x,
-        node_y,
-        node_z,
-        elem_dof_offsets,
-        elem_dof_pool,
-        elem_node_offsets,
-        elem_node_pool,
-        elem_primary_material_ids,
-        elem_type_tags,
-        elem_geom_tags,
-        elem_section_ids,
-        elem_integration_tags,
-        elem_num_int_pts,
-        elem_area,
-        elem_thickness,
-        frame2d_elem_indices,
-        frame3d_elem_indices,
-        truss_elem_indices,
-        zero_length_elem_indices,
-        two_node_link_elem_indices,
-        zero_length_section_elem_indices,
-        quad_elem_indices,
-        shell_elem_indices,
-        active_element_load_state_element_loads,
-        active_element_load_state_elem_load_offsets,
-        active_element_load_state_elem_load_pool,
-        1.0,
-        typed_sections_by_id,
-        typed_materials_by_id,
-        id_to_index,
-        node_count,
-        ndf,
-        ndm,
-        u,
-        uniaxial_defs,
-        uniaxial_state_defs,
-        uniaxial_states,
-        elem_uniaxial_offsets,
-        elem_uniaxial_counts,
-        elem_uniaxial_state_ids,
-        force_basic_offsets,
-        force_basic_counts,
-        force_basic_q,
-        fiber_section_defs,
-        fiber_section_cells,
-        fiber_section_index_by_id,
-        fiber_section3d_defs,
-        fiber_section3d_cells,
-        fiber_section3d_index_by_id,
-        layered_shell_section_defs,
-        shell_cache,
-        force_beam_column2d_scratch,
-        force_beam_column3d_scratch,
-    )
+    """R_f at the current trial state.
+
+    With `assemble_tangent`, the tangent is assembled into `mats.assembler` and
+    the uncollapsed internal force left in `F_int_full`, so the next Newton
+    iteration can use them instead of evaluating every element again at the
+    same displacement.
+    """
+    if not use_incremental_newmark:
+        _build_trial_state_newmark_simd(u_f, u_n, v_n, a_n, a0, a2, a3, gamma, dt, a_trial, v_trial)
+    _scatter_free_vector_to_full(free, v_trial, v_full)
+    if has_transformation_mpc:
+        _enforce_mpc_values(
+            v_full,
+            constrained,
+            mpc_slave_dof,
+            mpc_row_offsets,
+            mpc_dof_pool,
+            mpc_coeff_pool,
+            len(mats.supports.dofs) > 0,
+        )
+    var F_int: List[Float64]
+    if assemble_tangent:
+        var no_events = String()
+        var no_comma = False
+        assemble_global_stiffness_and_internal_native_soa(
+            typed_nodes,
+            typed_elements,
+            node_x,
+            node_y,
+            node_z,
+            elem_dof_offsets,
+            elem_dof_pool,
+            elem_dof_offsets,
+            elem_free_pool,
+            elem_node_offsets,
+            elem_node_pool,
+            elem_primary_material_ids,
+            elem_type_tags,
+            elem_geom_tags,
+            elem_section_ids,
+            elem_integration_tags,
+            elem_num_int_pts,
+            elem_area,
+            elem_thickness,
+            frame2d_elem_indices,
+            frame3d_elem_indices,
+            truss_elem_indices,
+            zero_length_elem_indices,
+            two_node_link_elem_indices,
+            zero_length_section_elem_indices,
+            quad_elem_indices,
+            shell_elem_indices,
+            active_element_load_state_element_loads,
+            active_element_load_state_elem_load_offsets,
+            active_element_load_state_elem_load_pool,
+            1.0,
+            typed_sections_by_id,
+            typed_materials_by_id,
+            id_to_index,
+            node_count,
+            ndf,
+            ndm,
+            u,
+            uniaxial_defs,
+            uniaxial_state_defs,
+            uniaxial_states,
+            elem_uniaxial_offsets,
+            elem_uniaxial_counts,
+            elem_uniaxial_state_ids,
+            force_basic_offsets,
+            force_basic_counts,
+            force_basic_q,
+            fiber_section_defs,
+            fiber_section_cells,
+            fiber_section_index_by_id,
+            fiber_section3d_defs,
+            fiber_section3d_cells,
+            fiber_section3d_index_by_id,
+            layered_shell_section_defs,
+            shell_cache,
+            force_beam_column2d_scratch,
+            force_beam_column3d_scratch,
+            asm_dof_map6,
+            asm_dof_map12,
+            asm_u_elem6,
+            mats.assembler,
+            F_int_full,
+            False,
+            0,
+            no_events,
+            no_comma,
+            0,
+            0,
+            runtime_metrics,
+            v_full,
+            dt,
+        )
+        F_int = F_int_full.copy()
+    else:
+        F_int = assemble_internal_forces_typed_soa(
+            typed_nodes,
+            typed_elements,
+            node_x,
+            node_y,
+            node_z,
+            elem_dof_offsets,
+            elem_dof_pool,
+            elem_node_offsets,
+            elem_node_pool,
+            elem_primary_material_ids,
+            elem_type_tags,
+            elem_geom_tags,
+            elem_section_ids,
+            elem_integration_tags,
+            elem_num_int_pts,
+            elem_area,
+            elem_thickness,
+            frame2d_elem_indices,
+            frame3d_elem_indices,
+            truss_elem_indices,
+            zero_length_elem_indices,
+            two_node_link_elem_indices,
+            zero_length_section_elem_indices,
+            quad_elem_indices,
+            shell_elem_indices,
+            active_element_load_state_element_loads,
+            active_element_load_state_elem_load_offsets,
+            active_element_load_state_elem_load_pool,
+            1.0,
+            typed_sections_by_id,
+            typed_materials_by_id,
+            id_to_index,
+            node_count,
+            ndf,
+            ndm,
+            u,
+            uniaxial_defs,
+            uniaxial_state_defs,
+            uniaxial_states,
+            elem_uniaxial_offsets,
+            elem_uniaxial_counts,
+            elem_uniaxial_state_ids,
+            force_basic_offsets,
+            force_basic_counts,
+            force_basic_q,
+            fiber_section_defs,
+            fiber_section_cells,
+            fiber_section_index_by_id,
+            fiber_section3d_defs,
+            fiber_section3d_cells,
+            fiber_section3d_index_by_id,
+            layered_shell_section_defs,
+            shell_cache,
+            force_beam_column2d_scratch,
+            force_beam_column3d_scratch,
+            v_full,
+            dt,
+        )
     if has_transformation_mpc:
         F_int = _collapse_vector_by_mpc(F_int, mpc_row_offsets, mpc_dof_pool, mpc_coeff_pool)
     if has_zero_length_dampers:
@@ -407,9 +537,8 @@ fn _transient_residual(
     else:
         for i in range(free_count):
             F_zero_length_damp_f[i] = 0.0
-    _build_trial_state_newmark_simd(u_f, u_n, v_n, a_n, a0, a2, a3, gamma, dt, a_trial, v_trial)
     _assemble_transient_residual(
-        mats, P_ext_f, F_int, free, F_zero_length_damp_f, v_trial, a_trial, R_f
+        mats, P_ext_f, F_int, free, F_zero_length_damp_f, v_trial, a_trial, u_f, R_f
     )
 
 
@@ -421,6 +550,7 @@ fn _assemble_transient_residual(
     F_zero_length_damp_f: List[Float64],
     v_trial: List[Float64],
     a_trial: List[Float64],
+    u_f: List[Float64],
     mut R_f: List[Float64],
 ):
     """R = P - F_int - F_damper - C v - M a over the free equations."""
@@ -434,6 +564,21 @@ fn _assemble_transient_residual(
             - mats.damping_force[i]
             - mats.inertia_force[i]
         )
+    mats.penalty.subtract_force(u_f, R_f)
+    if len(mats.supports.dofs) > 0:
+        mats.supports.subtract_force(
+            mats.support_k_current, mats.supports.velocity, mats.beta_k, R_f
+        )
+        mats.supports.subtract_force(
+            mats.support_k_init, mats.supports.velocity, mats.beta_k_init, R_f
+        )
+        mats.supports.subtract_force(
+            mats.support_k_comm, mats.supports.velocity, mats.beta_k_comm, R_f
+        )
+        mats.supports.subtract_force(
+            mats.support_mass_rayleigh, mats.supports.velocity, mats.alpha_m, R_f
+        )
+        mats.supports.subtract_force(mats.support_mass, mats.supports.acceleration, 1.0, R_f)
 
 
 fn _uniaxial_revert_trial_active_states(
@@ -556,49 +701,6 @@ fn _build_trial_state_newmark_simd(
 ):
     _build_trial_state_newmark_simd_impl[simd_width_of[DType.float64]()](
         u_f, u_n, v_n, a_n, a0, a2, a3, gamma, dt, a_trial, v_trial
-    )
-
-
-@always_inline
-fn _predict_displacement_newmark_simd_impl[
-    width: Int
-](
-    mut u_f: List[Float64],
-    u_n: List[Float64],
-    v_n: List[Float64],
-    a_n: List[Float64],
-    dt: Float64,
-    beta: Float64,
-):
-    var n = len(u_f)
-    var coeff = dt * dt * (0.5 - beta)
-
-    @parameter
-    fn predict_chunk[chunk: Int](i: Int):
-        var u_prev = load_float64_contiguous_simd[chunk](u_n, i)
-        var v_prev = load_float64_contiguous_simd[chunk](v_n, i)
-        var a_prev = load_float64_contiguous_simd[chunk](a_n, i)
-        var u_pred = (
-            u_prev
-            + SIMD[DType.float64, chunk](dt) * v_prev
-            + SIMD[DType.float64, chunk](coeff) * a_prev
-        )
-        store_float64_contiguous_simd[chunk](u_f, i, u_pred)
-
-    vectorize[predict_chunk, width](n)
-
-
-@always_inline
-fn _predict_displacement_newmark_simd(
-    mut u_f: List[Float64],
-    u_n: List[Float64],
-    v_n: List[Float64],
-    a_n: List[Float64],
-    dt: Float64,
-    beta: Float64,
-):
-    _predict_displacement_newmark_simd_impl[simd_width_of[DType.float64]()](
-        u_f, u_n, v_n, a_n, dt, beta
     )
 
 
@@ -856,6 +958,7 @@ fn _assemble_link_filter_pair(
 ):
     """Assemble all-link and Rayleigh-participating-link tangents into
     `mats.k_link_all` / `mats.k_link_rayleigh` (assembler target restored)."""
+    var support_tangent = mats.assembler.support_values.copy()
     swap(mats.assembler.values, mats.k_link_all)
     assemble_link_stiffness_native(
         typed_nodes,
@@ -878,6 +981,7 @@ fn _assemble_link_filter_pair(
         F_link_scratch,
     )
     swap(mats.assembler.values, mats.k_link_all)
+    var support_link_all = mats.assembler.support_values.copy()
     swap(mats.assembler.values, mats.k_link_rayleigh)
     assemble_link_stiffness_native(
         typed_nodes,
@@ -900,21 +1004,30 @@ fn _assemble_link_filter_pair(
         F_link_scratch,
     )
     swap(mats.assembler.values, mats.k_link_rayleigh)
+    for i in range(len(support_tangent)):
+        support_tangent[i] += mats.assembler.support_values[i] - support_link_all[i]
+    mats.assembler.support_values = support_tangent^
 
 
 fn run_transient_nonlinear(
     analysis: AnalysisInput,
+    mut transient_state: TransientState,
+    prescribed_pressures: List[PrescribedPressureInput],
+    penalty_sp_dofs: List[Int],
+    penalty_mp_dofs: List[Int],
+    penalty_sp_values: List[Float64],
     steps: Int,
     ts_index: Int,
     time_series: List[TimeSeriesInput],
     time_series_values: List[Float64],
     time_series_times: List[Float64],
     analysis_solver_chain_pool: List[SolverAttemptInput],
+    rayleigh: RayleighInput,
+    nodal_masses: List[MassInput],
     dampings: List[DampingInput],
     pattern_type: String,
     pattern_type_tag: Int,
-    uniform_excitation_direction: Int,
-    uniform_accel_ts_index: Int,
+    uniform_excitations: List[UniformExcitationInput],
     rayleigh_alpha_m: Float64,
     rayleigh_beta_k: Float64,
     rayleigh_beta_k_init: Float64,
@@ -967,7 +1080,7 @@ fn run_transient_nonlinear(
     F_pattern: List[Float64],
     M_total: List[Float64],
     M_rayleigh_total: List[Float64],
-    free: List[Int],
+    base_free: List[Int],
     recorders: List[RecorderInput],
     recorder_nodes_pool: List[Int],
     recorder_elements_pool: List[Int],
@@ -981,14 +1094,14 @@ fn run_transient_nonlinear(
     fiber_section3d_cells: List[FiberCell],
     fiber_section3d_index_by_id: List[Int],
     layered_shell_section_defs: List[LayeredShellSectionDef],
-    mut shell_cache: ShellAssemblyCache,
+    mut shell_cache: SurfaceAssemblyCache,
     mut transient_output_files: List[String],
     mut transient_output_buffers: List[String],
     progress_path: String,
     progress_stage_number: Int,
     progress_stage_count: Int,
     mut progress_last_ns: Int,
-    has_transformation_mpc: Bool,
+    base_has_transformation_mpc: Bool,
     mpc_slave_dof: List[Bool],
     mpc_row_offsets: List[Int],
     mpc_dof_pool: List[Int],
@@ -1011,6 +1124,7 @@ fn run_transient_nonlinear(
     frame_transient_step: Int,
     frame_uniaxial_revert_all: Int,
     frame_uniaxial_commit_all: Int,
+    mut force_beam_column3d_scratch: Frame3dAssemblyScratch,
     mut runtime_metrics: RuntimeProfileMetrics,
 ) raises:
     var time = Python.import_module("time")
@@ -1028,7 +1142,6 @@ fn run_transient_nonlinear(
     var asm_dof_map12: List[Int] = []
     var asm_u_elem6: List[Float64] = []
     var force_beam_column2d_scratch = ForceBeamColumn2dScratch()
-    var force_beam_column3d_scratch = Frame3dAssemblyScratch()
 
     var dt = analysis.dt
     if dt <= 0.0:
@@ -1038,16 +1151,6 @@ fn run_transient_nonlinear(
         and pattern_type_tag != PatternTypeTag.UniformExcitation
     ):
         abort("unsupported pattern type: " + pattern_type)
-    if pattern_type_tag == PatternTypeTag.UniformExcitation:
-        if uniform_excitation_direction < 1 or uniform_excitation_direction > ndm:
-            abort("UniformExcitation direction out of range")
-        if uniform_accel_ts_index < 0:
-            abort("UniformExcitation missing accel time_series")
-    var uniform_excitation_dofs: List[Int] = []
-    if pattern_type_tag == PatternTypeTag.UniformExcitation:
-        for i in range(total_dofs):
-            if (i % ndf) + 1 == uniform_excitation_direction:
-                uniform_excitation_dofs.append(i)
 
     var retry_algorithm_tags: List[Int] = []
     var retry_algorithm_modes: List[Int] = []
@@ -1091,6 +1194,90 @@ fn run_transient_nonlinear(
     if beta <= 0.0:
         abort("Newmark beta must be > 0")
 
+    var use_penalty = analysis.constraints_tag == ConstraintHandlerTag.Penalty
+    var has_transformation_mpc = base_has_transformation_mpc and not use_penalty
+    if use_penalty and (analysis.penalty_sp <= 0.0 or analysis.penalty_mp <= 0.0):
+        abort("Penalty coefficients must be positive")
+    var has_coupled_elements = shell_cache.has_coupled_elements()
+    var has_soil_materials = shell_cache.has_soil_materials()
+    var incremental_newmark = has_soil_materials or (ndm == 3 and ndf == 6)
+    var use_opensees_numbering = (
+        has_coupled_elements or has_soil_materials
+    ) and analysis.numberer_tag == NumbererTag.RCM
+    var has_prescribed_pressures = len(prescribed_pressures) > 0
+    var pressure_dofs: List[Int] = []
+    var pressure_load: List[Float64] = []
+    var prescribed_velocity: List[Float64] = []
+    var prescribed_acceleration: List[Float64] = []
+    if has_prescribed_pressures:
+        if (
+            not has_coupled_elements
+            or analysis.constraints_tag != ConstraintHandlerTag.Transformation
+        ):
+            abort("prescribed pore pressure requires coupled elements and Transformation")
+        prescribed_velocity.resize(total_dofs, 0.0)
+        prescribed_acceleration.resize(total_dofs, 0.0)
+        pressure_load.resize(total_dofs, 0.0)
+        for pressure in prescribed_pressures:
+            if (
+                pressure.node < 0
+                or pressure.node >= len(id_to_index)
+                or id_to_index[pressure.node] < 0
+            ):
+                abort("prescribed pore pressure refers to an unknown node")
+            var node = id_to_index[pressure.node]
+            if pressure.dof != ndm + 1 or typed_nodes[node].ndf != pressure.dof:
+                abort("prescribed pore pressure requires a pressure DOF")
+            var index = node_dof_index(node, pressure.dof, ndf)
+            if constrained[index] or mpc_slave_dof[index]:
+                abort("prescribed pore pressure overlaps an existing constraint")
+            pressure_dofs.append(index)
+            prescribed_velocity[index] = pressure.velocity
+            prescribed_acceleration[index] = pressure.acceleration
+            u[index] = pressure.displacement
+        for i in range(total_dofs):
+            if mpc_slave_dof[i]:
+                for term in range(mpc_row_offsets[i], mpc_row_offsets[i + 1]):
+                    if mpc_dof_pool[term] in pressure_dofs:
+                        abort("prescribed pore pressure cannot retain an MPC")
+        shell_cache.add_up_prescribed_pressure_load(
+            elem_dof_offsets,
+            elem_dof_pool,
+            prescribed_velocity,
+            prescribed_acceleration,
+            pressure_load,
+        )
+        if has_transformation_mpc:
+            pressure_load = _collapse_vector_by_mpc(
+                pressure_load, mpc_row_offsets, mpc_dof_pool, mpc_coeff_pool
+            )
+    var reordered_free: List[Int] = []
+    if use_opensees_numbering or use_penalty or has_prescribed_pressures:
+        var active: List[Bool] = []
+        active.resize(total_dofs, use_penalty)
+        if not use_penalty:
+            for dof in base_free:
+                active[dof] = True
+        for index in pressure_dofs:
+            active[index] = False
+        var node_order: List[Int] = []
+        if use_opensees_numbering:
+            var no_extra_edges: List[Int] = []
+            ref extra_edges = penalty_mp_dofs if use_penalty else no_extra_edges
+            node_order = opensees_rcm_node_order(typed_elements, node_count, extra_edges, ndf)
+        else:
+            for i in range(node_count):
+                node_order.append(i)
+        for i in node_order:
+            for dof in range(1, typed_nodes[i].ndf + 1):
+                var index = node_dof_index(i, dof, ndf)
+                if active[index]:
+                    reordered_free.append(index)
+    ref free = (
+        reordered_free if use_penalty
+        or use_opensees_numbering
+        or has_prescribed_pressures else base_free
+    )
     var free_count = len(free)
     var free_index: List[Int] = []
     free_index.resize(total_dofs, -1)
@@ -1103,10 +1290,28 @@ fn run_transient_nonlinear(
     var M_rayleigh_for_pattern: List[Float64] = []
     if rayleigh_alpha_m != 0.0:
         M_rayleigh_for_pattern = M_rayleigh_total.copy()
+    var penalty_offsets: List[Int] = []
+    var penalty_pool: List[Int] = []
+    if use_penalty and len(penalty_mp_dofs) > 0:
+        # The penalty terms need pattern entries even when the two nodes
+        # never appear in the same element.
+        penalty_offsets = elem_dof_offsets.copy()
+        penalty_pool = elem_dof_pool.copy()
+        append_penalty_pairs(penalty_offsets, penalty_pool, penalty_mp_dofs)
+    var has_modal_damping = len(analysis.supplemental.modal_damping) > 0
+    if has_modal_damping:
+        if len(penalty_offsets) == 0:
+            penalty_offsets = elem_dof_offsets.copy()
+            penalty_pool = elem_dof_pool.copy()
+        # The modal damping matrix couples all participating equations.
+        for dof in free:
+            penalty_pool.append(dof)
+        penalty_offsets.append(len(penalty_pool))
+    var use_expanded_pattern = len(penalty_pool) > 0
     var pattern = SparsePattern()
     var assembler = build_sparse_assembler(
-        elem_dof_offsets,
-        elem_dof_pool,
+        penalty_offsets if use_expanded_pattern else elem_dof_offsets,
+        penalty_pool if use_expanded_pattern else elem_dof_pool,
         free_index,
         free_count,
         has_transformation_mpc,
@@ -1118,6 +1323,25 @@ fn run_transient_nonlinear(
         pattern,
     )
     var mats = TransientSparseMatrices(pattern^, assembler^)
+    if use_penalty:
+        mats.penalty.prepare(
+            mats.pattern,
+            free_index,
+            penalty_sp_dofs,
+            penalty_mp_dofs,
+            analysis.penalty_sp,
+            analysis.penalty_mp,
+            penalty_sp_values,
+        )
+        mats.penalty.add_motions(
+            analysis.supplemental.support_motions,
+            typed_nodes,
+            id_to_index,
+            ndf,
+            free_index,
+            mats.pattern,
+            time_series,
+        )
     mats.mass = build_reduced_mass_values(
         mats.pattern,
         M_total,
@@ -1137,8 +1361,76 @@ fn run_transient_nonlinear(
             mpc_dof_pool,
             mpc_coeff_pool,
         )
+    var excitation_mass: List[Float64] = []
+    if has_coupled_elements:
+        shell_cache.add_up_transient_matrices(
+            mats.assembler,
+            elem_dof_offsets,
+            elem_free_pool,
+            mats.mass,
+            mats.mass_rayleigh,
+            mats.c_coupled,
+        )
+        excitation_mass = M_total.copy()
+        shell_cache.add_up_excitation_mass(elem_dof_offsets, elem_dof_pool, excitation_mass)
+    shell_cache.continuum.add_consistent_mass(
+        mats.assembler, mats.mass, elem_dof_offsets, elem_free_pool
+    )
+    if rayleigh_alpha_m != 0.0:
+        shell_cache.continuum.add_consistent_mass(
+            mats.assembler, mats.mass_rayleigh, elem_dof_offsets, elem_free_pool
+        )
+    add_shell_mass_sparse(shell_cache.shell.masses, mats.assembler, mats.mass)
+    if rayleigh_alpha_m != 0.0:
+        add_shell_mass_sparse(shell_cache.shell.masses, mats.assembler, mats.mass_rayleigh)
+    if len(analysis.supplemental.support_motions) > 0:
+        mats.supports = SupportKinematics(
+            analysis.supplemental.support_motions, typed_nodes, id_to_index, ndf, time_series
+        )
+    if not use_penalty and len(mats.supports.dofs) > 0:
+        for dof in mats.supports.dofs:
+            if free_index[dof] >= 0:
+                abort("imposed motion requires an existing fixed DOF with this constraint handler")
+        mats.assembler.prepare_support_columns(elem_dof_pool, mats.supports.dofs, free_count)
+
+        # The diagonal masses of independent fixed DOFs have no free row.
+        # Retain the columns of consistent element masses when present.
+        var support_mass_scratch: List[Float64] = []
+        support_mass_scratch.resize(mats.nnz(), 0.0)
+        shell_cache.continuum.add_consistent_mass(
+            mats.assembler, support_mass_scratch, elem_dof_offsets, elem_free_pool
+        )
+        add_shell_mass_sparse(shell_cache.shell.masses, mats.assembler, support_mass_scratch)
+        mats.support_mass = mats.assembler.support_values.copy()
+        if rayleigh_alpha_m != 0.0:
+            mats.support_mass_rayleigh = mats.support_mass.copy()
+    if len(uniform_excitations) > 0 and len(shell_cache.shell.masses) > 0:
+        if has_coupled_elements:
+            excitation_mass = shell_excitation_mass(shell_cache.shell.masses, excitation_mass)
+        else:
+            excitation_mass = shell_excitation_mass(shell_cache.shell.masses, M_total)
     if not sparse_values_any_nonzero(mats.mass):
         abort("transient_nonlinear requires masses on free dofs")
+    if rayleigh.has_regional_damping():
+        assemble_regional_rayleigh(
+            rayleigh,
+            nodal_masses,
+            typed_elements,
+            typed_sections_by_id,
+            node_x,
+            node_y,
+            ndf,
+            id_to_index,
+            elem_id_to_index,
+            elem_dof_offsets,
+            elem_free_pool,
+            free_index,
+            has_transformation_mpc,
+            mpc_row_offsets,
+            mpc_dof_pool,
+            mpc_coeff_pool,
+            mats,
+        )
 
     var a0 = 1.0 / (beta * dt * dt)
     var a1 = gamma / (beta * dt)
@@ -1157,8 +1449,13 @@ fn run_transient_nonlinear(
         or rayleigh_beta_k_init != 0.0
         or rayleigh_beta_k_comm != 0.0
         or has_zero_length_damp_mats
+        or has_coupled_elements
+        or rayleigh.has_regional_damping()
+        or has_modal_damping
     )
-    var need_current_damp_tangent = need_link_rayleigh_filter and rayleigh_beta_k != 0.0
+    var need_current_damp_tangent = (
+        has_coupled_elements or need_link_rayleigh_filter
+    ) and rayleigh_beta_k != 0.0
     var need_initial_tangent = rayleigh_beta_k_init != 0.0
     for i in range(retry_attempt_count):
         if retry_algorithm_modes[i] == NonlinearAlgorithmMode.ModifiedNewtonInitial:
@@ -1170,6 +1467,9 @@ fn run_transient_nonlinear(
     var need_comm_damp_tangent = need_link_rayleigh_filter and rayleigh_beta_k_comm != 0.0
     var backend = LinearSolverBackend()
     initialize_structure(backend, analysis, free_count)
+    # OpenSees' profile LDLᵀ factorization accepts negative pivots beyond the
+    # first equation. The coupled pressure mass and permeability are negative.
+    backend.profile_uses_ldlt = has_coupled_elements or has_soil_materials
     initialize_symbolic_from_pattern(backend, mats.pattern)
 
     var F_int: List[Float64] = []
@@ -1179,6 +1479,7 @@ fn run_transient_nonlinear(
     mats.beta_k_init = rayleigh_beta_k_init
     mats.beta_k_comm = rayleigh_beta_k_comm
     mats.use_k_damp = need_current_damp_tangent
+    mats.use_current_k_damp = has_coupled_elements and need_current_damp_tangent
     mats.use_k_init_damp = need_initial_damp_tangent
     mats.use_k_comm_damp = need_comm_damp_tangent
     mats.has_c_zero_length = has_zero_length_damp_mats
@@ -1326,6 +1627,13 @@ fn run_transient_nonlinear(
         var t_asm_end = Int(time.perf_counter_ns())
         var asm_end_us = (t_asm_end - t0) // 1000
         _append_event(events, events_need_comma, "C", frame_assemble_stiffness, asm_end_us)
+    if has_modal_damping:
+        var modal_stiffness = mats.assembler.values.copy()
+        for s in range(len(mats.penalty.stiffness)):
+            modal_stiffness[s] += mats.penalty.stiffness[s]
+        mats.modal_damping = build_modal_damping(
+            mats.pattern, modal_stiffness, mats.mass, analysis.supplemental.modal_damping
+        )
     if has_zero_length_damp_mats:
         swap(mats.assembler.values, mats.c_zero_length)
         assemble_zero_length_damping_sparse(
@@ -1342,6 +1650,12 @@ fn run_transient_nonlinear(
         swap(mats.assembler.values, mats.c_zero_length)
     if need_initial_tangent:
         copy_values(mats.k_init, mats.assembler.values)
+        if has_coupled_elements:
+            swap(mats.assembler.values, mats.k_init)
+            shell_cache.replace_quad_up_stiffness_with_initial(
+                mats.assembler, elem_dof_offsets, elem_free_pool
+            )
+            swap(mats.assembler.values, mats.k_init)
     if need_comm_tangent:
         copy_values(mats.k_comm, mats.assembler.values)
     if need_link_rayleigh_filter:
@@ -1367,7 +1681,7 @@ fn run_transient_nonlinear(
         if need_initial_damp_tangent:
             link_filtered_values(
                 mats.k_init_damp,
-                mats.assembler.values,
+                mats.k_init,
                 mats.k_link_all,
                 mats.k_link_rayleigh,
             )
@@ -1380,9 +1694,13 @@ fn run_transient_nonlinear(
             )
     else:
         if need_initial_damp_tangent:
-            copy_values(mats.k_init_damp, mats.assembler.values)
+            copy_values(mats.k_init_damp, mats.k_init)
         if need_comm_damp_tangent:
             copy_values(mats.k_comm_damp, mats.assembler.values)
+    if need_comm_tangent:
+        mats.support_k_comm = mats.assembler.support_values.copy()
+    if rayleigh_beta_k_init != 0.0:
+        mats.support_k_init = mats.assembler.support_values.copy()
     if do_profile:
         var t_revert_start = Int(time.perf_counter_ns())
         var revert_start_us = (t_revert_start - t0) // 1000
@@ -1407,10 +1725,11 @@ fn run_transient_nonlinear(
             revert_end_us,
         )
 
-    var v: List[Float64] = []
-    v.resize(total_dofs, 0.0)
-    var a: List[Float64] = []
-    a.resize(total_dofs, 0.0)
+    ref v = transient_state.velocity
+    ref a = transient_state.acceleration
+    for index in pressure_dofs:
+        v[index] = prescribed_velocity[index]
+        a[index] = prescribed_acceleration[index]
     var u_f: List[Float64] = []
     u_f.resize(free_count, 0.0)
     var v_f: List[Float64] = []
@@ -1418,6 +1737,9 @@ fn run_transient_nonlinear(
     var a_f: List[Float64] = []
     a_f.resize(free_count, 0.0)
     _gather_from_free_simd(free, u, u_f)
+    _gather_from_free_simd(free, v, v_f)
+    _gather_from_free_simd(free, a, a_f)
+    set_uniform_excitation_initial_velocity(uniform_excitations, free, ndf, v_f)
 
     var u_n: List[Float64] = []
     u_n.resize(free_count, 0.0)
@@ -1444,6 +1766,12 @@ fn run_transient_nonlinear(
     du_f.resize(free_count, 0.0)
     var lu_rhs: List[Float64] = []
     lu_rhs.resize(free_count, 0.0)
+
+    var has_viscous_damper = False
+    for i in range(len(uniaxial_defs)):
+        if uniaxial_defs[i].mat_type == UniMaterialTypeTag.ViscousDamper:
+            has_viscous_damper = True
+            break
 
     var record_reactions = _has_recorder_type(recorders, RecorderTypeTag.NodeReaction)
     var record_any_element_force = _has_recorder_type(
@@ -1501,6 +1829,8 @@ fn run_transient_nonlinear(
 
         if (
             rec.type_tag == RecorderTypeTag.NodeDisplacement
+            or rec.type_tag == RecorderTypeTag.NodeVelocity
+            or rec.type_tag == RecorderTypeTag.NodeAcceleration
             or rec.type_tag == RecorderTypeTag.EnvelopeNodeDisplacement
             or rec.type_tag == RecorderTypeTag.EnvelopeNodeAcceleration
             or rec.type_tag == RecorderTypeTag.NodeReaction
@@ -1508,9 +1838,9 @@ fn run_transient_nonlinear(
             recorder_node_dof_index_offsets[r] = len(recorder_node_dof_indices)
             recorder_node_file_index_offsets[r] = len(recorder_node_file_indices)
             if (
-                rec.type_tag == RecorderTypeTag.EnvelopeNodeAcceleration
-                and rec.time_series_tag >= 0
-            ):
+                rec.type_tag == RecorderTypeTag.NodeAcceleration
+                or rec.type_tag == RecorderTypeTag.EnvelopeNodeAcceleration
+            ) and rec.time_series_tag >= 0:
                 var ts_index = find_time_series_input(time_series, rec.time_series_tag)
                 if ts_index < 0:
                     abort("recorder time series not found")
@@ -1535,6 +1865,9 @@ fn run_transient_nonlinear(
 
         if (
             rec.type_tag == RecorderTypeTag.ElementForce
+            or rec.type_tag == RecorderTypeTag.QuadStress
+            or rec.type_tag == RecorderTypeTag.QuadStrain
+            or rec.type_tag == RecorderTypeTag.QuadState
             or rec.type_tag == RecorderTypeTag.ElementLocalForce
             or rec.type_tag == RecorderTypeTag.ElementBasicForce
             or rec.type_tag == RecorderTypeTag.ElementDeformation
@@ -1624,6 +1957,7 @@ fn run_transient_nonlinear(
                 filename,
             )
 
+    var t = analysis.start_time
     for step in range(steps):
         _write_run_progress_throttled(
             progress_path,
@@ -1666,6 +2000,7 @@ fn run_transient_nonlinear(
                 mpc_row_offsets,
                 mpc_dof_pool,
                 mpc_coeff_pool,
+                len(mats.supports.dofs) > 0,
             )
             _enforce_mpc_values(
                 a,
@@ -1674,6 +2009,7 @@ fn run_transient_nonlinear(
                 mpc_row_offsets,
                 mpc_dof_pool,
                 mpc_coeff_pool,
+                len(mats.supports.dofs) > 0,
             )
             if do_profile:
                 var t_constraints_end = Int(time.perf_counter_ns())
@@ -1689,7 +2025,9 @@ fn run_transient_nonlinear(
         copy_float64_contiguous(u_n, u_f, free_count)
         copy_float64_contiguous(v_n, v_f, free_count)
         copy_float64_contiguous(a_n, a_f, free_count)
-        _predict_displacement_newmark_simd(u_f, u_n, v_n, a_n, dt, beta)
+        # Displacement-form Newmark starts with the committed displacement.
+        # The trial acceleration and velocity follow from that displacement.
+        copy_float64_contiguous(u_f, u_n, free_count)
         _scatter_free_vector_to_full(free, u_f, u)
         if has_transformation_mpc:
             if do_profile:
@@ -1724,9 +2062,30 @@ fn run_transient_nonlinear(
         var force_basic_q_base = force_basic_q.copy()
         var uniaxial_states_base = uniaxial_states.copy()
 
-        var t = Float64(step + 1) * dt
+        if incremental_newmark:
+            t += dt
+        else:
+            t = analysis.start_time + Float64(step + 1) * dt
+        if len(mats.supports.dofs) > 0:
+            mats.supports.update(t, time_series, time_series_values, time_series_times)
+            if not use_penalty:
+                mats.supports.apply(v, a)
+        if use_penalty:
+            var factor = 1.0
+            if ts_index >= 0:
+                factor = eval_time_series_input(
+                    time_series[ts_index], t, time_series_values, time_series_times
+                )
+            mats.penalty.update_targets(
+                t, factor, time_series, time_series_values, time_series_times
+            )
         if pattern_type_tag == PatternTypeTag.UniformExcitation:
-            copy_float64_contiguous(F_ext_step, F_const, len(F_ext_step))
+            if has_coupled_elements:
+                copy_float64_contiguous(
+                    F_ext_step, build_active_nodal_load(F_const, F_pattern, 1.0), len(F_ext_step)
+                )
+            else:
+                copy_float64_contiguous(F_ext_step, F_const, len(F_ext_step))
             active_element_load_state = build_active_element_load_state(
                 const_element_loads,
                 pattern_element_loads,
@@ -1746,11 +2105,19 @@ fn run_transient_nonlinear(
                     frame_time_series_eval,
                     ts_start_us,
                 )
-            var ag = eval_time_series_input(
-                time_series[uniform_accel_ts_index],
+            add_uniform_excitation_load(
+                uniform_excitations,
                 t,
+                time_series,
                 time_series_values,
                 time_series_times,
+                excitation_mass if len(excitation_mass) > 0 else M_total,
+                ndf,
+                has_transformation_mpc,
+                mpc_row_offsets,
+                mpc_dof_pool,
+                mpc_coeff_pool,
+                F_ext_step,
             )
             if do_profile:
                 var t_ts_end = Int(time.perf_counter_ns())
@@ -1762,20 +2129,6 @@ fn run_transient_nonlinear(
                     frame_time_series_eval,
                     ts_end_us,
                 )
-            var uniform_inertia_load: List[Float64] = []
-            uniform_inertia_load.resize(total_dofs, 0.0)
-            for i in range(len(uniform_excitation_dofs)):
-                var dof_idx = uniform_excitation_dofs[i]
-                uniform_inertia_load[dof_idx] += -M_total[dof_idx] * ag
-            if has_transformation_mpc:
-                uniform_inertia_load = _collapse_load_keeping_restrained(
-                    uniform_inertia_load,
-                    mpc_row_offsets,
-                    mpc_dof_pool,
-                    mpc_coeff_pool,
-                )
-            for i in range(total_dofs):
-                F_ext_step[i] += uniform_inertia_load[i]
         else:
             if ts_index >= 0:
                 if do_profile:
@@ -1837,6 +2190,9 @@ fn run_transient_nonlinear(
             invalidate_force_beam_column2d_load_cache(force_beam_column2d_scratch)
             invalidate_frame3d_assembly_load_cache(force_beam_column3d_scratch)
         _gather_from_free_simd(free, F_ext_step, P_ext_f)
+        if has_prescribed_pressures:
+            for i in range(free_count):
+                P_ext_f[i] += pressure_load[free[i]]
 
         var converged = False
         var reaction_internal_current = False
@@ -1850,8 +2206,19 @@ fn run_transient_nonlinear(
         var attempt_krylov_max_dim = primary_krylov_max_dim
         for attempt in range(retry_attempt_count):
             if attempt > 0:
+                shell_cache.shell.revert_trial()
+                force_beam_column3d_scratch.revert_corotational()
                 copy_float64_contiguous(u_f, u_step_base_f, free_count)
                 _scatter_free_vector_to_full(free, u_f, u)
+                if has_transformation_mpc:
+                    _enforce_mpc_values(
+                        u,
+                        constrained,
+                        mpc_slave_dof,
+                        mpc_row_offsets,
+                        mpc_dof_pool,
+                        mpc_coeff_pool,
+                    )
                 force_basic_q = force_basic_q_base.copy()
                 uniaxial_states = uniaxial_states_base.copy()
                 fiber_section2d_revert_trial_runtime_all(fiber_section_defs)
@@ -1867,6 +2234,9 @@ fn run_transient_nonlinear(
                 reaction_internal_current = False
 
             var tangent_initialized = False
+            # Set when the previous iteration's updated residual already assembled
+            # the tangent and internal force at the current trial state.
+            var assembled_at_trial = False
             var k_eff_initialized = False
             var k_eff_factored = False
             var broyden_history_s: List[List[Float64]] = []
@@ -1880,8 +2250,21 @@ fn run_transient_nonlinear(
             var krylov_coeffs: List[Float64] = []
             var krylov_factor_work: List[Float64] = []
             var krylov_rhs_work: List[Float64] = []
-            for _ in range(attempt_max_iters):
+            var krylov_qr_columns: List[List[Float64]] = []
+            var krylov_qr_rhs: List[Float64] = []
+            if incremental_newmark:
+                for i in range(free_count):
+                    a_trial[i] = -a3 * a_n[i] - a2 * v_n[i]
+                    v_trial[i] = (1.0 - gamma / beta) * v_n[i] + dt * (
+                        1.0 - 0.5 * gamma / beta
+                    ) * a_n[i]
+            for iteration in range(attempt_max_iters):
                 var iter_closed = False
+                var use_imposed_predictor = (
+                    iteration == 0 and use_penalty and len(mats.supports.dofs) > 0
+                )
+                var predictor_v: List[Float64] = []
+                var predictor_a: List[Float64] = []
                 if runtime_metrics.enabled:
                     runtime_metrics.global_nonlinear_iterations += 1
                 if do_profile:
@@ -1894,6 +2277,33 @@ fn run_transient_nonlinear(
                         frame_nonlinear_iter,
                         iter_start_us,
                     )
+                if not incremental_newmark:
+                    _build_trial_state_newmark_simd(
+                        u_f, u_n, v_n, a_n, a0, a2, a3, gamma, dt, a_trial, v_trial
+                    )
+                if use_imposed_predictor:
+                    # Newmark applies the domain load after setting its predictor.
+                    # The first correction restores Newmark kinematics at penalty DOFs.
+                    predictor_v = v_trial.copy()
+                    predictor_a = a_trial.copy()
+                    for i in range(len(mats.supports.dofs)):
+                        var eq = free_index[mats.supports.dofs[i]]
+                        if mats.supports.velocities[i] >= 0:
+                            v_trial[eq] = mats.supports.velocity[i]
+                        if mats.supports.accelerations[i] >= 0:
+                            a_trial[eq] = mats.supports.acceleration[i]
+                if has_viscous_damper:
+                    _scatter_free_vector_to_full(free, v_trial, v)
+                    if has_transformation_mpc:
+                        _enforce_mpc_values(
+                            v,
+                            constrained,
+                            mpc_slave_dof,
+                            mpc_row_offsets,
+                            mpc_dof_pool,
+                            mpc_coeff_pool,
+                            len(mats.supports.dofs) > 0,
+                        )
                 if do_profile:
                     var t_asm_iter_start = Int(time.perf_counter_ns())
                     var asm_start_us = (t_asm_iter_start - t0) // 1000
@@ -1904,77 +2314,82 @@ fn run_transient_nonlinear(
                         frame_assemble_stiffness,
                         asm_start_us,
                     )
-                assemble_global_stiffness_and_internal_native_soa(
-                    typed_nodes,
-                    typed_elements,
-                    node_x,
-                    node_y,
-                    node_z,
-                    elem_dof_offsets,
-                    elem_dof_pool,
-                    elem_dof_offsets,
-                    elem_free_pool,
-                    elem_node_offsets,
-                    elem_node_pool,
-                    elem_primary_material_ids,
-                    elem_type_tags,
-                    elem_geom_tags,
-                    elem_section_ids,
-                    elem_integration_tags,
-                    elem_num_int_pts,
-                    elem_area,
-                    elem_thickness,
-                    frame2d_elem_indices,
-                    frame3d_elem_indices,
-                    truss_elem_indices,
-                    zero_length_elem_indices,
-                    two_node_link_elem_indices,
-                    zero_length_section_elem_indices,
-                    quad_elem_indices,
-                    shell_elem_indices,
-                    active_element_load_state.element_loads,
-                    active_element_load_state.elem_load_offsets,
-                    active_element_load_state.elem_load_pool,
-                    1.0,
-                    typed_sections_by_id,
-                    typed_materials_by_id,
-                    id_to_index,
-                    node_count,
-                    ndf,
-                    ndm,
-                    u,
-                    uniaxial_defs,
-                    uniaxial_state_defs,
-                    uniaxial_states,
-                    elem_uniaxial_offsets,
-                    elem_uniaxial_counts,
-                    elem_uniaxial_state_ids,
-                    force_basic_offsets,
-                    force_basic_counts,
-                    force_basic_q,
-                    fiber_section_defs,
-                    fiber_section_cells,
-                    fiber_section_index_by_id,
-                    fiber_section3d_defs,
-                    fiber_section3d_cells,
-                    fiber_section3d_index_by_id,
-                    layered_shell_section_defs,
-                    shell_cache,
-                    force_beam_column2d_scratch,
-                    force_beam_column3d_scratch,
-                    asm_dof_map6,
-                    asm_dof_map12,
-                    asm_u_elem6,
-                    mats.assembler,
-                    F_int,
-                    do_profile,
-                    t0,
-                    events,
-                    events_need_comma,
-                    frame_assemble_uniaxial,
-                    frame_assemble_fiber,
-                    runtime_metrics,
-                )
+                if assembled_at_trial:
+                    assembled_at_trial = False
+                else:
+                    assemble_global_stiffness_and_internal_native_soa(
+                        typed_nodes,
+                        typed_elements,
+                        node_x,
+                        node_y,
+                        node_z,
+                        elem_dof_offsets,
+                        elem_dof_pool,
+                        elem_dof_offsets,
+                        elem_free_pool,
+                        elem_node_offsets,
+                        elem_node_pool,
+                        elem_primary_material_ids,
+                        elem_type_tags,
+                        elem_geom_tags,
+                        elem_section_ids,
+                        elem_integration_tags,
+                        elem_num_int_pts,
+                        elem_area,
+                        elem_thickness,
+                        frame2d_elem_indices,
+                        frame3d_elem_indices,
+                        truss_elem_indices,
+                        zero_length_elem_indices,
+                        two_node_link_elem_indices,
+                        zero_length_section_elem_indices,
+                        quad_elem_indices,
+                        shell_elem_indices,
+                        active_element_load_state.element_loads,
+                        active_element_load_state.elem_load_offsets,
+                        active_element_load_state.elem_load_pool,
+                        1.0,
+                        typed_sections_by_id,
+                        typed_materials_by_id,
+                        id_to_index,
+                        node_count,
+                        ndf,
+                        ndm,
+                        u,
+                        uniaxial_defs,
+                        uniaxial_state_defs,
+                        uniaxial_states,
+                        elem_uniaxial_offsets,
+                        elem_uniaxial_counts,
+                        elem_uniaxial_state_ids,
+                        force_basic_offsets,
+                        force_basic_counts,
+                        force_basic_q,
+                        fiber_section_defs,
+                        fiber_section_cells,
+                        fiber_section_index_by_id,
+                        fiber_section3d_defs,
+                        fiber_section3d_cells,
+                        fiber_section3d_index_by_id,
+                        layered_shell_section_defs,
+                        shell_cache,
+                        force_beam_column2d_scratch,
+                        force_beam_column3d_scratch,
+                        asm_dof_map6,
+                        asm_dof_map12,
+                        asm_u_elem6,
+                        mats.assembler,
+                        F_int,
+                        do_profile,
+                        t0,
+                        events,
+                        events_need_comma,
+                        frame_assemble_uniaxial,
+                        frame_assemble_fiber,
+                        runtime_metrics,
+                        v,
+                        dt,
+                    )
                 if do_profile:
                     var t_asm_iter_end = Int(time.perf_counter_ns())
                     var asm_end_us = (t_asm_iter_end - t0) // 1000
@@ -2065,6 +2480,10 @@ fn run_transient_nonlinear(
                             mats.k_link_all,
                             mats.k_link_rayleigh,
                         )
+                elif need_current_damp_tangent:
+                    copy_values(mats.k_current_damp, mats.assembler.values)
+                if rayleigh_beta_k != 0.0 and len(mats.assembler.support_values) > 0:
+                    mats.support_k_current = mats.assembler.support_values.copy()
                 if attempt_algorithm_mode == NonlinearAlgorithmMode.Newton:
                     if need_tangent_matrix:
                         copy_values(mats.k_tangent, mats.assembler.values)
@@ -2130,10 +2549,6 @@ fn run_transient_nonlinear(
                     for i in range(free_count):
                         F_zero_length_damp_f[i] = 0.0
 
-                _build_trial_state_newmark_simd(
-                    u_f, u_n, v_n, a_n, a0, a2, a3, gamma, dt, a_trial, v_trial
-                )
-
                 _assemble_transient_residual(
                     mats,
                     P_ext_f,
@@ -2142,8 +2557,12 @@ fn run_transient_nonlinear(
                     F_zero_length_damp_f,
                     v_trial,
                     a_trial,
+                    u_f,
                     R_f,
                 )
+                if use_imposed_predictor:
+                    v_trial = predictor_v^
+                    a_trial = predictor_a^
                 if attempt_test_mode == 2:
                     var residual_norm = sqrt(sum_sq_float64_contiguous(R_f, free_count))
                     if residual_norm <= attempt_tol:
@@ -2269,17 +2688,26 @@ fn run_transient_nonlinear(
                 var krylov_base_direction: List[Float64] = []
                 if attempt_algorithm_tag == AnalysisAlgorithmTag.KrylovNewton:
                     krylov_base_direction = copy_krylov_vector(du_f, free_count)
-                    _ = krylov_apply_acceleration(
-                        du_f,
-                        krylov_history_v,
-                        krylov_history_av,
-                        free_count,
-                        krylov_normal_matrix_flat,
-                        krylov_normal_rhs,
-                        krylov_coeffs,
-                        krylov_factor_work,
-                        krylov_rhs_work,
-                    )
+                    if has_coupled_elements:
+                        krylov_apply_qr_acceleration(
+                            du_f,
+                            krylov_history_v,
+                            krylov_history_av,
+                            krylov_qr_columns,
+                            krylov_qr_rhs,
+                        )
+                    else:
+                        _ = krylov_apply_acceleration(
+                            du_f,
+                            krylov_history_v,
+                            krylov_history_av,
+                            free_count,
+                            krylov_normal_matrix_flat,
+                            krylov_normal_rhs,
+                            krylov_coeffs,
+                            krylov_factor_work,
+                            krylov_rhs_work,
+                        )
                 if attempt_algorithm_tag == AnalysisAlgorithmTag.Broyden:
                     if need_tangent_matrix:
                         broyden_history_s = []
@@ -2316,11 +2744,20 @@ fn run_transient_nonlinear(
                     var abs_val = abs(value)
                     if abs_val > max_u:
                         max_u = abs_val
-                var disp_incr_norm = sqrt(sum_sq_float64_contiguous(du_f, free_count))
+                # OpenSees keeps the linear correction in the SOE during the
+                # Krylov update. CTestNormDispIncr reads that correction.
+                ref test_update = (
+                    krylov_base_direction if has_coupled_elements
+                    and attempt_algorithm_tag == AnalysisAlgorithmTag.KrylovNewton else du_f
+                )
+                var disp_incr_norm = sqrt(sum_sq_float64_contiguous(test_update, free_count))
                 var energy_incr = abs(dot_float64_contiguous(du_f, R_f, free_count))
 
                 for i in range(free_count):
                     u_f[i] += du_f[i]
+                    if incremental_newmark:
+                        v_trial[i] += a1 * du_f[i]
+                        a_trial[i] += a0 * du_f[i]
                 _scatter_free_vector_to_full(free, u_f, u)
                 if has_transformation_mpc:
                     if do_profile:
@@ -2351,10 +2788,30 @@ fn run_transient_nonlinear(
                             frame_constraints,
                             constraints_end_us,
                         )
-                if attempt_algorithm_tag == AnalysisAlgorithmTag.NewtonLineSearch:
+                var line_search = attempt_algorithm_tag == AnalysisAlgorithmTag.NewtonLineSearch
+                # OpenSees tests half the work against the residual after the update.
+                var use_updated_energy = (
+                    (ndm == 3 and ndf == 6) or has_coupled_elements
+                ) and attempt_test_mode == 3
+                # That residual evaluates every element at the updated
+                # displacement. Assemble the tangent with it, as OpenSees forms
+                # both from one state determination, so the next iteration does
+                # not evaluate the same state again.
+                var reuse_updated_assembly = (
+                    use_updated_energy
+                    and not line_search
+                    and not has_viscous_damper
+                    and not has_zero_length_dampers
+                )
+                if attempt_algorithm_tag == AnalysisAlgorithmTag.Broyden:
+                    broyden_prev_residual = _copy_vector(R_f, free_count)
+                    has_broyden_prev_residual = True
+                if (
+                    line_search and (attempt_test_mode != 1 or disp_incr_norm > attempt_tol)
+                ) or use_updated_energy:
                     var line_search_tol = _default_line_search_tol(attempt_line_search_eta)
                     var s0 = -dot_float64_contiguous(du_f, R_f, free_count)
-                    if abs(s0) > 0.0:
+                    if use_updated_energy or abs(s0) > 0.0:
                         _transient_residual(
                             typed_nodes,
                             typed_elements,
@@ -2424,6 +2881,8 @@ fn run_transient_nonlinear(
                             force_beam_column2d_scratch,
                             force_beam_column3d_scratch,
                             has_transformation_mpc,
+                            constrained,
+                            mpc_slave_dof,
                             mpc_row_offsets,
                             mpc_dof_pool,
                             mpc_coeff_pool,
@@ -2435,13 +2894,22 @@ fn run_transient_nonlinear(
                             time_series_times,
                             t,
                             has_zero_length_dampers,
+                            v,
                             R_f,
                             a_trial,
                             v_trial,
                             F_zero_length_damp_f,
+                            incremental_newmark,
+                            reuse_updated_assembly,
+                            asm_dof_map6,
+                            asm_dof_map12,
+                            asm_u_elem6,
+                            F_int,
+                            runtime_metrics,
                         )
+                        assembled_at_trial = reuse_updated_assembly
                         var s = -dot_float64_contiguous(du_f, R_f, free_count)
-                        var r0 = abs(s / s0)
+                        var r0 = abs(s / s0) if line_search and s0 != 0.0 else 0.0
                         var r = r0
                         var eta_prev = 1.0
                         var line_search_iter = 0
@@ -2452,7 +2920,11 @@ fn run_transient_nonlinear(
                                 break
                             var delta_eta = eta - eta_prev
                             for i in range(free_count):
-                                u_f[i] += delta_eta * du_f[i]
+                                var delta = delta_eta * du_f[i]
+                                u_f[i] += delta
+                                if incremental_newmark:
+                                    v_trial[i] += a1 * delta
+                                    a_trial[i] += a0 * delta
                             _scatter_free_vector_to_full(free, u_f, u)
                             if has_transformation_mpc:
                                 _enforce_mpc_values(
@@ -2532,6 +3004,8 @@ fn run_transient_nonlinear(
                                 force_beam_column2d_scratch,
                                 force_beam_column3d_scratch,
                                 has_transformation_mpc,
+                                constrained,
+                                mpc_slave_dof,
                                 mpc_row_offsets,
                                 mpc_dof_pool,
                                 mpc_coeff_pool,
@@ -2543,20 +3017,31 @@ fn run_transient_nonlinear(
                                 time_series_times,
                                 t,
                                 has_zero_length_dampers,
+                                v,
                                 R_f,
                                 a_trial,
                                 v_trial,
                                 F_zero_length_damp_f,
+                                incremental_newmark,
+                                False,
+                                asm_dof_map6,
+                                asm_dof_map12,
+                                asm_u_elem6,
+                                F_int,
+                                runtime_metrics,
                             )
                             s = dot_float64_contiguous(du_f, R_f, free_count)
                             r = abs(s / s0)
                             eta_prev = eta
                         for i in range(free_count):
                             du_f[i] *= eta_prev
+                        if use_updated_energy:
+                            energy_incr = 0.5 * abs(
+                                dot_float64_contiguous(test_update, R_f, free_count)
+                            )
+                        disp_incr_norm *= abs(eta_prev)
                 if attempt_algorithm_tag == AnalysisAlgorithmTag.Broyden:
                     broyden_history_s.append(_copy_vector(du_f, free_count))
-                    broyden_prev_residual = _copy_vector(R_f, free_count)
-                    has_broyden_prev_residual = True
                 elif attempt_algorithm_tag == AnalysisAlgorithmTag.KrylovNewton:
                     krylov_push_iteration_state(
                         krylov_base_direction,
@@ -2617,9 +3102,76 @@ fn run_transient_nonlinear(
                 break
 
         if not converged:
-            abort("transient_nonlinear did not converge at step " + String(step + 1))
+            abort(
+                "transient_nonlinear did not converge at step "
+                + String(step + 1)
+                + " (time "
+                + String(t)
+                + ")"
+            )
 
-        if need_comm_tangent:
+        if incremental_newmark:
+            copy_float64_contiguous(v_f, v_trial, free_count)
+            copy_float64_contiguous(a_f, a_trial, free_count)
+        else:
+            _update_post_step_newmark_simd(u_f, u_n, v_n, a_n, a0, a2, a3, gamma, dt, v_f, a_f)
+        _scatter_free_vector_to_full(free, u_f, u)
+        _scatter_free_vector_to_full(free, v_f, v)
+        _scatter_free_vector_to_full(free, a_f, a)
+        if has_transformation_mpc:
+            if do_profile:
+                var t_constraints_start = Int(time.perf_counter_ns())
+                var constraints_start_us = (t_constraints_start - t0) // 1000
+                _append_event(
+                    events,
+                    events_need_comma,
+                    "O",
+                    frame_constraints,
+                    constraints_start_us,
+                )
+            _enforce_mpc_values(
+                u,
+                constrained,
+                mpc_slave_dof,
+                mpc_row_offsets,
+                mpc_dof_pool,
+                mpc_coeff_pool,
+            )
+            _enforce_mpc_values(
+                v,
+                constrained,
+                mpc_slave_dof,
+                mpc_row_offsets,
+                mpc_dof_pool,
+                mpc_coeff_pool,
+                len(mats.supports.dofs) > 0,
+            )
+            _enforce_mpc_values(
+                a,
+                constrained,
+                mpc_slave_dof,
+                mpc_row_offsets,
+                mpc_dof_pool,
+                mpc_coeff_pool,
+                len(mats.supports.dofs) > 0,
+            )
+            if do_profile:
+                var t_constraints_end = Int(time.perf_counter_ns())
+                var constraints_end_us = (t_constraints_end - t0) // 1000
+                _append_event(
+                    events,
+                    events_need_comma,
+                    "C",
+                    frame_constraints,
+                    constraints_end_us,
+                )
+
+        if (
+            need_comm_tangent
+            or has_viscous_damper
+            or has_soil_materials
+            or len(shell_cache.continuum.nonlinear) > 0
+        ):
             if do_profile:
                 var t_asm_post_start = Int(time.perf_counter_ns())
                 var asm_start_us = (t_asm_post_start - t0) // 1000
@@ -2700,6 +3252,8 @@ fn run_transient_nonlinear(
                 frame_assemble_uniaxial,
                 frame_assemble_fiber,
                 runtime_metrics,
+                v,
+                dt,
             )
             if do_profile:
                 var t_asm_post_end = Int(time.perf_counter_ns())
@@ -2714,36 +3268,37 @@ fn run_transient_nonlinear(
             reaction_internal_current = True
             if need_comm_tangent:
                 copy_values(mats.k_comm, mats.assembler.values)
-            if need_link_rayleigh_filter:
-                _assemble_link_filter_pair(
-                    mats,
-                    typed_nodes,
-                    typed_elements,
-                    zero_length_elem_indices,
-                    two_node_link_elem_indices,
-                    ndf,
-                    ndm,
-                    u,
-                    uniaxial_defs,
-                    uniaxial_state_defs,
-                    uniaxial_states,
-                    elem_uniaxial_offsets,
-                    elem_uniaxial_counts,
-                    elem_uniaxial_state_ids,
-                    elem_dof_offsets,
-                    elem_free_pool,
-                    F_link_scratch,
-                )
-                if need_comm_damp_tangent:
-                    link_filtered_values(
-                        mats.k_comm_damp,
-                        mats.k_comm,
-                        mats.k_link_all,
-                        mats.k_link_rayleigh,
+                if need_link_rayleigh_filter:
+                    _assemble_link_filter_pair(
+                        mats,
+                        typed_nodes,
+                        typed_elements,
+                        zero_length_elem_indices,
+                        two_node_link_elem_indices,
+                        ndf,
+                        ndm,
+                        u,
+                        uniaxial_defs,
+                        uniaxial_state_defs,
+                        uniaxial_states,
+                        elem_uniaxial_offsets,
+                        elem_uniaxial_counts,
+                        elem_uniaxial_state_ids,
+                        elem_dof_offsets,
+                        elem_free_pool,
+                        F_link_scratch,
                     )
-            else:
-                if need_comm_damp_tangent:
-                    copy_values(mats.k_comm_damp, mats.k_comm)
+                    if need_comm_damp_tangent:
+                        link_filtered_values(
+                            mats.k_comm_damp,
+                            mats.k_comm,
+                            mats.k_link_all,
+                            mats.k_link_rayleigh,
+                        )
+                else:
+                    if need_comm_damp_tangent:
+                        copy_values(mats.k_comm_damp, mats.k_comm)
+                mats.support_k_comm = mats.assembler.support_values.copy()
         if do_profile:
             var t_commit_start = Int(time.perf_counter_ns())
             var commit_start_us = (t_commit_start - t0) // 1000
@@ -2755,7 +3310,8 @@ fn run_transient_nonlinear(
                 commit_start_us,
             )
         _uniaxial_commit_active_states(uniaxial_states, elem_uniaxial_state_ids)
-        shell_cache.commit_layered_states()
+        shell_cache.commit()
+        force_beam_column3d_scratch.commit_corotational()
         fiber_section2d_commit_runtime_all(fiber_section_defs)
         fiber_section3d_commit_runtime_all(fiber_section3d_defs)
         if do_profile:
@@ -2777,56 +3333,6 @@ fn run_transient_nonlinear(
             force_basic_counts,
             force_basic_q,
         )
-
-        _update_post_step_newmark_simd(u_f, u_n, v_n, a_n, a0, a2, a3, gamma, dt, v_f, a_f)
-        _scatter_free_vector_to_full(free, u_f, u)
-        _scatter_free_vector_to_full(free, v_f, v)
-        _scatter_free_vector_to_full(free, a_f, a)
-        if has_transformation_mpc:
-            if do_profile:
-                var t_constraints_start = Int(time.perf_counter_ns())
-                var constraints_start_us = (t_constraints_start - t0) // 1000
-                _append_event(
-                    events,
-                    events_need_comma,
-                    "O",
-                    frame_constraints,
-                    constraints_start_us,
-                )
-            _enforce_mpc_values(
-                u,
-                constrained,
-                mpc_slave_dof,
-                mpc_row_offsets,
-                mpc_dof_pool,
-                mpc_coeff_pool,
-            )
-            _enforce_mpc_values(
-                v,
-                constrained,
-                mpc_slave_dof,
-                mpc_row_offsets,
-                mpc_dof_pool,
-                mpc_coeff_pool,
-            )
-            _enforce_mpc_values(
-                a,
-                constrained,
-                mpc_slave_dof,
-                mpc_row_offsets,
-                mpc_dof_pool,
-                mpc_coeff_pool,
-            )
-            if do_profile:
-                var t_constraints_end = Int(time.perf_counter_ns())
-                var constraints_end_us = (t_constraints_end - t0) // 1000
-                _append_event(
-                    events,
-                    events_need_comma,
-                    "C",
-                    frame_constraints,
-                    constraints_end_us,
-                )
 
         if do_profile:
             var t_rec_start = Int(time.perf_counter_ns())
@@ -2900,8 +3406,12 @@ fn run_transient_nonlinear(
                 elem_force_cached[i] = False
         for r in range(len(recorders)):
             var rec = recorders[r]
+            if not transient_state.should_sample(rec, r, t):
+                continue
             if (
                 rec.type_tag == RecorderTypeTag.NodeDisplacement
+                or rec.type_tag == RecorderTypeTag.NodeVelocity
+                or rec.type_tag == RecorderTypeTag.NodeAcceleration
                 or rec.type_tag == RecorderTypeTag.EnvelopeNodeDisplacement
                 or rec.type_tag == RecorderTypeTag.EnvelopeNodeAcceleration
             ):
@@ -2914,7 +3424,12 @@ fn run_transient_nonlinear(
                     for j in range(rec.dof_count):
                         var dof_index = recorder_node_dof_indices[dof_index_base + j]
                         var value = u[dof_index]
-                        if rec.type_tag == RecorderTypeTag.EnvelopeNodeAcceleration:
+                        if rec.type_tag == RecorderTypeTag.NodeVelocity:
+                            value = v[dof_index]
+                        if (
+                            rec.type_tag == RecorderTypeTag.EnvelopeNodeAcceleration
+                            or rec.type_tag == RecorderTypeTag.NodeAcceleration
+                        ):
                             value = a[dof_index]
                             var ts_index = recorder_node_time_series_index[r]
                             if ts_index >= 0:
@@ -2926,7 +3441,10 @@ fn run_transient_nonlinear(
                                 )
                         values[j] = value
                     var file_index = recorder_node_file_indices[node_file_index_offset + nidx]
-                    if rec.type_tag == RecorderTypeTag.NodeDisplacement:
+                    if (
+                        rec.type_tag != RecorderTypeTag.EnvelopeNodeDisplacement
+                        and rec.type_tag != RecorderTypeTag.EnvelopeNodeAcceleration
+                    ):
                         _append_output_at_index(
                             transient_output_buffers,
                             file_index,
@@ -2941,6 +3459,30 @@ fn run_transient_nonlinear(
                             envelope_max,
                             envelope_abs,
                         )
+            elif (
+                rec.type_tag == RecorderTypeTag.QuadStress
+                or rec.type_tag == RecorderTypeTag.QuadStrain
+                or rec.type_tag == RecorderTypeTag.QuadState
+            ):
+                var elem_index_offset = recorder_element_index_offsets[r]
+                var elem_file_index_offset = recorder_element_file_index_offsets[r]
+                for eidx in range(rec.element_count):
+                    var elem_index = recorder_element_indices[elem_index_offset + eidx]
+                    var values = shell_cache.record_quad(
+                        elem_index,
+                        rec.integration_point,
+                        rec.type_tag == RecorderTypeTag.QuadStress,
+                        rec.stress_components,
+                        elem_dof_offsets[elem_index],
+                        elem_dof_pool,
+                        u,
+                        rec.type_tag == RecorderTypeTag.QuadState,
+                    )
+                    _append_output_at_index(
+                        transient_output_buffers,
+                        recorder_element_file_indices[elem_file_index_offset + eidx],
+                        _format_values_line(values),
+                    )
             elif rec.type_tag == RecorderTypeTag.ElementForce:
                 var elem_index_offset = recorder_element_index_offsets[r]
                 var elem_file_index_offset = recorder_element_file_index_offsets[r]
@@ -2948,13 +3490,13 @@ fn run_transient_nonlinear(
                     var elem_index = recorder_element_indices[elem_index_offset + eidx]
                     if not elem_force_cached[elem_index]:
                         var elem = typed_elements[elem_index]
-                        if (
-                            elem.type_tag == ElementTypeTag.ForceBeamColumn2d
-                            and typed_sections_by_id[elem.section].type == "FiberSection2d"
+                        if elem.type_tag == ElementTypeTag.ForceBeamColumn2d and (
+                            typed_sections_by_id[elem.section].type == "FiberSection2d"
+                            or typed_sections_by_id[elem.section].hinge_radau.is_defined()
                         ):
                             elem_force_values[
                                 elem_index
-                            ] = _force_beam_column2d_force_global_from_basic_state(
+                            ] = _force_beam_column2d_end_forces_from_basic_state(
                                 elem_index,
                                 elem,
                                 typed_nodes,
@@ -2995,9 +3537,13 @@ fn run_transient_nonlinear(
                                 force_basic_offsets,
                                 force_basic_counts,
                                 force_basic_q,
+                                shell_cache.continuum,
                             )
                         elem_force_cached[elem_index] = True
-                    var line = _format_values_line(elem_force_values[elem_index])
+                    var out_values = _select_element_recorder_dofs(
+                        elem_force_values[elem_index], rec, recorder_dofs_pool
+                    )
+                    var line = _format_values_line(out_values)
                     _append_output_at_index(
                         transient_output_buffers,
                         recorder_element_file_indices[elem_file_index_offset + eidx],
@@ -3014,6 +3560,9 @@ fn run_transient_nonlinear(
                         elem,
                         ndf,
                         u,
+                        active_element_load_state.element_loads,
+                        active_element_load_state.elem_load_offsets,
+                        active_element_load_state.elem_load_pool,
                         typed_nodes,
                         typed_sections_by_id,
                         fiber_section_defs,
@@ -3032,10 +3581,11 @@ fn run_transient_nonlinear(
                         force_basic_counts,
                         force_basic_q,
                     )
+                    var out_values = _select_element_recorder_dofs(values, rec, recorder_dofs_pool)
                     _append_output_at_index(
                         transient_output_buffers,
                         recorder_element_file_indices[elem_file_index_offset + eidx],
-                        _format_values_line(values),
+                        _format_values_line(out_values),
                     )
             elif rec.type_tag == RecorderTypeTag.ElementBasicForce:
                 var elem_index_offset = recorder_element_index_offsets[r]
@@ -3055,11 +3605,13 @@ fn run_transient_nonlinear(
                         elem_uniaxial_offsets,
                         elem_uniaxial_counts,
                         elem_uniaxial_state_ids,
+                        rec.material_stress,
                     )
+                    var out_values = _select_element_recorder_dofs(values, rec, recorder_dofs_pool)
                     _append_output_at_index(
                         transient_output_buffers,
                         recorder_element_file_indices[elem_file_index_offset + eidx],
-                        _format_values_line(values),
+                        _format_values_line(out_values),
                     )
             elif rec.type_tag == RecorderTypeTag.ElementDeformation:
                 var elem_index_offset = recorder_element_index_offsets[r]
@@ -3070,10 +3622,11 @@ fn run_transient_nonlinear(
                     var values = _element_deformation_for_recorder(
                         elem_index, elem, ndf, u, typed_nodes
                     )
+                    var out_values = _select_element_recorder_dofs(values, rec, recorder_dofs_pool)
                     _append_output_at_index(
                         transient_output_buffers,
                         recorder_element_file_indices[elem_file_index_offset + eidx],
-                        _format_values_line(values),
+                        _format_values_line(out_values),
                     )
             elif rec.type_tag == RecorderTypeTag.NodeReaction:
                 if not record_reactions:
@@ -3111,13 +3664,13 @@ fn run_transient_nonlinear(
                     var elem_index = recorder_element_indices[elem_index_offset + eidx]
                     if not elem_force_cached[elem_index]:
                         var elem = typed_elements[elem_index]
-                        if (
-                            elem.type_tag == ElementTypeTag.ForceBeamColumn2d
-                            and typed_sections_by_id[elem.section].type == "FiberSection2d"
+                        if elem.type_tag == ElementTypeTag.ForceBeamColumn2d and (
+                            typed_sections_by_id[elem.section].type == "FiberSection2d"
+                            or typed_sections_by_id[elem.section].hinge_radau.is_defined()
                         ):
                             elem_force_values[
                                 elem_index
-                            ] = _force_beam_column2d_force_global_from_basic_state(
+                            ] = _force_beam_column2d_end_forces_from_basic_state(
                                 elem_index,
                                 elem,
                                 typed_nodes,
@@ -3158,12 +3711,16 @@ fn run_transient_nonlinear(
                                 force_basic_offsets,
                                 force_basic_counts,
                                 force_basic_q,
+                                shell_cache.continuum,
                             )
                         elem_force_cached[elem_index] = True
                     var file_index = recorder_element_file_indices[elem_file_index_offset + eidx]
+                    var out_values = _select_element_recorder_dofs(
+                        elem_force_values[elem_index], rec, recorder_dofs_pool
+                    )
                     _update_envelope(
                         transient_output_files[file_index],
-                        elem_force_values[elem_index],
+                        out_values,
                         envelope_files,
                         envelope_min,
                         envelope_max,
@@ -3180,6 +3737,9 @@ fn run_transient_nonlinear(
                         elem,
                         ndf,
                         u,
+                        active_element_load_state.element_loads,
+                        active_element_load_state.elem_load_offsets,
+                        active_element_load_state.elem_load_pool,
                         typed_nodes,
                         typed_sections_by_id,
                         fiber_section_defs,
@@ -3220,9 +3780,9 @@ fn run_transient_nonlinear(
                     for sidx in range(rec.section_count):
                         var sec_no = recorder_sections_pool[rec.section_offset + sidx]
                         var values: List[Float64]
-                        if (
-                            elem.type_tag == ElementTypeTag.ForceBeamColumn2d
-                            and typed_sections_by_id[elem.section].type == "FiberSection2d"
+                        if elem.type_tag == ElementTypeTag.ForceBeamColumn2d and (
+                            typed_sections_by_id[elem.section].type == "FiberSection2d"
+                            or typed_sections_by_id[elem.section].hinge_radau.is_defined()
                         ):
                             values = _force_beam_column2d_section_response_from_basic_state(
                                 elem_index,
@@ -3276,7 +3836,7 @@ fn run_transient_nonlinear(
                             file_index,
                             _format_values_line(values),
                         )
-            else:
+            elif rec.type_tag != RecorderTypeTag.ModalEigen:
                 abort("unsupported recorder type")
         if do_profile:
             var t_rec_end = Int(time.perf_counter_ns())

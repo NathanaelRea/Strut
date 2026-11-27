@@ -7,9 +7,11 @@ machine instead, alternating them run by run, and compares their medians.
 
 `prepare` writes the suite: generated models sized to take about 0.1-2 s each
 and chosen to cover the element, section, transformation, constraint, solver
-and analysis paths, plus the validation cases that run without pinned ground
-motions. `compare` times the timed cases on both binaries, checks that every
-case's outputs match, and writes a markdown table.
+and analysis paths, plus the validation cases. Runners download no reference
+data, so `prepare --synthetic-records` writes a seeded synthetic stand-in for
+every pinned ground-motion record that is missing. `compare` times the timed
+cases on both binaries, checks that every case's outputs match, and writes a
+markdown table.
 
 `compare` fails when the candidate crashes on a case the baseline runs, or when
 a timed case is slower than `--max-regression-pct` both times it is measured. A
@@ -36,6 +38,8 @@ import statistics
 import subprocess
 import sys
 import tempfile
+import zlib
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -245,6 +249,54 @@ TIMED_VALIDATION_CASES = (
 )
 
 
+FIXTURES_ROOT = REPO_ROOT / "tests" / "fixtures" / "opensees"
+LOCK_PATH = FIXTURES_ROOT / "reference-data.lock.json"
+# Ground-motion records among the pinned files. `.tcl` files are mostly models,
+# so only the named value files count.
+RECORD_SUFFIXES = {".at2", ".dt2", ".acc", ".txt", ".th"}
+RECORD_TCL_NAMES = {"A10000.tcl"}
+
+
+def _missing_records(lock_path: Path = LOCK_PATH) -> list[Path]:
+    lock = json.loads(lock_path.read_text(encoding="utf-8"))
+    paths = []
+    for entry in lock.get("files", []):
+        rel = Path(entry["path"])
+        if rel.suffix.lower() in RECORD_SUFFIXES or rel.name in RECORD_TCL_NAMES:
+            path = lock_path.parent / rel
+            if not path.exists():
+                paths.append(path)
+    return paths
+
+
+def _write_synthetic_record(path: Path) -> None:
+    """A seeded synthetic record in the layout the scripts read from `path`.
+
+    The length is only roughly the real record's: both binaries run the same
+    input, so a benchmark needs a valid record, not the recorded motion.
+    """
+    import synthetic_ground_motion as sgm
+
+    suffix = path.suffix.lower()
+    seed = zlib.crc32(path.name.encode("utf-8"))
+    if suffix in {".txt", ".th"}:
+        # One value per line, no header (tabasFN.txt, TakY.th, NR228.txt).
+        params = sgm.MotionParams(seed=seed, dt=0.01, npts=3000)
+        acc = sgm.generate_acceleration(params)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("".join(f"{value:.6f}\n" for value in acc), encoding="ascii")
+        return
+    dt = 0.005 if suffix in {".at2", ".dt2"} else 0.01
+    sgm.write_motion(path, sgm.MotionParams(seed=seed, dt=dt, npts=4000), fmt=None)
+
+
+def write_missing_synthetic_records(lock_path: Path = LOCK_PATH) -> list[Path]:
+    written = _missing_records(lock_path)
+    for path in written:
+        _write_synthetic_record(path)
+    return written
+
+
 # ---------------------------------------------------------------- prepare
 
 
@@ -336,6 +388,9 @@ def cmd_prepare(args: argparse.Namespace) -> int:
         shutil.rmtree(suite_dir)
     suite_dir.mkdir(parents=True)
     entries = []
+    if args.synthetic_records:
+        for path in write_missing_synthetic_records():
+            print(f"  synthetic record  {path.relative_to(FIXTURES_ROOT)}")
 
     for case in SYNTHETIC_CASES:
         path = _prepare_synthetic(case, suite_dir)
@@ -352,17 +407,26 @@ def cmd_prepare(args: argparse.Namespace) -> int:
     timed = {case.name: case for case in TIMED_VALIDATION_CASES}
     skipped = []
     validation_dir = suite_dir / "_validation"
-    for name in _validation_names():
-        try:
-            _, path = ab_compare._resolved_input(
-                ab_compare._resolve_named_case(name), validation_dir
+    names = _validation_names()
+    # Capped subprocesses, as in ab_compare: converting some live-replay scripts
+    # statically needs more memory than a runner has.
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        outcomes = list(
+            pool.map(
+                lambda name: ab_compare._resolve_in_subprocess(
+                    ab_compare._resolve_named_case(name), validation_dir
+                ),
+                names,
             )
-        except (Exception, SystemExit) as exc:  # noqa: BLE001 - report and continue
-            reason = str(exc).splitlines()[0]
+        )
+    for name, outcome in zip(names, outcomes):
+        if isinstance(outcome, str):
+            reason = outcome
             # Name the missing file, not the scratch path it was looked up in.
             reason = re.sub(r'"[^"]*/([^"/]+)"', r'"\1"', reason).split(" at /")[0]
             skipped.append({"name": name, "reason": reason})
             continue
+        _, path = outcome
         spec = timed.get(name)
         entries.append(
             _entry(
@@ -698,6 +762,15 @@ def main() -> int:
 
     prepare = sub.add_parser("prepare", help="Write the benchmark suite inputs.")
     prepare.add_argument("--suite", type=Path, default=DEFAULT_SUITE_DIR)
+    prepare.add_argument(
+        "--synthetic-records",
+        action="store_true",
+        help=(
+            "Write a seeded synthetic record for every pinned ground motion that is "
+            "missing, into the fixtures tree. For CI runners, which download no "
+            "reference data; `setup_reference_data.py install` replaces them."
+        ),
+    )
     prepare.set_defaults(func=cmd_prepare)
 
     compare = sub.add_parser("compare", help="Time a baseline and a candidate binary.")

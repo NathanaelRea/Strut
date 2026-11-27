@@ -1,7 +1,14 @@
+from elements.fiber_beam_shear_3d import FiberBeamShear3D
+from elements.force_beam_column_cbdi import CbdiSettings, cbdi_elastic_basic_state
 from collections import List
 from math import sqrt
 from os import abort
 
+from elements.corotational3d import (
+    Corotational3dState,
+    corotational3d_basic_displacements,
+    corotational3d_resisting_force_and_tangent,
+)
 from elements.beam_loads import beam3d_basic_fixed_end_and_reactions, beam3d_section_load_response
 from elements.beam_integration import (
     BeamIntegrationCache,
@@ -33,10 +40,17 @@ alias Beam3dMat12 = StaticTuple[Float64, 144]
 alias Beam3dVec12 = StaticTuple[Float64, 12]
 
 
+fn force_beam_column3d_fiber_state_count(num_points: Int) -> Int:
+    # Basic forces, section deformations, previous basic displacement, tangent, initialized.
+    return 5 + 3 * num_points + 6 + 25 + 1
+
+
 struct ForceBeamColumn3dScratch(Copyable, Movable):
+    var corotational_states: List[Corotational3dState]
     var integration_cache: BeamIntegrationCache
     var R: Beam3dMat3
     var u_local: Beam3dVec12
+    var elastic_basic_force: StaticTuple[Float64, 6]
     var section_load_axial: List[Float64]
     var section_load_my: List[Float64]
     var section_load_mz: List[Float64]
@@ -93,8 +107,10 @@ struct ForceBeamColumn3dScratch(Copyable, Movable):
     var section_init_fs33: List[Float64]
 
     fn __init__(out self):
+        self.corotational_states = []
         self.integration_cache = BeamIntegrationCache()
         self.R = Beam3dMat3(fill=0.0)
+        self.elastic_basic_force = StaticTuple[Float64, 6](fill=0.0)
         self.u_local = Beam3dVec12(fill=0.0)
         self.section_load_axial = []
         self.section_load_my = []
@@ -150,6 +166,16 @@ struct ForceBeamColumn3dScratch(Copyable, Movable):
         self.section_init_fs22 = []
         self.section_init_fs23 = []
         self.section_init_fs33 = []
+
+    fn corotational_trial(mut self, elem_index: Int, u: List[Float64]) -> Corotational3dState:
+        if elem_index < 0:
+            var state = Corotational3dState()
+            state.update(u)
+            return state
+        while len(self.corotational_states) <= elem_index:
+            self.corotational_states.append(Corotational3dState())
+        self.corotational_states[elem_index].update(u)
+        return self.corotational_states[elem_index]
 
 
 fn reset_force_beam_column3d_scratch(mut scratch: ForceBeamColumn3dScratch):
@@ -1117,34 +1143,9 @@ fn _restore_force_beam_column3d_predictor_state(
         force_basic_q_state[kz_offset + ip] = section_kz[ip]
 
 
-fn _force_beam_column3d_section_basic_deformation(
-    L: Float64,
-    num_int_pts: Int,
-    scratch: ForceBeamColumn3dScratch,
-    force_basic_q_state: List[Float64],
-    eps0_offset: Int,
-    ky_offset: Int,
-    kz_offset: Int,
-) -> (Float64, Float64, Float64, Float64, Float64):
-    var v0 = 0.0
-    var v1 = 0.0
-    var v2 = 0.0
-    var v3 = 0.0
-    var v4 = 0.0
-    for ip in range(num_int_pts):
-        var xi = scratch.integration_cache.xis[ip]
-        var wL = scratch.integration_cache.weights[ip] * L
-        var b_mi = xi - 1.0
-        var b_mj = xi
-        v0 += wL * force_basic_q_state[eps0_offset + ip]
-        v1 += wL * b_mi * force_basic_q_state[kz_offset + ip]
-        v2 += wL * b_mj * force_basic_q_state[kz_offset + ip]
-        v3 += wL * b_mi * force_basic_q_state[ky_offset + ip]
-        v4 += wL * b_mj * force_basic_q_state[ky_offset + ip]
-    return (v0, v1, v2, v3, v4)
-
-
-fn _force_beam_column3d_try_increment(
+fn _force_beam_column3d_try_increment[
+    has_shear: Bool
+](
     L: Float64,
     mut sec_def: FiberSection3dDef,
     elem_inst_base: Int,
@@ -1164,6 +1165,7 @@ fn _force_beam_column3d_try_increment(
     dv_trial2: Float64,
     dv_trial3: Float64,
     dv_trial4: Float64,
+    shear: FiberBeamShear3D,
     use_initial_section_flexibility: Int,
 ) -> (Bool, Float64, Float64, Float64, Float64, Float64):
     var q0 = force_basic_q_state[force_basic_q_offset]
@@ -1251,6 +1253,9 @@ fn _force_beam_column3d_try_increment(
             predictor_f, wL, xi - 1.0, xi, sf11, sf12, sf13, sf22, sf23, sf33
         )
 
+    @parameter
+    if has_shear:
+        shear.add_flexibility(predictor_f)
     var predictor_f_copy = predictor_f
     if _invert_5x5_flat_into(predictor_f_copy, scratch.k_basic_flat):
         q0 += (
@@ -1397,6 +1402,15 @@ fn _force_beam_column3d_try_increment(
                 scratch.f_basic_flat, wL, b_mi, b_mj, sf11, sf12, sf13, sf22, sf23, sf33
             )
 
+        @parameter
+        if has_shear:
+            shear.add_flexibility(scratch.f_basic_flat)
+            var vy = shear.y_deformation(q1, q2)
+            var vz = shear.z_deformation(q3, q4)
+            v_from_1 += vy
+            v_from_2 += vy
+            v_from_3 += vz
+            v_from_4 += vz
         scratch.f_basic_copy_flat = scratch.f_basic_flat
         if not _invert_5x5_flat_into(scratch.f_basic_copy_flat, scratch.k_basic_flat):
             return (False, 0.0, 0.0, 0.0, 0.0, 0.0)
@@ -1763,6 +1777,11 @@ fn force_beam_column3d_global_tangent_and_internal(
     J: Float64,
     mut k_global_out: List[List[Float64]],
     mut f_global_out: List[Float64],
+    shear_y: Float64 = 0.0,
+    shear_z: Float64 = 0.0,
+    integration: String = "Lobatto",
+    num_int_pts: Int = 3,
+    cbdi: CbdiSettings = CbdiSettings(0, 0.0),
 ):
     var scratch = ForceBeamColumn3dScratch()
     force_beam_column3d_global_tangent_and_internal(
@@ -1792,6 +1811,11 @@ fn force_beam_column3d_global_tangent_and_internal(
         scratch,
         k_global_out,
         f_global_out,
+        shear_y,
+        shear_z,
+        integration,
+        num_int_pts,
+        cbdi,
     )
 
 
@@ -1822,6 +1846,11 @@ fn force_beam_column3d_global_tangent_and_internal(
     mut scratch: ForceBeamColumn3dScratch,
     mut k_global_out: List[List[Float64]],
     mut f_global_out: List[Float64],
+    shear_y: Float64 = 0.0,
+    shear_z: Float64 = 0.0,
+    integration: String = "Lobatto",
+    num_int_pts: Int = 3,
+    cbdi: CbdiSettings = CbdiSettings(0, 0.0),
 ):
     _ensure_force_beam_column3d_geometry_cache(
         elem_index, x1, y1, z1, x2, y2, z2, has_vecxz, vecxz_x, vecxz_y, vecxz_z, scratch
@@ -1840,23 +1869,7 @@ fn force_beam_column3d_global_tangent_and_internal(
             abort("zero-length element")
         inv_L = 1.0 / L
 
-    if geom_transf == "Corotational":
-        _element_rotation_into_static(
-            x1,
-            y1,
-            z1,
-            x2,
-            y2,
-            z2,
-            u_elem_global,
-            geom_transf,
-            has_vecxz,
-            vecxz_x,
-            vecxz_y,
-            vecxz_z,
-            scratch.R,
-        )
-    elif elem_index >= 0 and elem_index < len(scratch.rotation_cache):
+    if elem_index >= 0 and elem_index < len(scratch.rotation_cache):
         scratch.R = scratch.rotation_cache[elem_index]
     else:
         _element_rotation_into_static(
@@ -1867,7 +1880,7 @@ fn force_beam_column3d_global_tangent_and_internal(
             y2,
             z2,
             u_elem_global,
-            geom_transf,
+            "Linear",
             has_vecxz,
             vecxz_x,
             vecxz_y,
@@ -1941,14 +1954,25 @@ fn force_beam_column3d_global_tangent_and_internal(
     var v_basic_3: Float64
     var v_basic_4: Float64
     var torsion_basic: Float64
-    (
-        v_basic_0,
-        v_basic_1,
-        v_basic_2,
-        v_basic_3,
-        v_basic_4,
-        torsion_basic,
-    ) = _force_beam_column3d_basic_state(scratch.u_local, inv_L)
+    var corotational = Corotational3dState()
+    if geom_transf == "Corotational":
+        corotational = scratch.corotational_trial(elem_index, u_elem_global)
+        var basic = corotational3d_basic_displacements(scratch.R, L, u_elem_global, corotational)
+        v_basic_0 = basic[0]
+        v_basic_1 = basic[1]
+        v_basic_2 = basic[2]
+        v_basic_3 = basic[3]
+        v_basic_4 = basic[4]
+        torsion_basic = basic[5]
+    else:
+        (
+            v_basic_0,
+            v_basic_1,
+            v_basic_2,
+            v_basic_3,
+            v_basic_4,
+            torsion_basic,
+        ) = _force_beam_column3d_basic_state(scratch.u_local, inv_L)
     var axial_k = E * A * inv_L
     var flex_z = E * Iz * inv_L
     var flex_y = E * Iy * inv_L
@@ -1956,28 +1980,122 @@ fn force_beam_column3d_global_tangent_and_internal(
     if G > 0.0 and J > 0.0:
         torsion_k = G * J * inv_L
 
+    var k_z = (4.0 * flex_z, 2.0 * flex_z, 4.0 * flex_z, fe1, fe2)
+    var k_y = (4.0 * flex_y, 2.0 * flex_y, 4.0 * flex_y, fe3, fe4)
+    if shear_y != 0.0 or shear_z != 0.0:
+        beam_integration_cache_ensure(scratch.integration_cache, integration, num_int_pts)
+        var load_z = StaticTuple[Float64, 3](fill=0.0)
+        var load_y = StaticTuple[Float64, 3](fill=0.0)
+        if has_elem_loads:
+            for ip in range(num_int_pts):
+                var xi = scratch.integration_cache.xis[ip]
+                var weight = scratch.integration_cache.weights[ip]
+                var load = beam3d_section_load_response(
+                    element_loads,
+                    elem_load_offsets,
+                    elem_load_pool,
+                    elem_index,
+                    load_scale,
+                    xi * L,
+                    L,
+                )
+                load_z[0] += weight * (xi - 1.0) * L * load[2]
+                load_z[1] += weight * xi * L * load[2]
+                load_z[2] += weight * load[3]
+                load_y[0] += weight * (xi - 1.0) * L * load[1]
+                load_y[1] += weight * xi * L * load[1]
+                load_y[2] += weight * load[4]
+        if shear_y != 0.0:
+            k_z = _elastic_bending_with_shear(L, E * Iz, shear_y, scratch.integration_cache, load_z)
+        if shear_z != 0.0:
+            k_y = _elastic_bending_with_shear(L, E * Iy, shear_z, scratch.integration_cache, load_y)
+
     var q_basic_0 = axial_k * v_basic_0 + fe0
-    var q_basic_1 = flex_z * (4.0 * v_basic_1 + 2.0 * v_basic_2) + fe1
-    var q_basic_2 = flex_z * (2.0 * v_basic_1 + 4.0 * v_basic_2) + fe2
-    var q_basic_3 = flex_y * (4.0 * v_basic_3 + 2.0 * v_basic_4) + fe3
-    var q_basic_4 = flex_y * (2.0 * v_basic_3 + 4.0 * v_basic_4) + fe4
+    var q_basic_1 = k_z[0] * v_basic_1 + k_z[1] * v_basic_2 + k_z[3]
+    var q_basic_2 = k_z[1] * v_basic_1 + k_z[2] * v_basic_2 + k_z[4]
+    var q_basic_3 = k_y[0] * v_basic_3 + k_y[1] * v_basic_4 + k_y[3]
+    var q_basic_4 = k_y[1] * v_basic_3 + k_y[2] * v_basic_4 + k_y[4]
     var q_basic_5 = torsion_k * torsion_basic
 
     _zero_static_tuple(scratch.k_basic_flat)
     scratch.k_basic_flat[0] = axial_k
-    scratch.k_basic_flat[6] = 4.0 * flex_z
-    scratch.k_basic_flat[7] = 2.0 * flex_z
-    scratch.k_basic_flat[11] = 2.0 * flex_z
-    scratch.k_basic_flat[12] = 4.0 * flex_z
-    scratch.k_basic_flat[18] = 4.0 * flex_y
-    scratch.k_basic_flat[19] = 2.0 * flex_y
-    scratch.k_basic_flat[23] = 2.0 * flex_y
-    scratch.k_basic_flat[24] = 4.0 * flex_y
+    scratch.k_basic_flat[6] = k_z[0]
+    scratch.k_basic_flat[7] = k_z[1]
+    scratch.k_basic_flat[11] = k_z[1]
+    scratch.k_basic_flat[12] = k_z[2]
+    scratch.k_basic_flat[18] = k_y[0]
+    scratch.k_basic_flat[19] = k_y[1]
+    scratch.k_basic_flat[23] = k_y[1]
+    scratch.k_basic_flat[24] = k_y[2]
+    if cbdi.enabled():
+        beam_integration_cache_ensure(scratch.integration_cache, integration, num_int_pts)
+        var loads: List[List[Float64]] = []
+        _ensure_zero_matrix(loads, 3, num_int_pts)
+        if has_elem_loads:
+            for ip in range(num_int_pts):
+                var load = beam3d_section_load_response(
+                    element_loads,
+                    elem_load_offsets,
+                    elem_load_pool,
+                    elem_index,
+                    load_scale,
+                    scratch.integration_cache.xis[ip] * L,
+                    L,
+                )
+                loads[0][ip] = load[0]
+                loads[1][ip] = load[2]
+                loads[2][ip] = load[1]
+        var q: List[Float64] = []
+        var k: List[List[Float64]] = []
+        cbdi_elastic_basic_state(
+            L,
+            E * A,
+            [E * Iz, E * Iy],
+            scratch.integration_cache,
+            loads,
+            [v_basic_0, v_basic_1, v_basic_2, v_basic_3, v_basic_4],
+            cbdi,
+            q,
+            k,
+        )
+        q_basic_0 = q[0]
+        q_basic_1 = q[1]
+        q_basic_2 = q[2]
+        q_basic_3 = q[3]
+        q_basic_4 = q[4]
+        for i in range(5):
+            for j in range(5):
+                scratch.k_basic_flat[_mat5_index(i, j)] = k[i][j]
+    scratch.elastic_basic_force = StaticTuple[Float64, 6](
+        q_basic_0, q_basic_1, q_basic_2, q_basic_3, q_basic_4, q_basic_5
+    )
+    if geom_transf == "Corotational":
+        _force_beam_column3d_corotational_response(
+            L,
+            u_elem_global,
+            corotational,
+            q_basic_0,
+            q_basic_1,
+            q_basic_2,
+            q_basic_3,
+            q_basic_4,
+            q_basic_5,
+            torsion_k,
+            fe5,
+            fe6,
+            fe7,
+            fe8,
+            fe9,
+            scratch,
+            k_global_out,
+            f_global_out,
+        )
+        return
     _beam3d_assemble_local_stiffness_from_basic(
         scratch.k_basic_flat, inv_L, torsion_k, scratch.k_local_flat
     )
 
-    if geom_transf == "PDelta" or geom_transf == "Corotational":
+    if geom_transf == "PDelta":
         _beam3d_add_axial_geometric_stiffness_flat(scratch.k_local_flat, q_basic_0, inv_L)
 
     _beam3d_assemble_local_force_from_basic(
@@ -1989,13 +2107,78 @@ fn force_beam_column3d_global_tangent_and_internal(
         scratch.f_local[2] += fe8
         scratch.f_local[7] += fe7
         scratch.f_local[8] += fe9
-    if geom_transf == "PDelta" or geom_transf == "Corotational":
+    if geom_transf == "PDelta":
         _beam3d_add_axial_geometric_force(scratch.f_local, scratch.u_local, q_basic_0, inv_L)
 
     _beam3d_transform_stiffness_local_to_global_flat(
         scratch.R, scratch.k_local_flat, scratch.k_work_flat, k_global_out
     )
     _beam3d_transform_f_local_to_global_static(scratch.R, scratch.f_local, f_global_out)
+
+
+fn _force_beam_column3d_corotational_response(
+    length: Float64,
+    u: List[Float64],
+    state: Corotational3dState,
+    q0: Float64,
+    q1: Float64,
+    q2: Float64,
+    q3: Float64,
+    q4: Float64,
+    q5: Float64,
+    torsion: Float64,
+    p0: Float64,
+    p1: Float64,
+    p2: Float64,
+    p3: Float64,
+    p4: Float64,
+    scratch: ForceBeamColumn3dScratch,
+    mut tangent: List[List[Float64]],
+    mut force: List[Float64],
+):
+    var q = StaticTuple[Float64, 6](fill=0.0)
+    q[0] = q0
+    q[1] = q1
+    q[2] = q2
+    q[3] = q3
+    q[4] = q4
+    q[5] = q5
+    corotational3d_resisting_force_and_tangent(
+        scratch.R, length, u, state, q, scratch.k_basic_flat, torsion, force, tangent
+    )
+    # Fixed-end reactions stay in the reference local axes.
+    for k in range(3):
+        force[k] += scratch.R[k] * p0 + scratch.R[k + 3] * p1 + scratch.R[k + 6] * p3
+        force[k + 6] += scratch.R[k + 3] * p2 + scratch.R[k + 6] * p4
+
+
+fn _elastic_bending_with_shear(
+    length: Float64,
+    ei: Float64,
+    ga: Float64,
+    quadrature: BeamIntegrationCache,
+    load: StaticTuple[Float64, 3],
+) -> (Float64, Float64, Float64, Float64, Float64):
+    var f11 = 0.0
+    var f12 = 0.0
+    var f22 = 0.0
+    for ip in range(quadrature.num_int_pts):
+        var xi = quadrature.xis[ip]
+        var weight = quadrature.weights[ip]
+        var flex_b = weight * length / ei
+        var flex_s = weight / (ga * length)
+        f11 += flex_b * (xi - 1.0) * (xi - 1.0) + flex_s
+        f12 += flex_b * (xi - 1.0) * xi + flex_s
+        f22 += flex_b * xi * xi + flex_s
+    var det = f11 * f22 - f12 * f12
+    if det == 0.0:
+        abort("elastic forceBeamColumn3d bending flexibility is singular")
+    var k11 = f22 / det
+    var k12 = -f12 / det
+    var k22 = f11 / det
+    var v1 = load[0] / ei + load[2] / ga
+    var v2 = load[1] / ei + load[2] / ga
+    return (k11, k12, k22, -k11 * v1 - k12 * v2, -k12 * v1 - k22 * v2)
 
 
 fn force_beam_column3d_fiber_global_tangent_and_internal(
@@ -2430,6 +2613,120 @@ fn force_beam_column3d_fiber_global_tangent_and_internal(
     mut k_global_out: List[List[Float64]],
     mut f_global_out: List[Float64],
 ):
+    if sec_def.added_shear_flexibility_y != 0.0 or sec_def.added_shear_flexibility_z != 0.0:
+        _force_beam_column3d_fiber_with_section[True](
+            elem_index,
+            x1,
+            y1,
+            z1,
+            x2,
+            y2,
+            z2,
+            u_elem_global,
+            geom_transf,
+            has_vecxz,
+            vecxz_x,
+            vecxz_y,
+            vecxz_z,
+            element_loads,
+            elem_load_offsets,
+            elem_load_pool,
+            load_scale,
+            sec_def,
+            fibers,
+            uniaxial_defs,
+            uniaxial_states,
+            elem_state_ids,
+            elem_state_offset,
+            elem_state_count,
+            integration,
+            num_int_pts,
+            G,
+            J,
+            force_basic_q_state,
+            force_basic_q_offset,
+            force_basic_q_count,
+            scratch,
+            k_global_out,
+            f_global_out,
+        )
+    else:
+        _force_beam_column3d_fiber_with_section[False](
+            elem_index,
+            x1,
+            y1,
+            z1,
+            x2,
+            y2,
+            z2,
+            u_elem_global,
+            geom_transf,
+            has_vecxz,
+            vecxz_x,
+            vecxz_y,
+            vecxz_z,
+            element_loads,
+            elem_load_offsets,
+            elem_load_pool,
+            load_scale,
+            sec_def,
+            fibers,
+            uniaxial_defs,
+            uniaxial_states,
+            elem_state_ids,
+            elem_state_offset,
+            elem_state_count,
+            integration,
+            num_int_pts,
+            G,
+            J,
+            force_basic_q_state,
+            force_basic_q_offset,
+            force_basic_q_count,
+            scratch,
+            k_global_out,
+            f_global_out,
+        )
+
+
+fn _force_beam_column3d_fiber_with_section[
+    has_shear: Bool
+](
+    elem_index: Int,
+    x1: Float64,
+    y1: Float64,
+    z1: Float64,
+    x2: Float64,
+    y2: Float64,
+    z2: Float64,
+    u_elem_global: List[Float64],
+    geom_transf: String,
+    has_vecxz: Bool,
+    vecxz_x: Float64,
+    vecxz_y: Float64,
+    vecxz_z: Float64,
+    element_loads: List[ElementLoadInput],
+    elem_load_offsets: List[Int],
+    elem_load_pool: List[Int],
+    load_scale: Float64,
+    mut sec_def: FiberSection3dDef,
+    fibers: List[FiberCell],
+    uniaxial_defs: List[UniMaterialDef],
+    mut uniaxial_states: List[UniMaterialState],
+    elem_state_ids: List[Int],
+    elem_state_offset: Int,
+    elem_state_count: Int,
+    integration: String,
+    num_int_pts: Int,
+    G: Float64,
+    J: Float64,
+    mut force_basic_q_state: List[Float64],
+    force_basic_q_offset: Int,
+    force_basic_q_count: Int,
+    mut scratch: ForceBeamColumn3dScratch,
+    mut k_global_out: List[List[Float64]],
+    mut f_global_out: List[Float64],
+):
     var fibers_per_section = sec_def.fiber_count
     if elem_state_count != num_int_pts * fibers_per_section:
         abort("forceBeamColumn3d element state count mismatch")
@@ -2442,12 +2739,10 @@ fn force_beam_column3d_fiber_global_tangent_and_internal(
         abort("forceBeamColumn3d section states out of range")
     var elem_inst_base = local_state_offset // fibers_per_section
 
-    var predictor_state_count = 5 + 3 * num_int_pts
-    if force_basic_q_count < predictor_state_count:
+    var state_count = force_beam_column3d_fiber_state_count(num_int_pts)
+    if force_basic_q_count < state_count:
         abort("forceBeamColumn3d basic force state count mismatch")
-    if force_basic_q_offset < 0 or force_basic_q_offset + predictor_state_count > len(
-        force_basic_q_state
-    ):
+    if force_basic_q_offset < 0 or force_basic_q_offset + state_count > len(force_basic_q_state):
         abort("forceBeamColumn3d basic force state out of range")
 
     _ensure_force_beam_column3d_geometry_cache(
@@ -2477,23 +2772,7 @@ fn force_beam_column3d_fiber_global_tangent_and_internal(
             abort("zero-length element")
         inv_L = 1.0 / L
 
-    if geom_transf == "Corotational":
-        _element_rotation_into_static(
-            x1,
-            y1,
-            z1,
-            x2,
-            y2,
-            z2,
-            u_elem_global,
-            geom_transf,
-            has_vecxz,
-            vecxz_x,
-            vecxz_y,
-            vecxz_z,
-            scratch.R,
-        )
-    elif elem_index >= 0 and elem_index < len(scratch.rotation_cache):
+    if elem_index >= 0 and elem_index < len(scratch.rotation_cache):
         scratch.R = scratch.rotation_cache[elem_index]
     else:
         _element_rotation_into_static(
@@ -2504,7 +2783,7 @@ fn force_beam_column3d_fiber_global_tangent_and_internal(
             y2,
             z2,
             u_elem_global,
-            geom_transf,
+            "Linear",
             has_vecxz,
             vecxz_x,
             vecxz_y,
@@ -2570,40 +2849,73 @@ fn force_beam_column3d_fiber_global_tangent_and_internal(
     var v_basic_3: Float64
     var v_basic_4: Float64
     var torsion_basic: Float64
-    (
-        v_basic_0,
-        v_basic_1,
-        v_basic_2,
-        v_basic_3,
-        v_basic_4,
-        torsion_basic,
-    ) = _force_beam_column3d_basic_state(scratch.u_local, inv_L)
+    var corotational = Corotational3dState()
+    if geom_transf == "Corotational":
+        corotational = scratch.corotational_trial(elem_index, u_elem_global)
+        var basic = corotational3d_basic_displacements(scratch.R, L, u_elem_global, corotational)
+        v_basic_0 = basic[0]
+        v_basic_1 = basic[1]
+        v_basic_2 = basic[2]
+        v_basic_3 = basic[3]
+        v_basic_4 = basic[4]
+        torsion_basic = basic[5]
+    else:
+        (
+            v_basic_0,
+            v_basic_1,
+            v_basic_2,
+            v_basic_3,
+            v_basic_4,
+            torsion_basic,
+        ) = _force_beam_column3d_basic_state(scratch.u_local, inv_L)
 
     var eps0_offset = force_basic_q_offset + 5
     var ky_offset = eps0_offset + num_int_pts
     var kz_offset = ky_offset + num_int_pts
 
-    _zero_static_tuple(scratch.k_basic_flat)
+    var basic_state_offset = kz_offset + num_int_pts
+    var tangent_offset = basic_state_offset + 6
+    var initialized_offset = tangent_offset + 25
+    var accepted_basic_0 = force_basic_q_state[basic_state_offset]
+    var accepted_basic_1 = force_basic_q_state[basic_state_offset + 1]
+    var accepted_basic_2 = force_basic_q_state[basic_state_offset + 2]
+    var accepted_basic_3 = force_basic_q_state[basic_state_offset + 3]
+    var accepted_basic_4 = force_basic_q_state[basic_state_offset + 4]
     _ensure_force_beam_column3d_section_history_capacity(scratch, num_int_pts)
-    var current_basic = _force_beam_column3d_section_basic_deformation(
-        L,
-        num_int_pts,
-        scratch,
-        force_basic_q_state,
-        eps0_offset,
-        ky_offset,
-        kz_offset,
-    )
-    var accepted_basic_0 = current_basic[0]
-    var accepted_basic_1 = current_basic[1]
-    var accepted_basic_2 = current_basic[2]
-    var accepted_basic_3 = current_basic[3]
-    var accepted_basic_4 = current_basic[4]
+    var shear = FiberBeamShear3D(0.0, 0.0, 0.0, 0.0)
+
+    @parameter
+    if has_shear:
+        shear.flexibility_y = sec_def.added_shear_flexibility_y * inv_L
+        shear.flexibility_z = sec_def.added_shear_flexibility_z * inv_L
+        if has_elem_loads:
+            for ip in range(num_int_pts):
+                var loads = beam3d_section_load_response(
+                    element_loads,
+                    elem_load_offsets,
+                    elem_load_pool,
+                    elem_index,
+                    load_scale,
+                    scratch.integration_cache.xis[ip] * L,
+                    L,
+                )
+                var weight = scratch.integration_cache.weights[ip]
+                shear.load_deformation_y += weight * sec_def.added_shear_flexibility_y * loads[3]
+                shear.load_deformation_z += weight * sec_def.added_shear_flexibility_z * loads[4]
     var accepted_q0 = force_basic_q_state[force_basic_q_offset]
     var accepted_q1 = force_basic_q_state[force_basic_q_offset + 1]
     var accepted_q2 = force_basic_q_state[force_basic_q_offset + 2]
     var accepted_q3 = force_basic_q_state[force_basic_q_offset + 3]
     var accepted_q4 = force_basic_q_state[force_basic_q_offset + 4]
+
+    @parameter
+    if has_shear:
+        var previous_vy = shear.y_deformation(accepted_q1, accepted_q2)
+        var previous_vz = shear.z_deformation(accepted_q3, accepted_q4)
+        accepted_basic_1 += previous_vy
+        accepted_basic_2 += previous_vy
+        accepted_basic_3 += previous_vz
+        accepted_basic_4 += previous_vz
     for ip in range(num_int_pts):
         scratch.section_vs_eps0[ip] = force_basic_q_state[eps0_offset + ip]
         scratch.section_vs_ky[ip] = force_basic_q_state[ky_offset + ip]
@@ -2612,12 +2924,28 @@ fn force_beam_column3d_fiber_global_tangent_and_internal(
     var tolerance = 1.0e-12
     var cutback_factor = 10.0
     var max_subdivisions = 4
-    var converged = False
     var remaining_0 = v_basic_0 - accepted_basic_0
     var remaining_1 = v_basic_1 - accepted_basic_1
     var remaining_2 = v_basic_2 - accepted_basic_2
     var remaining_3 = v_basic_3 - accepted_basic_3
     var remaining_4 = v_basic_4 - accepted_basic_4
+    var twist_increment = torsion_basic - force_basic_q_state[basic_state_offset + 5]
+    var displacement_increment = sqrt(
+        remaining_0 * remaining_0
+        + remaining_1 * remaining_1
+        + remaining_2 * remaining_2
+        + remaining_3 * remaining_3
+        + remaining_4 * remaining_4
+        + twist_increment * twist_increment
+    )
+    var converged = (
+        force_basic_q_state[initialized_offset] == 1.0
+        and not has_elem_loads
+        and displacement_increment <= 2.220446049250313e-16
+    )
+    if converged:
+        for i in range(25):
+            scratch.k_basic_flat[i] = force_basic_q_state[tangent_offset + i]
     var attempt_0 = remaining_0
     var attempt_1 = remaining_1
     var attempt_2 = remaining_2
@@ -2625,7 +2953,7 @@ fn force_beam_column3d_fiber_global_tangent_and_internal(
     var attempt_4 = remaining_4
     var num_subdivide = 1
 
-    while True:
+    while not converged:
         if num_subdivide > max_subdivisions:
             break
         var target_v0 = accepted_basic_0 + attempt_0
@@ -2648,7 +2976,7 @@ fn force_beam_column3d_fiber_global_tangent_and_internal(
                 scratch.section_vs_ky,
                 scratch.section_vs_kz,
             )
-            var solved = _force_beam_column3d_try_increment(
+            var solved = _force_beam_column3d_try_increment[has_shear](
                 L,
                 sec_def,
                 elem_inst_base,
@@ -2668,6 +2996,7 @@ fn force_beam_column3d_fiber_global_tangent_and_internal(
                 attempt_2,
                 attempt_3,
                 attempt_4,
+                shear,
                 use_initial,
             )
             if not solved[0]:
@@ -2732,6 +3061,15 @@ fn force_beam_column3d_fiber_global_tangent_and_internal(
             scratch.section_vs_kz,
         )
         abort("forceBeamColumn3d element compatibility did not converge")
+    force_basic_q_state[basic_state_offset] = accepted_basic_0
+    force_basic_q_state[basic_state_offset + 1] = accepted_basic_1
+    force_basic_q_state[basic_state_offset + 2] = accepted_basic_2
+    force_basic_q_state[basic_state_offset + 3] = accepted_basic_3
+    force_basic_q_state[basic_state_offset + 4] = accepted_basic_4
+    force_basic_q_state[basic_state_offset + 5] = torsion_basic
+    for i in range(25):
+        force_basic_q_state[tangent_offset + i] = scratch.k_basic_flat[i]
+    force_basic_q_state[initialized_offset] = -1.0 if has_elem_loads else 1.0
     var q0 = accepted_q0
     var q1 = accepted_q1
     var q2 = accepted_q2
@@ -2741,11 +3079,33 @@ fn force_beam_column3d_fiber_global_tangent_and_internal(
     var torsion_k = 0.0
     if G > 0.0 and J > 0.0:
         torsion_k = G * J * inv_L
+    if geom_transf == "Corotational":
+        _force_beam_column3d_corotational_response(
+            L,
+            u_elem_global,
+            corotational,
+            q0,
+            q1,
+            q2,
+            q3,
+            q4,
+            torsion_k * torsion_basic,
+            torsion_k,
+            fe5,
+            fe6,
+            fe7,
+            fe8,
+            fe9,
+            scratch,
+            k_global_out,
+            f_global_out,
+        )
+        return
     _beam3d_assemble_local_stiffness_from_basic(
         scratch.k_basic_flat, inv_L, torsion_k, scratch.k_local_flat
     )
 
-    if geom_transf == "PDelta" or geom_transf == "Corotational":
+    if geom_transf == "PDelta":
         _beam3d_add_axial_geometric_stiffness_flat(scratch.k_local_flat, q0, inv_L)
 
     var q_basic_5 = torsion_k * torsion_basic
@@ -2756,7 +3116,7 @@ fn force_beam_column3d_fiber_global_tangent_and_internal(
         scratch.f_local[2] += fe8
         scratch.f_local[7] += fe7
         scratch.f_local[8] += fe9
-    if geom_transf == "PDelta" or geom_transf == "Corotational":
+    if geom_transf == "PDelta":
         _beam3d_add_axial_geometric_force(scratch.f_local, scratch.u_local, q0, inv_L)
 
     _beam3d_transform_stiffness_local_to_global_flat(

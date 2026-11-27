@@ -1,0 +1,11 @@
+{
+  "name": "strut_shell_element_asdshellq4",
+  "entry_tcl": "tests/fixtures/opensees/strut_shell_element_check/model.tcl",
+  "tcl_source_version": "3.7.1",
+  "tcl_prelude": [
+    "set shellType ASDShellQ4",
+    "set shellOptions {}"
+  ],
+  "enabled": true,
+  "parity_mode": "step"
+}

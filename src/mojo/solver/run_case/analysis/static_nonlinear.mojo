@@ -1,18 +1,19 @@
 from collections import List
+from solver.run_case.analysis.penalty import PenaltyConstraints, append_penalty_pairs
 from elements import (
     ForceBeamColumn2dScratch,
     reset_force_beam_column2d_scratch,
 )
 from math import sqrt
 from materials import UniMaterialDef, UniMaterialState, uniaxial_commit, uniaxial_revert_trial
-from os import abort
+from os import abort, getenv
 from python import Python
 
 from solver.assembly.frame3d_scratch import (
     Frame3dAssemblyScratch,
     reset_frame3d_assembly_scratch,
 )
-from solver.assembly.shell_cache import ShellAssemblyCache
+from solver.assembly.surface_cache import SurfaceAssemblyCache
 from solver.run_case.linear_solver_backend import (
     LinearSolverBackend,
     clear,
@@ -83,7 +84,7 @@ from solver.run_case.helpers import (
     _element_basic_force_for_recorder,
     _element_deformation_for_recorder,
     _element_force_global_for_recorder,
-    _force_beam_column2d_force_global_from_basic_state,
+    _force_beam_column2d_end_forces_from_basic_state,
     _force_beam_column2d_section_response_from_basic_state,
     _element_local_force_for_recorder,
     _enforce_mpc_values,
@@ -214,6 +215,7 @@ fn _solve_displacement_control_augmented_from_factorized_backend(
     rhs_free: List[Float64],
     load_column_free: List[Float64],
     control_free: Int,
+    control_row: List[Float64],
     disp_constraint_rhs: Float64,
     mut solution_aug: List[Float64],
     mut rhs_solve: List[Float64],
@@ -222,18 +224,30 @@ fn _solve_displacement_control_augmented_from_factorized_backend(
     var free_count = len(rhs_free)
     if len(load_column_free) != free_count:
         abort("DisplacementControl load column size mismatch")
-    if control_free < 0 or control_free >= free_count:
+    if len(control_row) == 0 and (control_free < 0 or control_free >= free_count):
         abort("DisplacementControl control free index out of range")
     solve(backend, rhs_free, rhs_solve)
     solve(backend, load_column_free, load_solve)
-    var denom = load_solve[control_free]
+    var control_rhs: Float64
+    var denom: Float64
+    if len(control_row) > 0:
+        control_rhs = dot_float64_contiguous(control_row, rhs_solve, free_count)
+        denom = dot_float64_contiguous(control_row, load_solve, free_count)
+    else:
+        control_rhs = rhs_solve[control_free]
+        denom = load_solve[control_free]
     if abs(denom) <= 1.0e-14:
         return False
-    var delta_lambda = (rhs_solve[control_free] - disp_constraint_rhs) / denom
+    var delta_lambda = (control_rhs - disp_constraint_rhs) / denom
     if len(solution_aug) != free_count + 1:
         solution_aug.resize(free_count + 1, 0.0)
     for i in range(free_count):
         solution_aug[i] = rhs_solve[i] - load_solve[i] * delta_lambda
+    # The bordered equation prescribes this entry exactly. Avoid
+    # cancellation when the two solved vectors have large components here.
+    # A slaved control DOF (control_row) has no single free entry to pin.
+    if len(control_row) == 0:
+        solution_aug[control_free] = disp_constraint_rhs
     solution_aug[free_count] = delta_lambda
     return True
 
@@ -290,7 +304,7 @@ fn _static_load_control_residual(
     fiber_section3d_cells: List[FiberCell],
     fiber_section3d_index_by_id: List[Int],
     layered_shell_section_defs: List[LayeredShellSectionDef],
-    mut shell_cache: ShellAssemblyCache,
+    mut shell_cache: SurfaceAssemblyCache,
     mut force_beam_column2d_scratch: ForceBeamColumn2dScratch,
     mut force_beam_column3d_scratch: Frame3dAssemblyScratch,
     F_step: List[Float64],
@@ -392,6 +406,9 @@ fn _static_displacement_control_residual(
     zero_length_section_elem_indices: List[Int],
     quad_elem_indices: List[Int],
     shell_elem_indices: List[Int],
+    const_element_loads: List[ElementLoadInput],
+    pattern_element_loads: List[ElementLoadInput],
+    elem_id_to_index: List[Int],
     typed_sections_by_id: List[SectionInput],
     typed_materials_by_id: List[MaterialInput],
     id_to_index: List[Int],
@@ -415,7 +432,7 @@ fn _static_displacement_control_residual(
     fiber_section3d_cells: List[FiberCell],
     fiber_section3d_index_by_id: List[Int],
     layered_shell_section_defs: List[LayeredShellSectionDef],
-    mut shell_cache: ShellAssemblyCache,
+    mut shell_cache: SurfaceAssemblyCache,
     mut force_beam_column2d_scratch: ForceBeamColumn2dScratch,
     mut force_beam_column3d_scratch: Frame3dAssemblyScratch,
     free: List[Int],
@@ -426,15 +443,20 @@ fn _static_displacement_control_residual(
     mpc_coeff_pool: List[Float64],
     F_const_free: List[Float64],
     F_pattern_free: List[Float64],
-    load_factor: Float64,
-    attempt_du: Float64,
+    load_scale: Float64,
+    attempt_target: Float64,
     control_idx: Int,
-    u_base: List[Float64],
     mut residual_aug: List[Float64],
 ) raises:
-    var empty_element_loads: List[ElementLoadInput] = []
-    var empty_offsets: List[Int] = []
-    var empty_pool: List[Int] = []
+    var active_element_load_state = build_active_element_load_state(
+        const_element_loads,
+        pattern_element_loads,
+        load_scale,
+        typed_elements,
+        elem_id_to_index,
+        ndm,
+        ndf,
+    )
     var F_int = assemble_internal_forces_typed_soa(
         typed_nodes,
         typed_elements,
@@ -461,9 +483,9 @@ fn _static_displacement_control_residual(
         zero_length_section_elem_indices,
         quad_elem_indices,
         shell_elem_indices,
-        empty_element_loads,
-        empty_offsets,
-        empty_pool,
+        active_element_load_state.element_loads,
+        active_element_load_state.elem_load_offsets,
+        active_element_load_state.elem_load_pool,
         1.0,
         typed_sections_by_id,
         typed_materials_by_id,
@@ -495,8 +517,8 @@ fn _static_displacement_control_residual(
     if has_transformation_mpc:
         F_int = _collapse_vector_by_mpc(F_int, mpc_row_offsets, mpc_dof_pool, mpc_coeff_pool)
     for i in range(free_count):
-        residual_aug[i] = F_const_free[i] + load_factor * F_pattern_free[i] - F_int[free[i]]
-    residual_aug[free_count] = attempt_du - (u[control_idx] - u_base[control_idx])
+        residual_aug[i] = F_const_free[i] + load_scale * F_pattern_free[i] - F_int[free[i]]
+    residual_aug[free_count] = attempt_target - u[control_idx]
 
 
 fn _append_static_retry_attempt(
@@ -759,12 +781,17 @@ fn run_static_nonlinear_load_control(
     fiber_section3d_cells: List[FiberCell],
     fiber_section3d_index_by_id: List[Int],
     layered_shell_section_defs: List[LayeredShellSectionDef],
-    mut shell_cache: ShellAssemblyCache,
+    mut shell_cache: SurfaceAssemblyCache,
     total_dofs: Int,
     F_const: List[Float64],
     F_pattern: List[Float64],
-    free: List[Int],
-    free_index: List[Int],
+    prescribed_dofs: List[Int],
+    prescribed_values: List[Float64],
+    penalty_sp_dofs: List[Int],
+    penalty_mp_dofs: List[Int],
+    penalty_sp_values: List[Float64],
+    base_free: List[Int],
+    base_free_index: List[Int],
     recorders: List[RecorderInput],
     recorder_nodes_pool: List[Int],
     recorder_elements_pool: List[Int],
@@ -790,14 +817,17 @@ fn run_static_nonlinear_load_control(
     frame_nonlinear_iter: Int,
     frame_uniaxial_revert_all: Int,
     frame_uniaxial_commit_all: Int,
-    has_transformation_mpc: Bool,
+    base_has_transformation_mpc: Bool,
     mpc_slave_dof: List[Bool],
     mpc_row_offsets: List[Int],
     mpc_dof_pool: List[Int],
     mpc_coeff_pool: List[Float64],
     constrained: List[Bool],
+    mut force_beam_column3d_scratch: Frame3dAssemblyScratch,
     mut runtime_metrics: RuntimeProfileMetrics,
-) raises:
+    previous_step_size: Float64 = 0.0,
+    previous_iterations: Int = 0,
+) raises -> Tuple[Float64, Float64, Int]:
     var time = Python.import_module("time")
     _write_run_progress_throttled(
         progress_path,
@@ -813,7 +843,6 @@ fn run_static_nonlinear_load_control(
     var asm_dof_map12: List[Int] = []
     var asm_u_elem6: List[Float64] = []
     var force_beam_column2d_scratch = ForceBeamColumn2dScratch()
-    var force_beam_column3d_scratch = Frame3dAssemblyScratch()
     var has_force_beam_column2d = False
     for i in range(len(typed_elements)):
         if typed_elements[i].type_tag == ElementTypeTag.ForceBeamColumn2d:
@@ -857,6 +886,27 @@ fn run_static_nonlinear_load_control(
         if retry_algorithm_modes[i] == NonlinearAlgorithmMode.ModifiedNewtonInitial:
             chain_has_modified_newton_initial = True
             break
+    var use_penalty = analysis.constraints == "Penalty"
+    var has_transformation_mpc = base_has_transformation_mpc and not use_penalty
+    var penalty = PenaltyConstraints()
+    var penalty_free: List[Int] = []
+    var penalty_free_index: List[Int] = []
+    if use_penalty:
+        if analysis.penalty_sp <= 0.0 or analysis.penalty_mp <= 0.0:
+            abort("Penalty coefficients must be positive")
+        if (
+            analysis.integrator_tag != IntegratorTypeTag.LoadControl
+            and analysis.integrator_tag != IntegratorTypeTag.Unknown
+        ):
+            abort("static Penalty requires LoadControl")
+        penalty_free_index.resize(total_dofs, -1)
+        for node in range(node_count):
+            for dof in range(1, typed_nodes[node].ndf + 1):
+                var index = node_dof_index(node, dof, ndf)
+                penalty_free_index[index] = len(penalty_free)
+                penalty_free.append(index)
+    ref free = penalty_free if use_penalty else base_free
+    ref free_index = penalty_free_index if use_penalty else base_free_index
     var free_count = len(free)
     var F_const_free: List[Float64] = []
     F_const_free.resize(free_count, 0.0)
@@ -874,6 +924,7 @@ fn run_static_nonlinear_load_control(
         integrator_tag = IntegratorTypeTag.LoadControl
     var use_banded_loadcontrol = (
         analysis.system_tag == AnalysisSystemTag.BandGeneral
+        and not use_penalty
         and not has_transformation_mpc
         and integrator_tag == IntegratorTypeTag.LoadControl
         and primary_algorithm_mode != NonlinearAlgorithmMode.ModifiedNewtonInitial
@@ -881,7 +932,7 @@ fn run_static_nonlinear_load_control(
     )
     var bw_nl = 0
     if use_banded_loadcontrol:
-        bw_nl = estimate_bandwidth_typed(typed_elements, free_index)
+        bw_nl = estimate_bandwidth_typed(elem_dof_offsets, elem_dof_pool, free_index)
         if bw_nl > free_count - 1:
             bw_nl = free_count - 1
         if runtime_metrics.enabled:
@@ -890,7 +941,8 @@ fn run_static_nonlinear_load_control(
             runtime_metrics.active_profile_size = 0
     var backend = LinearSolverBackend()
     var native_direct_backend_available = (
-        not has_transformation_mpc
+        not use_penalty
+        and not has_transformation_mpc
         and not use_banded_loadcontrol
         and (
             analysis.system_tag == AnalysisSystemTag.FullGeneral
@@ -916,9 +968,15 @@ fn run_static_nonlinear_load_control(
     var K_init_values: List[Float64] = []
     if needs_sparse_global_matrix:
         var no_mass: List[Float64] = []
+        var penalty_offsets: List[Int] = []
+        var penalty_pool: List[Int] = []
+        if use_penalty and len(penalty_mp_dofs) > 0:
+            penalty_offsets = elem_dof_offsets.copy()
+            penalty_pool = elem_dof_pool.copy()
+            append_penalty_pairs(penalty_offsets, penalty_pool, penalty_mp_dofs)
         sparse_assembler = build_sparse_assembler(
-            elem_dof_offsets,
-            elem_dof_pool,
+            penalty_offsets if len(penalty_offsets) > 0 else elem_dof_offsets,
+            penalty_pool if len(penalty_pool) > 0 else elem_dof_pool,
             free_index,
             free_count,
             has_transformation_mpc,
@@ -929,6 +987,25 @@ fn run_static_nonlinear_load_control(
             no_mass,
             sparse_pattern,
         )
+        if use_penalty:
+            penalty.prepare(
+                sparse_pattern,
+                free_index,
+                penalty_sp_dofs,
+                penalty_mp_dofs,
+                analysis.penalty_sp,
+                analysis.penalty_mp,
+                penalty_sp_values,
+            )
+            penalty.add_motions(
+                analysis.supplemental.support_motions,
+                typed_nodes,
+                id_to_index,
+                ndf,
+                free_index,
+                sparse_pattern,
+                time_series,
+            )
         elem_free_pool_sparse = build_elem_free_pool(elem_dof_pool, free_index)
     var elem_free_pool_native: List[Int] = []
     if native_direct_backend_available:
@@ -1052,9 +1129,13 @@ fn run_static_nonlinear_load_control(
             frame_assemble_uniaxial,
             frame_assemble_fiber,
             runtime_metrics,
+            initial_wall_tangent=True,
+            initial_frame_tangent=True,
         )
         if not use_banded_loadcontrol:
             copy_values(K_init_values, sparse_assembler.values)
+            for slot in range(len(penalty.stiffness)):
+                K_init_values[slot] += penalty.stiffness[slot]
         if do_profile:
             var t_revert_start = Int(time.perf_counter_ns())
             var revert_start_us = (t_revert_start - t0) // 1000
@@ -1066,6 +1147,8 @@ fn run_static_nonlinear_load_control(
                 revert_start_us,
             )
         _uniaxial_revert_trial_active_states(uniaxial_states, elem_uniaxial_state_ids)
+        shell_cache.shell.revert_trial()
+        force_beam_column3d_scratch.revert_corotational()
         fiber_section2d_revert_trial_runtime_all(fiber_section_defs)
         fiber_section3d_revert_trial_runtime_all(fiber_section3d_defs)
         if do_profile:
@@ -1088,6 +1171,7 @@ fn run_static_nonlinear_load_control(
     var base_step_size = 1.0 / Float64(steps)
     if analysis.has_integrator_step:
         base_step_size = analysis.integrator_step
+    var replay_failure_path = getenv("STRUT_TCL_LOAD_CONTROL_FAILURE")
     var adaptive_step = (
         analysis.has_integrator_num_iter
         or analysis.has_integrator_min_step
@@ -1096,15 +1180,17 @@ fn run_static_nonlinear_load_control(
     var step_target_iters = analysis.integrator_num_iter
     if step_target_iters < 1:
         step_target_iters = 1
-    var last_step_iters = step_target_iters
+    var last_step_iters = previous_iterations if previous_iterations > 0 else step_target_iters
     var min_step_size = base_step_size
     if analysis.has_integrator_min_step:
         min_step_size = analysis.integrator_min_step
     var max_step_size = base_step_size
     if analysis.has_integrator_max_step:
         max_step_size = analysis.integrator_max_step
-    var current_step_size = base_step_size
-    var load_control_time = 0.0
+    var current_step_size = previous_step_size if previous_iterations > 0 else base_step_size
+    var load_control_time = analysis.start_time
+    var next_recorder_time: List[Float64] = []
+    next_recorder_time.resize(len(recorders), 0.0)
     for step in range(steps):
         _write_run_progress_throttled(
             progress_path,
@@ -1120,15 +1206,6 @@ fn run_static_nonlinear_load_control(
             var t_step_start = Int(time.perf_counter_ns())
             var step_start_us = (t_step_start - t0) // 1000
             _append_event(events, events_need_comma, "O", frame_nonlinear_step, step_start_us)
-        if has_transformation_mpc:
-            _enforce_mpc_values(
-                u,
-                constrained,
-                mpc_slave_dof,
-                mpc_row_offsets,
-                mpc_dof_pool,
-                mpc_coeff_pool,
-            )
         var step_size = current_step_size
         if adaptive_step:
             if last_step_iters > 0:
@@ -1154,6 +1231,23 @@ fn run_static_nonlinear_load_control(
         if ts_index >= 0:
             scale = eval_time_series_input(
                 time_series[ts_index], scale, time_series_values, time_series_times
+            )
+        if use_penalty:
+            penalty.update_targets(
+                load_control_time, scale, time_series, time_series_values, time_series_times
+            )
+        else:
+            for i in range(len(prescribed_dofs)):
+                u[prescribed_dofs[i]] = scale * prescribed_values[i]
+        if has_transformation_mpc:
+            _enforce_mpc_values(
+                u,
+                constrained,
+                mpc_slave_dof,
+                mpc_row_offsets,
+                mpc_dof_pool,
+                mpc_coeff_pool,
+                len(prescribed_dofs) > 0,
             )
         var F_step = build_active_nodal_load(F_const, F_pattern, scale)
         var active_element_load_state = build_active_element_load_state(
@@ -1198,12 +1292,15 @@ fn run_static_nonlinear_load_control(
         var attempt_broyden_count = primary_broyden_count
         var attempt_krylov_max_dim = primary_krylov_max_dim
         var step_converged_iters = 0
+        var completed_updates = 0
         for attempt in range(retry_attempt_count):
             if attempt > 0:
                 for i in range(total_dofs):
                     u[i] = u_base[i]
                 force_basic_q = force_basic_q_base.copy()
                 uniaxial_states = uniaxial_states_base.copy()
+                shell_cache.shell.revert_trial()
+                force_beam_column3d_scratch.revert_corotational()
                 fiber_section2d_revert_trial_runtime_all(fiber_section_defs)
                 fiber_section3d_revert_trial_runtime_all(fiber_section3d_defs)
                 attempt_algorithm_tag = retry_algorithm_tags[attempt]
@@ -1228,7 +1325,9 @@ fn run_static_nonlinear_load_control(
             var krylov_coeffs: List[Float64] = []
             var krylov_factor_work: List[Float64] = []
             var krylov_rhs_work: List[Float64] = []
-            for iter_idx in range(attempt_max_iters):
+            var checks_residual = attempt_test_mode == 2
+            completed_updates = 0
+            for iter_idx in range(attempt_max_iters + Int(checks_residual)):
                 if runtime_metrics.enabled:
                     runtime_metrics.global_nonlinear_iterations += 1
                 if do_profile:
@@ -1490,6 +1589,9 @@ fn run_static_nonlinear_load_control(
                         F_int = _collapse_vector_by_mpc(
                             F_int, mpc_row_offsets, mpc_dof_pool, mpc_coeff_pool
                         )
+                if use_penalty and refresh_tangent:
+                    for slot in range(len(penalty.stiffness)):
+                        sparse_assembler.values[slot] += penalty.stiffness[slot]
                 if do_profile:
                     var t_asm_end = Int(time.perf_counter_ns())
                     var asm_end_us = (t_asm_end - t0) // 1000
@@ -1558,15 +1660,17 @@ fn run_static_nonlinear_load_control(
                             tangent_factored = False
                         for i in range(free_count):
                             F_f[i] = F_step[free[i]] - F_int[free[i]]
+                if use_penalty:
+                    penalty.subtract_force(u, F_f, free)
                 if do_profile:
                     var t_kff_end = Int(time.perf_counter_ns())
                     var kff_end_us = (t_kff_end - t0) // 1000
                     _append_event(events, events_need_comma, "C", frame_kff_extract, kff_end_us)
 
-                var residual_norm_dbg = sqrt(sum_sq_float64_contiguous(F_f, free_count))
-
-                if attempt_test_mode == 2:
-                    if residual_norm_dbg <= attempt_tol:
+                if checks_residual:
+                    var residual_norm = sqrt(sum_sq_float64_contiguous(F_f, free_count))
+                    converged = residual_norm <= attempt_tol
+                    if converged or iter_idx == attempt_max_iters:
                         if do_profile:
                             var t_iter_end = Int(time.perf_counter_ns())
                             var iter_end_us = (t_iter_end - t0) // 1000
@@ -1577,8 +1681,7 @@ fn run_static_nonlinear_load_control(
                                 frame_nonlinear_iter,
                                 iter_end_us,
                             )
-                        step_converged_iters = iter_idx + 1
-                        converged = True
+                        step_converged_iters = max(1, iter_idx)
                         break
 
                 if do_profile:
@@ -1709,6 +1812,7 @@ fn run_static_nonlinear_load_control(
                         mpc_row_offsets,
                         mpc_dof_pool,
                         mpc_coeff_pool,
+                        len(prescribed_dofs) > 0,
                     )
                 if attempt_algorithm_tag == AnalysisAlgorithmTag.NewtonLineSearch:
                     var line_search_tol = _default_line_search_tol(attempt_line_search_eta)
@@ -1778,6 +1882,8 @@ fn run_static_nonlinear_load_control(
                             mpc_coeff_pool,
                             F_f,
                         )
+                        if use_penalty:
+                            penalty.subtract_force(u, F_f, free)
                         var s = -dot_float64_contiguous(u_f, F_f, free_count)
                         var r0 = abs(s / s0)
                         var r = r0
@@ -1799,6 +1905,7 @@ fn run_static_nonlinear_load_control(
                                     mpc_row_offsets,
                                     mpc_dof_pool,
                                     mpc_coeff_pool,
+                                    len(prescribed_dofs) > 0,
                                 )
                             _static_load_control_residual(
                                 typed_nodes,
@@ -1864,6 +1971,8 @@ fn run_static_nonlinear_load_control(
                                 mpc_coeff_pool,
                                 F_f,
                             )
+                            if use_penalty:
+                                penalty.subtract_force(u, F_f, free)
                             s = dot_float64_contiguous(u_f, F_f, free_count)
                             r = abs(s / s0)
                             eta_prev = eta
@@ -1881,9 +1990,10 @@ fn run_static_nonlinear_load_control(
                         krylov_history_v,
                         krylov_history_av,
                     )
+                completed_updates += 1
                 var disp_incr_norm = sqrt(sum_sq_float64_contiguous(u_f, free_count))
                 var energy_incr = abs(dot_float64_contiguous(u_f, F_f, free_count))
-                var converged_iter = max_diff <= attempt_tol
+                var converged_iter = not checks_residual and max_diff <= attempt_tol
                 if attempt_test_mode == 1:
                     converged_iter = disp_incr_norm <= attempt_tol
                 elif attempt_test_mode == 3:
@@ -1909,6 +2019,9 @@ fn run_static_nonlinear_load_control(
             var step_end_us = (t_step_end - t0) // 1000
             _append_event(events, events_need_comma, "C", frame_nonlinear_step, step_end_us)
         if not converged:
+            if adaptive_step and replay_failure_path != "":
+                var failure = Python.import_module("pathlib").Path(replay_failure_path)
+                failure.write_text(String(current_step_size) + " " + String(completed_updates))
             abort("static_nonlinear did not converge")
         if adaptive_step:
             if step_converged_iters < 1:
@@ -1982,7 +2095,8 @@ fn run_static_nonlinear_load_control(
                 commit_start_us,
             )
         _uniaxial_commit_active_states(uniaxial_states, elem_uniaxial_state_ids)
-        shell_cache.commit_layered_states()
+        shell_cache.commit()
+        force_beam_column3d_scratch.commit_corotational()
         fiber_section2d_commit_runtime_all(fiber_section_defs)
         fiber_section3d_commit_runtime_all(fiber_section3d_defs)
         if do_profile:
@@ -2009,11 +2123,28 @@ fn run_static_nonlinear_load_control(
             F_ext_reaction = F_step.copy()
         for r in range(len(recorders)):
             var rec = recorders[r]
+            if rec.delta_t > 0.0:
+                if load_control_time - next_recorder_time[r] < -rec.delta_t * 1.0e-5:
+                    continue
+                next_recorder_time[r] = load_control_time + rec.delta_t
             if (
                 rec.type_tag == RecorderTypeTag.NodeDisplacement
+                or rec.type_tag == RecorderTypeTag.NodeVelocity
+                or rec.type_tag == RecorderTypeTag.NodeAcceleration
                 or rec.type_tag == RecorderTypeTag.EnvelopeNodeDisplacement
                 or rec.type_tag == RecorderTypeTag.EnvelopeNodeAcceleration
             ):
+                var series_term = 0.0
+                if rec.time_series_tag >= 0:
+                    var recorder_ts = find_time_series_input(time_series, rec.time_series_tag)
+                    if recorder_ts < 0:
+                        abort("recorder time series not found")
+                    series_term = eval_time_series_input(
+                        time_series[recorder_ts],
+                        load_control_time,
+                        time_series_values,
+                        time_series_times,
+                    )
                 for nidx in range(rec.node_count):
                     var node_id = recorder_nodes_pool[rec.node_offset + nidx]
                     var i = id_to_index[node_id]
@@ -2022,12 +2153,18 @@ fn run_static_nonlinear_load_control(
                     for j in range(rec.dof_count):
                         var dof = recorder_dofs_pool[rec.dof_offset + j]
                         require_dof_in_range(dof, ndf, "recorder")
-                        var value = u[node_dof_index(i, dof, ndf)]
-                        if rec.type_tag == RecorderTypeTag.EnvelopeNodeAcceleration:
-                            value = 0.0
+                        var value = series_term
+                        if (
+                            rec.type_tag == RecorderTypeTag.NodeDisplacement
+                            or rec.type_tag == RecorderTypeTag.EnvelopeNodeDisplacement
+                        ):
+                            value += u[node_dof_index(i, dof, ndf)]
                         values[j] = value
                     var filename = rec.output + "_node" + String(node_id) + ".out"
-                    if rec.type_tag == RecorderTypeTag.NodeDisplacement:
+                    if (
+                        rec.type_tag != RecorderTypeTag.EnvelopeNodeDisplacement
+                        and rec.type_tag != RecorderTypeTag.EnvelopeNodeAcceleration
+                    ):
                         _append_output(
                             static_output_files,
                             static_output_buffers,
@@ -2043,6 +2180,61 @@ fn run_static_nonlinear_load_control(
                             envelope_max,
                             envelope_abs,
                         )
+            elif (
+                rec.type_tag == RecorderTypeTag.QuadStress
+                or rec.type_tag == RecorderTypeTag.QuadStrain
+                or rec.type_tag == RecorderTypeTag.QuadState
+            ):
+                for eidx in range(rec.element_count):
+                    var elem_id = recorder_elements_pool[rec.element_offset + eidx]
+                    if elem_id >= len(elem_id_to_index) or elem_id_to_index[elem_id] < 0:
+                        abort("recorder element not found")
+                    var e = elem_id_to_index[elem_id]
+                    var values = shell_cache.record_quad(
+                        e,
+                        rec.integration_point,
+                        rec.type_tag == RecorderTypeTag.QuadStress,
+                        rec.stress_components,
+                        elem_dof_offsets[e],
+                        elem_dof_pool,
+                        u,
+                        rec.type_tag == RecorderTypeTag.QuadState,
+                    )
+                    _append_output(
+                        static_output_files,
+                        static_output_buffers,
+                        rec.output + "_ele" + String(elem_id) + ".out",
+                        _format_values_line(values),
+                    )
+            elif (
+                rec.type_tag == RecorderTypeTag.ContactSecondaryForce
+                or rec.type_tag == RecorderTypeTag.ContactFrictionForce
+                or rec.type_tag == RecorderTypeTag.ContactScalarForce
+                or rec.type_tag == RecorderTypeTag.ContactPrimaryForce
+            ):
+                for eidx in range(rec.element_count):
+                    var elem_id = recorder_elements_pool[rec.element_offset + eidx]
+                    if elem_id >= len(elem_id_to_index) or elem_id_to_index[elem_id] < 0:
+                        abort("recorder element not found")
+                    var e = elem_id_to_index[elem_id]
+                    if typed_elements[e].type_tag != ElementTypeTag.BeamContact2D:
+                        abort("contact force recorder requires BeamContact2D")
+                    ref contact = shell_cache.contacts[shell_cache.contact_index[e]]
+                    var values: List[Float64]
+                    if rec.type_tag == RecorderTypeTag.ContactSecondaryForce:
+                        values = contact.secondary_force()
+                    elif rec.type_tag == RecorderTypeTag.ContactFrictionForce:
+                        values = contact.friction_force()
+                    elif rec.type_tag == RecorderTypeTag.ContactScalarForce:
+                        values = contact.contact_force()
+                    else:
+                        values = contact.primary_force()
+                    _append_output(
+                        static_output_files,
+                        static_output_buffers,
+                        rec.output + "_ele" + String(elem_id) + ".out",
+                        _format_values_line(values),
+                    )
             elif rec.type_tag == RecorderTypeTag.ElementForce:
                 for eidx in range(rec.element_count):
                     var elem_id = recorder_elements_pool[rec.element_offset + eidx]
@@ -2051,11 +2243,11 @@ fn run_static_nonlinear_load_control(
                     var elem_index = elem_id_to_index[elem_id]
                     var elem = typed_elements[elem_index]
                     var f_elem: List[Float64]
-                    if (
-                        elem.type_tag == ElementTypeTag.ForceBeamColumn2d
-                        and typed_sections_by_id[elem.section].type == "FiberSection2d"
+                    if elem.type_tag == ElementTypeTag.ForceBeamColumn2d and (
+                        typed_sections_by_id[elem.section].type == "FiberSection2d"
+                        or typed_sections_by_id[elem.section].hinge_radau.is_defined()
                     ):
-                        f_elem = _force_beam_column2d_force_global_from_basic_state(
+                        f_elem = _force_beam_column2d_end_forces_from_basic_state(
                             elem_index,
                             elem,
                             typed_nodes,
@@ -2096,47 +2288,85 @@ fn run_static_nonlinear_load_control(
                             force_basic_offsets,
                             force_basic_counts,
                             force_basic_q,
+                            shell_cache.continuum,
                         )
                     var line = _format_values_line(f_elem)
                     var filename = rec.output + "_ele" + String(elem_id) + ".out"
                     _append_output(static_output_files, static_output_buffers, filename, line)
-            elif rec.type_tag == RecorderTypeTag.ElementLocalForce:
+            elif (
+                rec.type_tag == RecorderTypeTag.ElementLocalForce
+                or rec.type_tag == RecorderTypeTag.EnvelopeElementLocalForce
+            ):
                 for eidx in range(rec.element_count):
                     var elem_id = recorder_elements_pool[rec.element_offset + eidx]
                     if elem_id >= len(elem_id_to_index) or elem_id_to_index[elem_id] < 0:
                         abort("recorder element not found")
                     var elem_index = elem_id_to_index[elem_id]
                     var elem = typed_elements[elem_index]
-                    var values = _element_local_force_for_recorder(
-                        elem_index,
-                        elem,
-                        ndf,
-                        u,
-                        typed_nodes,
-                        typed_sections_by_id,
-                        fiber_section_defs,
-                        fiber_section_cells,
-                        fiber_section_index_by_id,
-                        fiber_section3d_defs,
-                        fiber_section3d_cells,
-                        fiber_section3d_index_by_id,
-                        uniaxial_defs,
-                        uniaxial_state_defs,
-                        uniaxial_states,
-                        elem_uniaxial_offsets,
-                        elem_uniaxial_counts,
-                        elem_uniaxial_state_ids,
-                        force_basic_offsets,
-                        force_basic_counts,
-                        force_basic_q,
-                    )
+                    var values: List[Float64]
+                    if (
+                        elem.type_tag == ElementTypeTag.ForceBeamColumn2d
+                        and typed_sections_by_id[elem.section].type == "FiberSection2d"
+                    ):
+                        values = _force_beam_column2d_end_forces_from_basic_state(
+                            elem_index,
+                            elem,
+                            typed_nodes,
+                            ndf,
+                            u,
+                            active_element_load_state.element_loads,
+                            active_element_load_state.elem_load_offsets,
+                            active_element_load_state.elem_load_pool,
+                            1.0,
+                            force_basic_offsets,
+                            force_basic_counts,
+                            force_basic_q,
+                            local_coordinates=True,
+                        )
+                    else:
+                        values = _element_local_force_for_recorder(
+                            elem_index,
+                            elem,
+                            ndf,
+                            u,
+                            active_element_load_state.element_loads,
+                            active_element_load_state.elem_load_offsets,
+                            active_element_load_state.elem_load_pool,
+                            typed_nodes,
+                            typed_sections_by_id,
+                            fiber_section_defs,
+                            fiber_section_cells,
+                            fiber_section_index_by_id,
+                            fiber_section3d_defs,
+                            fiber_section3d_cells,
+                            fiber_section3d_index_by_id,
+                            uniaxial_defs,
+                            uniaxial_state_defs,
+                            uniaxial_states,
+                            elem_uniaxial_offsets,
+                            elem_uniaxial_counts,
+                            elem_uniaxial_state_ids,
+                            force_basic_offsets,
+                            force_basic_counts,
+                            force_basic_q,
+                        )
                     var filename = rec.output + "_ele" + String(elem_id) + ".out"
-                    _append_output(
-                        static_output_files,
-                        static_output_buffers,
-                        filename,
-                        _format_values_line(values),
-                    )
+                    if rec.type_tag == RecorderTypeTag.ElementLocalForce:
+                        _append_output(
+                            static_output_files,
+                            static_output_buffers,
+                            filename,
+                            _format_values_line(values),
+                        )
+                    else:
+                        _update_envelope(
+                            filename,
+                            values,
+                            envelope_files,
+                            envelope_min,
+                            envelope_max,
+                            envelope_abs,
+                        )
             elif rec.type_tag == RecorderTypeTag.ElementBasicForce:
                 for eidx in range(rec.element_count):
                     var elem_id = recorder_elements_pool[rec.element_offset + eidx]
@@ -2156,6 +2386,7 @@ fn run_static_nonlinear_load_control(
                         elem_uniaxial_offsets,
                         elem_uniaxial_counts,
                         elem_uniaxial_state_ids,
+                        rec.material_stress,
                     )
                     var filename = rec.output + "_ele" + String(elem_id) + ".out"
                     _append_output(
@@ -2222,11 +2453,11 @@ fn run_static_nonlinear_load_control(
                     var elem_index = elem_id_to_index[elem_id]
                     var elem = typed_elements[elem_index]
                     var f_elem: List[Float64]
-                    if (
-                        elem.type_tag == ElementTypeTag.ForceBeamColumn2d
-                        and typed_sections_by_id[elem.section].type == "FiberSection2d"
+                    if elem.type_tag == ElementTypeTag.ForceBeamColumn2d and (
+                        typed_sections_by_id[elem.section].type == "FiberSection2d"
+                        or typed_sections_by_id[elem.section].hinge_radau.is_defined()
                     ):
-                        f_elem = _force_beam_column2d_force_global_from_basic_state(
+                        f_elem = _force_beam_column2d_end_forces_from_basic_state(
                             elem_index,
                             elem,
                             typed_nodes,
@@ -2267,50 +2498,12 @@ fn run_static_nonlinear_load_control(
                             force_basic_offsets,
                             force_basic_counts,
                             force_basic_q,
+                            shell_cache.continuum,
                         )
                     var filename = rec.output + "_ele" + String(elem_id) + ".out"
                     _update_envelope(
                         filename,
                         f_elem,
-                        envelope_files,
-                        envelope_min,
-                        envelope_max,
-                        envelope_abs,
-                    )
-            elif rec.type_tag == RecorderTypeTag.EnvelopeElementLocalForce:
-                for eidx in range(rec.element_count):
-                    var elem_id = recorder_elements_pool[rec.element_offset + eidx]
-                    if elem_id >= len(elem_id_to_index) or elem_id_to_index[elem_id] < 0:
-                        abort("recorder element not found")
-                    var elem_index = elem_id_to_index[elem_id]
-                    var elem = typed_elements[elem_index]
-                    var values = _element_local_force_for_recorder(
-                        elem_index,
-                        elem,
-                        ndf,
-                        u,
-                        typed_nodes,
-                        typed_sections_by_id,
-                        fiber_section_defs,
-                        fiber_section_cells,
-                        fiber_section_index_by_id,
-                        fiber_section3d_defs,
-                        fiber_section3d_cells,
-                        fiber_section3d_index_by_id,
-                        uniaxial_defs,
-                        uniaxial_state_defs,
-                        uniaxial_states,
-                        elem_uniaxial_offsets,
-                        elem_uniaxial_counts,
-                        elem_uniaxial_state_ids,
-                        force_basic_offsets,
-                        force_basic_counts,
-                        force_basic_q,
-                    )
-                    var filename = rec.output + "_ele" + String(elem_id) + ".out"
-                    _update_envelope(
-                        filename,
-                        values,
                         envelope_files,
                         envelope_min,
                         envelope_max,
@@ -2330,9 +2523,9 @@ fn run_static_nonlinear_load_control(
                     for sidx in range(rec.section_count):
                         var sec_no = recorder_sections_pool[rec.section_offset + sidx]
                         var values: List[Float64]
-                        if (
-                            elem.type_tag == ElementTypeTag.ForceBeamColumn2d
-                            and typed_sections_by_id[elem.section].type == "FiberSection2d"
+                        if elem.type_tag == ElementTypeTag.ForceBeamColumn2d and (
+                            typed_sections_by_id[elem.section].type == "FiberSection2d"
+                            or typed_sections_by_id[elem.section].hinge_radau.is_defined()
                         ):
                             values = _force_beam_column2d_section_response_from_basic_state(
                                 elem_index,
@@ -2387,7 +2580,7 @@ fn run_static_nonlinear_load_control(
                             filename,
                             _format_values_line(values),
                         )
-            else:
+            elif rec.type_tag != RecorderTypeTag.ModalEigen:
                 abort("unsupported recorder type")
     clear(backend)
     _flush_envelope_outputs(
@@ -2408,6 +2601,7 @@ fn run_static_nonlinear_load_control(
         steps,
         progress_last_ns,
     )
+    return (load_control_time, current_step_size, last_step_iters)
 
 
 fn run_static_nonlinear_displacement_control(
@@ -2467,7 +2661,7 @@ fn run_static_nonlinear_displacement_control(
     fiber_section3d_cells: List[FiberCell],
     fiber_section3d_index_by_id: List[Int],
     layered_shell_section_defs: List[LayeredShellSectionDef],
-    mut shell_cache: ShellAssemblyCache,
+    mut shell_cache: SurfaceAssemblyCache,
     total_dofs: Int,
     F_const: List[Float64],
     F_pattern: List[Float64],
@@ -2503,6 +2697,7 @@ fn run_static_nonlinear_displacement_control(
     mpc_row_offsets: List[Int],
     mpc_dof_pool: List[Int],
     mpc_coeff_pool: List[Float64],
+    mut force_beam_column3d_scratch: Frame3dAssemblyScratch,
     mut runtime_metrics: RuntimeProfileMetrics,
 ) raises -> Float64:
     var time = Python.import_module("time")
@@ -2520,7 +2715,6 @@ fn run_static_nonlinear_displacement_control(
     var asm_dof_map12: List[Int] = []
     var asm_u_elem6: List[Float64] = []
     var force_beam_column2d_scratch = ForceBeamColumn2dScratch()
-    var force_beam_column3d_scratch = Frame3dAssemblyScratch()
     var has_force_beam_column2d = False
     var has_fiber_beam_column2d = False
     for i in range(len(typed_elements)):
@@ -2642,31 +2836,62 @@ fn run_static_nonlinear_displacement_control(
             backend, elem_dof_offsets, elem_dof_pool, free_index_native
         )
 
+    var hs_active = analysis.integrator_tag == IntegratorTypeTag.HSConstraint
+    var has_sfi_mvlem = False
+    for elem_type in elem_type_tags:
+        if elem_type == ElementTypeTag.SFIMVLEM:
+            has_sfi_mvlem = True
+            break
+    var hs = analysis.hs_constraint
+    var write_hs_window_times = (
+        hs_active
+        and progress_stage_number == progress_stage_count
+        and getenv("STRUT_TCL_REPLAY") == "hs-window"
+    )
+    if hs_active and (
+        hs.length <= 0.0
+        or hs.reference_displacement == 0.0
+        or (hs.force_weight == 0.0 and hs.displacement_weight == 0.0)
+    ):
+        abort("HSConstraint requires a positive arc length and valid weights")
+    if hs_active and len(pattern_element_loads) != 0:
+        abort("HSConstraint currently requires a nodal reference load")
     var load_scale_derivative = 1.0
     if ts_index >= 0:
         var ts = time_series[ts_index]
         if ts.type_tag != TimeSeriesTypeTag.Linear:
             abort("DisplacementControl only supports Linear time_series")
         load_scale_derivative = ts.factor
-    if analysis.integrator_node < 0 or analysis.integrator_dof < 0:
-        abort("DisplacementControl requires node and dof")
-    var control_node = analysis.integrator_node
-    var control_dof = analysis.integrator_dof
-    require_dof_in_range(control_dof, ndf, "DisplacementControl")
-    if control_node >= len(id_to_index) or id_to_index[control_node] < 0:
-        abort("DisplacementControl node not found")
-    var control_idx = node_dof_index(id_to_index[control_node], control_dof, ndf)
-    if constrained[control_idx]:
-        abort("DisplacementControl dof is constrained")
-    if has_transformation_mpc and mpc_slave_dof[control_idx]:
-        abort("DisplacementControl dof must be retained for transformation mp_constraints")
+    var control_idx = 0
     var control_free = -1
-    for i in range(free_count):
-        if free[i] == control_idx:
-            control_free = i
-            break
-    if control_free < 0:
-        abort("DisplacementControl dof is not free")
+    var control_row: List[Float64] = []
+    if not hs_active:
+        if analysis.integrator_node < 0 or analysis.integrator_dof < 0:
+            abort("DisplacementControl requires node and dof")
+        var control_node = analysis.integrator_node
+        var control_dof = analysis.integrator_dof
+        require_dof_in_range(control_dof, ndf, "DisplacementControl")
+        if control_node >= len(id_to_index) or id_to_index[control_node] < 0:
+            abort("DisplacementControl node not found")
+        control_idx = node_dof_index(id_to_index[control_node], control_dof, ndf)
+        control_free = free_index_native[control_idx]
+        if ndm == 3 and has_transformation_mpc and mpc_slave_dof[control_idx]:
+            # The physical control displacement is a row of the MPC transformation.
+            var has_free_term = False
+            control_row.resize(free_count, 0.0)
+            for slot in range(mpc_row_offsets[control_idx], mpc_row_offsets[control_idx + 1]):
+                var reduced_index = free_index_native[mpc_dof_pool[slot]]
+                if reduced_index >= 0 and mpc_coeff_pool[slot] != 0.0:
+                    control_row[reduced_index] = mpc_coeff_pool[slot]
+                    has_free_term = True
+            if not has_free_term:
+                abort("DisplacementControl dof is constrained")
+        elif constrained[control_idx]:
+            abort("DisplacementControl dof is constrained")
+        elif has_transformation_mpc and mpc_slave_dof[control_idx]:
+            abort("DisplacementControl dof must be retained for transformation mp_constraints")
+        elif control_free < 0:
+            abort("DisplacementControl dof is not free")
 
     var cutback = analysis.integrator_cutback
     var max_cutbacks = analysis.integrator_max_cutbacks
@@ -2680,7 +2905,7 @@ fn run_static_nonlinear_displacement_control(
     if du_target_iters < 1:
         du_target_iters = 1
     var du_last_iters = du_target_iters
-    if analysis.step_retry_enabled:
+    if analysis.step_retry_enabled or hs_active:
         max_cutbacks = 0
     var bulk_retry_attempt_count = retry_attempt_count
     if analysis.step_retry_continue_after_failure and retry_attempt_count > 1:
@@ -2696,7 +2921,7 @@ fn run_static_nonlinear_displacement_control(
     if analysis.has_integrator_max_du and analysis.integrator_max_du <= 0.0:
         abort("DisplacementControl max_du must be > 0")
 
-    var has_explicit_targets = analysis.integrator_targets_count > 0
+    var has_explicit_targets = not hs_active and analysis.integrator_targets_count > 0
     var target_disps: List[Float64] = []
     var current_du_step = 0.0
     var du_min_mag = 0.0
@@ -2709,7 +2934,7 @@ fn run_static_nonlinear_displacement_control(
         if len(target_disps) == 0:
             abort("DisplacementControl targets must not be empty")
         steps = len(target_disps)
-    else:
+    elif not hs_active:
         if not analysis.has_integrator_du:
             abort("DisplacementControl requires du or targets")
         var du_step = analysis.integrator_du
@@ -2725,12 +2950,15 @@ fn run_static_nonlinear_displacement_control(
         if du_max_mag < du_min_mag:
             du_max_mag = du_min_mag
 
-    var load_factor = 0.0
+    var load_factor = analysis.start_time
+    var hs_previous_increment = 0.0
     var has_pattern_reference_load = False
     for i in range(free_count):
         if abs(F_pattern_free[i]) > 0.0:
             has_pattern_reference_load = True
             break
+    if hs_active and not has_pattern_reference_load:
+        abort("HSConstraint reference load is zero")
     if (
         not has_pattern_reference_load
         and len(pattern_element_loads) == 0
@@ -2742,12 +2970,19 @@ fn run_static_nonlinear_displacement_control(
     var aug_size = free_count + 1
     var rhs_aug: List[Float64] = []
     rhs_aug.resize(aug_size, 0.0)
+    var updated_rhs_aug: List[Float64] = []
+    updated_rhs_aug.resize(aug_size, 0.0)
     var sol_aug: List[Float64] = []
     sol_aug.resize(aug_size, 0.0)
     var aug_load_column_free: List[Float64] = []
     aug_load_column_free.resize(free_count, 0.0)
     for i in range(free_count):
         aug_load_column_free[i] = -load_scale_derivative * F_pattern_free[i]
+    var hs_reference: List[Float64] = []
+    var hs_prior: List[Float64] = []
+    if hs_active:
+        hs_reference.resize(free_count, 0.0)
+        hs_prior.resize(free_count, 0.0)
     var aug_rhs_solve: List[Float64] = []
     aug_rhs_solve.resize(free_count, 0.0)
     var aug_load_solve: List[Float64] = []
@@ -2857,6 +3092,8 @@ fn run_static_nonlinear_displacement_control(
             frame_assemble_uniaxial,
             frame_assemble_fiber,
             runtime_metrics,
+            initial_wall_tangent=True,
+            initial_frame_tangent=True,
         )
         copy_values(K_init_values, sparse_assembler.values)
         if do_profile:
@@ -2871,6 +3108,7 @@ fn run_static_nonlinear_displacement_control(
             )
         _uniaxial_revert_trial_active_states(uniaxial_states, elem_uniaxial_state_ids)
         fiber_section2d_revert_trial_runtime_all(fiber_section_defs)
+        force_beam_column3d_scratch.revert_corotational()
         fiber_section3d_revert_trial_runtime_all(fiber_section3d_defs)
         if do_profile:
             var t_revert_end = Int(time.perf_counter_ns())
@@ -2883,7 +3121,22 @@ fn run_static_nonlinear_displacement_control(
                 revert_end_us,
             )
 
-    for step in range(steps):
+    var bulk_steps = steps
+    var continuation_steps = steps
+    if analysis.step_retry_continue_after_failure and not has_explicit_targets:
+        continuation_steps = max(steps, analysis.step_retry_continue_max_steps)
+    for step in range(continuation_steps):
+        if step >= bulk_steps and not continuation_active:
+            break
+        if continuation_active and analysis.step_retry_continue_target_disp > 0.0:
+            if abs(u[control_idx]) >= analysis.step_retry_continue_target_disp:
+                break
+        if analysis.displacement_limit:
+            var limit = analysis.displacement_limit.value()
+            if (current_du_step > 0.0 and u[control_idx] >= limit) or (
+                current_du_step < 0.0 and u[control_idx] <= limit
+            ):
+                break
         _write_run_progress_throttled(
             progress_path,
             "running_step",
@@ -2909,7 +3162,9 @@ fn run_static_nonlinear_displacement_control(
             )
 
         var target: Float64
-        if has_explicit_targets:
+        if hs_active:
+            target = 0.0
+        elif has_explicit_targets:
             target = target_disps[step]
         else:
             if adaptive_du:
@@ -2928,8 +3183,9 @@ fn run_static_nonlinear_displacement_control(
             target = u[control_idx] + current_du_step
         var committed_F_int: List[Float64] = []
         var step_converged_iters = 0
+        var step_accepted_attempt = 0
         while True:
-            var remaining = target - u[control_idx]
+            var remaining = hs.length if hs_active else target - u[control_idx]
             # `min_du` is the cutback floor, not the target-reached tolerance.
             # Using it here skips exact-size displacement steps whenever
             # `remaining == min_du`, which is common for fixed-increment pushover.
@@ -2943,7 +3199,10 @@ fn run_static_nonlinear_displacement_control(
             var attempt_du = remaining
             var attempt_ok = False
 
-            for _ in range(max_cutbacks + 1):
+            for cutback_idx in range(max_cutbacks + 1):
+                var attempt_target = target
+                if cutback_idx > 0:
+                    attempt_target = u_base[control_idx] + attempt_du
                 var converged = False
                 var converged_iters = 0
                 var attempt_algorithm_tag = primary_algorithm_tag
@@ -2962,6 +3221,8 @@ fn run_static_nonlinear_displacement_control(
                         u[i] = u_base[i]
                     force_basic_q = force_basic_q_base.copy()
                     uniaxial_states = uniaxial_states_base.copy()
+                    shell_cache.shell.revert_trial()
+                    force_beam_column3d_scratch.revert_corotational()
                     fiber_section2d_revert_trial_runtime_all(fiber_section_defs)
                     fiber_section3d_revert_trial_runtime_all(fiber_section3d_defs)
                     load_factor = lambda_base
@@ -2990,7 +3251,17 @@ fn run_static_nonlinear_displacement_control(
                     var krylov_coeffs: List[Float64] = []
                     var krylov_factor_work: List[Float64] = []
                     var krylov_rhs_work: List[Float64] = []
-                    for iter_idx in range(attempt_max_iters):
+                    # OpenSees DisplacementControl takes a predictor with the
+                    # current tangent in newStep(), before the solution algorithm
+                    # applies its own tangent policy and convergence test.
+                    var checks_residual = attempt_test_mode == 2
+                    for iter_idx in range(attempt_max_iters + 1 + Int(checks_residual)):
+                        var is_predictor = iter_idx == 0
+                        var iteration_algorithm_mode = attempt_algorithm_mode
+                        var iteration_algorithm_tag = attempt_algorithm_tag
+                        if is_predictor:
+                            iteration_algorithm_mode = NonlinearAlgorithmMode.Newton
+                            iteration_algorithm_tag = AnalysisAlgorithmTag.Newton
                         if runtime_metrics.enabled:
                             runtime_metrics.global_nonlinear_iterations += 1
                         if do_profile:
@@ -3008,27 +3279,27 @@ fn run_static_nonlinear_displacement_control(
                         if krylov_max_dim > free_count + 1:
                             krylov_max_dim = free_count + 1
                         var refresh_tangent: Bool
-                        if attempt_algorithm_mode == NonlinearAlgorithmMode.Newton:
-                            if attempt_algorithm_tag == AnalysisAlgorithmTag.Broyden:
+                        if iteration_algorithm_mode == NonlinearAlgorithmMode.Newton:
+                            if iteration_algorithm_tag == AnalysisAlgorithmTag.Broyden:
                                 refresh_tangent = (
                                     not tangent_initialized
                                     or broyden_refresh_interval <= 1
                                     or len(broyden_history_s) >= broyden_refresh_interval
                                 )
-                            elif attempt_algorithm_tag == AnalysisAlgorithmTag.KrylovNewton:
+                            elif iteration_algorithm_tag == AnalysisAlgorithmTag.KrylovNewton:
                                 refresh_tangent = (
                                     not tangent_initialized
                                     or len(krylov_history_v) > krylov_max_dim
                                 )
                             else:
                                 refresh_tangent = True
-                        elif attempt_algorithm_mode == NonlinearAlgorithmMode.ModifiedNewton:
+                        elif iteration_algorithm_mode == NonlinearAlgorithmMode.ModifiedNewton:
                             refresh_tangent = not tangent_initialized
                         else:
                             refresh_tangent = not tangent_initialized
                         if (
                             refresh_tangent
-                            and attempt_algorithm_tag == AnalysisAlgorithmTag.KrylovNewton
+                            and iteration_algorithm_tag == AnalysisAlgorithmTag.KrylovNewton
                         ):
                             krylov_history_v = []
                             krylov_history_av = []
@@ -3036,7 +3307,7 @@ fn run_static_nonlinear_displacement_control(
                         var use_native_tangent_assembly = (
                             use_native_direct_solve
                             and refresh_tangent
-                            and attempt_algorithm_mode
+                            and iteration_algorithm_mode
                             != NonlinearAlgorithmMode.ModifiedNewtonInitial
                         )
                         var use_native_internal_force_only = (
@@ -3313,7 +3584,7 @@ fn run_static_nonlinear_displacement_control(
                                 kff_start_us,
                             )
                         var load_ext_scale = load_scale
-                        if attempt_algorithm_mode == NonlinearAlgorithmMode.Newton:
+                        if iteration_algorithm_mode == NonlinearAlgorithmMode.Newton:
                             if refresh_tangent:
                                 for i in range(free_count):
                                     var row_i = free[i]
@@ -3333,7 +3604,7 @@ fn run_static_nonlinear_displacement_control(
                                         + load_ext_scale * F_pattern_free[i]
                                         - F_int[free[i]]
                                     )
-                        elif attempt_algorithm_mode == NonlinearAlgorithmMode.ModifiedNewton:
+                        elif iteration_algorithm_mode == NonlinearAlgorithmMode.ModifiedNewton:
                             if not tangent_initialized:
                                 for i in range(free_count):
                                     var row_i = free[i]
@@ -3376,33 +3647,27 @@ fn run_static_nonlinear_displacement_control(
                                 kff_end_us,
                             )
 
-                        # For DisplacementControl, the pre-solve residual is evaluated at the
-                        # current equilibrium state. Treating that as convergence before any
-                        # augmented solve would leave the control displacement unchanged and
-                        # spin forever on the same target.
-                        if (
-                            attempt_test_mode == 2
-                            and abs(u[control_idx] - u_base[control_idx]) > 0.0
-                        ):
+                        # The first convergence test follows a correction,
+                        # after the integrator has applied its predictor.
+                        if checks_residual and iter_idx > 1:
                             var residual_norm = sqrt(sum_sq_float64_contiguous(R_f, free_count))
-                            if residual_norm <= attempt_tol:
+                            if residual_norm <= attempt_tol or iter_idx > attempt_max_iters:
                                 if do_profile:
                                     var t_iter_end = Int(time.perf_counter_ns())
-                                    var iter_end_us = (t_iter_end - t0) // 1000
                                     _append_event(
                                         events,
                                         events_need_comma,
                                         "C",
                                         frame_nonlinear_iter,
-                                        iter_end_us,
+                                        (t_iter_end - t0) // 1000,
                                     )
-                                converged_iters = iter_idx + 1
-                                converged = True
+                                converged_iters = iter_idx - 1
+                                converged = residual_norm <= attempt_tol
                                 break
 
                         for i in range(free_count):
                             rhs_aug[i] = R_f[i]
-                        rhs_aug[free_count] = attempt_du - (u[control_idx] - u_base[control_idx])
+                        rhs_aug[free_count] = 0.0 if hs_active else attempt_target - u[control_idx]
 
                         if do_profile:
                             var t_solve_nl_start = Int(time.perf_counter_ns())
@@ -3415,7 +3680,7 @@ fn run_static_nonlinear_displacement_control(
                                 solve_nl_start_us,
                             )
                         var solved: Bool
-                        if attempt_algorithm_mode == NonlinearAlgorithmMode.ModifiedNewtonInitial:
+                        if iteration_algorithm_mode == NonlinearAlgorithmMode.ModifiedNewtonInitial:
                             _ = refactor_from_pattern_if_needed(
                                 backend,
                                 sparse_pattern,
@@ -3426,9 +3691,9 @@ fn run_static_nonlinear_displacement_control(
                             )
                         else:
                             var direct_newton_solve = (
-                                attempt_algorithm_mode == NonlinearAlgorithmMode.Newton
-                                and attempt_algorithm_tag != AnalysisAlgorithmTag.Broyden
-                                and attempt_algorithm_tag != AnalysisAlgorithmTag.KrylovNewton
+                                iteration_algorithm_mode == NonlinearAlgorithmMode.Newton
+                                and iteration_algorithm_tag != AnalysisAlgorithmTag.Broyden
+                                and iteration_algorithm_tag != AnalysisAlgorithmTag.KrylovNewton
                             )
                             var force_refactor = direct_newton_solve or not tangent_factored
                             if use_native_direct_solve:
@@ -3450,16 +3715,61 @@ fn run_static_nonlinear_displacement_control(
                         tangent_factored = True
                         # Bordered solve of the augmented DisplacementControl
                         # system with the factorized reduced tangent.
-                        solved = _solve_displacement_control_augmented_from_factorized_backend(
-                            backend,
-                            R_f,
-                            aug_load_column_free,
-                            control_free,
-                            rhs_aug[free_count],
-                            sol_aug,
-                            aug_rhs_solve,
-                            aug_load_solve,
-                        )
+                        if hs_active:
+                            if (
+                                iteration_algorithm_tag == AnalysisAlgorithmTag.Broyden
+                                or iteration_algorithm_tag == AnalysisAlgorithmTag.KrylovNewton
+                                or iteration_algorithm_tag == AnalysisAlgorithmTag.NewtonLineSearch
+                            ):
+                                abort("HSConstraint supports Newton and ModifiedNewton algorithms")
+                            if step == 0 and attempt == 0 and is_predictor:
+                                for i in range(free_count):
+                                    hs_reference[i] = R_f[i] - aug_load_column_free[i]
+                            solve(backend, hs_reference, aug_load_solve)
+                            var lambda_step = load_factor - lambda_base
+                            var delta_lambda: Optional[Float64]
+                            if is_predictor:
+                                delta_lambda = hs.predict(
+                                    aug_load_solve, hs_reference, hs_previous_increment
+                                )
+                                for i in range(free_count):
+                                    aug_rhs_solve[i] = 0.0
+                            else:
+                                for i in range(free_count):
+                                    hs_prior[i] = u[free[i]] - u_base[free[i]]
+                                solve(backend, R_f, aug_rhs_solve)
+                                delta_lambda = hs.correct(
+                                    aug_load_solve,
+                                    aug_rhs_solve,
+                                    hs_prior,
+                                    hs_reference,
+                                    lambda_step,
+                                )
+                            solved = Bool(delta_lambda)
+                            if solved:
+                                var dl = delta_lambda.value()
+                                sol_aug[free_count] = dl
+                                for i in range(free_count):
+                                    sol_aug[i] = aug_rhs_solve[i] + dl * aug_load_solve[i]
+                        else:
+                            if is_predictor and has_sfi_mvlem:
+                                # DisplacementControl::newStep advances in
+                                # the reference-load direction. The first
+                                # corrector resolves the residual that can
+                                # arise when an FSAM panel cracks at commit.
+                                for i in range(free_count):
+                                    R_f[i] = 0.0
+                            solved = _solve_displacement_control_augmented_from_factorized_backend(
+                                backend,
+                                R_f,
+                                aug_load_column_free,
+                                control_free,
+                                control_row,
+                                rhs_aug[free_count],
+                                sol_aug,
+                                aug_rhs_solve,
+                                aug_load_solve,
+                            )
                         if do_profile:
                             var t_solve_nl_end = Int(time.perf_counter_ns())
                             var solve_nl_end_us = (t_solve_nl_end - t0) // 1000
@@ -3473,7 +3783,7 @@ fn run_static_nonlinear_displacement_control(
                         if not solved:
                             break
                         var krylov_base_sol_aug: List[Float64] = []
-                        if attempt_algorithm_tag == AnalysisAlgorithmTag.KrylovNewton:
+                        if iteration_algorithm_tag == AnalysisAlgorithmTag.KrylovNewton:
                             krylov_base_sol_aug = copy_krylov_vector(sol_aug, free_count + 1)
                             _ = krylov_apply_acceleration(
                                 sol_aug,
@@ -3486,7 +3796,7 @@ fn run_static_nonlinear_displacement_control(
                                 krylov_factor_work,
                                 krylov_rhs_work,
                             )
-                        if attempt_algorithm_tag == AnalysisAlgorithmTag.Broyden:
+                        if iteration_algorithm_tag == AnalysisAlgorithmTag.Broyden:
                             if refresh_tangent:
                                 broyden_history_s = []
                                 broyden_history_z = []
@@ -3495,19 +3805,20 @@ fn run_static_nonlinear_displacement_control(
                             elif has_broyden_prev_residual and len(broyden_history_s) > len(
                                 broyden_history_z
                             ):
-                                var delta_residual_aug: List[Float64] = []
-                                delta_residual_aug.resize(free_count + 1, 0.0)
-                                for i in range(free_count + 1):
-                                    delta_residual_aug[i] = rhs_aug[i] - broyden_prev_residual[i]
+                                var delta_residual_free: List[Float64] = []
+                                delta_residual_free.resize(free_count, 0.0)
+                                for i in range(free_count):
+                                    delta_residual_free[i] = rhs_aug[i] - broyden_prev_residual[i]
                                 var z_aug: List[Float64] = []
                                 z_aug.resize(free_count + 1, 0.0)
                                 var z_ok = (
                                     _solve_displacement_control_augmented_from_factorized_backend(
                                         backend,
-                                        delta_residual_aug,
+                                        delta_residual_free,
                                         aug_load_column_free,
                                         control_free,
-                                        delta_residual_aug[free_count],
+                                        control_row,
+                                        rhs_aug[free_count] - broyden_prev_residual[free_count],
                                         z_aug,
                                         aug_rhs_solve,
                                         aug_load_solve,
@@ -3523,6 +3834,10 @@ fn run_static_nonlinear_displacement_control(
                                     )
                                     broyden_history_z.append(z_aug^)
 
+                        if not hs_active and len(control_row) == 0:
+                            # A slaved control DOF is met through control_row
+                            # in the augmented solve instead.
+                            sol_aug[control_free] = rhs_aug[free_count]
                         var max_diff = 0.0
                         var max_u = 0.0
                         var update_eta = 1.0
@@ -3537,6 +3852,8 @@ fn run_static_nonlinear_displacement_control(
                             var abs_val = abs(value)
                             if abs_val > max_u:
                                 max_u = abs_val
+                        if not hs_active:
+                            u[control_idx] = attempt_target
                         load_factor += sol_aug[free_count] * update_eta
                         if has_transformation_mpc:
                             _enforce_mpc_values(
@@ -3547,77 +3864,86 @@ fn run_static_nonlinear_displacement_control(
                                 mpc_dof_pool,
                                 mpc_coeff_pool,
                             )
-                        if attempt_algorithm_tag == AnalysisAlgorithmTag.NewtonLineSearch:
+                        var line_search = (
+                            iteration_algorithm_tag == AnalysisAlgorithmTag.NewtonLineSearch
+                        )
+                        var check_energy = attempt_test_mode == 3 and not is_predictor
+                        if line_search or (check_energy and adaptive_du):
+                            _static_displacement_control_residual(
+                                typed_nodes,
+                                typed_elements,
+                                node_x,
+                                node_y,
+                                node_z,
+                                elem_dof_offsets,
+                                elem_dof_pool,
+                                elem_node_offsets,
+                                elem_node_pool,
+                                elem_primary_material_ids,
+                                elem_type_tags,
+                                elem_geom_tags,
+                                elem_section_ids,
+                                elem_integration_tags,
+                                elem_num_int_pts,
+                                elem_area,
+                                elem_thickness,
+                                frame2d_elem_indices,
+                                frame3d_elem_indices,
+                                truss_elem_indices,
+                                zero_length_elem_indices,
+                                two_node_link_elem_indices,
+                                zero_length_section_elem_indices,
+                                quad_elem_indices,
+                                shell_elem_indices,
+                                const_element_loads,
+                                pattern_element_loads,
+                                elem_id_to_index,
+                                typed_sections_by_id,
+                                typed_materials_by_id,
+                                id_to_index,
+                                node_count,
+                                ndf,
+                                ndm,
+                                u,
+                                uniaxial_defs,
+                                uniaxial_state_defs,
+                                uniaxial_states,
+                                elem_uniaxial_offsets,
+                                elem_uniaxial_counts,
+                                elem_uniaxial_state_ids,
+                                force_basic_offsets,
+                                force_basic_counts,
+                                force_basic_q,
+                                fiber_section_defs,
+                                fiber_section_cells,
+                                fiber_section_index_by_id,
+                                fiber_section3d_defs,
+                                fiber_section3d_cells,
+                                fiber_section3d_index_by_id,
+                                layered_shell_section_defs,
+                                shell_cache,
+                                force_beam_column2d_scratch,
+                                force_beam_column3d_scratch,
+                                free,
+                                free_count,
+                                has_transformation_mpc,
+                                mpc_row_offsets,
+                                mpc_dof_pool,
+                                mpc_coeff_pool,
+                                F_const_free,
+                                F_pattern_free,
+                                load_scale_derivative * load_factor,
+                                attempt_target,
+                                control_idx,
+                                updated_rhs_aug,
+                            )
+                        if line_search:
                             var line_search_tol = _default_line_search_tol(attempt_line_search_eta)
                             var s0 = -dot_float64_contiguous(sol_aug, rhs_aug, free_count + 1)
                             if abs(s0) > 0.0:
-                                _static_displacement_control_residual(
-                                    typed_nodes,
-                                    typed_elements,
-                                    node_x,
-                                    node_y,
-                                    node_z,
-                                    elem_dof_offsets,
-                                    elem_dof_pool,
-                                    elem_node_offsets,
-                                    elem_node_pool,
-                                    elem_primary_material_ids,
-                                    elem_type_tags,
-                                    elem_geom_tags,
-                                    elem_section_ids,
-                                    elem_integration_tags,
-                                    elem_num_int_pts,
-                                    elem_area,
-                                    elem_thickness,
-                                    frame2d_elem_indices,
-                                    frame3d_elem_indices,
-                                    truss_elem_indices,
-                                    zero_length_elem_indices,
-                                    two_node_link_elem_indices,
-                                    zero_length_section_elem_indices,
-                                    quad_elem_indices,
-                                    shell_elem_indices,
-                                    typed_sections_by_id,
-                                    typed_materials_by_id,
-                                    id_to_index,
-                                    node_count,
-                                    ndf,
-                                    ndm,
-                                    u,
-                                    uniaxial_defs,
-                                    uniaxial_state_defs,
-                                    uniaxial_states,
-                                    elem_uniaxial_offsets,
-                                    elem_uniaxial_counts,
-                                    elem_uniaxial_state_ids,
-                                    force_basic_offsets,
-                                    force_basic_counts,
-                                    force_basic_q,
-                                    fiber_section_defs,
-                                    fiber_section_cells,
-                                    fiber_section_index_by_id,
-                                    fiber_section3d_defs,
-                                    fiber_section3d_cells,
-                                    fiber_section3d_index_by_id,
-                                    layered_shell_section_defs,
-                                    shell_cache,
-                                    force_beam_column2d_scratch,
-                                    force_beam_column3d_scratch,
-                                    free,
-                                    free_count,
-                                    has_transformation_mpc,
-                                    mpc_row_offsets,
-                                    mpc_dof_pool,
-                                    mpc_coeff_pool,
-                                    F_const_free,
-                                    F_pattern_free,
-                                    load_factor,
-                                    attempt_du,
-                                    control_idx,
-                                    u_base,
-                                    rhs_aug,
+                                var s = -dot_float64_contiguous(
+                                    sol_aug, updated_rhs_aug, free_count + 1
                                 )
-                                var s = -dot_float64_contiguous(sol_aug, rhs_aug, free_count + 1)
                                 var r0 = abs(s / s0)
                                 var r = r0
                                 var eta_prev = 1.0
@@ -3668,6 +3994,9 @@ fn run_static_nonlinear_displacement_control(
                                         zero_length_section_elem_indices,
                                         quad_elem_indices,
                                         shell_elem_indices,
+                                        const_element_loads,
+                                        pattern_element_loads,
+                                        elem_id_to_index,
                                         typed_sections_by_id,
                                         typed_materials_by_id,
                                         id_to_index,
@@ -3702,22 +4031,23 @@ fn run_static_nonlinear_displacement_control(
                                         mpc_coeff_pool,
                                         F_const_free,
                                         F_pattern_free,
-                                        load_factor,
-                                        attempt_du,
+                                        load_scale_derivative * load_factor,
+                                        attempt_target,
                                         control_idx,
-                                        u_base,
-                                        rhs_aug,
+                                        updated_rhs_aug,
                                     )
-                                    s = dot_float64_contiguous(sol_aug, rhs_aug, free_count + 1)
+                                    s = dot_float64_contiguous(
+                                        sol_aug, updated_rhs_aug, free_count + 1
+                                    )
                                     r = abs(s / s0)
                                     eta_prev = eta
                                 for i in range(free_count + 1):
                                     sol_aug[i] *= eta_prev
-                        if attempt_algorithm_tag == AnalysisAlgorithmTag.Broyden:
+                        if iteration_algorithm_tag == AnalysisAlgorithmTag.Broyden:
                             broyden_history_s.append(_copy_vector(sol_aug, free_count + 1))
                             broyden_prev_residual = _copy_vector(rhs_aug, free_count + 1)
                             has_broyden_prev_residual = True
-                        elif attempt_algorithm_tag == AnalysisAlgorithmTag.KrylovNewton:
+                        elif iteration_algorithm_tag == AnalysisAlgorithmTag.KrylovNewton:
                             krylov_push_iteration_state(
                                 krylov_base_sol_aug,
                                 sol_aug,
@@ -3726,12 +4056,17 @@ fn run_static_nonlinear_displacement_control(
                                 krylov_history_av,
                             )
                         var disp_incr_norm = sqrt(sum_sq_float64_contiguous(sol_aug, free_count))
-                        var energy_incr = abs(dot_float64_contiguous(sol_aug, rhs_aug, free_count))
-                        var converged_iter = max_diff <= attempt_tol
+                        var converged_iter = attempt_test_mode == 0 and max_diff <= attempt_tol
                         if attempt_test_mode == 1:
                             converged_iter = disp_incr_norm <= attempt_tol
                         elif attempt_test_mode == 3:
-                            converged_iter = energy_incr <= attempt_tol
+                            # Adaptive DisplacementControl uses the iteration count
+                            # from OpenSees' energy test on the updated unbalance.
+                            ref energy_rhs = updated_rhs_aug if adaptive_du else rhs_aug
+                            converged_iter = check_energy and (
+                                0.5 * abs(dot_float64_contiguous(sol_aug, energy_rhs, free_count))
+                                <= attempt_tol
+                            )
                         if do_profile:
                             var t_iter_end = Int(time.perf_counter_ns())
                             var iter_end_us = (t_iter_end - t0) // 1000
@@ -3742,11 +4077,16 @@ fn run_static_nonlinear_displacement_control(
                                 frame_nonlinear_iter,
                                 iter_end_us,
                             )
+                        if is_predictor:
+                            tangent_initialized = False
+                            tangent_factored = False
+                            continue
                         if converged_iter:
-                            converged_iters = iter_idx + 1
+                            converged_iters = iter_idx
                             converged = True
                             break
                     if converged:
+                        step_accepted_attempt = attempt
                         break
                 if converged:
                     attempt_ok = True
@@ -3767,10 +4107,14 @@ fn run_static_nonlinear_displacement_control(
                         u[i] = u_base[i]
                     force_basic_q = force_basic_q_base.copy()
                     uniaxial_states = uniaxial_states_base.copy()
+                    shell_cache.shell.revert_trial()
+                    force_beam_column3d_scratch.revert_corotational()
                     fiber_section2d_revert_trial_runtime_all(fiber_section_defs)
                     fiber_section3d_revert_trial_runtime_all(fiber_section3d_defs)
                     load_factor = lambda_base
                     continue
+                if hs_active:
+                    abort("static_nonlinear did not converge (HSConstraint)")
                 abort("static_nonlinear did not converge (DisplacementControl)")
 
             var committed_load_scale = load_scale_derivative * load_factor
@@ -3851,7 +4195,8 @@ fn run_static_nonlinear_displacement_control(
                     commit_start_us,
                 )
             _uniaxial_commit_active_states(uniaxial_states, elem_uniaxial_state_ids)
-            shell_cache.commit_layered_states()
+            shell_cache.commit()
+            force_beam_column3d_scratch.commit_corotational()
             fiber_section2d_commit_runtime_all(fiber_section_defs)
             fiber_section3d_commit_runtime_all(fiber_section3d_defs)
             if do_profile:
@@ -3874,6 +4219,10 @@ fn run_static_nonlinear_displacement_control(
                 force_basic_q,
             )
 
+            if hs_active:
+                hs_previous_increment = load_factor - lambda_base
+                break
+
         if not has_explicit_targets and adaptive_du:
             if step_converged_iters < 1:
                 step_converged_iters = du_target_iters
@@ -3883,6 +4232,14 @@ fn run_static_nonlinear_displacement_control(
             var t_step_end = Int(time.perf_counter_ns())
             var step_end_us = (t_step_end - t0) // 1000
             _append_event(events, events_need_comma, "C", frame_nonlinear_step, step_end_us)
+
+        if write_hs_window_times:
+            _append_output(
+                static_output_files,
+                static_output_buffers,
+                "__strut_hs_window_times.out",
+                String(load_factor) + " " + String(step_accepted_attempt) + "\n",
+            )
 
         var final_load_scale = load_scale_derivative * load_factor
         var F_step = build_active_nodal_load(F_const, F_pattern, final_load_scale)
@@ -4016,6 +4373,32 @@ fn run_static_nonlinear_displacement_control(
                             envelope_max,
                             envelope_abs,
                         )
+            elif (
+                rec.type_tag == RecorderTypeTag.QuadStress
+                or rec.type_tag == RecorderTypeTag.QuadStrain
+                or rec.type_tag == RecorderTypeTag.QuadState
+            ):
+                for eidx in range(rec.element_count):
+                    var elem_id = recorder_elements_pool[rec.element_offset + eidx]
+                    if elem_id >= len(elem_id_to_index) or elem_id_to_index[elem_id] < 0:
+                        abort("recorder element not found")
+                    var e = elem_id_to_index[elem_id]
+                    var values = shell_cache.record_quad(
+                        e,
+                        rec.integration_point,
+                        rec.type_tag == RecorderTypeTag.QuadStress,
+                        rec.stress_components,
+                        elem_dof_offsets[e],
+                        elem_dof_pool,
+                        u,
+                        rec.type_tag == RecorderTypeTag.QuadState,
+                    )
+                    _append_output(
+                        static_output_files,
+                        static_output_buffers,
+                        rec.output + "_ele" + String(elem_id) + ".out",
+                        _format_values_line(values),
+                    )
             elif rec.type_tag == RecorderTypeTag.ElementForce:
                 for eidx in range(rec.element_count):
                     var elem_id = recorder_elements_pool[rec.element_offset + eidx]
@@ -4024,11 +4407,11 @@ fn run_static_nonlinear_displacement_control(
                     var elem_index = elem_id_to_index[elem_id]
                     var elem = typed_elements[elem_index]
                     var f_elem: List[Float64]
-                    if (
-                        elem.type_tag == ElementTypeTag.ForceBeamColumn2d
-                        and typed_sections_by_id[elem.section].type == "FiberSection2d"
+                    if elem.type_tag == ElementTypeTag.ForceBeamColumn2d and (
+                        typed_sections_by_id[elem.section].type == "FiberSection2d"
+                        or typed_sections_by_id[elem.section].hinge_radau.is_defined()
                     ):
-                        f_elem = _force_beam_column2d_force_global_from_basic_state(
+                        f_elem = _force_beam_column2d_end_forces_from_basic_state(
                             elem_index,
                             elem,
                             typed_nodes,
@@ -4069,47 +4452,85 @@ fn run_static_nonlinear_displacement_control(
                             force_basic_offsets,
                             force_basic_counts,
                             force_basic_q,
+                            shell_cache.continuum,
                         )
                     var line = _format_values_line(f_elem)
                     var filename = rec.output + "_ele" + String(elem_id) + ".out"
                     _append_output(static_output_files, static_output_buffers, filename, line)
-            elif rec.type_tag == RecorderTypeTag.ElementLocalForce:
+            elif (
+                rec.type_tag == RecorderTypeTag.ElementLocalForce
+                or rec.type_tag == RecorderTypeTag.EnvelopeElementLocalForce
+            ):
                 for eidx in range(rec.element_count):
                     var elem_id = recorder_elements_pool[rec.element_offset + eidx]
                     if elem_id >= len(elem_id_to_index) or elem_id_to_index[elem_id] < 0:
                         abort("recorder element not found")
                     var elem_index = elem_id_to_index[elem_id]
                     var elem = typed_elements[elem_index]
-                    var values = _element_local_force_for_recorder(
-                        elem_index,
-                        elem,
-                        ndf,
-                        u,
-                        typed_nodes,
-                        typed_sections_by_id,
-                        fiber_section_defs,
-                        fiber_section_cells,
-                        fiber_section_index_by_id,
-                        fiber_section3d_defs,
-                        fiber_section3d_cells,
-                        fiber_section3d_index_by_id,
-                        uniaxial_defs,
-                        uniaxial_state_defs,
-                        uniaxial_states,
-                        elem_uniaxial_offsets,
-                        elem_uniaxial_counts,
-                        elem_uniaxial_state_ids,
-                        force_basic_offsets,
-                        force_basic_counts,
-                        force_basic_q,
-                    )
+                    var values: List[Float64]
+                    if (
+                        elem.type_tag == ElementTypeTag.ForceBeamColumn2d
+                        and typed_sections_by_id[elem.section].type == "FiberSection2d"
+                    ):
+                        values = _force_beam_column2d_end_forces_from_basic_state(
+                            elem_index,
+                            elem,
+                            typed_nodes,
+                            ndf,
+                            u,
+                            active_element_load_state.element_loads,
+                            active_element_load_state.elem_load_offsets,
+                            active_element_load_state.elem_load_pool,
+                            1.0,
+                            force_basic_offsets,
+                            force_basic_counts,
+                            force_basic_q,
+                            local_coordinates=True,
+                        )
+                    else:
+                        values = _element_local_force_for_recorder(
+                            elem_index,
+                            elem,
+                            ndf,
+                            u,
+                            active_element_load_state.element_loads,
+                            active_element_load_state.elem_load_offsets,
+                            active_element_load_state.elem_load_pool,
+                            typed_nodes,
+                            typed_sections_by_id,
+                            fiber_section_defs,
+                            fiber_section_cells,
+                            fiber_section_index_by_id,
+                            fiber_section3d_defs,
+                            fiber_section3d_cells,
+                            fiber_section3d_index_by_id,
+                            uniaxial_defs,
+                            uniaxial_state_defs,
+                            uniaxial_states,
+                            elem_uniaxial_offsets,
+                            elem_uniaxial_counts,
+                            elem_uniaxial_state_ids,
+                            force_basic_offsets,
+                            force_basic_counts,
+                            force_basic_q,
+                        )
                     var filename = rec.output + "_ele" + String(elem_id) + ".out"
-                    _append_output(
-                        static_output_files,
-                        static_output_buffers,
-                        filename,
-                        _format_values_line(values),
-                    )
+                    if rec.type_tag == RecorderTypeTag.ElementLocalForce:
+                        _append_output(
+                            static_output_files,
+                            static_output_buffers,
+                            filename,
+                            _format_values_line(values),
+                        )
+                    else:
+                        _update_envelope(
+                            filename,
+                            values,
+                            envelope_files,
+                            envelope_min,
+                            envelope_max,
+                            envelope_abs,
+                        )
             elif rec.type_tag == RecorderTypeTag.ElementBasicForce:
                 for eidx in range(rec.element_count):
                     var elem_id = recorder_elements_pool[rec.element_offset + eidx]
@@ -4129,6 +4550,7 @@ fn run_static_nonlinear_displacement_control(
                         elem_uniaxial_offsets,
                         elem_uniaxial_counts,
                         elem_uniaxial_state_ids,
+                        rec.material_stress,
                     )
                     var filename = rec.output + "_ele" + String(elem_id) + ".out"
                     _append_output(
@@ -4195,11 +4617,11 @@ fn run_static_nonlinear_displacement_control(
                     var elem_index = elem_id_to_index[elem_id]
                     var elem = typed_elements[elem_index]
                     var f_elem: List[Float64]
-                    if (
-                        elem.type_tag == ElementTypeTag.ForceBeamColumn2d
-                        and typed_sections_by_id[elem.section].type == "FiberSection2d"
+                    if elem.type_tag == ElementTypeTag.ForceBeamColumn2d and (
+                        typed_sections_by_id[elem.section].type == "FiberSection2d"
+                        or typed_sections_by_id[elem.section].hinge_radau.is_defined()
                     ):
-                        f_elem = _force_beam_column2d_force_global_from_basic_state(
+                        f_elem = _force_beam_column2d_end_forces_from_basic_state(
                             elem_index,
                             elem,
                             typed_nodes,
@@ -4240,50 +4662,12 @@ fn run_static_nonlinear_displacement_control(
                             force_basic_offsets,
                             force_basic_counts,
                             force_basic_q,
+                            shell_cache.continuum,
                         )
                     var filename = rec.output + "_ele" + String(elem_id) + ".out"
                     _update_envelope(
                         filename,
                         f_elem,
-                        envelope_files,
-                        envelope_min,
-                        envelope_max,
-                        envelope_abs,
-                    )
-            elif rec.type_tag == RecorderTypeTag.EnvelopeElementLocalForce:
-                for eidx in range(rec.element_count):
-                    var elem_id = recorder_elements_pool[rec.element_offset + eidx]
-                    if elem_id >= len(elem_id_to_index) or elem_id_to_index[elem_id] < 0:
-                        abort("recorder element not found")
-                    var elem_index = elem_id_to_index[elem_id]
-                    var elem = typed_elements[elem_index]
-                    var values = _element_local_force_for_recorder(
-                        elem_index,
-                        elem,
-                        ndf,
-                        u,
-                        typed_nodes,
-                        typed_sections_by_id,
-                        fiber_section_defs,
-                        fiber_section_cells,
-                        fiber_section_index_by_id,
-                        fiber_section3d_defs,
-                        fiber_section3d_cells,
-                        fiber_section3d_index_by_id,
-                        uniaxial_defs,
-                        uniaxial_state_defs,
-                        uniaxial_states,
-                        elem_uniaxial_offsets,
-                        elem_uniaxial_counts,
-                        elem_uniaxial_state_ids,
-                        force_basic_offsets,
-                        force_basic_counts,
-                        force_basic_q,
-                    )
-                    var filename = rec.output + "_ele" + String(elem_id) + ".out"
-                    _update_envelope(
-                        filename,
-                        values,
                         envelope_files,
                         envelope_min,
                         envelope_max,
@@ -4303,9 +4687,9 @@ fn run_static_nonlinear_displacement_control(
                     for sidx in range(rec.section_count):
                         var sec_no = recorder_sections_pool[rec.section_offset + sidx]
                         var values: List[Float64]
-                        if (
-                            elem.type_tag == ElementTypeTag.ForceBeamColumn2d
-                            and typed_sections_by_id[elem.section].type == "FiberSection2d"
+                        if elem.type_tag == ElementTypeTag.ForceBeamColumn2d and (
+                            typed_sections_by_id[elem.section].type == "FiberSection2d"
+                            or typed_sections_by_id[elem.section].hinge_radau.is_defined()
                         ):
                             values = _force_beam_column2d_section_response_from_basic_state(
                                 elem_index,
@@ -4360,7 +4744,7 @@ fn run_static_nonlinear_displacement_control(
                             filename,
                             _format_values_line(values),
                         )
-            else:
+            elif rec.type_tag != RecorderTypeTag.ModalEigen:
                 abort("unsupported recorder type")
     _flush_envelope_outputs(
         envelope_files,

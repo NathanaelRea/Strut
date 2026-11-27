@@ -1,0 +1,9 @@
+{
+  "name": "opensees_example_mrf_panel_zone_pushover",
+  "entry_tcl": "tests/fixtures/opensees/OpenSeesExamplesPractical/pushover_and_dynamic_analyses_of_2_story_moment_frame_with_panel_zones_and_rbs/MRF_2Story_Concentrated_PanelZone.tcl",
+  "tcl_source_version": "3.7.1",
+  "enabled": true,
+  "source_files": [
+    "MRF_2Story_Concentrated_PanelZone.tcl"
+  ]
+}

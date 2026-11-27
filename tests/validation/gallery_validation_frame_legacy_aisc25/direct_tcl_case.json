@@ -1,0 +1,8 @@
+{
+  "enabled": false,
+  "entry_tcl": "tests/fixtures/opensees/STAIRlabGallery/content/validation/Frame/Legacy/AISC25.tcl",
+  "tcl_source_version": "3.7.1",
+  "source_url": "https://github.com/peer-open-source/opensees-gallery/blob/fd3958fde8a3d0a350321b3fbdd3f415ee16e2a2/content/validation/Frame/Legacy/AISC25.tcl",
+  "reference": "R. C. Kaehler, D. W. White, and Y. D. Kim, Frame Design Using Web-Tapered Members, AISC Design Guide 25 (2011).",
+  "disabled_reason": "OpenSees 3.7.1 rejects a beam-column element definition."
+}

@@ -104,6 +104,14 @@ fn _profile_metrics_element_type_name(element_type: Int) -> String:
         return "zeroLength"
     if element_type == ElementTypeTag.FourNodeQuad:
         return "fourNodeQuad"
+    if element_type == ElementTypeTag.QuadUP:
+        return "quadUP"
+    if element_type == ElementTypeTag.SSPBrickUP:
+        return "SSPbrickUP"
+    if element_type == ElementTypeTag.Continuum:
+        return "continuum"
+    if element_type == ElementTypeTag.Tri31:
+        return "tri31"
     if element_type == ElementTypeTag.Shell:
         return "shell"
     if element_type == ElementTypeTag.ZeroLengthSection:

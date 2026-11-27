@@ -1,5 +1,6 @@
 from materials.uniaxial import (
     UniMaterialDef,
+    UniMaterialParams,
     UniMaterialState,
     uni_mat_initial_tangent,
     uni_mat_is_elastic,
@@ -11,6 +12,8 @@ from materials.uniaxial import (
     uniaxial_set_trial_strain_concrete02,
     uniaxial_set_trial_strain_elastic,
     uniaxial_set_trial_strain,
+    uniaxial_set_trial_strain_rate,
     uniaxial_set_trial_strain_steel01,
     uniaxial_set_trial_strain_steel02,
+    uniaxial_set_trial_strain_viscous_damper,
 )

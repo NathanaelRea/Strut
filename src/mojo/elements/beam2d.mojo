@@ -372,6 +372,42 @@ fn beam2d_pdelta_global_stiffness(
     )
 
 
+fn beam2d_pdelta_global_internal_force(
+    E: Float64,
+    A: Float64,
+    I: Float64,
+    x1: Float64,
+    y1: Float64,
+    x2: Float64,
+    y2: Float64,
+    u: List[Float64],
+) -> List[Float64]:
+    var dx = x2 - x1
+    var dy = y2 - y1
+    var L = hypot(dx, dy)
+    if L == 0.0:
+        abort("zero-length element")
+    var c = dx / L
+    var s = dy / L
+    var cl = c / L
+    var sl = s / L
+
+    # ElasticBeam2d forms forces from basic deformations before transforming
+    # to global coordinates. Multiplying the global tangent by displacement
+    # can cancel large terms on nearly released, axially rigid members.
+    var axial = -c * u[0] - s * u[1] + c * u[3] + s * u[4]
+    var theta_i = -sl * u[0] + cl * u[1] + u[2] + sl * u[3] - cl * u[4]
+    var theta_j = theta_i + u[5] - u[2]
+    var N = A * (E / L) * axial
+    var EI2 = 2.0 * I * (E / L)
+    var m_i = 2.0 * EI2 * theta_i + EI2 * theta_j
+    var m_j = EI2 * theta_i + 2.0 * EI2 * theta_j
+    var transverse_i = -s * u[0] + c * u[1]
+    var transverse_j = -s * u[3] + c * u[4]
+    var shear = (m_i + m_j) / L + (transverse_i - transverse_j) * N / L
+    return _beam2d_transform_force_local_to_global(c, s, [-N, shear, m_i, N, -shear, m_j])
+
+
 fn beam2d_corotational_global_tangent_and_internal(
     E: Float64,
     A: Float64,

@@ -1,0 +1,10 @@
+{
+  "name": "opensees_example_excavation",
+  "entry_tcl": "tests/fixtures/opensees/OpenSeesExamplesPractical/excavation_supported_by_cantilevered_sheet_pile_wall/Excavation.tcl",
+  "tcl_source_version": "3.7.1",
+  "enabled": false,
+  "disabled_reason": "The pinned OpenSees 3.8.0 build uses OpenBLAS DGELS for KrylovNewton. Roundoff changes the late excavation stress path beyond the existing tolerance (element 258 at step 45 and element 237 at step 46).",
+  "source_url": "https://opensees.berkeley.edu/wiki/index.php/Excavation_Supported_by_Cantilevered_Sheet_Pile_Wall",
+  "reference": "Excavation Supported by Cantilevered Sheet Pile Wall, Christopher McGann and Pedro Arduino, University of Washington.",
+  "parity_history": true
+}

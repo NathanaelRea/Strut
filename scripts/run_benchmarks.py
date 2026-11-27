@@ -73,6 +73,8 @@ class CaseSpec:
     tcl_path: Optional[Path] = None
     metadata_path: Optional[Path] = None
     benchmark_size: Optional[str] = None
+    interactive_tcl: bool = False
+    opensees_only: bool = False
 
 
 @dataclass(frozen=True)
@@ -605,6 +607,8 @@ def _direct_tcl_case_spec(manifest_path: Path) -> CaseSpec:
         tcl_path=_resolve_repo_relative_path(entry_tcl),
         metadata_path=manifest_path,
         benchmark_size=benchmark_size,
+        interactive_tcl=bool(data.get("interactive_tcl") or data.get("replay_tcl")),
+        opensees_only=data.get("opensees_only") is True,
     )
 
 
@@ -757,40 +761,32 @@ def _normalize_reference_outputs(
                 widths.append(int(width_by_item[items[0]]))
             if widths:
                 expected = sum(widths)
-                paired_payloads = [[] for _ in targets]
-                used_paired_layout = False
+                columns_per_value = None
                 for parts in normalized_rows:
                     if len(parts) == expected:
-                        if used_paired_layout:
-                            raise SystemExit(
-                                f"mixed grouped envelope layouts in {raw_path}"
-                            )
-                        offset = 0
-                        for idx, width in enumerate(widths):
-                            payloads[idx].append(
-                                " ".join(parts[offset : offset + width])
-                            )
-                            offset += width
-                        continue
-                    if strip_time and len(parts) == 2 * expected:
-                        used_paired_layout = True
-                        offset = 0
-                        for idx, width in enumerate(widths):
-                            segment = parts[offset : offset + 2 * width]
-                            paired_payloads[idx].extend(segment[1::2])
-                            offset += 2 * width
-                        continue
-                    if expected != len(parts):
-                        if preserve_existing_targets:
-                            payloads = []
-                            break
+                        stride = 1
+                    elif strip_time and len(parts) == 2 * expected:
+                        stride = 2
+                    elif preserve_existing_targets:
+                        payloads = []
+                        break
+                    else:
                         raise SystemExit(
                             "cannot split grouped recorder output "
                             f"{raw_path}: expected {expected} values, got {len(parts)}"
                         )
-                if used_paired_layout and payloads:
-                    for idx in range(len(targets)):
-                        payloads[idx] = [" ".join(paired_payloads[idx])]
+                    if columns_per_value is not None and columns_per_value != stride:
+                        raise SystemExit(
+                            f"mixed grouped envelope layouts in {raw_path}"
+                        )
+                    columns_per_value = stride
+                    offset = 0
+                    for idx, width in enumerate(widths):
+                        end = offset + stride * width
+                        payloads[idx].append(
+                            " ".join(parts[offset + stride - 1 : end : stride])
+                        )
+                        offset = end
             else:
                 group_layout = None
         if not group_layout:
@@ -872,6 +868,7 @@ def _load_direct_tcl_case(case: CaseSpec, repo_root: Path) -> tuple[dict, Path]:
         "parity_tolerance_by_category",
         "parity_tolerance_by_recorder",
         "parity_mode",
+        "comparison",
     ):
         if key in metadata:
             case_data[key] = metadata[key]
@@ -893,6 +890,13 @@ def _write_parser_check(case_root: Path) -> None:
 
 def _clear_parser_check(case_root: Path) -> None:
     (case_root / ".parser-check").unlink(missing_ok=True)
+
+
+def _has_direct_tcl_parser_check(case: CaseSpec) -> bool:
+    return (
+        case.tcl_path is not None
+        and (_direct_case_root(case) / ".parser-check").exists()
+    )
 
 
 def _require_direct_tcl_parser_check(case: CaseSpec) -> Path:
@@ -1059,6 +1063,13 @@ def _write_direct_tcl_wrapper(
                 "if {[llength [info commands recorder]] > 0 && [llength [info commands __strut_orig_recorder]] == 0} {",
                 "  rename recorder __strut_orig_recorder",
                 "  proc recorder args { return {} }",
+                "}",
+                "if {[llength [info commands remove]] > 0 && [llength [info commands __strut_orig_remove]] == 0} {",
+                "  rename remove __strut_orig_remove",
+                "  proc remove args {",
+                '    if {[lindex $args 0] eq "recorder"} { return {} }',
+                "    return [uplevel 1 [linsert $args 0 __strut_orig_remove]]",
+                "  }",
                 "}",
                 "foreach __strut_display_cmd {prp vup vpn viewWindow display} {",
                 "  if {[llength [info commands $__strut_display_cmd]] == 0} {",
@@ -1239,15 +1250,13 @@ def _prepare_direct_tcl_wrappers(
         instrumented_source = mirrored_source.with_name(
             mirrored_source.stem + "__strut_compute.tcl"
         )
-        instrumented_source.write_text(
-            "\n".join(
-                _inject_opensees_timing_into_source(
-                    mirrored_source.read_text(encoding="utf-8").splitlines()
-                )
+        source_text = mirrored_source.read_text(encoding="utf-8")
+        if not case.opensees_only:
+            source_text = (
+                "\n".join(_inject_opensees_timing_into_source(source_text.splitlines()))
+                + "\n"
             )
-            + "\n",
-            encoding="utf-8",
-        )
+        instrumented_source.write_text(source_text, encoding="utf-8")
         compute_source_lines.append(f"source {{{instrumented_source.name}}}")
     compute_entry = mirrored_script_dir / f"{entry_wrapper.stem}__compute.tcl"
     compute_entry.write_text("\n".join(compute_source_lines) + "\n", encoding="utf-8")
@@ -1312,6 +1321,11 @@ def _ensure_direct_tcl_case_artifacts(
 ) -> dict:
     if case.tcl_path is None:
         return _load_case_metadata(_case_json_path(case))
+
+    if case.opensees_only:
+        if not case.tcl_path.is_file():
+            raise ValueError(f"benchmark entry is missing: {case.tcl_path}")
+        return {"metadata": _load_case_metadata(_case_metadata_path(case))}
 
     case_root = _direct_case_root(case)
     case_root.mkdir(parents=True, exist_ok=True)
@@ -2739,6 +2753,18 @@ def main() -> None:
             "No benchmark cases found. Provide --cases or add validation cases."
         )
 
+    interactive_cases = [case.name for case in case_specs if case.interactive_tcl]
+    if interactive_cases:
+        log(
+            "Skipping interactive Tcl parity cases in solver benchmarks: "
+            + ", ".join(interactive_cases)
+        )
+        case_specs = [case for case in case_specs if not case.interactive_tcl]
+        if not case_specs:
+            raise SystemExit(
+                "No selected cases support single-model solver benchmarking."
+            )
+
     include_disabled_effective = args.include_disabled or (
         args.cases is None and os.getenv("STRUT_RUN_ALL_CASES") == "1"
     )
@@ -2750,6 +2776,9 @@ def main() -> None:
         raise SystemExit(
             "All selected cases are disabled. Use --include-disabled to run."
         )
+
+    if any(case.opensees_only for case in case_specs) and args.engine != "opensees":
+        raise SystemExit("OpenSees-only Tcl entries require --engine opensees.")
 
     if args.profile and not args.no_archive:
         args.no_archive = True
@@ -2849,8 +2878,16 @@ def main() -> None:
                 verbose,
                 require_parser_check=require_direct_tcl_parser_check,
             )
-            if case.tcl_path is not None and require_direct_tcl_parser_check:
-                _require_direct_tcl_parser_check(case)
+            if (
+                case.tcl_path is not None
+                and require_direct_tcl_parser_check
+                and not case.opensees_only
+                and not _has_direct_tcl_parser_check(case)
+            ):
+                log(
+                    f"{case.name}: OpenSees runs the original Tcl because the "
+                    "generated Tcl has no parser-check."
+                )
             prepared_case_data[case.name] = case_data
         except (OSError, ValueError, subprocess.CalledProcessError, SystemExit) as exc:
             setup_failures.append(
@@ -2881,6 +2918,19 @@ def main() -> None:
         notes = (case_data.get("metadata") or {}).get("notes")
         if isinstance(notes, str) and notes:
             case_entry["notes"] = notes
+        size_override = case.benchmark_size or _case_size_override(case_data)
+        if size_override is not None:
+            case_entry["size"] = size_override
+        if case.opensees_only:
+            _, compute = _prepare_direct_tcl_wrappers(
+                case, case_data, results_root / "tcl"
+            )
+            case_entry.update(
+                tcl=str(compute),
+                tcl_compute=str(compute),
+                uses_eigen=_tcl_uses_eigen(case.tcl_path),
+            )
+            return case_entry
         if case.json_path is not None:
             case_entry["json"] = str(_case_json_path(case))
         elif case.tcl_path is not None:
@@ -2894,17 +2944,16 @@ def main() -> None:
                     results_root / ".tmp" / "strut_inputs" / f"{case_name}.json",
                 )
             )
-        size_override = case.benchmark_size or _case_size_override(case_data)
-        if size_override is not None:
-            case_entry["size"] = size_override
 
         if case.tcl_path is not None:
             if not require_direct_tcl_parser_check:
                 return case_entry
             direct_case_root = _direct_case_root(case)
             generated_tcl = direct_case_root / "generated" / "model.tcl"
-            _require_direct_tcl_parser_check(case)
-            if generated_tcl.exists():
+            # Time OpenSees on the round-tripped Tcl when it was checked against
+            # the original; otherwise on the original script, which the parity
+            # suite already checks against Strut.
+            if generated_tcl.exists() and _has_direct_tcl_parser_check(case):
                 generated_copy = results_root / "tcl" / f"{case_name}.tcl"
                 shutil.copy2(generated_tcl, generated_copy)
                 generated_compute = (
@@ -2933,6 +2982,7 @@ def main() -> None:
                 )
                 case_entry["tcl"] = str(tcl_compute)
                 case_entry["uses_eigen"] = _tcl_uses_eigen(tcl_compute)
+                case_entry["opensees_input"] = "original"
         else:
             case_json = _case_json_path(case)
             tcl_out = _emit_case_tcl(

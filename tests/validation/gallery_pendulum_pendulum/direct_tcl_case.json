@@ -1,0 +1,8 @@
+{
+  "enabled": false,
+  "entry_tcl": "tests/fixtures/opensees/STAIRlabGallery/content/en/examples/Pendulum/pendulum.tcl",
+  "tcl_source_version": "openseesrt-fd3958f",
+  "tcl_upgrade_note": "Translates the positional model declaration.",
+  "source_url": "https://github.com/peer-open-source/opensees-gallery/blob/fd3958fde8a3d0a350321b3fbdd3f415ee16e2a2/content/en/examples/Pendulum/pendulum.tcl",
+  "disabled_reason": "Uses the OpenSeesRT linspace command. Node 2 is commented out but queried by nodeDisp."
+}

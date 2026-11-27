@@ -26,6 +26,7 @@ def _load_run_benchmarks_module():
 
 
 run_benchmarks = _load_run_benchmarks_module()
+import run_case
 
 synthetic_gm_spec = importlib.util.spec_from_file_location(
     "strut_synthetic_ground_motion_benchmarks_test_module",
@@ -1199,8 +1200,16 @@ def test_normalize_opensees_benchmark_outputs_writes_parity_filenames(tmp_path: 
     assert (output_dir / "disp_node1.out").read_text(encoding="utf-8") == "1.0\n2.0\n"
 
 
+@pytest.mark.parametrize(
+    "normalize_outputs",
+    [
+        run_case._normalize_reference_outputs,
+        run_benchmarks._normalize_reference_outputs,
+    ],
+)
 def test_normalize_reference_outputs_splits_envelope_group_layout_with_time_pairs(
     tmp_path: Path,
+    normalize_outputs,
 ):
     reference_dir = tmp_path / "reference"
     reference_dir.mkdir(parents=True, exist_ok=True)
@@ -1244,13 +1253,13 @@ def test_normalize_reference_outputs_splits_envelope_group_layout_with_time_pair
         ]
     }
 
-    run_benchmarks._normalize_reference_outputs(case_data, reference_dir)
+    normalize_outputs(case_data, reference_dir)
 
     assert (reference_dir / "env_ele1.out").read_text(encoding="utf-8") == (
-        "-1 2 3 4 5 6 -13 14 15 16 17 18 -25 26 27 28 29 30\n"
+        "-1 2 3 4 5 6\n-13 14 15 16 17 18\n-25 26 27 28 29 30\n"
     )
     assert (reference_dir / "env_ele2.out").read_text(encoding="utf-8") == (
-        "-7 8 9 10 11 12 -19 20 21 22 23 24 -31 32 33 34 35 36\n"
+        "-7 8 9 10 11 12\n-19 20 21 22 23 24\n-31 32 33 34 35 36\n"
     )
 
 
@@ -1304,10 +1313,10 @@ def test_normalize_reference_outputs_splits_envelope_node_group_layout_with_time
     run_benchmarks._normalize_reference_outputs(case_data, reference_dir)
 
     assert (reference_dir / "env_disp_node3.out").read_text(encoding="utf-8") == (
-        "-1 -3 5\n"
+        "-1\n-3\n5\n"
     )
     assert (reference_dir / "env_disp_node4.out").read_text(encoding="utf-8") == (
-        "2 4 6\n"
+        "2\n4\n6\n"
     )
 
 
@@ -1600,6 +1609,34 @@ def test_compare_case_max_abs_uses_shared_prefix_when_reference_is_truncated():
     )
 
     assert failures == []
+
+
+def test_compare_case_envelope_uses_complete_component_histories(tmp_path):
+    reference, actual = (tmp_path / name for name in ("reference", "actual"))
+    reference.mkdir()
+    actual.mkdir()
+    recorder = "node_accel_node1.out"
+    (reference / recorder).write_text("-1 3\n2 -4\n")
+    result = actual / recorder
+    result.write_text("2 3\n-1 -4\n")
+    data = {
+        "analysis": {"type": "transient_linear"},
+        "recorders": [{"type": "node_acceleration", "nodes": [1]}],
+    }
+    assert compare_case._compare_output_dirs(data, reference, actual)
+    data["comparison"] = "envelope"
+    assert compare_case._compare_output_dirs(data, reference, actual) == []
+
+    result.write_text("2 2\n-1 -4\n")
+    data["parity_tolerance"] = {"rtol": 1.0, "atol": 1.0}
+    failures = compare_case._compare_output_dirs(data, reference, actual)
+    assert failures[0] == "node 1 envelope maximum mismatch"
+    assert len(failures) == 2
+
+    result.write_text("2 -4\n")
+    assert compare_case._compare_output_dirs(data, reference, actual) == [
+        "node 1 step count mismatch: 2 != 1"
+    ]
 
 
 def test_resolve_recorder_tolerance_prefers_per_recorder_override():

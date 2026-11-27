@@ -1,3 +1,5 @@
+from elements.force_beam_column2d import force_beam_column2d_initial_global_stiffness
+from elements.force_beam_column2d import elastic_beam_column2d_global_tangent_and_internal
 from collections import List
 from os import abort
 from time import perf_counter_ns
@@ -10,6 +12,7 @@ from elements import (
     beam2d_pdelta_global_stiffness_flat,
     beam2d_corotational_global_tangent_and_internal,
     beam2d_pdelta_global_stiffness,
+    beam2d_pdelta_global_internal_force,
     beam_global_stiffness,
     disp_beam_column2d_global_tangent_and_internal,
     force_beam_column2d_global_tangent_and_internal,
@@ -90,6 +93,7 @@ fn _assemble_frame2d_native_soa_indices[
     mut events_need_comma: Bool,
     frame_assemble_fiber: Int,
     mut runtime_metrics: RuntimeProfileMetrics,
+    initial_tangent: Bool = False,
 ) raises:
     for idx in range(len(frame2d_elem_indices)):
         var e = frame2d_elem_indices[idx]
@@ -123,6 +127,29 @@ fn _assemble_frame2d_native_soa_indices[
             PROFILE_FRAME_ASSEMBLE_FIBER_GEOMETRY,
             t0,
         )
+        if initial_tangent:
+            var initial: List[List[Float64]] = []
+            if elem_type == ElementTypeTag.ElasticBeamColumn2d or sec.type == "ElasticSection2d":
+                initial = beam_global_stiffness(sec.E, sec.A, sec.I, x1, y1, x2, y2)
+                backend.add_element_matrix(e, elem_free_pool, free_offset, 6, initial)
+                continue
+            if elem_type == ElementTypeTag.ForceBeamColumn2d and not sec.hinge_radau.is_defined():
+                var section_index = fiber_section_index_by_id[elem_section_ids[e]]
+                force_beam_column2d_initial_global_stiffness(
+                    x1,
+                    y1,
+                    x2,
+                    y2,
+                    _beam_integration_name_from_tag(elem_integration_tags[e]),
+                    elem_num_int_pts[e],
+                    fiber_section_defs[section_index],
+                    fiber_section_cells,
+                    uniaxial_defs,
+                    force_beam_column2d_scratch,
+                    initial,
+                )
+                backend.add_element_matrix(e, elem_free_pool, free_offset, 6, initial)
+                continue
         if elem_type == ElementTypeTag.ElasticBeamColumn2d:
             var f_load_global = beam2d_element_load_global_array(
                 element_loads,
@@ -158,10 +185,19 @@ fn _assemble_frame2d_native_soa_indices[
                 else:
                     abort("unsupported geomTransf tag")
                 backend.add_element_matrix_flat(e, elem_free_pool, free_offset, 6, k_flat)
-                for a in range(6):
-                    F_int[dof_map6[a]] += (
-                        _dot_row_simd(k_flat, dof_map6, u, 6, a * 6) - f_load_global[a]
+                if elem_geom_tags[e] == GeomTransfTag.PDelta:
+                    # Basic forces first, as ElasticBeam2d does: K*u cancels large
+                    # terms on nearly released, axially rigid members.
+                    var f_elem = beam2d_pdelta_global_internal_force(
+                        sec.E, sec.A, sec.I, x1, y1, x2, y2, u_elem6
                     )
+                    for a in range(6):
+                        F_int[dof_map6[a]] += f_elem[a] - f_load_global[a]
+                else:
+                    for a in range(6):
+                        F_int[dof_map6[a]] += (
+                            _dot_row_simd(k_flat, dof_map6, u, 6, a * 6) - f_load_global[a]
+                        )
             if runtime_metrics.enabled:
                 _profile_metrics_note_element_timing(
                     runtime_metrics,
@@ -175,6 +211,41 @@ fn _assemble_frame2d_native_soa_indices[
         var k_global: List[List[Float64]] = []
         var f_global: List[Float64] = []
         if sec.type == "ElasticSection2d":
+            if (
+                sec.cbdi.enabled()
+                or sec.shear_rigidity_y != 0.0
+                or sec.hinge_radau.is_defined()
+                or elem_geom_tags[e] == GeomTransfTag.Corotational
+            ):
+                var q = elastic_beam_column2d_global_tangent_and_internal(
+                    e,
+                    x1,
+                    y1,
+                    x2,
+                    y2,
+                    u_elem6,
+                    _geom_transf_name_from_tag(elem_geom_tags[e]),
+                    _beam_integration_name_from_tag(elem_integration_tags[e]),
+                    elem_num_int_pts[e],
+                    sec,
+                    elem_type == ElementTypeTag.ForceBeamColumn2d,
+                    element_loads,
+                    elem_load_offsets,
+                    elem_load_pool,
+                    load_scale,
+                    force_beam_column2d_scratch,
+                    k_global,
+                    f_global,
+                )
+                var q_offset = force_basic_offsets[e]
+                if elem_type == ElementTypeTag.ForceBeamColumn2d and q_offset >= 0:
+                    force_basic_q[q_offset] = q[0]
+                    force_basic_q[q_offset + 1] = q[1]
+                    force_basic_q[q_offset + 2] = q[2]
+                backend.add_element_matrix(e, elem_free_pool, free_offset, 6, k_global)
+                for a in range(6):
+                    F_int[dof_map6[a]] += f_global[a]
+                continue
             var f_load_global = beam2d_element_load_global(
                 element_loads,
                 elem_load_offsets,
@@ -256,6 +327,7 @@ fn _assemble_frame2d_native_soa_indices[
                 force_beam_column2d_scratch,
                 k_global,
                 f_global,
+                sec.hinge_radau,
             )
         else:
             disp_beam_column2d_global_tangent_and_internal(
@@ -430,6 +502,9 @@ fn _assemble_frame2d_soa_indices(
                 k_global = beam2d_pdelta_global_stiffness(
                     sec.E, sec.A, sec.I, x1, y1, x2, y2, u_elem6
                 )
+                f_elem = beam2d_pdelta_global_internal_force(
+                    sec.E, sec.A, sec.I, x1, y1, x2, y2, u_elem6
+                )
             elif elem_geom_tags[e] == GeomTransfTag.Corotational:
                 for i in range(6):
                     u_elem6[i] = u[dof_map6[i]]
@@ -439,7 +514,7 @@ fn _assemble_frame2d_soa_indices(
             else:
                 abort("unsupported geomTransf tag")
 
-            if elem_geom_tags[e] == GeomTransfTag.Corotational:
+            if len(f_elem) != 0:
                 for a in range(6):
                     var Aidx = dof_map6[a]
                     _scatter_add_row[6](K, Aidx, k_global[a], dof_map6)
@@ -464,6 +539,42 @@ fn _assemble_frame2d_soa_indices(
         var k_global: List[List[Float64]] = []
         var f_global: List[Float64] = []
         if sec.type == "ElasticSection2d":
+            if (
+                sec.cbdi.enabled()
+                or sec.shear_rigidity_y != 0.0
+                or sec.hinge_radau.is_defined()
+                or elem_geom_tags[e] == GeomTransfTag.Corotational
+            ):
+                var q = elastic_beam_column2d_global_tangent_and_internal(
+                    e,
+                    x1,
+                    y1,
+                    x2,
+                    y2,
+                    u_elem6,
+                    _geom_transf_name_from_tag(elem_geom_tags[e]),
+                    _beam_integration_name_from_tag(elem_integration_tags[e]),
+                    elem_num_int_pts[e],
+                    sec,
+                    elem_type == ElementTypeTag.ForceBeamColumn2d,
+                    element_loads,
+                    elem_load_offsets,
+                    elem_load_pool,
+                    load_scale,
+                    force_beam_column2d_scratch,
+                    k_global,
+                    f_global,
+                )
+                var q_offset = force_basic_offsets[e]
+                if elem_type == ElementTypeTag.ForceBeamColumn2d and q_offset >= 0:
+                    force_basic_q[q_offset] = q[0]
+                    force_basic_q[q_offset + 1] = q[1]
+                    force_basic_q[q_offset + 2] = q[2]
+                for a in range(6):
+                    var Aidx = dof_map6[a]
+                    _scatter_add_row[6](K, Aidx, k_global[a], dof_map6)
+                    F_int[Aidx] += f_global[a]
+                continue
             var f_load_global = beam2d_element_load_global(
                 element_loads,
                 elem_load_offsets,
@@ -552,6 +663,7 @@ fn _assemble_frame2d_soa_indices(
                 force_beam_column2d_scratch,
                 k_elem6,
                 f_elem6,
+                sec.hinge_radau,
             )
         else:
             disp_beam_column2d_global_tangent_and_internal(
@@ -716,6 +828,9 @@ fn _assemble_frame2d_element(
                 node2.y,
                 u_elem6,
             )
+            f_elem = beam2d_pdelta_global_internal_force(
+                sec.E, sec.A, sec.I, node1.x, node1.y, node2.x, node2.y, u_elem6
+            )
         elif geom == "Corotational":
             for i in range(6):
                 u_elem6[i] = u[dof_map6[i]]
@@ -734,7 +849,7 @@ fn _assemble_frame2d_element(
         else:
             abort("unsupported geomTransf: " + geom)
 
-        if geom == "Corotational":
+        if len(f_elem) != 0:
             for a in range(6):
                 var Aidx = dof_map6[a]
                 _scatter_add_row[6](K, Aidx, k_global[a], dof_map6)
@@ -754,6 +869,42 @@ fn _assemble_frame2d_element(
     var k_global: List[List[Float64]] = []
     var f_global: List[Float64] = []
     if sec.type == "ElasticSection2d":
+        if (
+            sec.cbdi.enabled()
+            or sec.shear_rigidity_y != 0.0
+            or sec.hinge_radau.is_defined()
+            or elem.geom_tag == GeomTransfTag.Corotational
+        ):
+            var q = elastic_beam_column2d_global_tangent_and_internal(
+                e,
+                node1.x,
+                node1.y,
+                node2.x,
+                node2.y,
+                u_elem6,
+                elem.geom_transf,
+                elem.integration,
+                elem.num_int_pts,
+                sec,
+                elem_type == ElementTypeTag.ForceBeamColumn2d,
+                element_loads,
+                elem_load_offsets,
+                elem_load_pool,
+                load_scale,
+                force_beam_column2d_scratch,
+                k_global,
+                f_global,
+            )
+            var q_offset = force_basic_offsets[e]
+            if elem_type == ElementTypeTag.ForceBeamColumn2d and q_offset >= 0:
+                force_basic_q[q_offset] = q[0]
+                force_basic_q[q_offset + 1] = q[1]
+                force_basic_q[q_offset + 2] = q[2]
+            for a in range(6):
+                var Aidx = dof_map6[a]
+                _scatter_add_row[6](K, Aidx, k_global[a], dof_map6)
+                F_int[Aidx] += f_global[a]
+            return
         var f_load_global = beam2d_element_load_global(
             element_loads,
             elem_load_offsets,
@@ -835,6 +986,7 @@ fn _assemble_frame2d_element(
             force_beam_column2d_scratch,
             k_elem6,
             f_elem6,
+            sec.hinge_radau,
         )
     else:
         disp_beam_column2d_global_tangent_and_internal(

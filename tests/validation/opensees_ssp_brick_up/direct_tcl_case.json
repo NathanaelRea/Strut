@@ -1,0 +1,8 @@
+{
+  "name": "opensees_ssp_brick_up",
+  "entry_tcl": "tests/fixtures/opensees/StrutSoil/ssp_brick_up/ssp_brick_up.tcl",
+  "tcl_source_version": "3.7.1",
+  "enabled": true,
+  "source_url": "https://opensees.berkeley.edu/wiki/index.php/SSPbrickUP_Element",
+  "reference": "Strut regression for the OpenSees SSPbrickUP formulation, with a warped brick, drained top nodes, and a staged permeability update."
+}

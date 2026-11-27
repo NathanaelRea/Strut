@@ -1,0 +1,8 @@
+{
+  "name": "opensees_example_one_dimensional_consolidation",
+  "entry_tcl": "tests/fixtures/opensees/OpenSeesExamplesPractical/one_dimensional_consolidation/1Dconsolidation.tcl",
+  "tcl_source_version": "3.7.1",
+  "enabled": true,
+  "source_url": "https://opensees.berkeley.edu/wiki/index.php/One-dimensional_Consolidation",
+  "reference": "One-dimensional Consolidation, Christopher McGann and Pedro Arduino, University of Washington."
+}

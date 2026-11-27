@@ -1,7 +1,25 @@
 from collections import List
 
 from solver.run_case.input_types import ElementLoadInput
+from sections.thermal_profile2d import ThermalProfile2d
 from tag_types import ElementLoadTypeTag
+
+
+fn beam2d_thermal_load(
+    element_loads: List[ElementLoadInput],
+    elem_load_offsets: List[Int],
+    elem_load_pool: List[Int],
+    elem_index: Int,
+    load_scale: Float64,
+) -> ThermalProfile2d:
+    var profile = ThermalProfile2d()
+    if elem_index >= 0 and elem_index + 1 < len(elem_load_offsets):
+        for slot in range(elem_load_offsets[elem_index], elem_load_offsets[elem_index + 1]):
+            ref load = element_loads[elem_load_pool[slot]]
+            if load.type_tag == ElementLoadTypeTag.BeamThermal:
+                profile = load.thermal
+    profile.scale(load_scale)
+    return profile
 
 
 fn beam2d_section_load_response(

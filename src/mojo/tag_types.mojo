@@ -7,17 +7,26 @@ struct ElementTypeTag:
     alias Truss = 6
     alias ZeroLength = 7
     alias TwoNodeLink = 13
+    alias MVLEM = 25
+    alias SFIMVLEM = 28
+    alias CatenaryCable = 29
+    alias BeamContact2D = 30
     alias FourNodeQuad = 8
     alias Shell = 9
     alias ZeroLengthSection = 10
     alias ForceBeamColumn3d = 11
     alias DispBeamColumn3d = 12
+    alias Tri31 = 14
+    alias QuadUP = 26
+    alias SSPBrickUP = 27
+    alias Continuum = 15
 
 
 struct ElementLoadTypeTag:
     alias Unknown = 0
     alias BeamUniform = 1
     alias BeamPoint = 2
+    alias BeamThermal = 3
 
 
 struct GeomTransfTag:
@@ -32,6 +41,7 @@ struct BeamIntegrationTag:
     alias Lobatto = 1
     alias Legendre = 2
     alias Radau = 3
+    alias HingeRadau = 4
 
 
 struct NumbererTag:
@@ -66,6 +76,7 @@ struct ConstraintHandlerTag:
     alias Plain = 1
     alias Transformation = 2
     alias Lagrange = 3
+    alias Penalty = 4
 
 
 struct ForceBeamModeTag:
@@ -80,6 +91,7 @@ struct IntegratorTypeTag:
     alias LoadControl = 1
     alias DisplacementControl = 2
     alias Newmark = 3
+    alias HSConstraint = 4
 
 
 struct PatternTypeTag:
@@ -123,6 +135,15 @@ struct RecorderTypeTag:
     alias EnvelopeElementLocalForce = 12
     alias EnvelopeNodeDisplacement = 13
     alias EnvelopeNodeAcceleration = 14
+    alias NodeAcceleration = 15
+    alias NodeVelocity = 16
+    alias QuadStress = 17
+    alias QuadStrain = 18
+    alias QuadState = 19
+    alias ContactSecondaryForce = 20
+    alias ContactFrictionForce = 21
+    alias ContactScalarForce = 22
+    alias ContactPrimaryForce = 23
 
 
 struct TimeSeriesTypeTag:
@@ -139,6 +160,24 @@ struct UniMaterialTypeTag:
     alias Concrete01 = 2
     alias Steel02 = 3
     alias Concrete02 = 4
+    alias Bilin = 5
+    alias Hysteretic = 6
+    alias PySimple1 = 20
+    alias TzSimple1 = 21
+    alias QzSimple1 = 22
+    alias ViscousDamper = 7
+    alias HystereticSmooth = 8
+    alias HystereticAsym = 9
+    alias ENT = 10
+    alias Parallel = 11
+    alias ConcreteCM = 12
+    alias SteelMPF = 13
+    alias ModIMKPeakOriented = 18
+    alias Viscous = 14
+    alias ElasticPP = 15
+    alias ElasticBilin = 16
+    alias Ratchet = 17
+    alias Steel01Thermal = 19
 
 
 struct NonlinearAlgorithmMode:

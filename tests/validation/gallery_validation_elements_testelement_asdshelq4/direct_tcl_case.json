@@ -1,0 +1,7 @@
+{
+  "enabled": false,
+  "entry_tcl": "tests/fixtures/opensees/STAIRlabGallery/content/validation/elements/TestElement_ASDShelQ4.tcl",
+  "tcl_source_version": "3.7.1",
+  "source_url": "https://github.com/peer-open-source/opensees-gallery/blob/fd3958fde8a3d0a350321b3fbdd3f415ee16e2a2/content/validation/elements/TestElement_ASDShelQ4.tcl",
+  "disabled_reason": "The fixture runs only an eigen query before wipe, so its XML force, section-force, and fiber-stress recorders receive no analysis steps."
+}

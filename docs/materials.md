@@ -42,6 +42,58 @@ Newton/Modified Newton updates.
 - **Concrete02**
   - Parameters: required `{ fpc, epsc0, fpcu, epscu }`, optional grouped `{ rat, ft, Ets }`.
   - Defaults (OpenSees): `rat=0.1`, `ft=abs(0.1*fpc)`, `Ets=0.1*fpc/epsc0`.
+- **Bilin**
+  - OpenSees positional parameters include asymmetric yield, hardening, capping,
+    residual strength, and energy-based deterioration. The optional 24th
+    parameter is `nFactor`.
+  - Each spring or section response tracks its own reversal and deterioration
+    history. Trial updates start from the last committed history.
+- **Hysteretic**
+  - The positive and negative backbones each accept two or three force/deformation
+    pairs, followed by `pinchX pinchY damage1 damage2` and optional `beta`.
+  - The state records strain extrema, reversal points, and dissipated energy for
+    the pinching and unloading rules.
+
+For these two materials, JSON stores the OpenSees positional arguments after
+the material tag in `params.values`. The material tests compare cyclic stress
+and tangent with OpenSees 3.7.1, including repeated trials between commits.
+- **ViscousDamper** uses the axial displacement and velocity of a `twoNodeLink`
+  during transient analysis. It accepts `K C alpha`, an optional gap `LGap`,
+  and the optional group `NM RelTol AbsTol MaxHalf`. The three integration
+  schemes are Dormand–Prince, Adams–Bashforth–Moulton, and Rosenbrock.
+- **Fatigue** wraps a `Steel02` material using the OpenSees modified rainflow
+  algorithm. Pass the base material tag and optional `-Dmax`, `-E0`, `-m`,
+  `-min`, and `-max` flags. Each 3D fiber or uniaxial element instance tracks
+  its own strain reversals and reduces its stress and tangent after failure.
+
+- **ElasticPP** uses `{ E, epsyP, epsyN?, eps0? }`. It returns zero tangent
+  on its perfectly plastic branches and advances plastic strain on commit.
+  The negative yield strain defaults to `-epsyP` and the strain offset to zero.
+- **ElasticBilin** uses `{ E1P, E2P, eps2P, E1N?, E2N?, eps2N? }`. Its
+  stress follows a reversible bilinear envelope. The optional negative branch
+  is supplied as a group and defaults to the reflection of the positive branch.
+- **MinMax** uses `{ material, min?, max? }` and owns an instance of the
+  referenced uniaxial material. Reaching either limit gives zero stress and
+  a tangent of `1e-8` times the base material's initial tangent. Failure becomes
+  permanent when the step commits. Bounds default to `-1e16` and `1e16`.
+- **Ratchet** uses `{ E, freeTravel, freeTravelInitial, RatType }`. It develops
+  elastic force above the engagement threshold. A negative excursion moves
+  that threshold on commit in discrete increments for mode 1 and continuously
+  for mode 2.
+
+The cyclic material tests compare stress and tangent for all four materials
+with OpenSees 3.7.1, including repeated trials between commits.
+
+- **ENT** uses `{ E, a?, b? }`. It is linear in compression, with the
+  compressive tangent at zero strain. Tension defaults to zero (`a = 0`).
+  The optional tensile branch is `a E tanh(b strain)`, with `b = 1` by default.
+- **Parallel** uses `{ materials, factors? }`. Every component receives the
+  same strain and the aggregate sums their weighted stresses and tangents.
+  Factors default to one. Each material instance owns independent component
+  histories, including repeated or nested components.
+
+`FiberSection2d` and `FiberSection3d` use the generic uniaxial state path for
+materials outside their optimized material families, including MinMax wrappers.
 
 ## Extension Guidelines
 
@@ -144,3 +196,21 @@ compression, shear, and mixed cycles, including multiple trial strains per
 commit. The 48-step [cyclic wall](../tests/validation/strut_concrete_s_cyclic_wall/direct_tcl_case.json)
 checks tip displacement and base reactions through the Tcl converter and
 Strut parity harness.
+
+## ConcreteCM and SteelMPF
+
+`ConcreteCM` follows the Chang–Mander compression and tension envelopes and
+OpenSees' numbered unloading, reloading, and gap-closure rules. The Tcl form
+takes `fpcc epcc Ec rc xcrn ft et rt xcrp` followed by optional `-GapClose 0|1`
+or the monotonic-mode integer. The canonical optional keys are `gap_close` and
+`monotonic`.
+
+`SteelMPF` implements the asymmetric Menegotto–Pinto–Filippou curves. It takes
+`fyp fyn E0 bp bn R0 cR1 cR2` and optional `a1 a2 a3 a4`. The absolute
+compression yield strength is supplied as positive `fyn`. The positive and
+negative branches track their own strain hardening, reversal points, curvature,
+and previous-curve limits.
+
+Both materials evaluate each trial from the last commit. The cyclic material
+tests compare stress and tangent directly against OpenSees 3.7.1, including
+paths with multiple trials between commits.

@@ -14,9 +14,8 @@ What gets installed:
   copied into ``tests/fixtures/opensees/<path>``.
 * ``trees``: whole archives extracted into ``tests/fixtures/opensees/<path>``.
   None are pinned today.
-* The mega-tall benchmark model is generated, not downloaded:
-  ``scripts/megatall_recon/bundle.py`` rebuilds it from compact tables into
-  ``tests/fixtures/opensees/OpenSeesExamples/MegaTallBuildingBenchmark/Model1``.
+* The mega-tall, centrifuge, and effective-stress slope models are generated from rules and
+  compact tables under ``scripts/``.
 * ``git``: source trees cloned at a pinned commit into the cache and linked
   from ``docs/agent-reference/<path>``. These are OpenSees (matching the locked
   binary) and Modular (matching the Mojo version). An entry's ``links`` map
@@ -60,10 +59,22 @@ FIXTURE_GITIGNORE = FIXTURE_ROOT / ".gitignore"
 AGENT_REFERENCE = REPO_ROOT / "docs" / "agent-reference"
 
 # Fixture directories built locally by a generator instead of downloaded.
-GENERATED_FIXTURE_DIRS = ("OpenSeesExamples/MegaTallBuildingBenchmark",)
+GENERATED_FIXTURE_DIRS = (
+    "OpenSeesExamples/MegaTallBuildingBenchmark",
+    "OpenSeesManual/Centrifuge",
+)
+
+GENERATED_FIXTURE_FILES = (
+    "OpenSeesExamplesPractical/dynamic_2d_effective_stress_analysis_of_slope/SlopeAnalysis2Deff.tcl",
+)
 
 # Wiki example directories that vendor-wiki syncs from a scrape.
-WIKI_EXAMPLE_DIRS = ("OpenSeesExamplesBasic", "OpenSeesExamplesAdvanced")
+WIKI_EXAMPLE_DIRS = (
+    "OpenSeesExamplesBasic",
+    "OpenSeesExamplesAdvanced",
+    "OpenSeesExamplesPractical",
+    "OpenSeesExamplesSensitivity",
+)
 WIKI_PROVENANCE = "opensees-wiki-provenance.json"
 # Committed as source: example scripts. Everything else in a scrape is data
 # and goes through the manifest.
@@ -80,6 +91,10 @@ WIKI_ALIASES = {
     "OpenSeesExamplesAdvanced/GMfiles/H-e12140.at2": "OpenSeesExamplesAdvanced/H-E12140.AT2",
     "OpenSeesExamplesAdvanced/GMfiles/H-e12140.dt2": "OpenSeesExamplesAdvanced/H-E12140.DT2",
     "OpenSeesExamplesAdvanced/GMfiles/H-E01140.at2": "OpenSeesExamplesAdvanced/H-E01140.AT2",
+    # The effective-stress archive omits the Gilroy history consumed by the Tcl.
+    "OpenSeesExamplesPractical/effective_stress_site_response_analysis_of_a_layered_soil_column/velocityHistory.out": (
+        "OpenSeesExamplesPractical/site_response_analysis_of_a_layered_soil_column_total_stress_analysis/siteResponseAnalysis/velocityHistory.out"
+    ),
 }
 
 USER_AGENT = "strut-reference-data/1.0"
@@ -311,23 +326,37 @@ def ensure_git(entry: dict) -> Path:
         shutil.rmtree(dest)
     staging = dest.with_name(dest.name + ".partial")
     shutil.rmtree(staging, ignore_errors=True)
-    log(f"cloning {entry['url']} at {entry['ref']} (shallow)")
-    subprocess.run(
-        [
-            "git",
-            "-c",
-            "advice.detachedHead=false",
-            "clone",
-            "--quiet",
-            "--depth",
-            "1",
-            "--branch",
-            entry["ref"],
-            entry["url"],
-            str(staging),
-        ],
-        check=True,
-    )
+    ref = entry.get("ref")
+    log(f"cloning {entry['url']} at {ref or entry['commit']} (shallow)")
+    if ref is None:
+        subprocess.run(["git", "init", "--quiet", str(staging)], check=True)
+        subprocess.run(
+            ["git", "fetch", "--quiet", "--depth", "1", entry["url"], entry["commit"]],
+            cwd=staging,
+            check=True,
+        )
+        subprocess.run(
+            ["git", "checkout", "--quiet", "--detach", "FETCH_HEAD"],
+            cwd=staging,
+            check=True,
+        )
+    else:
+        subprocess.run(
+            [
+                "git",
+                "-c",
+                "advice.detachedHead=false",
+                "clone",
+                "--quiet",
+                "--depth",
+                "1",
+                "--branch",
+                ref,
+                entry["url"],
+                str(staging),
+            ],
+            check=True,
+        )
     head = subprocess.run(
         ["git", "-C", str(staging), "rev-parse", "HEAD"],
         check=True,
@@ -336,7 +365,9 @@ def ensure_git(entry: dict) -> Path:
     ).stdout.strip()
     if head != entry["commit"]:
         shutil.rmtree(staging, ignore_errors=True)
-        die(f"{entry['url']} {entry['ref']} is {head}, manifest pins {entry['commit']}")
+        die(
+            f"{entry['url']} {ref or entry['commit']} is {head}, manifest pins {entry['commit']}"
+        )
     # Read-only reference copy: drop history so agents cannot commit into it.
     shutil.rmtree(staging / ".git")
     (staging / GIT_MARKER).write_text(entry["commit"] + "\n", encoding="utf-8")
@@ -373,7 +404,7 @@ def cmd_install(skip_agent_reference: bool) -> None:
         trees = sum(
             install_tree(entry, sources, downloader) for entry in manifest["trees"]
         )
-        megatall = megatall_bundle().ensure_bundle()
+        regenerated = sum(bundle.ensure_bundle() for bundle in generated_bundles())
         if not skip_agent_reference:
             for entry in manifest["git"]:
                 tree = ensure_git(entry)
@@ -386,7 +417,7 @@ def cmd_install(skip_agent_reference: bool) -> None:
     log(
         f"fixtures: {len(manifest['files'])} files ({written} written), "
         f"{len(manifest['trees'])} trees ({trees} extracted); "
-        f"mega-tall model {'generated' if megatall else 'up to date'}; "
+        f"{regenerated} generated models refreshed; "
         f"{downloader.count} download(s); cache {reference_cache()}"
     )
     problems = collect_problems(
@@ -405,6 +436,15 @@ def megatall_bundle():
     return bundle
 
 
+def generated_bundles():
+    megatall = megatall_bundle()
+    from scripts.centrifuge_recon import bundle as centrifuge
+
+    from scripts.slope_recon import bundle as slope
+
+    return megatall, centrifuge, slope
+
+
 def collect_problems(manifest: dict, include_agent_reference: bool) -> list[str]:
     problems = []
     for entry in manifest["files"]:
@@ -415,11 +455,11 @@ def collect_problems(manifest: dict, include_agent_reference: bool) -> list[str]
         status = tree_status(entry)
         if status:
             problems.append(f"tests/fixtures/opensees/{entry['path']}/: {status}")
-    bundle = megatall_bundle()
-    if not bundle.bundle_is_current():
-        problems.append(
-            f"{bundle.FIXTURE_DIR.relative_to(REPO_ROOT)}/: generated model missing or stale"
-        )
+    for bundle in generated_bundles():
+        if not bundle.bundle_is_current():
+            problems.append(
+                f"{bundle.FIXTURE_DIR.relative_to(REPO_ROOT)}/: generated model missing or stale"
+            )
     if include_agent_reference:
         for entry in manifest["git"]:
             for name in [entry["path"], *entry.get("links", {})]:
@@ -472,6 +512,8 @@ def cmd_vendor_wiki(scrape_root: Path) -> None:
             die(f"scrape is missing {base}")
         for path in sorted(p for p in base.rglob("*") if p.is_file()):
             rel = PurePosixPath(path.relative_to(scrape_root).as_posix())
+            if rel.as_posix() in GENERATED_FIXTURE_FILES:
+                continue
             data = path.read_bytes()
             if is_vendored(rel, len(data)):
                 atomic_write(FIXTURE_ROOT / rel, data)
@@ -525,8 +567,9 @@ def write_fixture_gitignore(manifest: dict) -> None:
     ]
     lines += sorted(f"/{e['path']}" for e in manifest["files"])
     lines += sorted(f"/{e['path']}/" for e in manifest["trees"])
-    lines.append("# Generated by scripts/megatall_recon/bundle.py; not committed.")
+    lines.append("# Model bundles generated by setup_reference_data.py; not committed.")
     lines += [f"/{path}/" for path in GENERATED_FIXTURE_DIRS]
+    lines += [f"/{path}" for path in GENERATED_FIXTURE_FILES]
     FIXTURE_GITIGNORE.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 

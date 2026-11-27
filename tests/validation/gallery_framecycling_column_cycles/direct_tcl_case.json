@@ -1,0 +1,7 @@
+{
+  "enabled": false,
+  "entry_tcl": "tests/fixtures/opensees/STAIRlabGallery/content/en/examples/FrameCycling/column_cycles.tcl",
+  "tcl_source_version": "3.7.1",
+  "source_url": "https://github.com/peer-open-source/opensees-gallery/blob/fd3958fde8a3d0a350321b3fbdd3f415ee16e2a2/content/en/examples/FrameCycling/column_cycles.tcl",
+  "disabled_reason": "The static Penalty path converts, but the forceBeamColumn2d requires AggregatorSection2d with a fiber base and added Vy response, which the solver rejects."
+}

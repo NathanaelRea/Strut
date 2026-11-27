@@ -229,3 +229,43 @@ fn _beam2d_transform_stiffness_local_to_global_in_place(
     k_local[4][3] = s * r33 + c * r43
     k_local[4][4] = s * r34 + c * r44
     k_local[4][5] = s * r35 + c * r45
+
+
+fn _invert_3x3_values(
+    a: Float64,
+    b: Float64,
+    c: Float64,
+    d: Float64,
+    e: Float64,
+    f: Float64,
+    g: Float64,
+    h: Float64,
+    i: Float64,
+) -> (Bool, Float64, Float64, Float64, Float64, Float64, Float64, Float64, Float64, Float64,):
+    var co00 = e * i - f * h
+    var co01 = -(d * i - f * g)
+    var co02 = d * h - e * g
+    var co10 = -(b * i - c * h)
+    var co11 = a * i - c * g
+    var co12 = -(a * h - b * g)
+    var co20 = b * f - c * e
+    var co21 = -(a * f - c * d)
+    var co22 = a * e - b * d
+
+    var det = a * co00 + b * co01 + c * co02
+    if abs(det) <= 1.0e-40:
+        return (False, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+
+    var inv_det = 1.0 / det
+    return (
+        True,
+        co00 * inv_det,
+        co10 * inv_det,
+        co20 * inv_det,
+        co01 * inv_det,
+        co11 * inv_det,
+        co21 * inv_det,
+        co02 * inv_det,
+        co12 * inv_det,
+        co22 * inv_det,
+    )

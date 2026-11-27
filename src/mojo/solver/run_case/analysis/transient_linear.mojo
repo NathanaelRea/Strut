@@ -1,3 +1,5 @@
+from solver.assembly.shell_mass import add_shell_mass_sparse, shell_excitation_mass
+from solver.run_case.analysis.transient_state import TransientState
 from algorithm import vectorize
 from collections import List
 from elements import (
@@ -22,7 +24,7 @@ from solver.assembly.frame3d_scratch import (
     Frame3dAssemblyScratch,
     reset_frame3d_assembly_scratch,
 )
-from solver.assembly.shell_cache import ShellAssemblyCache
+from solver.assembly.surface_cache import SurfaceAssemblyCache
 from solver.run_case.linear_solver_backend import (
     LinearSolverBackend,
     clear,
@@ -71,8 +73,11 @@ from solver.run_case.input_types import (
     NodeInput,
     RecorderInput,
     SectionInput,
+    UniformExcitationInput,
 )
 from solver.run_case.load_state import (
+    add_uniform_excitation_load,
+    set_uniform_excitation_initial_velocity,
     build_active_element_load_state,
     build_active_nodal_load,
 )
@@ -80,7 +85,6 @@ from solver.time_series import TimeSeriesInput, eval_time_series_input, find_tim
 
 from solver.run_case.helpers import (
     _append_output,
-    _collapse_load_keeping_restrained,
     _collapse_vector_by_mpc,
     _element_basic_force_for_recorder,
     _element_deformation_for_recorder,
@@ -118,7 +122,9 @@ fn _has_nonparticipating_link_for_rayleigh(elements: List[ElementInput]) -> Bool
 fn _has_zero_length_damp_mats(elements: List[ElementInput]) -> Bool:
     for i in range(len(elements)):
         var elem = elements[i]
-        if elem.type_tag == ElementTypeTag.ZeroLength and elem.damp_material_count > 0:
+        if elem.type_tag == ElementTypeTag.ZeroLength and (
+            elem.damp_material_count > 0 or elem.has_viscous_material
+        ):
             return True
     return False
 
@@ -170,89 +176,32 @@ fn _build_solver_load_vector_with_element_loads(
             dst[elem_dof_pool[dof_offset + a]] += f_load[a]
 
 
-fn _build_effective_rhs_newmark(
+fn _build_newmark_residual(
     free: List[Int],
     u_f: List[Float64],
     v_f: List[Float64],
     a_f: List[Float64],
     F_ext_step: List[Float64],
-    mut mats: TransientSparseMatrices,
-    a0: Float64,
-    a1: Float64,
-    a2: Float64,
-    a3: Float64,
-    a4: Float64,
-    a5: Float64,
-    mut P_ext_f: List[Float64],
-    mut C_term: List[Float64],
-    mut P_eff: List[Float64],
-):
-    var n = len(free)
-    var inertia_term: List[Float64] = []
-    inertia_term.resize(n, 0.0)
-    for i in range(n):
-        P_ext_f[i] = F_ext_step[free[i]]
-        C_term[i] = a1 * u_f[i] + a4 * v_f[i] + a5 * a_f[i]
-        inertia_term[i] = a0 * u_f[i] + a2 * v_f[i] + a3 * a_f[i]
-    mats.compute_inertia_force(inertia_term)
-    for i in range(n):
-        P_eff[i] = P_ext_f[i] + mats.inertia_force[i]
-
-
-@always_inline
-fn _update_newmark_state_from_solution_simd_impl[
-    width: Int
-](
-    mut u_f: List[Float64],
-    mut v_f: List[Float64],
-    mut a_f: List[Float64],
-    u_next_f: List[Float64],
-    a0: Float64,
-    a2: Float64,
-    a3: Float64,
+    mats: TransientSparseMatrices,
+    beta: Float64,
     gamma: Float64,
     dt: Float64,
+    mut v_predict: List[Float64],
+    mut a_predict: List[Float64],
+    mut residual: List[Float64],
 ):
-    var n = len(u_f)
-    var one_minus_gamma = 1.0 - gamma
-
-    @parameter
-    fn update_chunk[chunk: Int](i: Int):
-        var u_old = load_float64_contiguous_simd[chunk](u_f, i)
-        var v_old = load_float64_contiguous_simd[chunk](v_f, i)
-        var a_old = load_float64_contiguous_simd[chunk](a_f, i)
-        var u_next = load_float64_contiguous_simd[chunk](u_next_f, i)
-        var a_next = (
-            SIMD[DType.float64, chunk](a0) * (u_next - u_old)
-            - SIMD[DType.float64, chunk](a2) * v_old
-            - SIMD[DType.float64, chunk](a3) * a_old
-        )
-        var v_next = v_old + SIMD[DType.float64, chunk](dt) * (
-            SIMD[DType.float64, chunk](one_minus_gamma) * a_old
-            + SIMD[DType.float64, chunk](gamma) * a_next
-        )
-        store_float64_contiguous_simd[chunk](u_f, i, u_next)
-        store_float64_contiguous_simd[chunk](v_f, i, v_next)
-        store_float64_contiguous_simd[chunk](a_f, i, a_next)
-
-    vectorize[update_chunk, width](n)
-
-
-@always_inline
-fn _update_newmark_state_from_solution_simd(
-    mut u_f: List[Float64],
-    mut v_f: List[Float64],
-    mut a_f: List[Float64],
-    u_next_f: List[Float64],
-    a0: Float64,
-    a2: Float64,
-    a3: Float64,
-    gamma: Float64,
-    dt: Float64,
-):
-    _update_newmark_state_from_solution_simd_impl[simd_width_of[DType.float64]()](
-        u_f, v_f, a_f, u_next_f, a0, a2, a3, gamma, dt
-    )
+    # Displacement-form Newmark keeps the committed displacement for the
+    # predictor. Solving directly for its correction avoids cancellation
+    # between the old and new displacements when dt is small.
+    var velocity_scale = 1.0 - gamma / beta
+    var velocity_accel_scale = dt * (1.0 - 0.5 * gamma / beta)
+    var accel_scale = 1.0 - 0.5 / beta
+    var accel_velocity_scale = -1.0 / (beta * dt)
+    for i in range(len(free)):
+        v_predict[i] = velocity_scale * v_f[i] + velocity_accel_scale * a_f[i]
+        a_predict[i] = accel_scale * a_f[i] + accel_velocity_scale * v_f[i]
+    # The matrices do not change during a linear transient, so C is formed once.
+    mats.newmark_residual_frozen(free, F_ext_step, u_f, v_predict, a_predict, residual)
 
 
 @always_inline
@@ -276,6 +225,7 @@ fn _scatter_free_vector_to_full(free: List[Int], src: List[Float64], mut dst: Li
 
 fn run_transient_linear(
     analysis: AnalysisInput,
+    mut transient_state: TransientState,
     steps: Int,
     ts_index: Int,
     time_series: List[TimeSeriesInput],
@@ -284,8 +234,7 @@ fn run_transient_linear(
     dampings: List[DampingInput],
     pattern_type: String,
     pattern_type_tag: Int,
-    uniform_excitation_direction: Int,
-    uniform_accel_ts_index: Int,
+    uniform_excitations: List[UniformExcitationInput],
     rayleigh_alpha_m: Float64,
     rayleigh_beta_k: Float64,
     rayleigh_beta_k_init: Float64,
@@ -352,7 +301,7 @@ fn run_transient_linear(
     fiber_section3d_cells: List[FiberCell],
     fiber_section3d_index_by_id: List[Int],
     layered_shell_section_defs: List[LayeredShellSectionDef],
-    mut shell_cache: ShellAssemblyCache,
+    mut shell_cache: SurfaceAssemblyCache,
     mut transient_output_files: List[String],
     mut transient_output_buffers: List[String],
     has_transformation_mpc: Bool,
@@ -385,16 +334,6 @@ fn run_transient_linear(
         and pattern_type_tag != PatternTypeTag.UniformExcitation
     ):
         abort("unsupported pattern type: " + pattern_type)
-    if pattern_type_tag == PatternTypeTag.UniformExcitation:
-        if uniform_excitation_direction < 1 or uniform_excitation_direction > ndm:
-            abort("UniformExcitation direction out of range")
-        if uniform_accel_ts_index < 0:
-            abort("UniformExcitation missing accel time_series")
-    var uniform_excitation_dofs: List[Int] = []
-    if pattern_type_tag == PatternTypeTag.UniformExcitation:
-        for i in range(total_dofs):
-            if (i % ndf) + 1 == uniform_excitation_direction:
-                uniform_excitation_dofs.append(i)
     var integrator_tag = analysis.integrator_tag
     if integrator_tag == IntegratorTypeTag.Unknown:
         integrator_tag = IntegratorTypeTag.Newmark
@@ -445,6 +384,18 @@ fn run_transient_linear(
         mpc_dof_pool,
         mpc_coeff_pool,
     )
+    shell_cache.continuum.add_consistent_mass(
+        mats.assembler, mats.mass, elem_dof_offsets, elem_free_pool
+    )
+    shell_cache.continuum.add_consistent_mass(
+        mats.assembler, mats.mass_rayleigh, elem_dof_offsets, elem_free_pool
+    )
+    add_shell_mass_sparse(shell_cache.shell.masses, mats.assembler, mats.mass)
+    if rayleigh_alpha_m != 0.0:
+        add_shell_mass_sparse(shell_cache.shell.masses, mats.assembler, mats.mass_rayleigh)
+    var excitation_mass: List[Float64] = []
+    if len(uniform_excitations) > 0:
+        excitation_mass = shell_excitation_mass(shell_cache.shell.masses, M_total)
     if not sparse_values_any_nonzero(mats.mass):
         abort("transient_linear requires masses on free dofs")
     var force_beam_column2d_scratch = ForceBeamColumn2dScratch()
@@ -578,10 +529,6 @@ fn run_transient_linear(
 
     var a0 = 1.0 / (beta * dt * dt)
     var a1 = gamma / (beta * dt)
-    var a2 = 1.0 / (beta * dt)
-    var a3 = 1.0 / (2.0 * beta) - 1.0
-    var a4 = gamma / beta - 1.0
-    var a5 = dt * (gamma / (2.0 * beta) - 1.0)
     var beta_sum = rayleigh_beta_k + rayleigh_beta_k_init + rayleigh_beta_k_comm
     var need_link_rayleigh_filter = beta_sum != 0.0 and _has_nonparticipating_link_for_rayleigh(
         typed_elements
@@ -681,10 +628,8 @@ fn run_transient_linear(
             var fac_end_us = (t_fac_end - t0) // 1000
             _append_event(events, events_need_comma, "C", frame_factorize, fac_end_us)
 
-    var v: List[Float64] = []
-    v.resize(total_dofs, 0.0)
-    var a: List[Float64] = []
-    a.resize(total_dofs, 0.0)
+    ref v = transient_state.velocity
+    ref a = transient_state.acceleration
     var u_f: List[Float64] = []
     u_f.resize(free_count, 0.0)
     var v_f: List[Float64] = []
@@ -693,21 +638,22 @@ fn run_transient_linear(
     a_f.resize(free_count, 0.0)
     for i in range(free_count):
         u_f[i] = u[free[i]]
+        v_f[i] = v[free[i]]
+        a_f[i] = a[free[i]]
+    set_uniform_excitation_initial_velocity(uniform_excitations, free, ndf, v_f)
 
     var F_ext_step: List[Float64] = []
     F_ext_step.resize(total_dofs, 0.0)
     var F_solve_step: List[Float64] = []
     F_solve_step.resize(total_dofs, 0.0)
-    var P_ext_f: List[Float64] = []
-    P_ext_f.resize(free_count, 0.0)
-    var P_eff: List[Float64] = []
-    P_eff.resize(free_count, 0.0)
-    var C_term: List[Float64] = []
-    C_term.resize(free_count, 0.0)
+    var v_predict: List[Float64] = []
+    v_predict.resize(free_count, 0.0)
+    var a_predict: List[Float64] = []
+    a_predict.resize(free_count, 0.0)
     var lu_rhs: List[Float64] = []
     lu_rhs.resize(free_count, 0.0)
-    var u_next_f: List[Float64] = []
-    u_next_f.resize(free_count, 0.0)
+    var delta_u_f: List[Float64] = []
+    delta_u_f.resize(free_count, 0.0)
     var record_reactions = _has_recorder_type(recorders, RecorderTypeTag.NodeReaction)
     var record_any_element_force = _has_recorder_type(
         recorders, RecorderTypeTag.ElementForce
@@ -725,6 +671,8 @@ fn run_transient_linear(
     var envelope_max: List[List[Float64]] = []
     var envelope_abs: List[List[Float64]] = []
 
+    mats.freeze_damping()
+    var t = analysis.start_time
     for step in range(steps):
         if do_profile:
             var t_step_start = Int(time.perf_counter_ns())
@@ -775,7 +723,7 @@ fn run_transient_linear(
                     frame_constraints,
                     constraints_end_us,
                 )
-        var t = Float64(step + 1) * dt
+        t += dt
         if pattern_type_tag == PatternTypeTag.UniformExcitation:
             copy_float64_contiguous(F_ext_step, F_const, len(F_ext_step))
             active_element_load_state = build_active_element_load_state(
@@ -817,11 +765,19 @@ fn run_transient_linear(
                     frame_time_series_eval,
                     ts_start_us,
                 )
-            var ag = eval_time_series_input(
-                time_series[uniform_accel_ts_index],
+            add_uniform_excitation_load(
+                uniform_excitations,
                 t,
+                time_series,
                 time_series_values,
                 time_series_times,
+                excitation_mass,
+                ndf,
+                has_transformation_mpc,
+                mpc_row_offsets,
+                mpc_dof_pool,
+                mpc_coeff_pool,
+                F_ext_step,
             )
             if do_profile:
                 var t_ts_end = Int(time.perf_counter_ns())
@@ -833,20 +789,6 @@ fn run_transient_linear(
                     frame_time_series_eval,
                     ts_end_us,
                 )
-            var uniform_inertia_load: List[Float64] = []
-            uniform_inertia_load.resize(total_dofs, 0.0)
-            for i in range(len(uniform_excitation_dofs)):
-                var dof_idx = uniform_excitation_dofs[i]
-                uniform_inertia_load[dof_idx] += -M_total[dof_idx] * ag
-            if has_transformation_mpc:
-                uniform_inertia_load = _collapse_load_keeping_restrained(
-                    uniform_inertia_load,
-                    mpc_row_offsets,
-                    mpc_dof_pool,
-                    mpc_coeff_pool,
-                )
-            for i in range(total_dofs):
-                F_ext_step[i] += uniform_inertia_load[i]
         else:
             if ts_index >= 0:
                 if do_profile:
@@ -955,22 +897,8 @@ fn run_transient_linear(
             F_ext_step,
             F_solve_step,
         )
-        _build_effective_rhs_newmark(
-            free,
-            u_f,
-            v_f,
-            a_f,
-            F_solve_step,
-            mats,
-            a0,
-            a1,
-            a2,
-            a3,
-            a4,
-            a5,
-            P_ext_f,
-            C_term,
-            P_eff,
+        _build_newmark_residual(
+            free, u_f, v_f, a_f, F_solve_step, mats, beta, gamma, dt, v_predict, a_predict, lu_rhs
         )
         if has_zero_length_dampers:
             var F_zero_length_damp_committed: List[Float64] = []
@@ -1019,21 +947,26 @@ fn run_transient_linear(
                 var t_fac_end = Int(time.perf_counter_ns())
                 var fac_end_us = (t_fac_end - t0) // 1000
                 _append_event(events, events_need_comma, "C", frame_factorize, fac_end_us)
-        mats.compute_damping_force(C_term)
-        for i in range(free_count):
-            lu_rhs[i] = P_eff[i] + mats.damping_force[i]
-            if has_zero_length_dampers:
-                lu_rhs[i] += F_zero_length_damp_committed_f[i]
+        if has_zero_length_dampers:
+            for i in range(free_count):
+                # The affine damper force is K_d * u - F_d,committed.
+                var damp_force = 0.0
+                for slot in range(mats.pattern.row_start[i], mats.pattern.row_start[i + 1]):
+                    damp_force += mats.k_zero_length_damp[slot] * u_f[mats.pattern.col_index[slot]]
+                lu_rhs[i] += F_zero_length_damp_committed_f[i] - damp_force
         if do_profile:
             var t_solve_start = Int(time.perf_counter_ns())
             var solve_start_us = (t_solve_start - t0) // 1000
             _append_event(events, events_need_comma, "O", frame_solve_linear, solve_start_us)
-        solve(backend, lu_rhs, u_next_f)
+        solve(backend, lu_rhs, delta_u_f)
         if do_profile:
             var t_solve_end = Int(time.perf_counter_ns())
             var solve_end_us = (t_solve_end - t0) // 1000
             _append_event(events, events_need_comma, "C", frame_solve_linear, solve_end_us)
-        _update_newmark_state_from_solution_simd(u_f, v_f, a_f, u_next_f, a0, a2, a3, gamma, dt)
+        for i in range(free_count):
+            u_f[i] += delta_u_f[i]
+            v_f[i] = v_predict[i] + a1 * delta_u_f[i]
+            a_f[i] = a_predict[i] + a0 * delta_u_f[i]
         var need_full_state = (
             has_transformation_mpc or record_reactions or len(recorders) > 0 or step == steps - 1
         )
@@ -1214,8 +1147,12 @@ fn run_transient_linear(
 
         for r in range(len(recorders)):
             var rec = recorders[r]
+            if not transient_state.should_sample(rec, r, t):
+                continue
             if (
                 rec.type_tag == RecorderTypeTag.NodeDisplacement
+                or rec.type_tag == RecorderTypeTag.NodeVelocity
+                or rec.type_tag == RecorderTypeTag.NodeAcceleration
                 or rec.type_tag == RecorderTypeTag.EnvelopeNodeDisplacement
                 or rec.type_tag == RecorderTypeTag.EnvelopeNodeAcceleration
             ):
@@ -1227,8 +1164,14 @@ fn run_transient_linear(
                     for j in range(rec.dof_count):
                         var dof = recorder_dofs_pool[rec.dof_offset + j]
                         require_dof_in_range(dof, ndf, "recorder")
-                        var value = u[node_dof_index(i, dof, ndf)]
-                        if rec.type_tag == RecorderTypeTag.EnvelopeNodeAcceleration:
+                        var dof_index = node_dof_index(i, dof, ndf)
+                        var value = u[dof_index]
+                        if rec.type_tag == RecorderTypeTag.NodeVelocity:
+                            value = v[dof_index]
+                        if (
+                            rec.type_tag == RecorderTypeTag.EnvelopeNodeAcceleration
+                            or rec.type_tag == RecorderTypeTag.NodeAcceleration
+                        ):
                             value = a[node_dof_index(i, dof, ndf)]
                             if rec.time_series_tag >= 0:
                                 var ts_index = find_time_series_input(
@@ -1244,7 +1187,10 @@ fn run_transient_linear(
                                 )
                         values[j] = value
                     var filename = rec.output + "_node" + String(node_id) + ".out"
-                    if rec.type_tag == RecorderTypeTag.NodeDisplacement:
+                    if (
+                        rec.type_tag != RecorderTypeTag.EnvelopeNodeDisplacement
+                        and rec.type_tag != RecorderTypeTag.EnvelopeNodeAcceleration
+                    ):
                         _append_output(
                             transient_output_files,
                             transient_output_buffers,
@@ -1260,6 +1206,32 @@ fn run_transient_linear(
                             envelope_max,
                             envelope_abs,
                         )
+            elif (
+                rec.type_tag == RecorderTypeTag.QuadStress
+                or rec.type_tag == RecorderTypeTag.QuadStrain
+                or rec.type_tag == RecorderTypeTag.QuadState
+            ):
+                for eidx in range(rec.element_count):
+                    var elem_id = recorder_elements_pool[rec.element_offset + eidx]
+                    if elem_id >= len(elem_id_to_index) or elem_id_to_index[elem_id] < 0:
+                        abort("recorder element not found")
+                    var elem_index = elem_id_to_index[elem_id]
+                    var values = shell_cache.record_quad(
+                        elem_index,
+                        rec.integration_point,
+                        rec.type_tag == RecorderTypeTag.QuadStress,
+                        rec.stress_components,
+                        elem_dof_offsets[elem_index],
+                        elem_dof_pool,
+                        u,
+                        rec.type_tag == RecorderTypeTag.QuadState,
+                    )
+                    _append_output(
+                        transient_output_files,
+                        transient_output_buffers,
+                        rec.output + "_ele" + String(elem_id) + ".out",
+                        _format_values_line(values),
+                    )
             elif rec.type_tag == RecorderTypeTag.ElementForce:
                 for eidx in range(rec.element_count):
                     var elem_id = recorder_elements_pool[rec.element_offset + eidx]
@@ -1294,6 +1266,7 @@ fn run_transient_linear(
                             force_basic_offsets,
                             force_basic_counts,
                             force_basic_q,
+                            shell_cache.continuum,
                         )
                         elem_force_cached[elem_index] = True
                     var line = _format_values_line(elem_force_values[elem_index])
@@ -1311,6 +1284,9 @@ fn run_transient_linear(
                         elem,
                         ndf,
                         u,
+                        active_element_load_state.element_loads,
+                        active_element_load_state.elem_load_offsets,
+                        active_element_load_state.elem_load_pool,
                         typed_nodes,
                         typed_sections_by_id,
                         fiber_section_defs,
@@ -1355,6 +1331,7 @@ fn run_transient_linear(
                         elem_uniaxial_offsets,
                         elem_uniaxial_counts,
                         elem_uniaxial_state_ids,
+                        rec.material_stress,
                     )
                     var filename = rec.output + "_ele" + String(elem_id) + ".out"
                     _append_output(
@@ -1441,6 +1418,7 @@ fn run_transient_linear(
                             force_basic_offsets,
                             force_basic_counts,
                             force_basic_q,
+                            shell_cache.continuum,
                         )
                         elem_force_cached[elem_index] = True
                     var filename = rec.output + "_ele" + String(elem_id) + ".out"
@@ -1464,6 +1442,9 @@ fn run_transient_linear(
                         elem,
                         ndf,
                         u,
+                        active_element_load_state.element_loads,
+                        active_element_load_state.elem_load_offsets,
+                        active_element_load_state.elem_load_pool,
                         typed_nodes,
                         typed_sections_by_id,
                         fiber_section_defs,
@@ -1541,7 +1522,7 @@ fn run_transient_linear(
                             filename,
                             _format_values_line(values),
                         )
-            else:
+            elif rec.type_tag != RecorderTypeTag.ModalEigen:
                 abort("unsupported recorder type")
         if do_profile:
             var t_rec_end = Int(time.perf_counter_ns())
@@ -1560,7 +1541,7 @@ fn run_transient_linear(
                     commit_start_us,
                 )
             uniaxial_commit_all(uniaxial_states)
-            shell_cache.commit_layered_states()
+            shell_cache.commit()
             fiber_section2d_commit_runtime_all(fiber_section_defs)
             fiber_section3d_commit_runtime_all(fiber_section3d_defs)
             if do_profile:

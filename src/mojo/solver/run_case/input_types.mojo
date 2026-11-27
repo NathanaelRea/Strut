@@ -1,8 +1,21 @@
-from collections import List
+from solver.run_case.analysis.hs_constraint import HSConstraint
+from materials.pressure_depend_multi_yield import PressureDependMultiYieldDef
+from materials.pressure_depend_multi_yield_02 import PressureDependMultiYield02Parameters
+from materials.pressure_independ_multi_yield import PressureIndependMultiYieldDef
+from elements.continuum import continuum_nodes
+from materials.drucker_prager import DruckerPragerDefinition
+from collections import InlineArray, List
 from pathlib import Path
 from os import abort
+from elements.hinge_radau2d import HingeRadau2d
+from elements.force_beam_column_cbdi import CbdiSettings
+from sections.thermal_profile2d import ThermalProfile2d
 
+from materials.fsam import FSAMInput
+from elements.catenary_cable import CatenaryCable
+from elements.mvlem import MVLEMFiber, MVLEMGeometry
 from json_native import JsonDocument, JsonValueTag
+from materials.uniaxial.core import UniMaterialDef
 from strut_io import CaseSourceInfo, read_text_native
 from solver.time_series import TimeSeriesInput, find_time_series_input
 from tag_types import (
@@ -21,6 +34,7 @@ from tag_types import (
     PatternTypeTag,
     RecorderTypeTag,
     TimeSeriesTypeTag,
+    UniMaterialTypeTag,
 )
 
 
@@ -39,6 +53,7 @@ struct NodeInput(ImplicitlyCopyable, Movable):
     var y: Float64
     var z: Float64
     var has_z: Bool
+    var ndf: Int
     var constraint_count: Int
     var constraint_1: Int
     var constraint_2: Int
@@ -53,6 +68,7 @@ struct NodeInput(ImplicitlyCopyable, Movable):
         self.y = 0.0
         self.z = 0.0
         self.has_z = False
+        self.ndf = 0
         self.constraint_count = 0
         self.constraint_1 = 0
         self.constraint_2 = 0
@@ -67,6 +83,7 @@ struct NodeInput(ImplicitlyCopyable, Movable):
         self.y = y
         self.z = z
         self.has_z = has_z
+        self.ndf = 0
         self.constraint_count = 0
         self.constraint_1 = 0
         self.constraint_2 = 0
@@ -86,6 +103,10 @@ struct SectionInput(ImplicitlyCopyable, Movable):
     var Iy: Float64
     var G: Float64
     var J: Float64
+    var shear_rigidity_y: Float64
+    var shear_rigidity_z: Float64
+    var base_torsional_rigidity: Float64
+    var added_torsional_rigidity: Float64
     var nu: Float64
     var h: Float64
     var rho: Float64
@@ -102,8 +123,12 @@ struct SectionInput(ImplicitlyCopyable, Movable):
     var fiber_layer_count: Int
     var fiber_offset: Int
     var fiber_count: Int
+    var plate_mod: Float64
+    var plate_fiber_material: Int
     var shell_layer_offset: Int
     var shell_layer_count: Int
+    var hinge_radau: HingeRadau2d
+    var cbdi: CbdiSettings
 
     fn __init__(out self):
         self.id = -1
@@ -115,6 +140,10 @@ struct SectionInput(ImplicitlyCopyable, Movable):
         self.Iy = 0.0
         self.G = 0.0
         self.J = 0.0
+        self.shear_rigidity_y = 0.0
+        self.shear_rigidity_z = 0.0
+        self.base_torsional_rigidity = 0.0
+        self.added_torsional_rigidity = 0.0
         self.nu = 0.0
         self.h = 0.0
         self.rho = 0.0
@@ -131,8 +160,12 @@ struct SectionInput(ImplicitlyCopyable, Movable):
         self.fiber_layer_count = 0
         self.fiber_offset = 0
         self.fiber_count = 0
+        self.plate_mod = 1.0
+        self.plate_fiber_material = -1
         self.shell_layer_offset = 0
         self.shell_layer_count = 0
+        self.hinge_radau = HingeRadau2d()
+        self.cbdi = CbdiSettings(0, 0.0)
 
     fn __init__(out self, id: Int, type: String):
         self.id = id
@@ -144,6 +177,10 @@ struct SectionInput(ImplicitlyCopyable, Movable):
         self.Iy = 0.0
         self.G = 0.0
         self.J = 0.0
+        self.shear_rigidity_y = 0.0
+        self.shear_rigidity_z = 0.0
+        self.base_torsional_rigidity = 0.0
+        self.added_torsional_rigidity = 0.0
         self.nu = 0.0
         self.h = 0.0
         self.rho = 0.0
@@ -160,8 +197,19 @@ struct SectionInput(ImplicitlyCopyable, Movable):
         self.fiber_layer_count = 0
         self.fiber_offset = 0
         self.fiber_count = 0
+        self.plate_mod = 1.0
+        self.plate_fiber_material = -1
         self.shell_layer_offset = 0
         self.shell_layer_count = 0
+        self.hinge_radau = HingeRadau2d()
+        self.cbdi = CbdiSettings(0, 0.0)
+
+    fn beam_shear_modulus(self, element_type: Int) -> Float64:
+        if element_type == ElementTypeTag.ForceBeamColumn3d and self.added_torsional_rigidity > 0.0:
+            var base = self.base_torsional_rigidity
+            var added = self.added_torsional_rigidity
+            return base * added / (base + added) / self.J
+        return self.G
 
 
 struct FiberPatchInput(ImplicitlyCopyable, Movable):
@@ -177,6 +225,14 @@ struct FiberPatchInput(ImplicitlyCopyable, Movable):
     var z_k: Float64
     var y_l: Float64
     var z_l: Float64
+    var num_subdiv_circ: Int
+    var num_subdiv_rad: Int
+    var y_center: Float64
+    var z_center: Float64
+    var int_rad: Float64
+    var ext_rad: Float64
+    var start_ang: Float64
+    var end_ang: Float64
 
     fn __init__(out self):
         self.type = ""
@@ -191,6 +247,14 @@ struct FiberPatchInput(ImplicitlyCopyable, Movable):
         self.z_k = 0.0
         self.y_l = 0.0
         self.z_l = 0.0
+        self.num_subdiv_circ = 0
+        self.num_subdiv_rad = 0
+        self.y_center = 0.0
+        self.z_center = 0.0
+        self.int_rad = 0.0
+        self.ext_rad = 0.0
+        self.start_ang = 0.0
+        self.end_ang = 360.0
 
 
 struct FiberLayerInput(ImplicitlyCopyable, Movable):
@@ -202,6 +266,12 @@ struct FiberLayerInput(ImplicitlyCopyable, Movable):
     var z_start: Float64
     var y_end: Float64
     var z_end: Float64
+    var y_center: Float64
+    var z_center: Float64
+    var radius: Float64
+    var start_ang: Float64
+    var end_ang: Float64
+    var has_angles: Bool
 
     fn __init__(out self):
         self.type = ""
@@ -212,6 +282,12 @@ struct FiberLayerInput(ImplicitlyCopyable, Movable):
         self.z_start = 0.0
         self.y_end = 0.0
         self.z_end = 0.0
+        self.y_center = 0.0
+        self.z_center = 0.0
+        self.radius = 0.0
+        self.start_ang = 0.0
+        self.end_ang = 360.0
+        self.has_angles = False
 
 
 struct FiberInput(ImplicitlyCopyable, Movable):
@@ -234,6 +310,12 @@ struct ShellLayerInput(ImplicitlyCopyable, Movable):
     fn __init__(out self):
         self.material = -1
         self.thickness = 0.0
+
+
+@fieldwise_init
+struct ParallelComponentInput(ImplicitlyCopyable, Movable):
+    var material: Int
+    var factor: Float64
 
 
 struct MaterialInput(ImplicitlyCopyable, Movable):
@@ -263,9 +345,47 @@ struct MaterialInput(ImplicitlyCopyable, Movable):
     var Es: Float64
     var nu: Float64
     var rho: Float64
+    var drucker_prager: Optional[DruckerPragerDefinition]
+    var cross_anisotropic: InlineArray[Float64, 5]
+    var viscous_coefficient: Float64
+    var viscous_exponent: Float64
+    var pimy_index: Int
+    var pdmy_index: Int
+    var soil_dimensions: Int
     var base_material: Int
     var angle: Float64
     var gmod: Float64
+    var contact_parameters: InlineArray[Float64, 4]
+    var uniaxial_values: InlineArray[Float64, 24]
+    var soil_type: Int
+    var soil_ultimate: Float64
+    var soil_disp50: Float64
+    var soil_drag_or_suction: Float64
+    var soil_dashpot: Float64
+    var K: Float64
+    var C: Float64
+    var alpha: Float64
+    var LGap: Float64
+    var NM: Float64
+    var RelTol: Float64
+    var AbsTol: Float64
+    var MaxHalf: Float64
+    var fatigue_dmax: Float64
+    var fatigue_slope: Float64
+    var strain_min: Float64
+    var strain_max: Float64
+    var ka: Float64
+    var kb: Float64
+    var fbar: Float64
+    var beta1: Float64
+    var beta2: Float64
+    var gamma: Float64
+
+    var ent_a: Float64
+    var ent_b: Float64
+    var parallel_components: Optional[List[ParallelComponentInput]]
+    var direct_uniaxial_def: UniMaterialDef
+    var fsam: Optional[FSAMInput]
 
     var has_r0: Bool
     var has_cr1: Bool
@@ -305,9 +425,46 @@ struct MaterialInput(ImplicitlyCopyable, Movable):
         self.Es = 0.0
         self.nu = 0.0
         self.rho = 0.0
+        self.drucker_prager = None
+        self.cross_anisotropic = InlineArray[Float64, 5](fill=0.0)
+        self.viscous_coefficient = 0.0
+        self.viscous_exponent = 1.0
+        self.pimy_index = -1
+        self.pdmy_index = -1
+        self.soil_dimensions = 0
         self.base_material = -1
         self.angle = 0.0
         self.gmod = 0.0
+        self.contact_parameters = InlineArray[Float64, 4](fill=0.0)
+        self.uniaxial_values = InlineArray[Float64, 24](fill=0.0)
+        self.soil_type = 0
+        self.soil_ultimate = 0.0
+        self.soil_disp50 = 0.0
+        self.soil_drag_or_suction = 0.0
+        self.soil_dashpot = 0.0
+        self.K = 0.0
+        self.C = 0.0
+        self.alpha = 1.0
+        self.LGap = 0.0
+        self.NM = 1.0
+        self.RelTol = 1.0e-6
+        self.AbsTol = 1.0e-10
+        self.MaxHalf = 15.0
+        self.fatigue_dmax = 1.0
+        self.fatigue_slope = -0.458
+        self.strain_min = -1.0e16
+        self.strain_max = 1.0e16
+        self.ka = 0.0
+        self.kb = 0.0
+        self.fbar = 0.0
+        self.beta1 = 0.0
+        self.beta2 = 0.0
+        self.gamma = 0.0
+        self.ent_a = 0.0
+        self.ent_b = 1.0
+        self.parallel_components = None
+        self.direct_uniaxial_def = UniMaterialDef()
+        self.fsam = None
         self.has_r0 = False
         self.has_cr1 = False
         self.has_cr2 = False
@@ -320,6 +477,84 @@ struct MaterialInput(ImplicitlyCopyable, Movable):
         self.has_ft = False
         self.has_ets = False
 
+    fn __copyinit__(out self, existing: Self):
+        self.id = existing.id
+        self.type = existing.type
+        self.E = existing.E
+        self.Fy = existing.Fy
+        self.E0 = existing.E0
+        self.b = existing.b
+        self.fpc = existing.fpc
+        self.epsc0 = existing.epsc0
+        self.fpcu = existing.fpcu
+        self.epscu = existing.epscu
+        self.R0 = existing.R0
+        self.cR1 = existing.cR1
+        self.cR2 = existing.cR2
+        self.a1 = existing.a1
+        self.a2 = existing.a2
+        self.a3 = existing.a3
+        self.a4 = existing.a4
+        self.sigInit = existing.sigInit
+        self.rat = existing.rat
+        self.ft = existing.ft
+        self.Ets = existing.Ets
+        self.fc = existing.fc
+        self.Es = existing.Es
+        self.nu = existing.nu
+        self.rho = existing.rho
+        self.drucker_prager = existing.drucker_prager
+        self.cross_anisotropic = existing.cross_anisotropic
+        self.viscous_coefficient = existing.viscous_coefficient
+        self.viscous_exponent = existing.viscous_exponent
+        self.pimy_index = existing.pimy_index
+        self.pdmy_index = existing.pdmy_index
+        self.soil_dimensions = existing.soil_dimensions
+        self.base_material = existing.base_material
+        self.angle = existing.angle
+        self.gmod = existing.gmod
+        self.contact_parameters = existing.contact_parameters.copy()
+        self.uniaxial_values = existing.uniaxial_values.copy()
+        self.soil_type = existing.soil_type
+        self.soil_ultimate = existing.soil_ultimate
+        self.soil_disp50 = existing.soil_disp50
+        self.soil_drag_or_suction = existing.soil_drag_or_suction
+        self.soil_dashpot = existing.soil_dashpot
+        self.K = existing.K
+        self.C = existing.C
+        self.alpha = existing.alpha
+        self.LGap = existing.LGap
+        self.NM = existing.NM
+        self.RelTol = existing.RelTol
+        self.AbsTol = existing.AbsTol
+        self.MaxHalf = existing.MaxHalf
+        self.fatigue_dmax = existing.fatigue_dmax
+        self.fatigue_slope = existing.fatigue_slope
+        self.strain_min = existing.strain_min
+        self.strain_max = existing.strain_max
+        self.ka = existing.ka
+        self.kb = existing.kb
+        self.fbar = existing.fbar
+        self.beta1 = existing.beta1
+        self.beta2 = existing.beta2
+        self.gamma = existing.gamma
+        self.ent_a = existing.ent_a
+        self.ent_b = existing.ent_b
+        self.parallel_components = existing.parallel_components
+        self.direct_uniaxial_def = existing.direct_uniaxial_def
+        self.fsam = existing.fsam
+        self.has_r0 = existing.has_r0
+        self.has_cr1 = existing.has_cr1
+        self.has_cr2 = existing.has_cr2
+        self.has_a1 = existing.has_a1
+        self.has_a2 = existing.has_a2
+        self.has_a3 = existing.has_a3
+        self.has_a4 = existing.has_a4
+        self.has_siginit = existing.has_siginit
+        self.has_rat = existing.has_rat
+        self.has_ft = existing.has_ft
+        self.has_ets = existing.has_ets
+
 
 struct ElementInput(ImplicitlyCopyable, Movable):
     var id: Int
@@ -331,10 +566,13 @@ struct ElementInput(ImplicitlyCopyable, Movable):
     var node_2: Int
     var node_3: Int
     var node_4: Int
+    var solid_extra_nodes: Optional[List[Int]]
     var node_index_1: Int
     var node_index_2: Int
     var node_index_3: Int
     var node_index_4: Int
+    var extra_nodes: InlineArray[Int, 5]
+    var extra_node_indices: InlineArray[Int, 5]
     var section: Int
     var material: Int
     var material_count: Int
@@ -344,6 +582,7 @@ struct ElementInput(ImplicitlyCopyable, Movable):
     var material_4: Int
     var material_5: Int
     var material_6: Int
+    var has_viscous_material: Bool
     var damp_material_count: Int
     var damp_material_1: Int
     var damp_material_2: Int
@@ -369,8 +608,27 @@ struct ElementInput(ImplicitlyCopyable, Movable):
     var geom_vecxz_3: Float64
     var integration: String
     var num_int_pts: Int
+    var cbdi: CbdiSettings
+    var thermal_beam: Bool
     var rho: Float64
     var use_cmass: Bool
+    var shell_eas: Bool
+    var shell_drilling_stab: Float64
+    var quad_pressure: Float64
+    var quad_density: Float64
+    var quad_body_x: Float64
+    var quad_body_y: Float64
+    var up_bulk: Float64
+    var up_perm_x: Float64
+    var up_perm_y: Float64
+    var up_perm_z: Float64
+    var up_void_ratio: Float64
+    var up_stabilization: Float64
+    var up_body_z: Float64
+    var continuum_body_z: Float64
+    var contact_gap_tol: Float64
+    var contact_force_tol: Float64
+    var contact_initial: Bool
     var element_mass: Float64
     var do_rayleigh: Bool
     var has_orient_x: Bool
@@ -386,6 +644,9 @@ struct ElementInput(ImplicitlyCopyable, Movable):
     var pdelta_2: Float64
     var pdelta_3: Float64
     var pdelta_4: Float64
+    var cable: CatenaryCable
+    var wall: MVLEMGeometry
+    var wall_internal_node_start: Int
     var has_shear_dist: Bool
     var shear_dist_1: Float64
     var shear_dist_2: Float64
@@ -416,6 +677,7 @@ struct ElementInput(ImplicitlyCopyable, Movable):
     var dof_22: Int
     var dof_23: Int
     var dof_24: Int
+    var extra_dofs: InlineArray[Int, 8]
 
     fn __init__(out self):
         self.id = 0
@@ -427,10 +689,13 @@ struct ElementInput(ImplicitlyCopyable, Movable):
         self.node_2 = -1
         self.node_3 = -1
         self.node_4 = -1
+        self.solid_extra_nodes = None
         self.node_index_1 = -1
         self.node_index_2 = -1
         self.node_index_3 = -1
         self.node_index_4 = -1
+        self.extra_nodes = InlineArray[Int, 5](fill=-1)
+        self.extra_node_indices = InlineArray[Int, 5](fill=-1)
         self.section = -1
         self.material = -1
         self.material_count = 0
@@ -440,6 +705,7 @@ struct ElementInput(ImplicitlyCopyable, Movable):
         self.material_4 = -1
         self.material_5 = -1
         self.material_6 = -1
+        self.has_viscous_material = False
         self.damp_material_count = 0
         self.damp_material_1 = -1
         self.damp_material_2 = -1
@@ -464,9 +730,28 @@ struct ElementInput(ImplicitlyCopyable, Movable):
         self.geom_vecxz_2 = 0.0
         self.geom_vecxz_3 = 0.0
         self.integration = "Lobatto"
+        self.cbdi = CbdiSettings(0, 0.0)
+        self.thermal_beam = False
         self.num_int_pts = 3
         self.rho = 0.0
         self.use_cmass = False
+        self.shell_eas = True
+        self.shell_drilling_stab = 0.01
+        self.quad_pressure = 0.0
+        self.quad_density = 0.0
+        self.quad_body_x = 0.0
+        self.quad_body_y = 0.0
+        self.up_bulk = 0.0
+        self.up_perm_x = 0.0
+        self.up_perm_y = 0.0
+        self.up_perm_z = 0.0
+        self.up_void_ratio = 0.0
+        self.up_stabilization = 0.0
+        self.up_body_z = 0.0
+        self.continuum_body_z = 0.0
+        self.contact_gap_tol = 0.0
+        self.contact_force_tol = 0.0
+        self.contact_initial = True
         self.element_mass = 0.0
         self.do_rayleigh = False
         self.has_orient_x = False
@@ -482,6 +767,9 @@ struct ElementInput(ImplicitlyCopyable, Movable):
         self.pdelta_2 = 0.0
         self.pdelta_3 = 0.0
         self.pdelta_4 = 0.0
+        self.cable = CatenaryCable()
+        self.wall = MVLEMGeometry()
+        self.wall_internal_node_start = -1
         self.has_shear_dist = False
         self.shear_dist_1 = 0.5
         self.shear_dist_2 = 0.5
@@ -512,6 +800,7 @@ struct ElementInput(ImplicitlyCopyable, Movable):
         self.dof_22 = -1
         self.dof_23 = -1
         self.dof_24 = -1
+        self.extra_dofs = InlineArray[Int, 8](fill=-1)
 
 
 struct ElementLoadInput(ImplicitlyCopyable, Movable):
@@ -525,6 +814,7 @@ struct ElementLoadInput(ImplicitlyCopyable, Movable):
     var pz: Float64
     var px: Float64
     var x: Float64
+    var thermal: ThermalProfile2d
 
     fn __init__(
         out self,
@@ -549,6 +839,7 @@ struct ElementLoadInput(ImplicitlyCopyable, Movable):
         self.pz = pz
         self.px = px
         self.x = x
+        self.thermal = ThermalProfile2d()
 
 
 struct NodalLoadInput(ImplicitlyCopyable, Movable):
@@ -573,14 +864,41 @@ struct MassInput(ImplicitlyCopyable, Movable):
         self.value = value
 
 
+@fieldwise_init
+struct SupportMotionInput(ImplicitlyCopyable, Movable):
+    var node: Int
+    var dof: Int
+    var time_series: Int
+    var velocity_series: Int
+    var acceleration_series: Int
+    var factor: Float64
+
+
+struct AnalysisConstraintsInput(ImplicitlyCopyable, Movable):
+    var modal_damping: List[Float64]
+    var support_motions: List[SupportMotionInput]
+
+    fn __init__(out self):
+        self.modal_damping = []
+        self.support_motions = []
+
+    fn __copyinit__(out self, existing: Self):
+        self.modal_damping = existing.modal_damping.copy()
+        self.support_motions = existing.support_motions.copy()
+
+
 struct AnalysisInput(ImplicitlyCopyable, Movable):
+    var supplemental: AnalysisConstraintsInput
     var type: String
     var type_tag: Int
     var constraints: String
     var constraints_tag: Int
+    var penalty_sp: Float64
+    var penalty_mp: Float64
     var numberer_tag: Int
     var steps: Int
     var num_modes: Int
+    var standard_eigen: Bool
     var force_beam_mode: String
     var force_beam_mode_tag: Int
     var system: String
@@ -597,6 +915,8 @@ struct AnalysisInput(ImplicitlyCopyable, Movable):
     var sparse_sym_ordering: Int
     var band_threshold: Int
     var dt: Float64
+    var start_time: Float64
+    var has_start_time: Bool
     var algorithm: String
     var algorithm_tag: Int
     var max_iters: Int
@@ -613,6 +933,7 @@ struct AnalysisInput(ImplicitlyCopyable, Movable):
     var solver_chain_count: Int
     var integrator_type: String
     var integrator_tag: Int
+    var displacement_limit: Optional[Float64]
     var integrator_gamma: Float64
     var integrator_beta: Float64
     var integrator_num_iter: Int
@@ -633,6 +954,7 @@ struct AnalysisInput(ImplicitlyCopyable, Movable):
     var has_integrator_max_du: Bool
     var has_integrator_du: Bool
     var integrator_du: Float64
+    var hs_constraint: HSConstraint
     var integrator_targets_offset: Int
     var integrator_targets_count: Int
 
@@ -641,9 +963,13 @@ struct AnalysisInput(ImplicitlyCopyable, Movable):
         self.type_tag = AnalysisTypeTag.StaticLinear
         self.constraints = "Plain"
         self.constraints_tag = ConstraintHandlerTag.Plain
+        self.penalty_sp = 0.0
+        self.penalty_mp = 0.0
+        self.supplemental = AnalysisConstraintsInput()
         self.numberer_tag = NumbererTag.Unknown
         self.steps = 1
         self.num_modes = 0
+        self.standard_eigen = False
         self.force_beam_mode = "auto"
         self.force_beam_mode_tag = ForceBeamModeTag.Auto
         self.system = "BandGeneral"
@@ -660,6 +986,8 @@ struct AnalysisInput(ImplicitlyCopyable, Movable):
         self.sparse_sym_ordering = 0
         self.band_threshold = 128
         self.dt = 0.0
+        self.start_time = 0.0
+        self.has_start_time = False
         self.algorithm = "Newton"
         self.algorithm_tag = AnalysisAlgorithmTag.Newton
         self.max_iters = 20
@@ -676,6 +1004,7 @@ struct AnalysisInput(ImplicitlyCopyable, Movable):
         self.solver_chain_count = 0
         self.integrator_type = ""
         self.integrator_tag = IntegratorTypeTag.Unknown
+        self.displacement_limit = None
         self.integrator_gamma = 0.5
         self.integrator_beta = 0.25
         self.integrator_num_iter = 1
@@ -696,6 +1025,7 @@ struct AnalysisInput(ImplicitlyCopyable, Movable):
         self.has_integrator_max_du = False
         self.has_integrator_du = False
         self.integrator_du = 0.0
+        self.hs_constraint = HSConstraint()
         self.integrator_targets_offset = 0
         self.integrator_targets_count = 0
 
@@ -831,16 +1161,21 @@ struct MPConstraintInput(ImplicitlyCopyable, Movable):
         self.rigid_dz = 0.0
 
 
+@fieldwise_init
+struct UniformExcitationInput(ImplicitlyCopyable, Movable):
+    var direction: Int
+    var accel: Int
+    var initial_velocity: Float64
+
+
 struct PatternInput(ImplicitlyCopyable, Movable):
     var has_pattern: Bool
     var type: String
     var type_tag: Int
     var has_time_series: Bool
     var time_series: Int
-    var has_direction: Bool
-    var direction: Int
-    var has_accel: Bool
-    var accel: Int
+    var excitations: List[UniformExcitationInput]
+    var sp_constraints: List[NodalLoadInput]
 
     fn __init__(out self):
         self.has_pattern = False
@@ -848,10 +1183,23 @@ struct PatternInput(ImplicitlyCopyable, Movable):
         self.type_tag = PatternTypeTag.Plain
         self.has_time_series = False
         self.time_series = -1
-        self.has_direction = False
-        self.direction = 0
-        self.has_accel = False
-        self.accel = -1
+        self.excitations = []
+        self.sp_constraints = []
+
+    fn __copyinit__(out self, existing: Self):
+        self.has_pattern = existing.has_pattern
+        self.type = existing.type
+        self.type_tag = existing.type_tag
+        self.has_time_series = existing.has_time_series
+        self.time_series = existing.time_series
+        self.excitations = existing.excitations.copy()
+        self.sp_constraints = existing.sp_constraints.copy()
+
+
+@fieldwise_init
+struct RayleighCoefficient(ImplicitlyCopyable, Movable):
+    var tag: Int
+    var coefficient: Float64
 
 
 struct RayleighInput(ImplicitlyCopyable, Movable):
@@ -860,6 +1208,8 @@ struct RayleighInput(ImplicitlyCopyable, Movable):
     var beta_k: Float64
     var beta_k_init: Float64
     var beta_k_comm: Float64
+    var node_alpha_m: List[RayleighCoefficient]
+    var element_beta_k_init: List[RayleighCoefficient]
 
     fn __init__(out self):
         self.has_rayleigh = False
@@ -867,6 +1217,20 @@ struct RayleighInput(ImplicitlyCopyable, Movable):
         self.beta_k = 0.0
         self.beta_k_init = 0.0
         self.beta_k_comm = 0.0
+        self.node_alpha_m = []
+        self.element_beta_k_init = []
+
+    fn __copyinit__(out self, existing: Self):
+        self.has_rayleigh = existing.has_rayleigh
+        self.alpha_m = existing.alpha_m
+        self.beta_k = existing.beta_k
+        self.beta_k_init = existing.beta_k_init
+        self.beta_k_comm = existing.beta_k_comm
+        self.node_alpha_m = existing.node_alpha_m.copy()
+        self.element_beta_k_init = existing.element_beta_k_init.copy()
+
+    fn has_regional_damping(self) -> Bool:
+        return len(self.node_alpha_m) > 0 or len(self.element_beta_k_init) > 0
 
 
 struct DampingInput(ImplicitlyCopyable, Movable):
@@ -888,7 +1252,41 @@ struct DampingInput(ImplicitlyCopyable, Movable):
         self.factor_ts_index = -1
 
 
+@fieldwise_init
+struct MaterialStageInput(ImplicitlyCopyable, Movable):
+    var material: Int
+    var stage: Int
+
+
+@fieldwise_init
+struct PermeabilityUpdate(ImplicitlyCopyable, Movable):
+    var element: Int
+    var axis: String
+    var value: Float64
+
+
+@fieldwise_init
+struct PrescribedPressureInput(ImplicitlyCopyable, Movable):
+    var node: Int
+    var dof: Int
+    var velocity: Float64
+    var displacement: Float64
+    var acceleration: Float64
+
+
 struct StageInput(ImplicitlyCopyable, Movable):
+    var constant_loads: List[NodalLoadInput]
+    var constant_element_loads: List[ElementLoadInput]
+    var sample_before: List[Int]
+    var resume_load_control: Bool
+    var material_stages: List[MaterialStageInput]
+    var has_initial_state_reset: Bool
+    var contact_friction: Optional[Bool]
+    var capture_initial_state: Bool
+    var removed_nodes: List[Int]
+    var removed_elements: List[Int]
+    var permeability_updates: List[PermeabilityUpdate]
+    var prescribed_pressures: List[PrescribedPressureInput]
     var analysis: AnalysisInput
     var analysis_integrator_targets_pool: List[Float64]
     var analysis_solver_chain_pool: List[SolverAttemptInput]
@@ -903,6 +1301,18 @@ struct StageInput(ImplicitlyCopyable, Movable):
     var time_series_times: List[Float64]
 
     fn __init__(out self):
+        self.constant_loads = []
+        self.constant_element_loads = []
+        self.sample_before = []
+        self.resume_load_control = False
+        self.material_stages = []
+        self.has_initial_state_reset = False
+        self.contact_friction = None
+        self.capture_initial_state = False
+        self.removed_nodes = []
+        self.removed_elements = []
+        self.permeability_updates = []
+        self.prescribed_pressures = []
         self.analysis = AnalysisInput()
         self.analysis_integrator_targets_pool = []
         self.analysis_solver_chain_pool = []
@@ -917,6 +1327,18 @@ struct StageInput(ImplicitlyCopyable, Movable):
         self.time_series_times = []
 
     fn __copyinit__(out self, existing: Self):
+        self.constant_loads = existing.constant_loads.copy()
+        self.constant_element_loads = existing.constant_element_loads.copy()
+        self.sample_before = existing.sample_before.copy()
+        self.resume_load_control = existing.resume_load_control
+        self.material_stages = existing.material_stages.copy()
+        self.has_initial_state_reset = existing.has_initial_state_reset
+        self.contact_friction = existing.contact_friction
+        self.capture_initial_state = existing.capture_initial_state
+        self.removed_nodes = existing.removed_nodes.copy()
+        self.removed_elements = existing.removed_elements.copy()
+        self.permeability_updates = existing.permeability_updates.copy()
+        self.prescribed_pressures = existing.prescribed_pressures.copy()
         self.analysis = existing.analysis
         self.analysis_integrator_targets_pool = existing.analysis_integrator_targets_pool.copy()
         self.analysis_solver_chain_pool = existing.analysis_solver_chain_pool.copy()
@@ -932,8 +1354,14 @@ struct StageInput(ImplicitlyCopyable, Movable):
 
 
 struct RecorderInput(ImplicitlyCopyable, Movable):
+    var material_stress: Bool
+    var integration_point: Int
+    var stress_components: Int
     var type_tag: Int
     var output: String
+    var start_stage: Int
+    var end_stage: Int
+    var delta_t: Float64
     var node_offset: Int
     var node_count: Int
     var element_offset: Int
@@ -951,8 +1379,14 @@ struct RecorderInput(ImplicitlyCopyable, Movable):
     var time_series_tag: Int
 
     fn __init__(out self):
+        self.material_stress = False
+        self.integration_point = 0
+        self.stress_components = 0
         self.type_tag = RecorderTypeTag.Unknown
         self.output = ""
+        self.start_stage = 0
+        self.end_stage = 2147483647
+        self.delta_t = 0.0
         self.node_offset = 0
         self.node_count = 0
         self.element_offset = 0
@@ -978,6 +1412,8 @@ struct CaseInput(Movable):
     var fiber_layers: List[FiberLayerInput]
     var fibers: List[FiberInput]
     var shell_layers: List[ShellLayerInput]
+    var pimy_definitions: List[PressureIndependMultiYieldDef]
+    var pdmy_definitions: List[PressureDependMultiYieldDef]
     var materials: List[MaterialInput]
     var elements: List[ElementInput]
     var element_loads: List[ElementLoadInput]
@@ -1009,6 +1445,8 @@ struct CaseInput(Movable):
         self.fiber_layers = []
         self.fibers = []
         self.shell_layers = []
+        self.pimy_definitions = []
+        self.pdmy_definitions = []
         self.materials = []
         self.elements = []
         self.element_loads = []
@@ -1046,17 +1484,39 @@ fn element_type_tag(type_name: String) -> Int:
         return ElementTypeTag.ForceBeamColumn3d
     if type_name == "dispBeamColumn3d":
         return ElementTypeTag.DispBeamColumn3d
-    if type_name == "truss":
+    if type_name == "truss" or type_name == "corotTruss":
         return ElementTypeTag.Truss
-    if type_name == "zeroLength":
+    if type_name == "zeroLength" or type_name == "CoupledZeroLength":
         return ElementTypeTag.ZeroLength
+    if type_name == "MVLEM":
+        return ElementTypeTag.MVLEM
+    if type_name == "CatenaryCable":
+        return ElementTypeTag.CatenaryCable
+    if type_name == "SFI_MVLEM":
+        return ElementTypeTag.SFIMVLEM
     if type_name == "twoNodeLink":
         return ElementTypeTag.TwoNodeLink
     if type_name == "zeroLengthSection":
         return ElementTypeTag.ZeroLengthSection
-    if type_name == "fourNodeQuad" or type_name == "bbarQuad":
+    if type_name == "SSPbrickUP":
+        return ElementTypeTag.SSPBrickUP
+    if type_name == "quadUP" or type_name == "9_4_QuadUP":
+        return ElementTypeTag.QuadUP
+    if continuum_nodes(type_name) > 0:
+        return ElementTypeTag.Continuum
+    if type_name == "BeamContact2D":
+        return ElementTypeTag.BeamContact2D
+    if type_name == "fourNodeQuad":
         return ElementTypeTag.FourNodeQuad
-    if type_name == "shell":
+    if type_name == "tri31":
+        return ElementTypeTag.Tri31
+    if (
+        type_name == "shell"
+        or type_name == "ShellDKGT"
+        or type_name == "ShellDKGQ"
+        or type_name == "ShellNLDKGQ"
+        or type_name == "ASDShellQ4"
+    ):
         return ElementTypeTag.Shell
     return ElementTypeTag.Unknown
 
@@ -1072,6 +1532,8 @@ fn geom_transf_tag(geom_name: String) -> Int:
 
 
 fn beam_integration_tag(integration_name: String) -> Int:
+    if integration_name == "HingeRadau":
+        return BeamIntegrationTag.HingeRadau
     if integration_name == "Lobatto":
         return BeamIntegrationTag.Lobatto
     if integration_name == "Legendre":
@@ -1122,7 +1584,7 @@ fn canonical_analysis_system_name(system_name: String) -> String:
     elif canonical == "Umfpack":
         canonical = "UmfPack"
     elif canonical == "Mumps":
-        abort("unsupported analysis system: Mumps")
+        canonical = "SuperLU"
     if analysis_system_tag(canonical) == AnalysisSystemTag.Unknown:
         abort("unsupported analysis system: " + canonical)
     return canonical
@@ -1328,6 +1790,8 @@ fn constraint_handler_tag(handler_name: String) -> Int:
         return ConstraintHandlerTag.Transformation
     if handler_name == "Lagrange":
         return ConstraintHandlerTag.Lagrange
+    if handler_name == "Penalty":
+        return ConstraintHandlerTag.Penalty
     return ConstraintHandlerTag.Unknown
 
 
@@ -1376,6 +1840,8 @@ fn integrator_type_tag(integrator_name: String) -> Int:
         return IntegratorTypeTag.LoadControl
     if integrator_name == "DisplacementControl":
         return IntegratorTypeTag.DisplacementControl
+    if integrator_name == "HSConstraint":
+        return IntegratorTypeTag.HSConstraint
     if integrator_name == "Newmark":
         return IntegratorTypeTag.Newmark
     return IntegratorTypeTag.Unknown
@@ -1392,6 +1858,22 @@ fn pattern_type_tag(type_name: String) -> Int:
 
 
 fn recorder_type_tag(type_name: String) -> Int:
+    if type_name == "node_velocity":
+        return RecorderTypeTag.NodeVelocity
+    if type_name == "contact_secondary_force":
+        return RecorderTypeTag.ContactSecondaryForce
+    if type_name == "contact_friction_force":
+        return RecorderTypeTag.ContactFrictionForce
+    if type_name == "contact_scalar_force":
+        return RecorderTypeTag.ContactScalarForce
+    if type_name == "contact_primary_force":
+        return RecorderTypeTag.ContactPrimaryForce
+    if type_name == "quad_stress":
+        return RecorderTypeTag.QuadStress
+    if type_name == "quad_strain":
+        return RecorderTypeTag.QuadStrain
+    if type_name == "quad_state":
+        return RecorderTypeTag.QuadState
     if type_name == "node_displacement":
         return RecorderTypeTag.NodeDisplacement
     if type_name == "element_force":
@@ -1414,6 +1896,8 @@ fn recorder_type_tag(type_name: String) -> Int:
         return RecorderTypeTag.EnvelopeNodeDisplacement
     if type_name == "envelope_node_acceleration":
         return RecorderTypeTag.EnvelopeNodeAcceleration
+    if type_name == "node_acceleration":
+        return RecorderTypeTag.NodeAcceleration
     if type_name == "modal_eigen":
         return RecorderTypeTag.ModalEigen
     if type_name == "section_force":
@@ -1428,6 +1912,8 @@ fn element_load_type_tag(type_name: String) -> Int:
         return ElementLoadTypeTag.BeamUniform
     if type_name == "beamPoint":
         return ElementLoadTypeTag.BeamPoint
+    if type_name == "beamThermal":
+        return ElementLoadTypeTag.BeamThermal
     return ElementLoadTypeTag.Unknown
 
 
@@ -1471,6 +1957,94 @@ fn _json_number_value(doc: JsonDocument, node_index: Int, field: String) -> Floa
     if doc.node_tag(node_index) != JsonValueTag.Number:
         abort(field + " must be a number")
     return doc.node_number(node_index)
+
+
+fn _required_material_param(doc: JsonDocument, params: Int, key: StringSlice) raises -> Float64:
+    return _json_number_value(doc, _json_require_key(doc, params, key), String(key))
+
+
+fn read_small_material_def(doc: JsonDocument, params: Int, kind: String) raises -> UniMaterialDef:
+    if kind == "ElasticPP":
+        var E = _required_material_param(doc, params, "E")
+        var positive = abs(_required_material_param(doc, params, "epsyP"))
+        var negative = -abs(_json_get_float(doc, params, "epsyN", -positive))
+        var offset = _json_get_float(doc, params, "eps0", 0.0)
+        if E <= 0.0:
+            raise Error("ElasticPP E must be positive")
+        return UniMaterialDef(UniMaterialTypeTag.ElasticPP, E, positive, negative, offset)
+    if kind == "ElasticBilin":
+        var first = _required_material_param(doc, params, "E1P")
+        var second = _required_material_param(doc, params, "E2P")
+        var breakpoint = abs(_required_material_param(doc, params, "eps2P"))
+        var negative_first = first
+        var negative_second = second
+        var negative_breakpoint = -breakpoint
+        if (
+            _json_has_key(doc, params, "E1N")
+            or _json_has_key(doc, params, "E2N")
+            or _json_has_key(doc, params, "eps2N")
+        ):
+            negative_first = _required_material_param(doc, params, "E1N")
+            negative_second = _required_material_param(doc, params, "E2N")
+            negative_breakpoint = -abs(_required_material_param(doc, params, "eps2N"))
+        return UniMaterialDef(
+            UniMaterialTypeTag.ElasticBilin,
+            first,
+            second,
+            breakpoint,
+            negative_first,
+            negative_second,
+            negative_breakpoint,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+        )
+    var E = _required_material_param(doc, params, "E")
+    var travel = _required_material_param(doc, params, "freeTravel")
+    var initial = _required_material_param(doc, params, "freeTravelInitial")
+    var mode = _required_material_param(doc, params, "RatType")
+    if E <= 0.0 or (mode == 1.0 and travel <= 0.0):
+        raise Error("Ratchet requires positive stiffness and positive travel in discrete mode")
+    return UniMaterialDef(UniMaterialTypeTag.Ratchet, E, travel, initial, mode)
+
+
+fn read_wall_material_def(doc: JsonDocument, params: Int, kind: String) raises -> UniMaterialDef:
+    if kind == "ConcreteCM":
+        var gap_close = _json_get_float(doc, params, "gap_close", 0.0)
+        var monotonic = _json_get_float(doc, params, "monotonic", 0.0)
+        if (gap_close != 0.0 and gap_close != 1.0) or (monotonic != 0.0 and monotonic != 1.0):
+            abort("ConcreteCM gap_close and monotonic must be 0 or 1")
+        return UniMaterialDef(
+            UniMaterialTypeTag.ConcreteCM,
+            _required_material_param(doc, params, "fpcc"),
+            _required_material_param(doc, params, "epcc"),
+            _required_material_param(doc, params, "Ec"),
+            _required_material_param(doc, params, "rc"),
+            _required_material_param(doc, params, "xcrn"),
+            _required_material_param(doc, params, "ft"),
+            _required_material_param(doc, params, "et"),
+            _required_material_param(doc, params, "rt"),
+            _required_material_param(doc, params, "xcrp"),
+            gap_close,
+            monotonic,
+        )
+    return UniMaterialDef(
+        UniMaterialTypeTag.SteelMPF,
+        _required_material_param(doc, params, "fyp"),
+        _required_material_param(doc, params, "fyn"),
+        _required_material_param(doc, params, "E0"),
+        _required_material_param(doc, params, "bp"),
+        _required_material_param(doc, params, "bn"),
+        _required_material_param(doc, params, "R0"),
+        _required_material_param(doc, params, "cR1"),
+        _required_material_param(doc, params, "cR2"),
+        _json_get_float(doc, params, "a1", 0.0),
+        _json_get_float(doc, params, "a2", 1.0),
+        _json_get_float(doc, params, "a3", 0.0),
+        _json_get_float(doc, params, "a4", 1.0),
+    )
 
 
 fn _json_int_value(doc: JsonDocument, node_index: Int, field: String) -> Int:
@@ -1794,12 +2368,35 @@ fn parse_analysis_input_from_native(
     analysis.type_tag = analysis_type_tag(analysis.type)
     analysis.constraints = _json_get_string(doc, analysis_index, "constraints", "Plain")
     analysis.constraints_tag = constraint_handler_tag(analysis.constraints)
+    analysis.penalty_sp = _json_get_float(doc, analysis_index, "penalty_sp", 0.0)
+    analysis.penalty_mp = _json_get_float(doc, analysis_index, "penalty_mp", 0.0)
+    var modal_damping = _json_key(doc, analysis_index, "modal_damping")
+    for i in range(_json_expect_array_len(doc, modal_damping, "modal_damping")):
+        analysis.supplemental.modal_damping.append(
+            _json_number_value(doc, doc.array_item(modal_damping, i), "modal_damping")
+        )
+    var motions = _json_key(doc, analysis_index, "support_motions")
+    for i in range(_json_expect_array_len(doc, motions, "support_motions")):
+        var motion = doc.array_item(motions, i)
+        analysis.supplemental.support_motions.append(
+            SupportMotionInput(
+                _json_get_int(doc, motion, "node", -1),
+                _json_get_int(doc, motion, "dof", -1),
+                _json_get_int(doc, motion, "time_series", -1),
+                _json_get_int(doc, motion, "velocity_series", -1),
+                _json_get_int(doc, motion, "acceleration_series", -1),
+                _json_get_float(doc, motion, "factor", 1.0),
+            )
+        )
     analysis.numberer_tag = numberer_tag(_json_get_string(doc, analysis_index, "numberer", ""))
     analysis.steps = _json_get_int(doc, analysis_index, "steps", 1)
     analysis.num_modes = _json_get_int(doc, analysis_index, "num_modes", 0)
+    analysis.standard_eigen = _json_get_bool(doc, analysis_index, "standard_eigen", False)
     analysis.force_beam_mode = _json_get_string(doc, analysis_index, "force_beam_mode", "auto")
     analysis.force_beam_mode_tag = force_beam_mode_tag(analysis.force_beam_mode)
     analysis.dt = _json_get_float(doc, analysis_index, "dt", 0.0)
+    analysis.start_time = _json_get_float(doc, analysis_index, "start_time", 0.0)
+    analysis.has_start_time = _json_has_key(doc, analysis_index, "start_time")
     analysis.algorithm = _json_get_string(doc, analysis_index, "algorithm", "Newton")
     analysis.algorithm_tag = analysis_algorithm_tag(analysis.algorithm)
     analysis.max_iters = _json_get_int(doc, analysis_index, "max_iters", 20)
@@ -1855,6 +2452,10 @@ fn parse_analysis_input_from_native(
     analysis.band_threshold = _json_get_int(doc, analysis_index, "band_threshold", 128)
 
     var integrator_index = _json_key(doc, analysis_index, "integrator")
+    if _json_has_key(doc, integrator_index, "displacement_limit"):
+        analysis.displacement_limit = _json_get_float(
+            doc, integrator_index, "displacement_limit", 0.0
+        )
     var default_integrator_type = ""
     if analysis.type_tag == AnalysisTypeTag.StaticNonlinear:
         default_integrator_type = "LoadControl"
@@ -1930,6 +2531,13 @@ fn parse_analysis_input_from_native(
     analysis.has_integrator_du = _json_has_key(doc, integrator_index, "du")
     if analysis.has_integrator_du:
         analysis.integrator_du = _json_get_float(doc, integrator_index, "du", 0.0)
+    if analysis.integrator_tag == IntegratorTypeTag.HSConstraint:
+        analysis.hs_constraint = HSConstraint(
+            _json_get_float(doc, integrator_index, "arc_length", 0.0),
+            _json_get_float(doc, integrator_index, "psi_u", 1.0),
+            _json_get_float(doc, integrator_index, "psi_f", 1.0),
+            _json_get_float(doc, integrator_index, "u_ref", 1.0),
+        )
     var targets_index = _json_key(doc, integrator_index, "targets")
     if _json_has_value(doc, targets_index):
         analysis.integrator_targets_offset = len(integrator_targets_pool)
@@ -2018,13 +2626,47 @@ fn parse_pattern_input_from_native(doc: JsonDocument, pattern_index: Int) raises
     if _json_has_key(doc, pattern_index, "time_series"):
         pattern.has_time_series = True
         pattern.time_series = _json_get_int(doc, pattern_index, "time_series", -1)
-    if _json_has_key(doc, pattern_index, "direction"):
-        pattern.has_direction = True
-        pattern.direction = _json_get_int(doc, pattern_index, "direction", 0)
-    if _json_has_key(doc, pattern_index, "accel"):
-        pattern.has_accel = True
-        pattern.accel = _json_get_int(doc, pattern_index, "accel", 0)
+    if pattern.type_tag == PatternTypeTag.UniformExcitation:
+        var excitations = _json_key(doc, pattern_index, "excitations")
+        if _json_has_value(doc, excitations):
+            for i in range(_json_expect_array_len(doc, excitations, "excitations")):
+                pattern.excitations.append(
+                    _parse_uniform_excitation(doc, doc.array_item(excitations, i))
+                )
+        else:
+            pattern.excitations.append(_parse_uniform_excitation(doc, pattern_index))
+    var constraints = _json_key(doc, pattern_index, "sp_constraints")
+    if _json_has_value(doc, constraints):
+        for i in range(_json_expect_array_len(doc, constraints, "sp_constraints")):
+            pattern.sp_constraints.append(
+                parse_nodal_load_input_from_native(doc, doc.array_item(constraints, i))
+            )
     return pattern^
+
+
+fn _parse_uniform_excitation(doc: JsonDocument, index: Int) raises -> UniformExcitationInput:
+    return UniformExcitationInput(
+        _json_get_int(doc, index, "direction", 0),
+        _json_get_int(doc, index, "accel", _json_get_int(doc, index, "time_series", -1)),
+        _json_get_float(doc, index, "vel0", 0.0),
+    )
+
+
+fn _parse_rayleigh_coefficients(
+    doc: JsonDocument, rayleigh_index: Int, key: StringSlice
+) raises -> List[RayleighCoefficient]:
+    var coefficients: List[RayleighCoefficient] = []
+    var entries = _json_key(doc, rayleigh_index, key)
+    if _json_has_value(doc, entries):
+        for i in range(_json_expect_array_len(doc, entries, String(key))):
+            var entry = doc.array_item(entries, i)
+            coefficients.append(
+                RayleighCoefficient(
+                    _json_get_int(doc, entry, "tag", -1),
+                    _json_get_float(doc, entry, "coefficient", 0.0),
+                )
+            )
+    return coefficients^
 
 
 fn parse_rayleigh_input_from_native(doc: JsonDocument, rayleigh_index: Int) raises -> RayleighInput:
@@ -2036,6 +2678,10 @@ fn parse_rayleigh_input_from_native(doc: JsonDocument, rayleigh_index: Int) rais
     rayleigh.beta_k = _json_get_float(doc, rayleigh_index, "betaK", 0.0)
     rayleigh.beta_k_init = _json_get_float(doc, rayleigh_index, "betaKInit", 0.0)
     rayleigh.beta_k_comm = _json_get_float(doc, rayleigh_index, "betaKComm", 0.0)
+    rayleigh.node_alpha_m = _parse_rayleigh_coefficients(doc, rayleigh_index, "node_alpha_m")
+    rayleigh.element_beta_k_init = _parse_rayleigh_coefficients(
+        doc, rayleigh_index, "element_beta_k_init"
+    )
     return rayleigh^
 
 
@@ -2043,7 +2689,7 @@ fn parse_element_load_input_from_native(
     doc: JsonDocument, load_index: Int
 ) raises -> ElementLoadInput:
     var load_type = _json_get_string(doc, load_index, "type", "")
-    return ElementLoadInput(
+    var load = ElementLoadInput(
         _json_get_int(doc, load_index, "element", 0),
         load_type,
         element_load_type_tag(load_type),
@@ -2055,6 +2701,25 @@ fn parse_element_load_input_from_native(
         _json_get_float_alias3(doc, load_index, "px", "N", "Paxial", 0.0),
         _json_get_float_alias3(doc, load_index, "x", "xL", "aOverL", 0.0),
     )
+    if load.type_tag == ElementLoadTypeTag.BeamThermal:
+        var temperatures = _json_key(doc, load_index, "temperatures")
+        var locations = _json_key(doc, load_index, "locations")
+        var count = _json_expect_array_len(doc, temperatures, "beamThermal temperatures")
+        if (count != 2 and count != 5 and count != 9) or count != _json_expect_array_len(
+            doc, locations, "beamThermal locations"
+        ):
+            abort("beamThermal requires 2, 5, or 9 temperature/location pairs")
+        load.thermal.count = count
+        for i in range(count):
+            load.thermal.temperatures[i] = _json_number_value(
+                doc, doc.array_item(temperatures, i), "beamThermal temperature"
+            )
+            load.thermal.locations[i] = _json_number_value(
+                doc, doc.array_item(locations, i), "beamThermal location"
+            )
+            if i > 0 and load.thermal.locations[i] <= load.thermal.locations[i - 1]:
+                abort("beamThermal locations must increase")
+    return load^
 
 
 fn parse_nodal_load_input_from_native(doc: JsonDocument, load_index: Int) raises -> NodalLoadInput:
@@ -2152,6 +2817,22 @@ fn parse_stage_input_from_native(
     doc: JsonDocument, stage_index: Int, source_info: CaseSourceInfo
 ) raises -> StageInput:
     var stage = StageInput()
+    stage.has_initial_state_reset = _json_has_key(doc, stage_index, "initial_state_reset")
+    if _json_has_key(doc, stage_index, "contact_friction"):
+        stage.contact_friction = _json_get_bool(doc, stage_index, "contact_friction", True)
+    stage.capture_initial_state = _json_get_bool(doc, stage_index, "initial_state_reset", False)
+    var removed_nodes = _json_key(doc, stage_index, "remove_nodes")
+    if _json_has_value(doc, removed_nodes):
+        for i in range(_json_expect_array_len(doc, removed_nodes, "removed nodes")):
+            stage.removed_nodes.append(
+                _json_int_value(doc, doc.array_item(removed_nodes, i), "removed node")
+            )
+    var removed_elements = _json_key(doc, stage_index, "remove_elements")
+    if _json_has_value(doc, removed_elements):
+        for i in range(_json_expect_array_len(doc, removed_elements, "removed elements")):
+            stage.removed_elements.append(
+                _json_int_value(doc, doc.array_item(removed_elements, i), "removed element")
+            )
     var stage_analysis_index = _json_key(doc, stage_index, "analysis")
     if stage_analysis_index < 0:
         stage_analysis_index = stage_index
@@ -2161,6 +2842,48 @@ fn parse_stage_input_from_native(
         stage.analysis_integrator_targets_pool,
         stage.analysis_solver_chain_pool,
     )
+    stage.resume_load_control = _json_get_bool(doc, stage_index, "resume_load_control", False)
+    var samples = _json_key(doc, stage_index, "sample_before")
+    if _json_has_value(doc, samples):
+        for i in range(_json_expect_array_len(doc, samples, "explicit recorder samples")):
+            stage.sample_before.append(
+                _json_int_value(doc, doc.array_item(samples, i), "explicit recorder index")
+            )
+    var updates = _json_key(doc, stage_index, "material_stages")
+    if _json_has_value(doc, updates):
+        for i in range(_json_expect_array_len(doc, updates, "material stages")):
+            var update = doc.array_item(updates, i)
+            stage.material_stages.append(
+                MaterialStageInput(
+                    _json_get_int(doc, update, "material", -1),
+                    _json_get_int(doc, update, "stage", 0),
+                )
+            )
+    var permeability = _json_key(doc, stage_index, "permeability_updates")
+    if _json_has_value(doc, permeability):
+        for i in range(_json_expect_array_len(doc, permeability, "permeability updates")):
+            var update = doc.array_item(permeability, i)
+            stage.permeability_updates.append(
+                PermeabilityUpdate(
+                    _json_get_int(doc, update, "element", -1),
+                    _json_get_string(doc, update, "axis", ""),
+                    _json_get_float(doc, update, "value", -1.0),
+                )
+            )
+    var pressures = _json_key(doc, stage_index, "prescribed_pressures")
+    if _json_has_value(doc, pressures):
+        for i in range(_json_expect_array_len(doc, pressures, "prescribed pressures")):
+            var pressure = doc.array_item(pressures, i)
+            var load = parse_nodal_load_input_from_native(doc, pressure)
+            stage.prescribed_pressures.append(
+                PrescribedPressureInput(
+                    load.node,
+                    load.dof,
+                    load.value,
+                    _json_get_float(doc, pressure, "displacement", 0.0),
+                    _json_get_float(doc, pressure, "acceleration", 0.0),
+                )
+            )
     stage.pattern = parse_pattern_input_from_native(doc, _json_key(doc, stage_index, "pattern"))
     stage.rayleigh = parse_rayleigh_input_from_native(doc, _json_key(doc, stage_index, "rayleigh"))
 
@@ -2171,6 +2894,17 @@ fn parse_stage_input_from_native(
         else:
             stage.has_load_const = True
             stage.load_const_time = _json_get_float(doc, load_const_index, "time", 0.0)
+
+    var constant_loads = _json_key(doc, stage_index, "constant_loads")
+    for i in range(_json_expect_array_len(doc, constant_loads, "constant nodal loads")):
+        stage.constant_loads.append(
+            parse_nodal_load_input_from_native(doc, doc.array_item(constant_loads, i))
+        )
+    var constant_element_loads = _json_key(doc, stage_index, "constant_element_loads")
+    for i in range(_json_expect_array_len(doc, constant_element_loads, "constant element loads")):
+        stage.constant_element_loads.append(
+            parse_element_load_input_from_native(doc, doc.array_item(constant_element_loads, i))
+        )
 
     var loads_index = _json_key(doc, stage_index, "loads")
     if _json_has_value(doc, loads_index):
@@ -2263,6 +2997,7 @@ fn parse_case_input_native_from_source(
                 parsed.constraint_6 = _json_int_value(
                     doc, doc.array_item(constraints, 5), "node constraints"
                 )
+        parsed.ndf = _json_get_int(doc, node, "ndf", case_input.model.ndf)
         case_input.nodes.append(parsed)
 
     var sections_raw = _json_key(doc, root, "sections")
@@ -2274,6 +3009,17 @@ fn parse_case_input_native_from_source(
                 _json_get_string(doc, sec, "type", ""),
             )
             var params = _json_key(doc, sec, "params")
+            if parsed.type == "ElasticMembranePlateSection":
+                parsed.plate_mod = _json_get_float(doc, params, "Ep_mod", 1.0)
+            if parsed.type == "PlateFiber":
+                parsed.plate_fiber_material = _json_get_int(doc, params, "material", -1)
+            if parsed.type == "HingeRadauSection2d":
+                parsed.hinge_radau.section_i = _json_get_int(doc, params, "section_i", -1)
+                parsed.hinge_radau.section_j = _json_get_int(doc, params, "section_j", -1)
+                parsed.hinge_radau.length_i = _json_get_float(doc, params, "length_i", 0.0)
+                parsed.hinge_radau.length_j = _json_get_float(doc, params, "length_j", 0.0)
+                parsed.hinge_radau.max_iters = _json_get_int(doc, params, "max_iters", 10)
+                parsed.hinge_radau.tolerance = _json_get_float(doc, params, "tol", 1.0e-10)
             if _json_has_key(doc, params, "E"):
                 parsed.E = _json_get_float(doc, params, "E", 0.0)
             if _json_has_key(doc, params, "A"):
@@ -2288,6 +3034,14 @@ fn parse_case_input_native_from_source(
                 parsed.G = _json_get_float(doc, params, "G", 0.0)
             if _json_has_key(doc, params, "J"):
                 parsed.J = _json_get_float(doc, params, "J", 0.0)
+            parsed.shear_rigidity_y = _json_get_float(doc, params, "shear_rigidity_y", 0.0)
+            parsed.shear_rigidity_z = _json_get_float(doc, params, "shear_rigidity_z", 0.0)
+            parsed.base_torsional_rigidity = _json_get_float(
+                doc, params, "base_torsional_rigidity", 0.0
+            )
+            parsed.added_torsional_rigidity = _json_get_float(
+                doc, params, "added_torsional_rigidity", 0.0
+            )
             if _json_has_key(doc, params, "nu"):
                 parsed.nu = _json_get_float(doc, params, "nu", 0.0)
             if _json_has_key(doc, params, "h"):
@@ -2339,6 +3093,24 @@ fn parse_case_input_native_from_source(
                         patch_input.y_l = _json_get_float(doc, patch, "y_l", 0.0)
                     if _json_has_key(doc, patch, "z_l"):
                         patch_input.z_l = _json_get_float(doc, patch, "z_l", 0.0)
+                    if _json_has_key(doc, patch, "num_subdiv_circ"):
+                        patch_input.num_subdiv_circ = _json_get_int(
+                            doc, patch, "num_subdiv_circ", 0
+                        )
+                    if _json_has_key(doc, patch, "num_subdiv_rad"):
+                        patch_input.num_subdiv_rad = _json_get_int(doc, patch, "num_subdiv_rad", 0)
+                    if _json_has_key(doc, patch, "y_center"):
+                        patch_input.y_center = _json_get_float(doc, patch, "y_center", 0.0)
+                    if _json_has_key(doc, patch, "z_center"):
+                        patch_input.z_center = _json_get_float(doc, patch, "z_center", 0.0)
+                    if _json_has_key(doc, patch, "int_rad"):
+                        patch_input.int_rad = _json_get_float(doc, patch, "int_rad", 0.0)
+                    if _json_has_key(doc, patch, "ext_rad"):
+                        patch_input.ext_rad = _json_get_float(doc, patch, "ext_rad", 0.0)
+                    if _json_has_key(doc, patch, "start_ang"):
+                        patch_input.start_ang = _json_get_float(doc, patch, "start_ang", 0.0)
+                    if _json_has_key(doc, patch, "end_ang"):
+                        patch_input.end_ang = _json_get_float(doc, patch, "end_ang", 360.0)
                     case_input.fiber_patches.append(patch_input)
 
                 var layers_raw = _json_key(doc, params, "layers")
@@ -2355,6 +3127,18 @@ fn parse_case_input_native_from_source(
                     layer_input.z_start = _json_get_float(doc, layer, "z_start", 0.0)
                     layer_input.y_end = _json_get_float(doc, layer, "y_end", 0.0)
                     layer_input.z_end = _json_get_float(doc, layer, "z_end", 0.0)
+                    if _json_has_key(doc, layer, "y_center"):
+                        layer_input.y_center = _json_get_float(doc, layer, "y_center", 0.0)
+                    if _json_has_key(doc, layer, "z_center"):
+                        layer_input.z_center = _json_get_float(doc, layer, "z_center", 0.0)
+                    if _json_has_key(doc, layer, "radius"):
+                        layer_input.radius = _json_get_float(doc, layer, "radius", 0.0)
+                    if _json_has_key(doc, layer, "start_ang") and _json_has_key(
+                        doc, layer, "end_ang"
+                    ):
+                        layer_input.start_ang = _json_get_float(doc, layer, "start_ang", 0.0)
+                        layer_input.end_ang = _json_get_float(doc, layer, "end_ang", 360.0)
+                        layer_input.has_angles = True
                     case_input.fiber_layers.append(layer_input)
                 var fibers_raw = _json_key(doc, params, "fibers")
                 if _json_has_value(doc, fibers_raw):
@@ -2388,6 +3172,160 @@ fn parse_case_input_native_from_source(
             var parsed = MaterialInput()
             parsed.id = _json_get_int(doc, mat, "id", -1)
             parsed.type = _json_get_string(doc, mat, "type", "")
+            if parsed.type == "Viscous":
+                parsed.viscous_coefficient = _json_number_value(
+                    doc, _json_require_key(doc, params, "C"), "Viscous C"
+                )
+                var exponent = _json_get_float(doc, params, "alpha", 1.0)
+                parsed.viscous_exponent = exponent if exponent >= 0.0 else 1.0
+                case_input.materials.append(parsed^)
+                continue
+            if parsed.type == "ContactMaterial2D":
+                for i in range(4):
+                    parsed.contact_parameters[i] = _required_material_param(
+                        doc, params, ["mu", "G", "c", "t"][i]
+                    )
+                if parsed.contact_parameters[1] <= 0.0:
+                    abort("ContactMaterial2D requires positive tangential stiffness")
+            if parsed.type == "InitialStateAnalysisWrapper":
+                parsed.base_material = _json_get_int(doc, params, "material", -1)
+                parsed.soil_dimensions = _json_get_int(doc, params, "nd", 2)
+                case_input.materials.append(parsed^)
+                continue
+            if (
+                parsed.type == "PressureIndependMultiYield"
+                or parsed.type == "PressureDependMultiYield"
+                or parsed.type == "PressureDependMultiYield02"
+            ):
+                var variant_02 = parsed.type == "PressureDependMultiYield02"
+                parsed.soil_dimensions = _json_get_int(doc, params, "nd", 2)
+                var curve_data = _json_key(doc, params, "reduction_curve")
+                var curve: List[Float64] = []
+                if _json_has_value(doc, curve_data):
+                    for j in range(_json_expect_array_len(doc, curve_data, "soil reduction curve")):
+                        curve.append(
+                            _json_number_value(
+                                doc, doc.array_item(curve_data, j), "soil reduction point"
+                            )
+                        )
+                parsed.rho = _json_get_float(doc, params, "rho", 0.0)
+                if parsed.rho < 0.0:
+                    abort("soil material requires nonnegative density")
+                var shear = _json_get_float(doc, params, "G", 0.0)
+                var bulk = _json_get_float(doc, params, "K", 0.0)
+                var peak_strain = _json_get_float(doc, params, "peak_shear_strain", 0.0)
+                var friction = _json_get_float(doc, params, "friction_angle", 0.0)
+                var ref_pressure = _json_get_float(doc, params, "reference_pressure", 100.0)
+                var exponent = _json_get_float(doc, params, "pressure_exponent", 0.0)
+                var surfaces = _json_get_int(doc, params, "yield_surfaces", 20)
+                if parsed.type == "PressureIndependMultiYield":
+                    parsed.pimy_index = len(case_input.pimy_definitions)
+                    case_input.pimy_definitions.append(
+                        PressureIndependMultiYieldDef(
+                            parsed.rho,
+                            shear,
+                            bulk,
+                            _json_get_float(doc, params, "cohesion", 0.0),
+                            peak_strain,
+                            friction,
+                            ref_pressure,
+                            exponent,
+                            surfaces,
+                            curve,
+                        )
+                    )
+                else:
+                    parsed.pdmy_index = len(case_input.pdmy_definitions)
+                    case_input.pdmy_definitions.append(
+                        PressureDependMultiYieldDef(
+                            shear,
+                            bulk,
+                            friction,
+                            peak_strain,
+                            ref_pressure,
+                            exponent,
+                            _json_get_float(doc, params, "phase_angle", 0.0),
+                            _json_get_float(doc, params, "contraction", 0.0),
+                            _json_get_float(doc, params, "dilate1", 0.0),
+                            _json_get_float(doc, params, "dilate2", 3.0 if variant_02 else 0.0),
+                            _json_get_float(doc, params, "liquefy_pressure", 0.0),
+                            _json_get_float(doc, params, "liquefy_size", 0.0),
+                            _json_get_float(doc, params, "liquefy_translation", 0.0),
+                            surfaces,
+                            curve,
+                            _json_get_float(doc, params, "void_ratio", 0.6),
+                            _json_get_float(doc, params, "vol_limit1", 0.9),
+                            _json_get_float(doc, params, "vol_limit2", 0.02),
+                            _json_get_float(doc, params, "vol_limit3", 0.7),
+                            _json_get_float(doc, params, "atmospheric_pressure", 101.0),
+                            _json_get_float(doc, params, "cohesion", 0.1 if variant_02 else 0.3),
+                            _json_get_float(doc, params, "hv", 0.0),
+                            _json_get_float(doc, params, "pv", 1.0),
+                            PressureDependMultiYield02Parameters(
+                                variant_02,
+                                _json_get_float(doc, params, "contraction2", 5.0),
+                                _json_get_float(doc, params, "contraction3", 0.0),
+                                _json_get_float(doc, params, "dilate3", 0.0),
+                                _json_get_float(doc, params, "liquefy1", 1.0),
+                                _json_get_float(doc, params, "liquefy2", 0.0),
+                            ),
+                        )
+                    )
+                case_input.materials.append(parsed^)
+                continue
+            if (
+                parsed.type == "Bilin"
+                or parsed.type == "Hysteretic"
+                or parsed.type == "ModIMKPeakOriented"
+            ):
+                var values = _json_require_key(doc, params, "values")
+                var count = _json_expect_array_len(doc, values, parsed.type + " values")
+                if parsed.type == "Bilin" or parsed.type == "ModIMKPeakOriented":
+                    if count != 23 and count != 24:
+                        raise Error(parsed.type + " expects 23 or 24 parameters")
+                elif count != 12 and count != 13 and count != 16 and count != 17:
+                    raise Error("Hysteretic expects 12, 13, 16 or 17 parameters")
+                for p in range(count):
+                    var value = _json_number_value(doc, doc.array_item(values, p), parsed.type)
+                    if parsed.type == "Hysteretic" and count <= 13:
+                        # Insert the collinear midpoint used by the two-point constructor.
+                        var index = p if p < 2 else p + 2 if p < 6 else p + 4
+                        parsed.uniaxial_values[index] = value
+                    else:
+                        parsed.uniaxial_values[p] = value
+                if parsed.type == "Hysteretic" and count <= 13:
+                    for p in range(2):
+                        parsed.uniaxial_values[2 + p] = 0.5 * (
+                            parsed.uniaxial_values[p] + parsed.uniaxial_values[4 + p]
+                        )
+                        parsed.uniaxial_values[8 + p] = 0.5 * (
+                            parsed.uniaxial_values[6 + p] + parsed.uniaxial_values[10 + p]
+                        )
+                case_input.materials.append(parsed^)
+                continue
+            if (
+                parsed.type == "ElasticPP"
+                or parsed.type == "ElasticBilin"
+                or parsed.type == "Ratchet"
+            ):
+                parsed.direct_uniaxial_def = read_small_material_def(doc, params, parsed.type)
+            if parsed.type == "FSAM":
+                parsed.fsam = FSAMInput(
+                    _required_material_param(doc, params, "rho"),
+                    _json_get_int(doc, params, "steel_x", -1),
+                    _json_get_int(doc, params, "steel_y", -1),
+                    _json_get_int(doc, params, "concrete", -1),
+                    _required_material_param(doc, params, "rho_x"),
+                    _required_material_param(doc, params, "rho_y"),
+                    _required_material_param(doc, params, "friction"),
+                    _required_material_param(doc, params, "dowel"),
+                )
+                case_input.materials.append(parsed^)
+                continue
+            if parsed.type == "ConcreteCM" or parsed.type == "SteelMPF":
+                parsed.direct_uniaxial_def = read_wall_material_def(doc, params, parsed.type)
+                case_input.materials.append(parsed^)
+                continue
             if parsed.type == "ConcreteS":
                 parsed.E = _json_number_value(
                     doc, _json_require_key(doc, params, "E"), "ConcreteS E"
@@ -2406,8 +3344,59 @@ fn parse_case_input_native_from_source(
                 )
                 case_input.materials.append(parsed^)
                 continue
+            if parsed.type == "HystereticSmooth" or parsed.type == "HystereticAsym":
+                parsed.ka = _json_get_float(doc, params, "ka", 0.0)
+                parsed.kb = _json_get_float(doc, params, "kb", 0.0)
+                parsed.fbar = _json_get_float(doc, params, "fbar", 0.0)
+                if parsed.type == "HystereticSmooth":
+                    parsed.beta1 = _json_get_float(doc, params, "beta", 0.0)
+                else:
+                    parsed.beta1 = _json_get_float(doc, params, "beta1", 0.0)
+                    parsed.beta2 = _json_get_float(doc, params, "beta2", 0.0)
+                    parsed.gamma = _json_get_float(doc, params, "gamma", 0.0)
+                case_input.materials.append(parsed^)
+                continue
             if _json_has_key(doc, params, "E"):
                 parsed.E = _json_get_float(doc, params, "E", 0.0)
+            if parsed.type == "DruckerPrager":
+                parsed.drucker_prager = DruckerPragerDefinition(
+                    _json_get_float(doc, params, "bulk", 0.0),
+                    _json_get_float(doc, params, "shear", 0.0),
+                    _json_get_float(doc, params, "yield_stress", 0.0),
+                    _json_get_float(doc, params, "friction", 0.0),
+                    _json_get_float(doc, params, "dilation", 0.0),
+                    _json_get_float(doc, params, "saturation", 0.0),
+                    _json_get_float(doc, params, "initial_hardening", 0.0),
+                    _json_get_float(doc, params, "saturation_rate", 0.0),
+                    _json_get_float(doc, params, "tension_rate", 0.0),
+                    _json_get_float(doc, params, "hardening", 0.0),
+                    _json_get_float(doc, params, "isotropic_fraction", 1.0),
+                )
+            if parsed.type == "ElasticCrossAnisotropic":
+                parsed.cross_anisotropic = InlineArray[Float64, 5](
+                    _json_get_float(doc, params, "Eh", 0.0),
+                    _json_get_float(doc, params, "Ev", 0.0),
+                    _json_get_float(doc, params, "nuhv", 0.0),
+                    _json_get_float(doc, params, "nuhh", 0.0),
+                    _json_get_float(doc, params, "Ghv", 0.0),
+                )
+            if parsed.type == "PySimple1":
+                parsed.soil_type = _json_get_int(doc, params, "soilType", 0)
+                parsed.soil_ultimate = _json_get_float(doc, params, "pult", 0.0)
+                parsed.soil_disp50 = _json_get_float(doc, params, "y50", 0.0)
+                parsed.soil_drag_or_suction = _json_get_float(doc, params, "Cd", 0.0)
+                parsed.soil_dashpot = _json_get_float(doc, params, "c", 0.0)
+            elif parsed.type == "TzSimple1":
+                parsed.soil_type = _json_get_int(doc, params, "tzType", 0)
+                parsed.soil_ultimate = _json_get_float(doc, params, "tult", 0.0)
+                parsed.soil_disp50 = _json_get_float(doc, params, "z50", 0.0)
+                parsed.soil_dashpot = _json_get_float(doc, params, "c", 0.0)
+            elif parsed.type == "QzSimple1":
+                parsed.soil_type = _json_get_int(doc, params, "qzType", 0)
+                parsed.soil_ultimate = _json_get_float(doc, params, "qult", 0.0)
+                parsed.soil_disp50 = _json_get_float(doc, params, "z50", 0.0)
+                parsed.soil_drag_or_suction = _json_get_float(doc, params, "suction", 0.0)
+                parsed.soil_dashpot = _json_get_float(doc, params, "c", 0.0)
             if _json_has_key(doc, params, "Fy"):
                 parsed.Fy = _json_get_float(doc, params, "Fy", 0.0)
             if _json_has_key(doc, params, "E0"):
@@ -2465,6 +3454,57 @@ fn parse_case_input_native_from_source(
                 parsed.angle = _json_get_float(doc, params, "angle", 0.0)
             if _json_has_key(doc, params, "gmod"):
                 parsed.gmod = _json_get_float(doc, params, "gmod", 0.0)
+            if _json_has_key(doc, params, "K"):
+                parsed.K = _json_get_float(doc, params, "K", 0.0)
+            if _json_has_key(doc, params, "C"):
+                parsed.C = _json_get_float(doc, params, "C", 0.0)
+            if _json_has_key(doc, params, "alpha"):
+                parsed.alpha = _json_get_float(doc, params, "alpha", 1.0)
+            elif _json_has_key(doc, params, "Alpha"):
+                parsed.alpha = _json_get_float(doc, params, "Alpha", 1.0)
+            if _json_has_key(doc, params, "LGap"):
+                parsed.LGap = _json_get_float(doc, params, "LGap", 0.0)
+            if _json_has_key(doc, params, "NM"):
+                parsed.NM = _json_get_float(doc, params, "NM", 1.0)
+            if _json_has_key(doc, params, "RelTol"):
+                parsed.RelTol = _json_get_float(doc, params, "RelTol", 1.0e-6)
+            if _json_has_key(doc, params, "AbsTol"):
+                parsed.AbsTol = _json_get_float(doc, params, "AbsTol", 1.0e-10)
+            if _json_has_key(doc, params, "MaxHalf"):
+                parsed.MaxHalf = _json_get_float(doc, params, "MaxHalf", 15.0)
+            if parsed.type == "Fatigue":
+                parsed.E0 = _json_get_float(doc, params, "E0", 0.191)
+                parsed.fatigue_dmax = _json_get_float(doc, params, "Dmax", 1.0)
+                parsed.fatigue_slope = _json_get_float(doc, params, "m", -0.458)
+                parsed.strain_min = _json_get_float(doc, params, "min", -1.0e16)
+                parsed.strain_max = _json_get_float(doc, params, "max", 1.0e16)
+            if parsed.type == "MinMax":
+                parsed.strain_min = _json_get_float(doc, params, "min", -1.0e16)
+                parsed.strain_max = _json_get_float(doc, params, "max", 1.0e16)
+            if parsed.type == "ENT":
+                parsed.ent_a = _json_get_float(doc, params, "a", 0.0)
+                parsed.ent_b = _json_get_float(doc, params, "b", 1.0)
+            elif parsed.type == "Parallel":
+                var children = _json_key(doc, params, "materials")
+                var child_count = _json_expect_array_len(doc, children, "Parallel materials")
+                if child_count == 0:
+                    abort("Parallel requires at least one child material")
+                var factors = _json_key(doc, params, "factors")
+                var factor_count = _json_expect_array_len(doc, factors, "Parallel factors")
+                if factors >= 0 and factor_count != child_count:
+                    abort("Parallel requires one factor per material")
+                var components = List[ParallelComponentInput](capacity=child_count)
+                for j in range(child_count):
+                    var child_id = _json_int_value(
+                        doc, doc.array_item(children, j), "Parallel child material"
+                    )
+                    var factor = 1.0
+                    if factor_count > 0:
+                        factor = _json_number_value(
+                            doc, doc.array_item(factors, j), "Parallel factor"
+                        )
+                    components.append(ParallelComponentInput(child_id, factor))
+                parsed.parallel_components = components^
             case_input.materials.append(parsed^)
 
     var elements_raw = _json_require_key(doc, root, "elements")
@@ -2474,8 +3514,82 @@ fn parse_case_input_native_from_source(
         parsed.id = _json_get_int(doc, elem, "id", 0)
         parsed.type = _json_get_string(doc, elem, "type", "")
         var nodes = _json_require_key(doc, elem, "nodes")
+        if parsed.type == "BeamContact2D":
+            if _json_expect_array_len(doc, nodes, "BeamContact2D nodes") != 4:
+                abort("BeamContact2D requires four nodes")
+            parsed.contact_gap_tol = _required_material_param(doc, elem, "gap_tol")
+            parsed.contact_force_tol = _required_material_param(doc, elem, "force_tol")
+            parsed.contact_initial = _json_get_bool(doc, elem, "initial_contact", True)
+        if parsed.type == "MVLEM":
+            if _json_expect_array_len(doc, nodes, "MVLEM nodes") != 2:
+                abort("MVLEM requires two nodes")
+            parsed.wall.c = _required_material_param(doc, elem, "c")
+            parsed.material = _json_get_int(doc, elem, "shear_material", -1)
+            var fibers = _json_require_key(doc, elem, "fibers")
+            for f in range(_json_expect_array_len(doc, fibers, "MVLEM fibers")):
+                var fiber = doc.array_item(fibers, f)
+                var width = _required_material_param(doc, fiber, "width")
+                var thickness = _required_material_param(doc, fiber, "thickness")
+                var rho = _required_material_param(doc, fiber, "rho")
+                if width <= 0.0 or thickness <= 0.0 or rho < 0.0 or rho > 1.0:
+                    abort("MVLEM fiber requires positive width and thickness and rho in [0, 1]")
+                parsed.wall.fibers.append(
+                    MVLEMFiber(
+                        width,
+                        thickness,
+                        rho,
+                        _json_get_int(doc, fiber, "concrete", -1),
+                        _json_get_int(doc, fiber, "steel", -1),
+                    )
+                )
+        if parsed.type == "CatenaryCable":
+            parsed.cable = CatenaryCable(
+                _required_material_param(doc, elem, "weight"),
+                _required_material_param(doc, elem, "E"),
+                _required_material_param(doc, elem, "A"),
+                _required_material_param(doc, elem, "L0"),
+                _required_material_param(doc, elem, "alpha"),
+                _required_material_param(doc, elem, "temperature_change"),
+                _required_material_param(doc, elem, "rho"),
+                _required_material_param(doc, elem, "error_tol"),
+                _json_get_int(doc, elem, "substeps", 0),
+                _json_get_int(doc, elem, "mass_type", 0),
+            )
+        if parsed.type == "SFI_MVLEM":
+            if _json_expect_array_len(doc, nodes, "SFI_MVLEM nodes") != 2:
+                abort("SFI_MVLEM requires two nodes")
+            parsed.wall.c = _required_material_param(doc, elem, "c")
+            var panels = _json_require_key(doc, elem, "panels")
+            for i in range(_json_expect_array_len(doc, panels, "SFI_MVLEM panels")):
+                var panel = doc.array_item(panels, i)
+                var width = _required_material_param(doc, panel, "width")
+                var thickness = _required_material_param(doc, panel, "thickness")
+                if width <= 0.0 or thickness <= 0.0:
+                    abort("SFI_MVLEM requires positive panel width and thickness")
+                parsed.wall.fibers.append(
+                    MVLEMFiber(width, thickness, 0.0, _json_get_int(doc, panel, "material", -1), -1)
+                )
         var node_count = _json_expect_array_len(doc, nodes, "element nodes")
-        if node_count > 4:
+        var solid_nodes = continuum_nodes(parsed.type)
+        if parsed.type == "9_4_QuadUP" or parsed.type == "quadUP" or parsed.type == "SSPbrickUP":
+            var expected = 4
+            if parsed.type == "9_4_QuadUP":
+                expected = 9
+            elif parsed.type == "SSPbrickUP":
+                expected = 8
+            if node_count != expected:
+                abort(parsed.type + " has an invalid node count")
+        elif solid_nodes > 0:
+            if node_count != solid_nodes:
+                abort(parsed.type + " has an invalid node count")
+            if solid_nodes > 4:
+                var extra_nodes: List[Int] = []
+                for n in range(4, node_count):
+                    extra_nodes.append(
+                        _json_int_value(doc, doc.array_item(nodes, n), "element nodes")
+                    )
+                parsed.solid_extra_nodes = extra_nodes^
+        elif node_count > 4:
             node_count = 4
         parsed.node_count = node_count
         if node_count > 0:
@@ -2486,6 +3600,11 @@ fn parse_case_input_native_from_source(
             parsed.node_3 = _json_int_value(doc, doc.array_item(nodes, 2), "element nodes")
         if node_count > 3:
             parsed.node_4 = _json_int_value(doc, doc.array_item(nodes, 3), "element nodes")
+        if not parsed.solid_extra_nodes:
+            for i in range(4, node_count):
+                parsed.extra_nodes[i - 4] = _json_int_value(
+                    doc, doc.array_item(nodes, i), "element nodes"
+                )
         if _json_has_key(doc, elem, "section"):
             parsed.section = _json_get_int(doc, elem, "section", -1)
         if _json_has_key(doc, elem, "material"):
@@ -2574,8 +3693,13 @@ fn parse_case_input_native_from_source(
             parsed.area = _json_get_float(doc, elem, "area", 0.0)
         if _json_has_key(doc, elem, "thickness"):
             parsed.thickness = _json_get_float(doc, elem, "thickness", 0.0)
+        if parsed.type == "BeamContact2D":
+            parsed.thickness = _required_material_param(doc, elem, "width")
         parsed.formulation = _json_get_string(doc, elem, "formulation", "PlaneStress")
         parsed.geom_transf = _json_get_string(doc, elem, "geomTransf", "Linear")
+        if parsed.type == "ASDShellQ4":
+            parsed.shell_eas = _json_get_bool(doc, elem, "eas", True)
+            parsed.shell_drilling_stab = _json_get_float(doc, elem, "drilling_stab", 0.01)
         var vecxz = _json_key(doc, elem, "vecxz")
         if _json_has_value(doc, vecxz):
             var vec_count = _json_expect_array_len(doc, vecxz, "element vecxz")
@@ -2594,10 +3718,46 @@ fn parse_case_input_native_from_source(
             parsed.has_geom_vecxz = True
         parsed.integration = _json_get_string(doc, elem, "integration", "Lobatto")
         parsed.num_int_pts = _json_get_int(doc, elem, "num_int_pts", 3)
+        parsed.thermal_beam = _json_get_bool(doc, elem, "thermal", False)
+        if _json_get_bool(doc, elem, "cbdi", False):
+            var cbdi_iters = _json_get_int(doc, elem, "max_iters", 10)
+            var cbdi_tol = _json_get_float(doc, elem, "tol", 1.0e-12)
+            if cbdi_iters <= 0 or cbdi_tol <= 0.0:
+                abort("forceBeamColumnCBDI requires positive iteration limit and tolerance")
+            parsed.cbdi = CbdiSettings(cbdi_iters, cbdi_tol)
         parsed.rho = _json_get_float(doc, elem, "rho", 0.0)
         parsed.use_cmass = _json_get_bool(doc, elem, "cMass", False)
+        if parsed.type == "SSPbrickUP":
+            parsed.up_perm_z = _json_get_float(doc, elem, "perm_z", 0.0)
+            parsed.up_void_ratio = _json_get_float(doc, elem, "void_ratio", 0.0)
+            parsed.up_stabilization = _json_get_float(doc, elem, "stabilization", 0.0)
+            parsed.up_body_z = _json_get_float(doc, elem, "body_z", 0.0)
+        if parsed.type == "quadUP" or parsed.type == "9_4_QuadUP" or parsed.type == "SSPbrickUP":
+            parsed.up_bulk = _json_get_float(doc, elem, "fluid_bulk", 0.0)
+            parsed.up_perm_x = _json_get_float(doc, elem, "perm_x", 0.0)
+            parsed.up_perm_y = _json_get_float(doc, elem, "perm_y", 0.0)
+            parsed.quad_density = _json_get_float(doc, elem, "fluid_density", 0.0)
+        if parsed.type == "fourNodeQuad" or solid_nodes > 0:
+            parsed.quad_density = _json_get_float(doc, elem, "rho", 0.0)
+        if (
+            parsed.type == "fourNodeQuad"
+            or parsed.type == "quadUP"
+            or parsed.type == "9_4_QuadUP"
+            or parsed.type == "SSPbrickUP"
+            or solid_nodes > 0
+        ):
+            parsed.quad_pressure = _json_get_float(doc, elem, "pressure", 0.0)
+            parsed.quad_body_x = _json_get_float(doc, elem, "body_x", 0.0)
+            parsed.quad_body_y = _json_get_float(doc, elem, "body_y", 0.0)
+            if solid_nodes > 0:
+                parsed.continuum_body_z = _json_get_float(doc, elem, "body_z", 0.0)
         parsed.element_mass = _json_get_float(doc, elem, "mass", 0.0)
         parsed.do_rayleigh = _json_get_bool(doc, elem, "doRayleigh", False)
+        if parsed.type == "MVLEM":
+            _ = _required_material_param(doc, elem, "density")
+            parsed.do_rayleigh = True
+        if parsed.type == "SFI_MVLEM":
+            parsed.do_rayleigh = True
         var orient = _json_key(doc, elem, "orient")
         if _json_has_value(doc, orient):
             var x_vals = _json_key(doc, orient, "x")
@@ -2892,16 +4052,25 @@ fn parse_case_input_native_from_source(
     for i in range(_json_expect_array_len(doc, recorders_raw, "recorders")):
         var rec = doc.array_item(recorders_raw, i)
         var parsed = RecorderInput()
+        parsed.start_stage = _json_get_int(doc, rec, "start_stage", 0)
+        parsed.end_stage = _json_get_int(doc, rec, "end_stage", parsed.end_stage)
+        parsed.delta_t = _json_get_float_alias2(doc, rec, "delta_t", "sample_dt", 0.0)
         parsed.type_tag = recorder_type_tag(_json_get_string(doc, rec, "type", ""))
         if parsed.type_tag == RecorderTypeTag.Unknown:
             abort("unsupported recorder type")
         if (
             parsed.type_tag == RecorderTypeTag.NodeDisplacement
+            or parsed.type_tag == RecorderTypeTag.NodeVelocity
+            or parsed.type_tag == RecorderTypeTag.NodeAcceleration
             or parsed.type_tag == RecorderTypeTag.EnvelopeNodeDisplacement
             or parsed.type_tag == RecorderTypeTag.EnvelopeNodeAcceleration
         ):
             if parsed.type_tag == RecorderTypeTag.NodeDisplacement:
                 parsed.output = _json_get_string(doc, rec, "output", "node_disp")
+            elif parsed.type_tag == RecorderTypeTag.NodeVelocity:
+                parsed.output = _json_get_string(doc, rec, "output", "node_velocity")
+            elif parsed.type_tag == RecorderTypeTag.NodeAcceleration:
+                parsed.output = _json_get_string(doc, rec, "output", "node_accel")
             elif parsed.type_tag == RecorderTypeTag.EnvelopeNodeDisplacement:
                 parsed.output = _json_get_string(doc, rec, "output", "envelope_node_displacement")
             else:
@@ -2926,17 +4095,52 @@ fn parse_case_input_native_from_source(
                 parsed.time_series_tag = _json_get_int(doc, rec, "time_series", -1)
         elif (
             parsed.type_tag == RecorderTypeTag.ElementForce
+            or parsed.type_tag == RecorderTypeTag.QuadStress
+            or parsed.type_tag == RecorderTypeTag.QuadStrain
+            or parsed.type_tag == RecorderTypeTag.QuadState
+            or parsed.type_tag == RecorderTypeTag.ContactSecondaryForce
+            or parsed.type_tag == RecorderTypeTag.ContactFrictionForce
+            or parsed.type_tag == RecorderTypeTag.ContactScalarForce
+            or parsed.type_tag == RecorderTypeTag.ContactPrimaryForce
             or parsed.type_tag == RecorderTypeTag.ElementLocalForce
             or parsed.type_tag == RecorderTypeTag.ElementBasicForce
             or parsed.type_tag == RecorderTypeTag.ElementDeformation
             or parsed.type_tag == RecorderTypeTag.EnvelopeElementForce
             or parsed.type_tag == RecorderTypeTag.EnvelopeElementLocalForce
         ):
-            if parsed.type_tag == RecorderTypeTag.ElementForce:
+            if (
+                parsed.type_tag == RecorderTypeTag.ContactSecondaryForce
+                or parsed.type_tag == RecorderTypeTag.ContactFrictionForce
+                or parsed.type_tag == RecorderTypeTag.ContactScalarForce
+                or parsed.type_tag == RecorderTypeTag.ContactPrimaryForce
+            ):
+                parsed.output = _json_get_string(
+                    doc, rec, "output", _json_get_string(doc, rec, "type", "")
+                )
+            elif parsed.type_tag == RecorderTypeTag.ElementForce:
                 parsed.output = _json_get_string(doc, rec, "output", "element_force")
+            elif (
+                parsed.type_tag == RecorderTypeTag.QuadStress
+                or parsed.type_tag == RecorderTypeTag.QuadStrain
+                or parsed.type_tag == RecorderTypeTag.QuadState
+            ):
+                var output = (
+                    "quad_stress" if parsed.type_tag
+                    == RecorderTypeTag.QuadStress else "quad_strain"
+                )
+                if parsed.type_tag == RecorderTypeTag.QuadState:
+                    output = "quad_state"
+                parsed.output = _json_get_string(doc, rec, "output", output)
+                parsed.integration_point = _json_get_int(doc, rec, "integration_point", 1) - 1
+                if parsed.integration_point < 0 or parsed.integration_point >= 27:
+                    abort("solid material recorder integration point must be in 1..27")
+                parsed.stress_components = _json_get_int(doc, rec, "stress_components", 0)
             elif parsed.type_tag == RecorderTypeTag.ElementLocalForce:
                 parsed.output = _json_get_string(doc, rec, "output", "element_local_force")
             elif parsed.type_tag == RecorderTypeTag.ElementBasicForce:
+                parsed.material_stress = (
+                    _json_get_string(doc, rec, "truss_response", "") == "material"
+                )
                 parsed.output = _json_get_string(doc, rec, "output", "element_basic_force")
             elif parsed.type_tag == RecorderTypeTag.ElementDeformation:
                 parsed.output = _json_get_string(doc, rec, "output", "element_deformation")
@@ -2955,6 +4159,14 @@ fn parse_case_input_native_from_source(
                 case_input.recorder_elements_pool.append(
                     _json_int_value(doc, doc.array_item(recorder_elements, j), "recorder elements")
                 )
+            var recorder_dofs = _json_key(doc, rec, "dofs")
+            if _json_has_value(doc, recorder_dofs):
+                parsed.dof_offset = len(case_input.recorder_dofs_pool)
+                parsed.dof_count = _json_expect_array_len(doc, recorder_dofs, "recorder dofs")
+                for j in range(parsed.dof_count):
+                    case_input.recorder_dofs_pool.append(
+                        _json_int_value(doc, doc.array_item(recorder_dofs, j), "recorder dofs")
+                    )
         elif parsed.type_tag == RecorderTypeTag.NodeReaction:
             parsed.output = _json_get_string(doc, rec, "output", "reaction")
             var recorder_nodes = _json_key(doc, rec, "nodes")

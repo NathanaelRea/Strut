@@ -59,6 +59,8 @@ fn _assembly_filter_accepts_element(elem: ElementInput, filter_mode: Int) -> Boo
     var is_link_like = (
         elem.type_tag == ElementTypeTag.ZeroLength
         or elem.type_tag == ElementTypeTag.TwoNodeLink
+        or elem.type_tag == ElementTypeTag.MVLEM
+        or elem.type_tag == ElementTypeTag.SFIMVLEM
         or elem.type_tag == ElementTypeTag.Truss
     )
     if filter_mode == 1:
@@ -84,6 +86,8 @@ fn _geom_transf_name_from_tag(geom_tag: Int) -> String:
 
 @always_inline
 fn _beam_integration_name_from_tag(integration_tag: Int) -> String:
+    if integration_tag == BeamIntegrationTag.HingeRadau:
+        return "HingeRadau"
     if integration_tag == BeamIntegrationTag.Lobatto:
         return "Lobatto"
     if integration_tag == BeamIntegrationTag.Legendre:
@@ -237,6 +241,8 @@ fn _elem_dir(elem: ElementInput, idx: Int) -> Int:
 
 
 fn _elem_dof(elem: ElementInput, idx: Int) -> Int:
+    if elem.type_tag == ElementTypeTag.SFIMVLEM and idx >= 6:
+        return 3 * (elem.wall_internal_node_start + idx - 6)
     if idx == 0:
         return elem.dof_1
     if idx == 1:
@@ -283,7 +289,9 @@ fn _elem_dof(elem: ElementInput, idx: Int) -> Int:
         return elem.dof_22
     if idx == 22:
         return elem.dof_23
-    return elem.dof_24
+    if idx == 23:
+        return elem.dof_24
+    return elem.extra_dofs[idx - 24]
 
 
 fn _elem_dof_map(elem: ElementInput) -> List[Int]:

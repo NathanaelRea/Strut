@@ -152,6 +152,56 @@ def test_beam_column3d_variants_static_linear_run(element_type: str):
     assert row[0] == pytest.approx(-row[6], abs=1e-9)
 
 
+@pytest.mark.parametrize(
+    "element_type", ["elasticBeamColumn3d", "forceBeamColumn3d", "dispBeamColumn3d"]
+)
+def test_uniform_3d_load_local_force_uses_all_components(
+    tmp_path: Path, element_type: str
+):
+    case = _base_case(element_type)
+    case["nodes"][1].update(x=3.0, z=0.0)
+    case["elements"][0]["vecxz"] = [0.0, 1.0, 0.0]
+    case["loads"] = []
+    case["element_loads"] = [
+        {"element": 1, "type": "beamUniform", "wx": 5.0, "wy": -2.0, "wz": 4.0}
+    ]
+    case["recorders"] = [
+        {"type": "element_local_force", "elements": [1], "output": "local_force"}
+    ]
+
+    _run_strut_case(case, tmp_path)
+
+    assert _read_rows(tmp_path / "local_force_ele1.out") == [
+        pytest.approx([-15.0, 6.0, -12.0, 0.0, 18.0, 9.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+    ]
+
+
+def test_transient_3d_energy_incr_uses_updated_residual(tmp_path: Path):
+    case = _base_case("forceBeamColumn3d")
+    case["analysis"] = {
+        "type": "transient_nonlinear",
+        "steps": 1,
+        "dt": 0.01,
+        "integrator": {"type": "Newmark", "gamma": 0.5, "beta": 0.25},
+        "algorithm": "ModifiedNewton",
+        "test_type": "EnergyIncr",
+        "max_iters": 1,
+        "tol": 1e-10,
+    }
+    case["masses"] = [{"node": 2, "dof": 1, "value": 100.0}]
+    case["recorders"] = [
+        {"type": "node_displacement", "nodes": [2], "dofs": [1], "output": "disp"}
+    ]
+
+    _run_strut_case(case, tmp_path)
+
+    stiffness = 3.0 * 2.0e11 * 1.0e-5 / 3.0**3
+    effective_stiffness = stiffness + 100.0 / (0.25 * 0.01**2)
+    assert _read_rows(tmp_path / "disp_node2.out") == [
+        pytest.approx([1000.0 / effective_stiffness])
+    ]
+
+
 @pytest.mark.parametrize("geom_transf", ["PDelta", "Corotational"])
 def test_force_beam_column3d_non_linear_geom_transf_runs(geom_transf: str):
     case_data = _base_case("forceBeamColumn3d")
