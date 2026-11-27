@@ -1,0 +1,9 @@
+{
+  "name": "opensees_example_excavation",
+  "entry_tcl": "tests/fixtures/opensees/OpenSeesExamplesPractical/excavation_supported_by_cantilevered_sheet_pile_wall/Excavation.tcl",
+  "tcl_source_version": "3.7.1",
+  "enabled": true,
+  "source_url": "https://opensees.berkeley.edu/wiki/index.php/Excavation_Supported_by_Cantilevered_Sheet_Pile_Wall",
+  "reference": "Excavation Supported by Cantilevered Sheet Pile Wall, Christopher McGann and Pedro Arduino, University of Washington.",
+  "parity_history": true
+}

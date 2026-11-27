@@ -1,0 +1,8 @@
+{
+  "name": "opensees_example_laterally_loaded_pile_foundation",
+  "entry_tcl": "tests/fixtures/opensees/OpenSeesExamplesPractical/laterally_loaded_pile_foundation/StaticBNWFpile.tcl",
+  "tcl_source_version": "3.7.1",
+  "enabled": true,
+  "source_url": "https://opensees.berkeley.edu/wiki/index.php/Laterally-Loaded_Pile_Foundation",
+  "reference": "Reese, L.C. and Van Impe, W.F. (2001). Single Piles and Pile Groups Under Lateral Loading. A.A. Balkema."
+}

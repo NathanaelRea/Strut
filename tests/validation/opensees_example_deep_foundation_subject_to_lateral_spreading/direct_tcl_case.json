@@ -1,0 +1,8 @@
+{
+  "name": "opensees_example_deep_foundation_subject_to_lateral_spreading",
+  "entry_tcl": "tests/fixtures/opensees/OpenSeesExamplesPractical/deep_foundation_subject_to_lateral_spreading/lateralSpreadPile.tcl",
+  "tcl_source_version": "3.7.1",
+  "enabled": true,
+  "source_url": "https://opensees.berkeley.edu/wiki/index.php/Deep_Foundation_Subject_to_Lateral_Spreading",
+  "reference": "McGann, C.R., Arduino, P., and Mackenzie-Helnwein, P. (2012). Simplified procedure to account for a weaker soil layer in lateral load analysis of single piles. Journal of Geotechnical and Geoenvironmental Engineering, 138(9), 1129\u20131137."
+}

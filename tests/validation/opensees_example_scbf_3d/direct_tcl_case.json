@@ -1,0 +1,9 @@
+{
+  "enabled": false,
+  "disabled_reason": "Strut reaches the post-gravity 3D eigen query, then fails its multipoint-constraint precheck. The dynamic script also needs element-region Rayleigh damping and combined section and fiber responses.",
+  "entry_tcl": "tests/fixtures/opensees/OpenSeesExamplesPractical/scbf_model/SCBF-3Dmodel/SCBF_3D.tcl",
+  "tcl_source_version": "3.0.2",
+  "tcl_upgrade_note": "Restores the V3.0.2 default torsion for 3D fiber sections.",
+  "source_url": "https://opensees.berkeley.edu/wiki/index.php/SCBF_Model",
+  "reference": "https://opensees.berkeley.edu/wiki/images/d/de/ModelingSCBF.pdf"
+}

@@ -41,7 +41,7 @@ from solver.run_case.input_types import (
     SectionInput,
 )
 from sections import FiberCell, FiberSection3dDef
-from tag_types import ElementTypeTag
+from tag_types import ElementTypeTag, GeomTransfTag
 
 
 fn _frame3d_element_tangent_and_force(
@@ -128,7 +128,7 @@ fn _frame3d_element_tangent_and_force(
             sec.A,
             sec.Iy,
             sec.Iz,
-            sec.G,
+            sec.beam_shear_modulus(elem_type),
             sec.J,
             scratch,
             k_elem12,
@@ -158,11 +158,16 @@ fn _frame3d_element_tangent_and_force(
                 sec.A,
                 sec.Iy,
                 sec.Iz,
-                sec.G,
+                sec.beam_shear_modulus(elem_type),
                 sec.J,
                 scratch,
                 k_elem12,
                 f_elem12,
+                sec.shear_rigidity_y,
+                sec.shear_rigidity_z,
+                elem.integration,
+                elem.num_int_pts,
+                elem.cbdi,
             )
         else:
             disp_beam_column3d_global_tangent_and_internal(
@@ -187,7 +192,7 @@ fn _frame3d_element_tangent_and_force(
                 sec.A,
                 sec.Iy,
                 sec.Iz,
-                sec.G,
+                sec.beam_shear_modulus(elem_type),
                 sec.J,
                 scratch,
                 k_elem12,
@@ -226,7 +231,7 @@ fn _frame3d_element_tangent_and_force(
                 elem_uniaxial_counts[e],
                 integration_name,
                 elem_num_int_pts[e],
-                sec.G,
+                sec.beam_shear_modulus(elem_type),
                 sec.J,
                 force_basic_q,
                 force_basic_offsets[e],
@@ -263,7 +268,7 @@ fn _frame3d_element_tangent_and_force(
                 elem_uniaxial_counts[e],
                 integration_name,
                 elem_num_int_pts[e],
-                sec.G,
+                sec.beam_shear_modulus(elem_type),
                 sec.J,
                 scratch,
                 k_elem12,
@@ -440,6 +445,12 @@ fn _assemble_frame3d_native_soa_indices[
     var workers = 1
     if not do_profile:
         workers = force_beam_column3d_scratch.worker_count(element_count)
+
+    if workers > 1:
+        for e in frame3d_elem_indices:
+            if elem_geom_tags[e] == GeomTransfTag.Corotational:
+                workers = 1
+                break
 
     if workers > 1:
         force_beam_column3d_scratch.ensure_workers(workers)
@@ -711,7 +722,7 @@ fn _assemble_frame3d_soa_indices(
                 sec.A,
                 sec.Iy,
                 sec.Iz,
-                sec.G,
+                sec.beam_shear_modulus(elem_type),
                 sec.J,
                 force_beam_column3d_scratch.main,
                 k_elem12,
@@ -742,11 +753,16 @@ fn _assemble_frame3d_soa_indices(
                         sec.A,
                         sec.Iy,
                         sec.Iz,
-                        sec.G,
+                        sec.beam_shear_modulus(elem_type),
                         sec.J,
                         force_beam_column3d_scratch.main,
                         k_elem12,
                         f_elem12,
+                        sec.shear_rigidity_y,
+                        sec.shear_rigidity_z,
+                        elem.integration,
+                        elem.num_int_pts,
+                        elem.cbdi,
                     )
                 else:
                     disp_beam_column3d_global_tangent_and_internal(
@@ -771,7 +787,7 @@ fn _assemble_frame3d_soa_indices(
                         sec.A,
                         sec.Iy,
                         sec.Iz,
-                        sec.G,
+                        sec.beam_shear_modulus(elem_type),
                         sec.J,
                         force_beam_column3d_scratch.main,
                         k_elem12,
@@ -824,7 +840,7 @@ fn _assemble_frame3d_soa_indices(
                         elem_uniaxial_counts[e],
                         integration_name,
                         elem_num_int_pts[e],
-                        sec.G,
+                        sec.beam_shear_modulus(elem_type),
                         sec.J,
                         force_basic_q,
                         force_basic_offsets[e],
@@ -861,7 +877,7 @@ fn _assemble_frame3d_soa_indices(
                         elem_uniaxial_counts[e],
                         integration_name,
                         elem_num_int_pts[e],
-                        sec.G,
+                        sec.beam_shear_modulus(elem_type),
                         sec.J,
                         force_beam_column3d_scratch.main,
                         k_elem12,
@@ -999,7 +1015,7 @@ fn _assemble_frame3d_element(
             sec.A,
             sec.Iy,
             sec.Iz,
-            sec.G,
+            sec.beam_shear_modulus(elem_type),
             sec.J,
             force_beam_column3d_scratch.main,
             k_elem12,
@@ -1030,11 +1046,16 @@ fn _assemble_frame3d_element(
                     sec.A,
                     sec.Iy,
                     sec.Iz,
-                    sec.G,
+                    sec.beam_shear_modulus(elem_type),
                     sec.J,
                     force_beam_column3d_scratch.main,
                     k_elem12,
                     f_elem12,
+                    sec.shear_rigidity_y,
+                    sec.shear_rigidity_z,
+                    elem.integration,
+                    elem.num_int_pts,
+                    elem.cbdi,
                 )
             else:
                 disp_beam_column3d_global_tangent_and_internal(
@@ -1059,7 +1080,7 @@ fn _assemble_frame3d_element(
                     sec.A,
                     sec.Iy,
                     sec.Iz,
-                    sec.G,
+                    sec.beam_shear_modulus(elem_type),
                     sec.J,
                     force_beam_column3d_scratch.main,
                     k_elem12,
@@ -1097,7 +1118,7 @@ fn _assemble_frame3d_element(
                     elem_uniaxial_counts[e],
                     elem.integration,
                     elem.num_int_pts,
-                    sec.G,
+                    sec.beam_shear_modulus(elem_type),
                     sec.J,
                     force_basic_q,
                     force_basic_offsets[e],
@@ -1134,7 +1155,7 @@ fn _assemble_frame3d_element(
                     elem_uniaxial_counts[e],
                     elem.integration,
                     elem.num_int_pts,
-                    sec.G,
+                    sec.beam_shear_modulus(elem_type),
                     sec.J,
                     force_beam_column3d_scratch.main,
                     k_elem12,

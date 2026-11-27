@@ -229,6 +229,22 @@ Run these explicitly once enabled:
 uv run scripts/run_benchmarks.py --cases elastic_truss_basic,elastic_four_node_quad_basic --include-disabled
 ```
 
+## Centrifuge test
+
+The full centrifuge benchmark runs both gravity stages and all nine shaking
+and drainage phases to 360 s. The published model reports a 38.6-hour run.
+Install the [generated fixture](../scripts/centrifuge_recon/README.md) and select
+the manifest explicitly. Its `opensees_only` flag runs native Tcl while Strut's
+soil elements, material staging and pore-pressure boundary conditions are
+unavailable.
+
+```sh
+uv run scripts/setup_reference_data.py
+uv run scripts/run_benchmarks.py \
+  --cases benchmark/OpenSees/centrifuge/direct_tcl_case.json \
+  --engine opensees --repeat 1 --warmup 0 --no-batch
+```
+
 ## Results
 
 - `benchmark/results/` contains the latest run (summary plus last-run outputs).

@@ -1,5 +1,10 @@
-from sections.patch_cells import quad_cell_centroid
+from sections.patch_cells import (
+    circ_cell_area_and_centroid,
+    circ_layer_effective_angles,
+    quad_cell_centroid,
+)
 from collections import List
+from math import acos, cos, sin
 from os import abort
 from python import PythonObject
 
@@ -197,11 +202,16 @@ struct FiberSection3dDef(Defaultable, ImplicitlyCopyable, Movable):
     # Other nonlinear fallback runtime state (allocated only if other_count > 0)
     var runtime_other_states: List[UniMaterialState]
 
+    var added_shear_flexibility_y: Float64
+    var added_shear_flexibility_z: Float64
+
     fn __init__(out self):
         self.fiber_offset = 0
         self.fiber_count = 0
         self.y_bar = 0.0
         self.z_bar = 0.0
+        self.added_shear_flexibility_y = 0.0
+        self.added_shear_flexibility_z = 0.0
         self.elastic_count = 0
         self.nonlinear_count = 0
         self.has_nonelastic = False
@@ -343,6 +353,8 @@ struct FiberSection3dDef(Defaultable, ImplicitlyCopyable, Movable):
         self.fiber_count = existing.fiber_count
         self.y_bar = existing.y_bar
         self.z_bar = existing.z_bar
+        self.added_shear_flexibility_y = existing.added_shear_flexibility_y
+        self.added_shear_flexibility_z = existing.added_shear_flexibility_z
         self.elastic_count = existing.elastic_count
         self.nonlinear_count = existing.nonlinear_count
         self.has_nonelastic = existing.has_nonelastic
@@ -662,7 +674,12 @@ fn _build_fiber_section3d_def(
         else:
             nonlinear_count += 1
             sec_def.has_nonelastic = True
-            if mat_def.mat_type == UniMaterialTypeTag.Steel02:
+            if mat_def.strain_limits:
+                sec_def.other_y_rel.append(y_rel)
+                sec_def.other_z_rel.append(z_rel)
+                sec_def.other_area.append(cell.area)
+                sec_def.other_mat_defs.append(mat_def)
+            elif mat_def.mat_type == UniMaterialTypeTag.Steel02 and not mat_def.fatigue.enabled:
                 s2_def_indices.append(def_index)
                 s2_y.append(y_rel)
                 s2_z.append(z_rel)
@@ -2190,6 +2207,89 @@ fn _append_straight_layer_cells(
         qz_sum += bar_area * y
 
 
+fn _append_circ_patch_cells(
+    patch: PythonObject,
+    uniaxial_def_by_id: List[Int],
+    mut fibers: List[FiberCell],
+    mut area_sum: Float64,
+    mut qy_sum: Float64,
+    mut qz_sum: Float64,
+) raises:
+    var mat_id = Int(py=patch["material"])
+    var n_circ = Int(py=patch["num_subdiv_circ"])
+    var n_rad = Int(py=patch["num_subdiv_rad"])
+    if n_circ <= 0 or n_rad <= 0:
+        abort("FiberSection3d patch circ requires num_subdiv_circ and num_subdiv_rad > 0")
+    var y_center = Float64(py=patch["y_center"])
+    var z_center = Float64(py=patch["z_center"])
+    var int_rad = Float64(py=patch["int_rad"])
+    var ext_rad = Float64(py=patch["ext_rad"])
+    var start_ang = Float64(py=patch.get("start_ang", 0.0))
+    var end_ang = Float64(py=patch.get("end_ang", 360.0))
+    if int_rad < 0.0 or ext_rad <= int_rad:
+        abort("FiberSection3d patch circ requires 0 <= int_rad < ext_rad")
+    var def_index = _resolve_uniaxial_def_index(mat_id, uniaxial_def_by_id)
+    var pi = acos(-1.0)
+    var init_rad = pi * start_ang / 180.0
+    var final_rad = pi * end_ang / 180.0
+    var delta_rad = (ext_rad - int_rad) / Float64(n_rad)
+    var delta_theta = (final_rad - init_rad) / Float64(n_circ)
+    if delta_theta == 0.0:
+        abort("FiberSection3d patch circ requires non-zero angular span")
+    for j in range(n_rad):
+        var rad_j = int_rad + delta_rad * Float64(j)
+        var rad_j1 = rad_j + delta_rad
+        for i in range(n_circ):
+            var theta_mid = init_rad + delta_theta * Float64(i) + delta_theta / 2.0
+            var cell = circ_cell_area_and_centroid(
+                rad_j, rad_j1, delta_theta, theta_mid, y_center, z_center
+            )
+            var cell_area = cell[0]
+            var y = cell[1]
+            var z = cell[2]
+            if cell_area <= 0.0:
+                abort("FiberSection3d patch circ generated non-positive area cell")
+            fibers.append(FiberCell(y, z, cell_area, def_index))
+            area_sum += cell_area
+            qy_sum += cell_area * z
+            qz_sum += cell_area * y
+
+
+fn _append_circ_layer_cells(
+    layer: PythonObject,
+    uniaxial_def_by_id: List[Int],
+    mut fibers: List[FiberCell],
+    mut area_sum: Float64,
+    mut qy_sum: Float64,
+    mut qz_sum: Float64,
+) raises:
+    var mat_id = Int(py=layer["material"])
+    var num_bars = Int(py=layer["num_bars"])
+    if num_bars <= 0:
+        abort("FiberSection3d layer circ requires num_bars > 0")
+    var bar_area = Float64(py=layer["bar_area"])
+    if bar_area <= 0.0:
+        abort("FiberSection3d layer circ requires bar_area > 0")
+    var y_center = Float64(py=layer["y_center"])
+    var z_center = Float64(py=layer["z_center"])
+    var radius = Float64(py=layer["radius"])
+    var has_angles = ("start_ang" in layer) and ("end_ang" in layer)
+    var start_ang = Float64(py=layer.get("start_ang", 0.0))
+    var end_ang = Float64(py=layer.get("end_ang", 360.0))
+    var def_index = _resolve_uniaxial_def_index(mat_id, uniaxial_def_by_id)
+    var ang = circ_layer_effective_angles(num_bars, start_ang, end_ang, has_angles)
+    var init_rad = ang[0]
+    var dtheta = ang[1]
+    for i in range(num_bars):
+        var theta = init_rad + dtheta * Float64(i)
+        var y = y_center + radius * cos(theta)
+        var z = z_center + radius * sin(theta)
+        fibers.append(FiberCell(y, z, bar_area, def_index))
+        area_sum += bar_area
+        qy_sum += bar_area * z
+        qz_sum += bar_area * y
+
+
 fn append_fiber_section3d_from_json(
     sec: PythonObject,
     uniaxial_def_by_id: List[Int],
@@ -2220,6 +2320,8 @@ fn append_fiber_section3d_from_json(
             _append_rect_patch_cells(patch, uniaxial_def_by_id, fibers, area_sum, qy_sum, qz_sum)
         elif patch_type == "quadr":
             _append_quadr_patch_cells(patch, uniaxial_def_by_id, fibers, area_sum, qy_sum, qz_sum)
+        elif patch_type == "circ":
+            _append_circ_patch_cells(patch, uniaxial_def_by_id, fibers, area_sum, qy_sum, qz_sum)
         else:
             abort("unsupported FiberSection3d patch type: " + patch_type)
 
@@ -2230,6 +2332,8 @@ fn append_fiber_section3d_from_json(
             _append_straight_layer_cells(
                 layer, uniaxial_def_by_id, fibers, area_sum, qy_sum, qz_sum
             )
+        elif layer_type == "circ":
+            _append_circ_layer_cells(layer, uniaxial_def_by_id, fibers, area_sum, qy_sum, qz_sum)
         else:
             abort("unsupported FiberSection3d layer type: " + layer_type)
 
@@ -2462,6 +2566,75 @@ fn _append_direct_fibers_input(
         qz_sum += fiber.area * fiber.y
 
 
+fn _append_circ_patch_cells_input(
+    patch: FiberPatchInput,
+    uniaxial_def_by_id: List[Int],
+    mut fibers: List[FiberCell],
+    mut area_sum: Float64,
+    mut qy_sum: Float64,
+    mut qz_sum: Float64,
+):
+    var n_circ = patch.num_subdiv_circ
+    var n_rad = patch.num_subdiv_rad
+    if n_circ <= 0 or n_rad <= 0:
+        abort("FiberSection3d patch circ requires num_subdiv_circ and num_subdiv_rad > 0")
+    if patch.int_rad < 0.0 or patch.ext_rad <= patch.int_rad:
+        abort("FiberSection3d patch circ requires 0 <= int_rad < ext_rad")
+    var def_index = _resolve_uniaxial_def_index(patch.material, uniaxial_def_by_id)
+    var pi = acos(-1.0)
+    var init_rad = pi * patch.start_ang / 180.0
+    var final_rad = pi * patch.end_ang / 180.0
+    var delta_rad = (patch.ext_rad - patch.int_rad) / Float64(n_rad)
+    var delta_theta = (final_rad - init_rad) / Float64(n_circ)
+    if delta_theta == 0.0:
+        abort("FiberSection3d patch circ requires non-zero angular span")
+    for j in range(n_rad):
+        var rad_j = patch.int_rad + delta_rad * Float64(j)
+        var rad_j1 = rad_j + delta_rad
+        for i in range(n_circ):
+            var theta_mid = init_rad + delta_theta * Float64(i) + delta_theta / 2.0
+            var cell = circ_cell_area_and_centroid(
+                rad_j, rad_j1, delta_theta, theta_mid, patch.y_center, patch.z_center
+            )
+            var cell_area = cell[0]
+            var y = cell[1]
+            var z = cell[2]
+            if cell_area <= 0.0:
+                abort("FiberSection3d patch circ generated non-positive area cell")
+            fibers.append(FiberCell(y, z, cell_area, def_index))
+            area_sum += cell_area
+            qy_sum += cell_area * z
+            qz_sum += cell_area * y
+
+
+fn _append_circ_layer_cells_input(
+    layer: FiberLayerInput,
+    uniaxial_def_by_id: List[Int],
+    mut fibers: List[FiberCell],
+    mut area_sum: Float64,
+    mut qy_sum: Float64,
+    mut qz_sum: Float64,
+):
+    if layer.num_bars <= 0:
+        abort("FiberSection3d layer circ requires num_bars > 0")
+    if layer.bar_area <= 0.0:
+        abort("FiberSection3d layer circ requires bar_area > 0")
+    var def_index = _resolve_uniaxial_def_index(layer.material, uniaxial_def_by_id)
+    var ang = circ_layer_effective_angles(
+        layer.num_bars, layer.start_ang, layer.end_ang, layer.has_angles
+    )
+    var init_rad = ang[0]
+    var dtheta = ang[1]
+    for i in range(layer.num_bars):
+        var theta = init_rad + dtheta * Float64(i)
+        var y = layer.y_center + layer.radius * cos(theta)
+        var z = layer.z_center + layer.radius * sin(theta)
+        fibers.append(FiberCell(y, z, layer.bar_area, def_index))
+        area_sum += layer.bar_area
+        qy_sum += layer.bar_area * z
+        qz_sum += layer.bar_area * y
+
+
 fn append_fiber_section3d_from_input(
     sec: SectionInput,
     fiber_patches: List[FiberPatchInput],
@@ -2492,6 +2665,10 @@ fn append_fiber_section3d_from_input(
             _append_quadr_patch_cells_input(
                 patch, uniaxial_def_by_id, fibers, area_sum, qy_sum, qz_sum
             )
+        elif patch.type == "circ":
+            _append_circ_patch_cells_input(
+                patch, uniaxial_def_by_id, fibers, area_sum, qy_sum, qz_sum
+            )
         else:
             abort("unsupported FiberSection3d patch type: " + patch.type)
 
@@ -2499,6 +2676,10 @@ fn append_fiber_section3d_from_input(
         var layer = fiber_layers[sec.fiber_layer_offset + i]
         if layer.type == "straight":
             _append_straight_layer_cells_input(
+                layer, uniaxial_def_by_id, fibers, area_sum, qy_sum, qz_sum
+            )
+        elif layer.type == "circ":
+            _append_circ_layer_cells_input(
                 layer, uniaxial_def_by_id, fibers, area_sum, qy_sum, qz_sum
             )
         else:

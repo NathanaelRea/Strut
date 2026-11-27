@@ -1,0 +1,9 @@
+{
+  "name": "opensees_example_mrf_pushover_concentrated",
+  "entry_tcl": "tests/fixtures/opensees/OpenSeesExamplesPractical/pushover_analysis_of_2_story_moment_frame/pushover_concentrated.tcl",
+  "tcl_source_version": "3.7.1",
+  "enabled": true,
+  "source_files": [
+    "pushover_concentrated.tcl"
+  ]
+}

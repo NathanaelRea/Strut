@@ -1,0 +1,8 @@
+{
+  "enabled": false,
+  "entry_tcl": "tests/fixtures/opensees/STAIRlabGallery/content/validation/Frame/Section/test_section.tcl",
+  "tcl_source_version": "openseesrt-fd3958f",
+  "tcl_upgrade_note": "Translates the positional model declaration.",
+  "source_url": "https://github.com/peer-open-source/opensees-gallery/blob/fd3958fde8a3d0a350321b3fbdd3f415ee16e2a2/content/validation/Frame/Section/test_section.tcl",
+  "disabled_reason": "Uses OpenSeesRT invoke FrameSection to query the section tangent. OpenSees 3.7.1 has no equivalent Tcl section query."
+}

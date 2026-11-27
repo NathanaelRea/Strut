@@ -15,6 +15,11 @@ from materials.uniaxial.ops import (
     uniaxial_set_trial_strain_concrete02,
     uniaxial_set_trial_strain_elastic,
     uniaxial_set_trial_strain,
+    uniaxial_set_trial_strain_py_simple1,
+    uniaxial_set_trial_strain_qz_simple1,
+    uniaxial_set_trial_strain_rate,
     uniaxial_set_trial_strain_steel01,
     uniaxial_set_trial_strain_steel02,
+    uniaxial_set_trial_strain_tz_simple1,
+    uniaxial_set_trial_strain_viscous_damper,
 )

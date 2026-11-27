@@ -1,6 +1,10 @@
 {
   "name": "opensees_example_ex9f_build_rcsection_circ3d",
-  "entry_tcl": "tests/fixtures/opensees/OpenSeesExamplesAdvanced/opensees_example_9_build_analyze_a_section_example/Ex9f.build.RCSection.Circ3D.tcl",
+  "entry_tcl": "tests/fixtures/opensees/OpenSeesExamplesAdvanced/opensees_example_9_build_analyze_a_section_example/Ex9.analyze.MomentCurvature3D.tcl",
   "tcl_source_version": "3.7.1",
-  "enabled": false
+  "enabled": true,
+  "source_files": [
+    "Ex9f.build.RCSection.Circ3D.tcl",
+    "Ex9.analyze.MomentCurvature3D.tcl"
+  ]
 }

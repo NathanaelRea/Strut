@@ -1,0 +1,10 @@
+{
+  "name": "opensees_centrifuge",
+  "entry_tcl": "tests/fixtures/opensees/OpenSeesManual/Centrifuge/CentrifugeCapped.tcl",
+  "tcl_source_version": "3.7.1",
+  "enabled": false,
+  "disabled_reason": "Strut and OpenSees now both complete both gravity stages and the capped 0.15 seconds of shaking. At the first shaking sample, node 1 horizontal displacement is about -2.637e-4 in Strut and -1.749e-4 in OpenSees, outside the normal tolerance.",
+  "source_url": "https://opensees.berkeley.edu/OpenSees/manuals/usermanual/documents/CentrifugeExample.tcl",
+  "reference": "Antonios Vytiniotis, Simulating a Centrifuge Test using the OpenSees Framework, OpenSees User Manual, chapter 4188.",
+  "notes": "Both gravity stages and the first 0.15 seconds of the original adaptive shaking sequence."
+}

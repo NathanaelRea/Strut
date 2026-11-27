@@ -6,6 +6,7 @@ from materials import UniMaterialState
 from solver.assembly.stiffness_internal_links import _zero_length_row
 from solver.assembly.stiffness_internal_shared import (
     _elem_damp_material,
+    _elem_material,
     _elem_dir,
     _elem_dof_map,
     _zero_matrix,
@@ -22,6 +23,17 @@ from solver.time_series import TimeSeriesInput, eval_time_series_input
 from tag_types import ElementTypeTag
 
 
+fn _linear_link_damping(elem: ElementInput, m: Int, materials: List[MaterialInput]) -> Float64:
+    var result = 0.0
+    if elem.has_viscous_material:
+        var material = materials[_elem_material(elem, m)]
+        if material.type == "Viscous":
+            result = material.viscous_coefficient
+    if m < elem.damp_material_count:
+        result += materials[_elem_damp_material(elem, m)].E
+    return result
+
+
 fn _assemble_zero_length_damping_element(
     elem: ElementInput,
     nodes: List[NodeInput],
@@ -30,7 +42,7 @@ fn _assemble_zero_length_damping_element(
     materials_by_id: List[MaterialInput],
     mut C: List[List[Float64]],
 ):
-    if elem.damp_material_count <= 0:
+    if elem.damp_material_count <= 0 and not elem.has_viscous_material:
         return
     var node1 = nodes[elem.node_index_1]
     var node2 = nodes[elem.node_index_2]
@@ -53,15 +65,9 @@ fn _assemble_zero_length_damping_element(
         False,
     )
     var dof_map = _elem_dof_map(elem)
-    for m in range(elem.damp_material_count):
+    for m in range(elem.material_count):
         var row = _zero_length_row(_elem_dir(elem, m), ndm, ndf, trans)
-        var damp_mat_id = _elem_damp_material(elem, m)
-        if damp_mat_id < 0 or damp_mat_id >= len(materials_by_id):
-            abort("zeroLength damp material not found")
-        var damp_mat = materials_by_id[damp_mat_id]
-        if damp_mat.id < 0:
-            abort("zeroLength damp material not found")
-        var eta = damp_mat.E
+        var eta = _linear_link_damping(elem, m, materials_by_id)
         for i in range(elem.dof_count):
             var ri = row[i]
             if ri == 0.0:
@@ -92,7 +98,7 @@ fn assemble_zero_length_damping_typed(
         var elem = elements[e]
         if elem.type_tag != ElementTypeTag.ZeroLength:
             continue
-        if elem.damp_material_count <= 0:
+        if elem.damp_material_count <= 0 and not elem.has_viscous_material:
             continue
         _assemble_zero_length_damping_element(elem, nodes, ndf, ndm, materials_by_id, C)
 
@@ -315,7 +321,7 @@ fn assemble_zero_length_damping_sparse[
         var elem = elements[e]
         if elem.type_tag != ElementTypeTag.ZeroLength:
             continue
-        if elem.damp_material_count <= 0:
+        if elem.damp_material_count <= 0 and not elem.has_viscous_material:
             continue
         var node1 = nodes[elem.node_index_1]
         var node2 = nodes[elem.node_index_2]
@@ -339,15 +345,9 @@ fn assemble_zero_length_damping_sparse[
         )
         var n = elem.dof_count
         _zero_flat_prefix(k_flat, n * n)
-        for m in range(elem.damp_material_count):
+        for m in range(elem.material_count):
             var row = _zero_length_row(_elem_dir(elem, m), ndm, ndf, trans)
-            var damp_mat_id = _elem_damp_material(elem, m)
-            if damp_mat_id < 0 or damp_mat_id >= len(materials_by_id):
-                abort("zeroLength damp material not found")
-            var damp_mat = materials_by_id[damp_mat_id]
-            if damp_mat.id < 0:
-                abort("zeroLength damp material not found")
-            var eta = damp_mat.E
+            var eta = _linear_link_damping(elem, m, materials_by_id)
             for i in range(n):
                 var ri = row[i]
                 if ri == 0.0:

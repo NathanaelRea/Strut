@@ -165,6 +165,115 @@ def test_prepare_direct_tcl_entry_preserves_legacy_mass_arity_in_source(tmp_path
     assert f"source {{{runtime_entry.name}}}" in wrapper_text
 
 
+def test_legacy_fiber_upgrade_uses_active_dimension_and_hashes_helpers(tmp_path: Path):
+    from direct_tcl_dialects import PINNED_TCL_VERSION
+
+    bundle = tmp_path / "fixtures" / "bundle"
+    bundle.mkdir(parents=True)
+    entry = bundle / "entry.tcl"
+    entry.write_text("source fibers.tcl\n", encoding="utf-8")
+    helper = bundle / "fibers.tcl"
+    original = (
+        b"proc legacy {tag} {\r\n"
+        b"    section fiberSec $tag { fiber 1 2 1 1 }\r\n"
+        b"}\r\n"
+        b"section Fiber 3 -GJ 2.0 {}\r\n"
+        b"section Fiber 4 -torsion 8 {}\r\n"
+        b"# section Fiber 5 {}\r\n"
+    )
+    helper.write_bytes(original)
+    manifest = tmp_path / "direct_tcl_case.json"
+    manifest.write_text('{"tcl_source_version": "3.0.2"}', encoding="utf-8")
+
+    runtime_entry, hash_inputs = run_case._prepare_direct_tcl_entry(
+        entry, tmp_path / "case", manifest_path=manifest
+    )
+    mirrored_helper = runtime_entry.with_name(helper.name)
+    mirrored = mirrored_helper.read_bytes()
+    assert mirrored_helper in hash_inputs
+    assert helper.read_bytes() == original
+    assert (
+        mirrored.splitlines(keepends=True)[2:] == original.splitlines(keepends=True)[2:]
+    )
+
+    builder = tcl_to_strut.TclStrutBuilder(runtime_entry, REPO_ROOT)
+    interp = builder.interp
+    captured = []
+    interp.createcommand("section", lambda *args: captured.append(args) or "")
+    interp.eval(f"source {{{runtime_entry}}}")
+    interp.eval("model BasicBuilder -ndm 2; legacy 1; wipe")
+    interp.eval("set ndm 3; model BasicBuilder -ndm $ndm; legacy 2")
+    assert captured == [
+        ("Fiber", "3", "-GJ", "2.0", ""),
+        ("Fiber", "4", "-torsion", "8", ""),
+        ("fiberSec", "1", " fiber 1 2 1 1 "),
+        ("fiberSec", "2", "-GJ", "1.0e-10", " fiber 1 2 1 1 "),
+    ]
+
+    unversioned, _ = run_case._prepare_direct_tcl_entry(entry, tmp_path / "unversioned")
+    assert unversioned.with_name(helper.name).read_bytes() == original
+    manifest.write_text(json.dumps({"tcl_source_version": PINNED_TCL_VERSION}))
+    pinned, pinned_inputs = run_case._prepare_direct_tcl_entry(
+        entry, tmp_path / "pinned", manifest_path=manifest
+    )
+    assert pinned.with_name(helper.name).read_bytes() == original
+    assert pinned.with_name(helper.name) not in pinned_inputs
+
+
+def test_gallery_tcl_upgrade_translates_supported_forms(tmp_path: Path):
+    from direct_tcl_dialects import upgrade_mirrored_tcl
+
+    script = tmp_path / "gallery.tcl"
+    script.write_bytes(
+        b"# model basic 2 3\n"
+        b"model basic 2 3; # model dimensions\n"
+        b"model basic -ndm 3\n"
+        b"model BasicBuilder $ndm\n"
+        b"section FiberSec 8 -GJ 9.0 {}\n"
+        b"nDMaterial DruckerPrager 2 \\\n"
+        b"    -G $G -K $K -Fy 5 -Rvol 0.4 -Rbar 0.3 -Fo 6 -Fs 7 \\\n"
+        b"    -Hsat 0.8 -H 9 -theta 0.1 -delta2 0.2; # material\n"
+        b"nDMaterial DruckerPrager 3 -K 20 -unsupported 1\n"
+        b'element SSPquad $tag 1 2 3 4 0.5 "PlaneStrain" 2 7.0 8.0 9.0 10.0\n'
+        b"element SSPquad $tag 5 6 7 8 $thick PlaneStress $mat $p $rho\n"
+        b"section LayeredShell $numLayers $thickness 1 $thickness 1\n"
+        b"verify value [getTime] 3\n"
+    )
+    assert upgrade_mirrored_tcl("openseesrt-fd3958f", tmp_path) == [script]
+    assert script.read_bytes() == (
+        b"# model basic 2 3\n"
+        b"model BasicBuilder -ndm 2 -ndf 3; # model dimensions\n"
+        b"model basic -ndm 3\n"
+        b"model BasicBuilder -ndm $ndm\n"
+        b"section Fiber 8 -GJ 9.0 {}\n"
+        b"nDMaterial DruckerPrager 2 $K $G 5 0.4 0.3 7 6 0.8 0.2 9 0.1 0.0 101.0; # material\n"
+        b"nDMaterial DruckerPrager 3 -K 20 -unsupported 1\n"
+        b'element SSPquad $tag 1 2 3 4 2 "PlaneStrain" 0.5 9.0 10.0\n'
+        b"element SSPquad $tag 5 6 7 8 $mat PlaneStress $thick {*}[lrange [list $p $rho] 2 end]\n"
+        b"section LayeredShell $numLayers $thickness 1 $thickness 1\n"
+        b"verify value [getTime] 3\n"
+    )
+
+
+def test_tcl_dialect_upgrade_follows_registry_to_binary_pin(
+    tmp_path: Path, monkeypatch
+):
+    import direct_tcl_dialects as dialects
+
+    script = tmp_path / "legacy.tcl"
+    script.write_bytes(b"section Fiber 1 {}\n")
+    monkeypatch.setattr(dialects, "PINNED_TCL_VERSION", "3.8.0")
+    monkeypatch.setitem(
+        dialects.TCL_UPGRADES,
+        "3.7.1",
+        ("3.8.0", lambda text: text.replace(b"1.0e-10", b"checked-after-fiber")),
+    )
+    dialects.upgrade_mirrored_tcl("3.0.2", tmp_path)
+    assert b"-GJ checked-after-fiber" in script.read_bytes()
+    with pytest.raises(ValueError, match="no Tcl upgrade path"):
+        dialects.upgrade_mirrored_tcl("unknown", tmp_path)
+
+
 def test_prepare_direct_tcl_entry_injects_missing_w_section_tags(tmp_path: Path):
     bundle_root = tmp_path / "OpenSeesExamplesAdvanced"
     script_dir = (
@@ -194,6 +303,91 @@ def test_prepare_direct_tcl_entry_injects_missing_w_section_tags(tmp_path: Path)
     assert "set BeamSecTag 4" in mirrored_text
 
 
+def test_prepare_direct_tcl_entry_trims_legacy_2d_pushover_load(tmp_path: Path):
+    script_dir = tmp_path / "bundle" / "example"
+    script_dir.mkdir(parents=True)
+    entry = script_dir / "Ex2a.Canti2D.ElasticElement.Push.tcl"
+    original = "load 2 0 -100 0\n\tload 2 $Hload 0.0 0.0 0.0 0.0 0.0; # lateral load\n"
+    entry.write_text(original, encoding="utf-8")
+
+    runtime_entry, _ = run_case._prepare_direct_tcl_entry(
+        entry, tmp_path / "case_root", [entry]
+    )
+    assert entry.read_text(encoding="utf-8") == original
+    assert (runtime_entry.parent / entry.name).read_text(encoding="utf-8") == (
+        "load 2 0 -100 0\n\tload 2 $Hload 0.0 0.0; # lateral load\n"
+    )
+
+
+def test_convert_starts_recorders_at_their_registration_stage(tmp_path: Path):
+    entry = tmp_path / "record_after_gravity.tcl"
+    entry.write_text(
+        "\n".join(
+            [
+                "model BasicBuilder -ndm 2 -ndf 3",
+                "node 1 0 0",
+                "node 2 1 0",
+                "fix 1 1 1 1",
+                "geomTransf Linear 1",
+                "element elasticBeamColumn 1 1 2 1.0 200.0 1.0 1",
+                "pattern Plain 1 Linear {load 2 0 -1 0}",
+                "recorder Node -file early.out -node 2 -dof 2 disp",
+                "integrator LoadControl 0.1",
+                "analysis Static",
+                "analyze 2",
+                "recorder EnvelopeElement -file late.out -time -ele 1 forces",
+                "analyze 3",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    case = tcl_to_strut.convert_tcl_to_case(entry, REPO_ROOT)
+    assert [stage["analysis"]["steps"] for stage in case["analysis"]["stages"]] == [
+        2,
+        3,
+    ]
+    assert "start_stage" not in case["recorders"][0]
+    assert case["recorders"][1]["start_stage"] == 1
+
+
+def test_convert_removes_only_the_requested_recorder_group(tmp_path: Path):
+    entry = tmp_path / "remove_recorder.tcl"
+    entry.write_text(
+        """model BasicBuilder -ndm 2 -ndf 3
+node 1 0 0
+node 2 1 0
+fix 1 1 1 1
+geomTransf Linear 1
+element elasticBeamColumn 1 1 2 1.0 200.0 1.0 1
+pattern Plain 1 Linear {load 2 0 -1 0}
+set group [recorder Node -file early.out -node 1 2 -dof 2 disp]
+recorder Node -file persistent.out -node 2 -dof 2 disp
+integrator LoadControl 0.1
+analysis Static
+analyze 2
+remove recorder $group
+set pending [recorder Node -file pending.out -node 2 -dof 2 disp]
+remove recorder $pending
+analyze 3
+remove recorders
+analyze 1
+""",
+        encoding="utf-8",
+    )
+    case = tcl_to_strut.convert_tcl_to_case(entry, REPO_ROOT)
+    assert [stage["analysis"]["steps"] for stage in case["analysis"]["stages"]] == [
+        2,
+        3,
+        1,
+    ]
+    assert [(r["output"], r["end_stage"]) for r in case["recorders"]] == [
+        ("early", 1),
+        ("early", 1),
+        ("persistent", 2),
+    ]
+
+
 def test_resolve_json_case_root_keeps_generated_case_json_in_canonical_case_dir(
     tmp_path: Path,
 ):
@@ -210,6 +404,39 @@ def test_resolve_json_case_root_keeps_generated_case_json_in_canonical_case_dir(
     assert case_name == "example_case"
     assert resolved_case_root == case_root.resolve()
     assert resolved_case_json == generated_case_json.resolve()
+
+
+def test_explicit_time_series_does_not_replace_inline_gravity(tmp_path: Path):
+    entry = tmp_path / "frame.tcl"
+    entry.write_text(
+        """model Basic -ndm 2 -ndf 2
+node 1 0 0
+node 2 1 0
+fix 1 1 1
+fix 2 0 1
+mass 2 1 0
+uniaxialMaterial Elastic 1 1000
+element truss 1 1 2 1 1
+pattern Plain 1 Linear {load 2 1 0}
+integrator LoadControl 1
+analysis Static
+analyze 1
+loadConst -time 0
+timeSeries Constant 1 -factor 2
+pattern UniformExcitation 2 1 -accel 1
+wipeAnalysis
+integrator Newmark 0.5 0.25
+analysis Transient
+analyze 1 0.01
+""",
+        encoding="utf-8",
+    )
+    case = tcl_to_strut.convert_tcl_to_case(entry, tmp_path)
+    gravity, transient = case["analysis"]["stages"]
+    series_by_tag = {series["tag"]: series for series in case["time_series"]}
+    assert series_by_tag[gravity["pattern"]["time_series"]]["type"] == "Linear"
+    assert transient["pattern"]["accel"] == 1
+    assert series_by_tag[1]["type"] == "Constant"
 
 
 def test_convert_ex1a_builds_staged_case(tmp_path: Path):
@@ -367,6 +594,7 @@ def test_convert_uniform_excitation_accepts_inline_sine_and_vel0(tmp_path: Path)
         "tag": 400,
         "direction": 1,
         "accel": 1,
+        "vel0": pytest.approx(-10.76),
     }
 
 
@@ -434,7 +662,9 @@ def test_convert_hardening_uniaxial_material_maps_to_steel01(tmp_path: Path):
     assert case["materials"][0]["type"] == "Steel01"
     assert case["materials"][0]["params"]["Fy"] == pytest.approx(60.0)
     assert case["materials"][0]["params"]["E0"] == pytest.approx(29000.0)
-    assert case["materials"][0]["params"]["b"] == pytest.approx(1000.0 / 29000.0)
+    assert case["materials"][0]["params"]["b"] == pytest.approx(
+        1000.0 / (29000.0 + 1000.0)
+    )
 
 
 def test_convert_load_ignores_oversized_numeric_tail_beyond_model_ndf(tmp_path: Path):
@@ -1202,6 +1432,340 @@ def test_convert_2d_beam_uniform_preserves_opensees_wy_wx_order(tmp_path: Path):
     ]
 
 
+def test_convert_3d_beam_uniform_preserves_wy_wz_and_optional_wx(tmp_path: Path):
+    script = tmp_path / "case.tcl"
+    script.write_text(
+        """
+        model basic -ndm 3 -ndf 6
+        node 1 0 0 0
+        node 2 3 0 0
+        fix 1 1 1 1 1 1 1
+        geomTransf Linear 1 0 0 1
+        element elasticBeamColumn 1 1 2 2 12 4 1 1 2 1
+        pattern Plain 1 Linear {
+            eleLoad -ele 1 -type -beamUniform -2 4
+            eleLoad -ele 1 -type -beamUniform 0 0 5
+        }
+        integrator LoadControl 1
+        analysis Static
+        analyze 1
+        """,
+        encoding="utf-8",
+    )
+
+    case = tcl_to_strut.convert_tcl_to_case(script, REPO_ROOT)
+
+    assert case["analysis"]["stages"][0]["element_loads"] == [
+        {"element": 1, "type": "beamUniform", "wy": -2.0, "wz": 4.0},
+        {"element": 1, "type": "beamUniform", "wy": 0.0, "wz": 0.0, "wx": 5.0},
+    ]
+
+
+def test_convert_3d_node_range_uses_existing_nodes(tmp_path: Path):
+    script = tmp_path / "case.tcl"
+    script.write_text(
+        """
+        model basic -ndm 3 -ndf 6
+        node 10 0 0 0
+        node 12 3 0 0
+        node 15 6 0 0
+        recorder Node -file disp.out -nodeRange 14 10 -dof 1 disp
+        integrator LoadControl 1
+        analysis Static
+        analyze 1
+        """,
+        encoding="utf-8",
+    )
+
+    case = tcl_to_strut.convert_tcl_to_case(script, REPO_ROOT)
+
+    assert [recorder["nodes"] for recorder in case["recorders"]] == [[10], [12]]
+
+
+@pytest.mark.parametrize("initialize_with_eigen", [False, True])
+def test_convert_3d_preserves_bidirectional_uniform_excitation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, initialize_with_eigen: bool
+):
+    monkeypatch.setattr(
+        tcl_to_strut.TclStrutBuilder,
+        "_solve_frame3d_eigenvalues",
+        lambda self, num_modes: [1.0],
+    )
+    script = tmp_path / "case.tcl"
+    script.write_text(
+        f"""
+        model basic -ndm 3 -ndf 6
+        node 1 0 0 0
+        recorder Node -file disp.out -node 1 -dof 1 3 disp
+        timeSeries Constant 10
+        timeSeries Constant 30
+        integrator Newmark 0.5 0.25
+        analysis Transient
+        {"eigen 1" if initialize_with_eigen else ""}
+        pattern UniformExcitation 1 1 -accel 10 -vel0 0.4
+        pattern UniformExcitation 2 3 -accel 30
+        analyze 1 0.1
+        """,
+        encoding="utf-8",
+    )
+
+    case = tcl_to_strut.convert_tcl_to_case(script, REPO_ROOT)
+
+    assert case["analysis"]["stages"][0]["pattern"] == {
+        "type": "UniformExcitation",
+        "excitations": [
+            {
+                "type": "UniformExcitation",
+                "tag": 1,
+                "direction": 1,
+                "accel": 10,
+                **({} if initialize_with_eigen else {"vel0": 0.4}),
+            },
+            {"type": "UniformExcitation", "tag": 2, "direction": 3, "accel": 30},
+        ],
+    }
+    assert case["recorders"][0].get("parity", True)
+
+
+@pytest.mark.parametrize("initialize_with_eigen", [False, True])
+def test_convert_3d_multiple_support_checks_cached_constraints(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, initialize_with_eigen: bool
+):
+    monkeypatch.setattr(
+        tcl_to_strut.TclStrutBuilder,
+        "_solve_frame3d_eigenvalues",
+        lambda self, num_modes: [1.0],
+    )
+    script = tmp_path / "case.tcl"
+    script.write_text(
+        f"""
+        model basic -ndm 3 -ndf 6
+        node 1 0 0 0
+        fix 1 1 1 1 1 1 1
+        recorder Node -file disp.out -node 1 -dof 1 disp
+        constraints Transformation
+        integrator Newmark 0.5 0.25
+        analysis Transient
+        {"eigen 1" if initialize_with_eigen else ""}
+        pattern MultipleSupport 1 {{
+            groundMotion 1 Plain -disp "Sine 0.0 1.0 0.5 -factor 1"
+            imposedMotion 1 1 1
+        }}
+        analyze 1 0.1
+        """,
+        encoding="utf-8",
+    )
+    if initialize_with_eigen:
+        case = tcl_to_strut.convert_tcl_to_case(script, REPO_ROOT)
+        assert case["analysis"]["stages"][0]["pattern"] == {"type": "None"}
+        assert case["recorders"][0].get("parity", True)
+    else:
+        with pytest.raises(
+            tcl_to_strut.TclToStrutError, match="active MultipleSupport"
+        ):
+            tcl_to_strut.convert_tcl_to_case(script, REPO_ROOT)
+
+
+def test_convert_3d_transient_recovers_with_single_step_solver_chain(tmp_path: Path):
+    script = tmp_path / "case.tcl"
+    script.write_text(
+        """
+        model basic -ndm 3 -ndf 6
+        node 1 0 0 0
+        constraints Transformation
+        test EnergyIncr 1e-8 10
+        algorithm ModifiedNewton
+        integrator Newmark 0.5 0.25
+        analysis Transient
+        set dt 0.005
+        set ok [analyze 10 $dt]
+        if {$ok != 0} {
+            set ok 0
+            while {$ok == 0 && [getTime] < 0.05} {
+                set ok [analyze 1 $dt]
+                if {$ok != 0} {
+                    test NormDispIncr 1e-8 1000
+                    algorithm Newton -initial
+                    set ok [analyze 1 $dt]
+                }
+            }
+        }
+        """,
+        encoding="utf-8",
+    )
+    case = tcl_to_strut.convert_tcl_to_case(script, REPO_ROOT)
+    analysis = case["analysis"]["stages"][0]["analysis"]
+    assert [attempt["algorithm"] for attempt in analysis["solver_chain"]] == [
+        "ModifiedNewton",
+        "ModifiedNewtonInitial",
+    ]
+    assert analysis["solver_chain"][1]["max_iters"] == 1000
+
+
+@pytest.mark.parametrize("element_type", ["elasticBeamColumn", "dispBeamColumn"])
+def test_eigen_uses_consistent_beam_mass(tmp_path: Path, element_type: str):
+    script = tmp_path / "consistent_mass.tcl"
+    properties = "4 2 1 1" if element_type == "elasticBeamColumn" else "3 1 1"
+    script.write_text(
+        f"""
+        model Basic -ndm 2 -ndf 3
+        node 1 0 0
+        node 2 2 0
+        node 3 4 0
+        fix 1 1 1 1
+        fix 2 0 1 1
+        fix 3 0 1 1
+        geomTransf Linear 1
+        section Elastic 1 4 2 1
+        element {element_type} 1 1 2 {properties} -mass 3 -cMass
+        element {element_type} 2 2 3 {properties} -mass 3 -cMass
+        eigen -fullGenLapack 2
+        """,
+        encoding="utf-8",
+    )
+    builder = tcl_to_strut.TclStrutBuilder(script, tmp_path)
+    builder.convert()
+
+    # The reduced matrices are K = [[8, -4], [-4, 4]] and M = [[4, 1], [1, 2]].
+    assert builder.last_eigenvalues == pytest.approx(
+        [(40 - 1152**0.5) / 14, (40 + 1152**0.5) / 14]
+    )
+
+
+@pytest.mark.parametrize(
+    ("element", "section", "torsional_rigidity"),
+    [
+        ("forceBeamColumn", "section Aggregator 1 1 P 2 Mz 3 My 4 T", 80.0),
+        ("dispBeamColumn", "section Aggregator 1 1 P 2 Mz 3 My 4 T", 80.0),
+        (
+            "forceBeamColumn",
+            "section Fiber 9 -torsion 4 {patch rect 5 2 2 -1 -1 1 1}\n"
+            "section Aggregator 1 6 T -section 9",
+            16.0,
+        ),
+        (
+            "dispBeamColumn",
+            "section Fiber 9 -torsion 4 {patch rect 5 2 2 -1 -1 1 1}\n"
+            "section Aggregator 1 6 T -section 9",
+            100.0,
+        ),
+    ],
+)
+def test_standard_eigen_uses_3d_aggregated_section(
+    tmp_path: Path, element: str, section: str, torsional_rigidity: float
+):
+    script = tmp_path / "case.tcl"
+    script.write_text(
+        f"""
+        model basic -ndm 3 -ndf 6
+        node 1 0 0 0
+        node 2 2 0 0
+        fix 1 1 1 1 1 1 1
+        fix 2 0 1 1 0 1 1
+        geomTransf Linear 1 0 0 1
+        uniaxialMaterial Elastic 1 24
+        uniaxialMaterial Elastic 2 6
+        uniaxialMaterial Elastic 3 6
+        uniaxialMaterial Elastic 4 80
+        uniaxialMaterial Elastic 5 6
+        uniaxialMaterial Elastic 6 20
+        {section}
+        element {element} 1 1 2 3 1 1
+        eigen -standard -symmBandLapack 2
+        """,
+        encoding="utf-8",
+    )
+
+    builder = tcl_to_strut.TclStrutBuilder(script, tmp_path)
+    case = builder.convert().to_json_dict()
+
+    assert builder.last_eigenvalues == pytest.approx(
+        sorted([12.0, torsional_rigidity / 2.0])
+    )
+    assert case["analysis"]["stages"][0]["analysis"]["standard_eigen"] is True
+
+
+@pytest.mark.parametrize(
+    ("element", "expected"),
+    [
+        (
+            "forceBeamColumn",
+            [1.0 / (1.0 / 9.0 + 2.0 / 12.0), 1.0 / (1.0 / 9.0 + 2.0 / 24.0)],
+        ),
+        ("dispBeamColumn", [9.0, 9.0]),
+    ],
+)
+def test_standard_eigen_uses_3d_fiber_shear_aggregation(
+    tmp_path: Path, element: str, expected: list[float]
+):
+    script = tmp_path / "case.tcl"
+    script.write_text(
+        f"""
+        model basic -ndm 3 -ndf 6
+        node 1 0 0 0
+        node 2 2 0 0
+        fix 1 1 1 1 1 1 1
+        fix 2 1 0 0 1 1 1
+        geomTransf Linear 1 0 0 1
+        uniaxialMaterial Elastic 1 6
+        uniaxialMaterial Elastic 2 12
+        uniaxialMaterial Elastic 3 24
+        section Fiber 1 -GJ 10 {{patch rect 1 2 2 -1 -1 1 1}}
+        section Aggregator 2 2 Vy 3 Vz -section 1
+        element {element} 1 1 2 3 2 1
+        eigen standard 2
+        """,
+        encoding="utf-8",
+    )
+
+    builder = tcl_to_strut.TclStrutBuilder(script, tmp_path)
+    builder.convert()
+
+    assert builder.last_eigenvalues == pytest.approx(expected)
+
+
+@pytest.mark.parametrize("after_gravity", [False, True])
+def test_convert_3d_eigen_uses_rigid_diaphragm_mass(
+    tmp_path: Path, after_gravity: bool
+):
+    script = tmp_path / "case.tcl"
+    initial_analysis = (
+        "constraints Transformation\n"
+        "integrator LoadControl 1\n"
+        "analysis Static\n"
+        "analyze 1\n"
+        "loadConst -time 0"
+    )
+    script.write_text(
+        f"""
+        model basic -ndm 3 -ndf 6
+        node 1 0 0 0
+        node 2 3 0 0
+        node 3 7 0 0
+        fix 1 1 1 1 1 1 1
+        fix 2 0 1 1 1 1 0
+        fix 3 0 0 1 1 1 0
+        rigidDiaphragm 3 2 3
+        mass 3 0 2 0 0 0 0
+        geomTransf Linear 1 0 0 1
+        element elasticBeamColumn 1 1 2 2 12 4 1 1 2 1
+        pattern Plain 1 Linear {{load 2 0 0 0 0 0 1}}
+        {initial_analysis if after_gravity else ""}
+        rayleigh [eigen 1] 0 0 0
+        constraints Transformation
+        integrator LoadControl 1
+        analysis Static
+        analyze 1
+        """,
+        encoding="utf-8",
+    )
+
+    case = tcl_to_strut.convert_tcl_to_case(script, REPO_ROOT)
+
+    # K_theta = 4 E Iz / L = 32, and M_theta = 2 * 4**2 = 32.
+    assert case["analysis"]["stages"][-1]["rayleigh"]["alphaM"] == pytest.approx(1.0)
+
+
 def test_convert_normalizes_element_alias(tmp_path: Path):
     script = tmp_path / "case.tcl"
     script.write_text(
@@ -1381,7 +1945,7 @@ def test_convert_imports_disp_beam_column_3d_with_mass(tmp_path: Path):
         "section": 5,
         "geomTransf": "PDelta",
         "vecxz": [0.0, 0.0, 1.0],
-        "integration": "Lobatto",
+        "integration": "Legendre",
         "num_int_pts": 3,
         "rho": pytest.approx(2.5),
     }
@@ -1879,7 +2443,7 @@ def test_convert_imports_layered_shell_materials_and_shellmitc4(tmp_path: Path):
     ]
 
 
-def test_convert_rejects_block2d_nine_node_elements_until_schema_supports_them(
+def test_convert_rejects_nine_node_connectivity_for_four_node_quad(
     tmp_path: Path,
 ):
     script = tmp_path / "case.tcl"
@@ -1910,6 +2474,34 @@ def test_convert_rejects_block2d_nine_node_elements_until_schema_supports_them(
 
     with pytest.raises(tcl_to_strut.TclToStrutError, match="numEleNodes 9"):
         tcl_to_strut.convert_tcl_to_case(script, REPO_ROOT)
+
+
+def test_convert_block2d_nine_node_connectivity(tmp_path: Path):
+    script = tmp_path / "case.tcl"
+    script.write_text(
+        """
+model basic -ndm 2 -ndf 2
+nDMaterial ElasticIsotropic 1 1000.0 0.25 0.0
+block2D 4 2 11 21 quad9n {2.0 PlaneStress 1} -numEleNodes 9 {
+  1 0 0
+  2 4 0
+  3 4 2
+  4 0 2
+  7 2 3
+}
+integrator LoadControl 1.0
+analysis Static
+analyze 1
+""",
+        encoding="utf-8",
+    )
+
+    case = tcl_to_strut.convert_tcl_to_case(script, REPO_ROOT)
+    assert [(e["id"], e["type"], e["nodes"]) for e in case["elements"]] == [
+        (21, "quad9n", [11, 13, 23, 21, 12, 18, 22, 16, 17]),
+        (22, "quad9n", [13, 15, 25, 23, 14, 20, 24, 18, 19]),
+    ]
+    assert [(n["x"], n["y"]) for n in case["nodes"] if n["id"] == 23] == [(2.0, 3.0)]
 
 
 def test_convert_applies_fixy_to_matching_nodes(tmp_path: Path):
@@ -2246,7 +2838,7 @@ def test_convert_maps_corot_truss_section_syntax_and_preserves_print_commands(
 
     assert case["materials"] == [{"id": 1, "type": "Elastic", "params": {"E": 3000.0}}]
     assert case["elements"] == [
-        {"id": 1, "type": "truss", "nodes": [1, 2], "area": 5.0, "material": 1}
+        {"id": 1, "type": "corotTruss", "nodes": [1, 2], "area": 5.0, "material": 1}
     ]
     stage = case["analysis"]["stages"][0]
     assert stage["analysis"]["numberer"] == "RCM"
@@ -2494,4 +3086,175 @@ def test_convert_uniform_excitation_time_series_path_resolves_values_path_case(
     assert len(path_series) == 1
     assert path_series[0]["values_path"] == str(
         (tmp_path / "GMfiles" / "H-e12140.at2").resolve()
+    )
+
+
+def test_convert_patch_circ_layer_circ_and_aggregator_3d(tmp_path: Path):
+    script = tmp_path / "circ3d.tcl"
+    script.write_text(
+        "\n".join(
+            [
+                "wipe",
+                "model basic -ndm 3 -ndf 6",
+                "node 1 0.0 0.0 0.0",
+                "node 2 0.0 0.0 0.0",
+                "fix 1 1 1 1 1 1 1",
+                "fix 2 0 1 1 1 1 0",
+                "uniaxialMaterial Elastic 1 4000.0",
+                "uniaxialMaterial Elastic 2 29000.0",
+                "uniaxialMaterial Elastic 3 1.0e10",
+                "section Fiber 1 {",
+                "  patch circ 1 8 4 0.0 0.0 0.0 12.0 0.0 360.0",
+                "  patch circ 1 8 2 0.0 0.0 12.0 15.0",
+                "  layer circ 2 10 0.6 0.0 0.0 11.0 18.0 342.0",
+                "  layer circ 2 6 0.5 0.0 0.0 10.0",
+                "}",
+                "section Aggregator 2 3 T -section 1",
+                "section Aggregator 3 1 P 2 Mz 3 T",
+                "element zeroLengthSection 1 1 2 2",
+                "timeSeries Linear 1",
+                "pattern Plain 1 1 { load 2 0.0 0.0 0.0 0.0 0.0 1.0 }",
+                "constraints Plain",
+                "numberer Plain",
+                "system BandGeneral",
+                "algorithm Linear",
+                "integrator LoadControl 1.0",
+                "analysis Static",
+                "analyze 1",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    case = tcl_to_strut.convert_tcl_to_case(script, REPO_ROOT)
+    sec1 = next(sec for sec in case["sections"] if sec["id"] == 1)
+    sec2 = next(sec for sec in case["sections"] if sec["id"] == 2)
+    sec3 = next(sec for sec in case["sections"] if sec["id"] == 3)
+    assert sec1["type"] == "FiberSection3d"
+    assert len(sec1["params"]["patches"]) == 2
+    assert sec1["params"]["patches"][0] == {
+        "type": "circ",
+        "material": 1,
+        "num_subdiv_circ": 8,
+        "num_subdiv_rad": 4,
+        "y_center": 0.0,
+        "z_center": 0.0,
+        "int_rad": 0.0,
+        "ext_rad": 12.0,
+        "start_ang": 0.0,
+        "end_ang": 360.0,
+    }
+    assert sec1["params"]["patches"][1]["start_ang"] == 0.0
+    assert sec1["params"]["patches"][1]["end_ang"] == 360.0
+    assert len(sec1["params"]["layers"]) == 2
+    assert sec1["params"]["layers"][0]["start_ang"] == 18.0
+    assert sec1["params"]["layers"][0]["end_ang"] == 342.0
+    assert "start_ang" not in sec1["params"]["layers"][1]
+    assert sec2["type"] == "FiberSection3d"
+    assert sec2["params"]["G"] == pytest.approx(1.0e10)
+    assert sec2["params"]["J"] == pytest.approx(1.0)
+    assert sec3["type"] == "AggregatorSection3d"
+    assert sec3["params"]["axial_material"] == 1
+    assert sec3["params"]["flexural_material"] == 2
+    assert sec3["params"]["torsion_material"] == 3
+
+
+def test_convert_section_uniaxial_and_latin1_source(tmp_path: Path):
+    helper = tmp_path / "helper_latin1.tcl"
+    # Embed non-UTF-8 byte 0xd7 (multiplication sign in latin-1, as in Wsection.tcl).
+    helper.write_bytes(b"# W14\xd790 helper comment\nset secE 29000.0\n")
+    script = tmp_path / "uniaxial_sec.tcl"
+    script.write_text(
+        "\n".join(
+            [
+                "wipe",
+                "model basic -ndm 2 -ndf 3",
+                "source helper_latin1.tcl",
+                "node 1 0.0 0.0",
+                "node 2 0.0 0.0",
+                "fix 1 1 1 1",
+                "fix 2 1 1 0",
+                "uniaxialMaterial Elastic 1 $secE",
+                "section Uniaxial 7 1 Mz",
+                "element zeroLengthSection 1 1 2 7",
+                "timeSeries Linear 1",
+                "pattern Plain 1 1 { load 2 0.0 0.0 1.0 }",
+                "constraints Plain",
+                "numberer Plain",
+                "system BandGeneral",
+                "algorithm Linear",
+                "integrator LoadControl 1.0",
+                "analysis Static",
+                "analyze 1",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    case = tcl_to_strut.convert_tcl_to_case(script, REPO_ROOT)
+    assert case["materials"][0]["params"]["E"] == pytest.approx(29000.0)
+    sec = case["sections"][0]
+    assert sec["id"] == 7
+    assert sec["type"] == "AggregatorSection2d"
+    assert sec["params"]["flexural_material"] == 1
+
+
+def test_convert_eigen_only_script_synthesizes_modal_eigen_stage(tmp_path: Path):
+    script = tmp_path / "eigen_only.tcl"
+    script.write_text(
+        "\n".join(
+            [
+                "wipe",
+                "model basic -ndm 2 -ndf 3",
+                "node 1 0.0 0.0",
+                "node 2 0.0 3.0",
+                "fix 1 1 1 1",
+                "mass 2 10.0 0.0 0.0",
+                "geomTransf Linear 1",
+                "element elasticBeamColumn 1 1 2 0.1 2.0e11 1.0e-4 1",
+                "set lam [eigen 1]",
+                'recorder Node -file mode1.out -node 2 -dof 1 "eigen 1"',
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    case = tcl_to_strut.convert_tcl_to_case(script, REPO_ROOT)
+    assert case["analysis"]["type"] == "staged"
+    assert case["analysis"]["stages"][0]["analysis"]["type"] == "modal_eigen"
+    assert case["analysis"]["stages"][0]["analysis"]["num_modes"] == 1
+
+
+def test_convert_ex9_moment_curvature_proc_detects_step_retry_policy():
+    case = _convert_direct_tcl_manifest("opensees_example_ex9f_build_rcsection_circ2d")
+    mc_stage = case["analysis"]["stages"][1]["analysis"]
+    assert mc_stage["integrator"]["type"] == "DisplacementControl"
+    assert len(mc_stage["solver_chain"]) == 4
+    assert mc_stage["solver_chain"][1]["algorithm"] == "ModifiedNewtonInitial"
+    assert mc_stage["solver_chain"][1]["tol"] == pytest.approx(1.0e-9)
+    assert mc_stage["solver_chain"][2]["algorithm"] == "Broyden"
+    assert mc_stage["solver_chain"][3]["algorithm"] == "NewtonLineSearch"
+    assert mc_stage["step_retry"]["type"] == "continue_after_failure"
+    assert mc_stage["step_retry"]["continue_target_disp"] == pytest.approx(0.01)
+
+
+def test_prepare_ex8_uniform_sine_uses_newton_in_runtime_mirror(tmp_path: Path):
+    bundle = tmp_path / "OpenSeesExamplesAdvanced" / "example"
+    bundle.mkdir(parents=True)
+    entry = bundle / "Ex8.genericFrame3D.analyze.Dynamic.sine.Uniform.tcl"
+    source = (
+        "source LibAnalysisDynamicParameters.tcl; # Analysis setup\nanalyze 10 0.005\n"
+    )
+    entry.write_text(source, encoding="utf-8")
+
+    runtime_entry, _ = run_case._prepare_direct_tcl_entry(
+        entry, tmp_path / "case_root", [entry]
+    )
+
+    assert entry.read_text(encoding="utf-8") == source
+    assert (runtime_entry.parent / entry.name).read_text(encoding="utf-8") == (
+        "source LibAnalysisDynamicParameters.tcl; # Analysis setup\n"
+        "set algorithmTypeDynamic Newton\n"
+        "algorithm $algorithmTypeDynamic\n"
+        "analyze 10 0.005\n"
     )

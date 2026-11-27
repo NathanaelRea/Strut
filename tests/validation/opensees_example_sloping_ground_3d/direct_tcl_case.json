@@ -1,0 +1,14 @@
+{
+  "name": "opensees_example_sloping_ground_3d",
+  "entry_tcl": "tests/fixtures/opensees/OpenSeesExamplesPractical/three_dimensional_site_response_analysis_of_sloping_ground/freeField3D.tcl",
+  "tcl_source_version": "3.7.1",
+  "enabled": false,
+  "disabled_reason": "Both engines complete gravity and 400 shaking steps. Node 5 vertical displacement differs beyond the normal tolerance during plastic gravity.",
+  "source_url": "https://opensees.berkeley.edu/wiki/index.php/Three-Dimensional_Site_Response_Analysis_of_Sloping_Ground",
+  "reference": "Three-Dimensional Site Response Analysis of Sloping Ground, Christopher McGann and Pedro Arduino, University of Washington.",
+  "transient_step_cap": {
+    "step_variable": "nSteps",
+    "max_steps": 400
+  },
+  "notes": "The published gravity sequence followed by up to 400 shaking steps at the computed time increment."
+}

@@ -1,0 +1,12 @@
+{
+  "name": "opensees_source_verification_small_eigen",
+  "entry_tcl": "tests/fixtures/opensees/OpenSeesSource/EXAMPLES/verification/SmallEigen.tcl",
+  "tcl_source_version": "3.7.1",
+  "source_url": "https://github.com/OpenSees/OpenSees/blob/v3.7.1/EXAMPLES/verification/SmallEigen.tcl",
+  "enabled": true,
+  "parity_tolerance": {},
+  "parity_tolerance_by_category": {},
+  "parity_tolerance_by_recorder": {},
+  "parity_mode": "step",
+  "replay_tcl": "live"
+}

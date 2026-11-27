@@ -1,0 +1,8 @@
+{
+  "enabled": false,
+  "entry_tcl": "tests/fixtures/opensees/STAIRlabGallery/content/en/examples/ConcretePanel/ConcretePanel.tcl",
+  "tcl_source_version": "3.7.1",
+  "source_url": "https://github.com/peer-open-source/opensees-gallery/blob/fd3958fde8a3d0a350321b3fbdd3f415ee16e2a2/content/en/examples/ConcretePanel/ConcretePanel.tcl",
+  "disabled_reason": "OpenSees 3.7.1 rejects the original LayeredShell declaration before analysis. The command supplies the layer count as the section tag and the first thickness as the layer count; the model also requires PlasticDamageConcrete3d.",
+  "reference": "P. Adebar and M. P. Collins, panel tests (1989)."
+}

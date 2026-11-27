@@ -1,0 +1,12 @@
+{
+  "name": "opensees_source_dynamic_shell",
+  "entry_tcl": "tests/fixtures/opensees/OpenSeesSource/EXAMPLES/ExampleScripts/DynamicShell.tcl",
+  "tcl_source_version": "3.7.1",
+  "source_url": "https://github.com/OpenSees/OpenSees/blob/v3.7.1/EXAMPLES/ExampleScripts/DynamicShell.tcl",
+  "enabled": true,
+  "parity_tolerance": {},
+  "parity_tolerance_by_category": {},
+  "parity_tolerance_by_recorder": {},
+  "parity_mode": "step",
+  "replay_tcl": "live"
+}

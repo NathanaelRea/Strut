@@ -1,20 +1,36 @@
 """Geometry and workspace owned by one loaded model."""
 
+from elements.shell_asd_q4 import asd_shell_elastic_geometry
+from elements.shell_asd_transform import (
+    ASDFrame,
+    ASDPoint,
+    ASDPoints,
+    ASDCorotational,
+    asd_linear_stiffness,
+)
+from elements.shell_discrete_kirchhoff import discrete_kirchhoff_geometry
+from sections.plate_fiber import elastic_plate_fiber_section_tangent
 from collections import InlineArray, List
 from elements.shell4 import (
     SHELL4_DOFS,
     SHELL4_GEOMETRY_SIZE,
     SHELL4_MATRIX_SIZE,
     SHELL4_SCRATCH_SIZE,
+    compact_shell_matrix,
+    elastic_membrane_plate_tangent,
+    shell4_integrate_tangent,
     shell4_mindlin_stiffness,
     shell4_precompute_geometry,
 )
+from elements.shell_mass import ShellMass
+from elements.shell_nldkgq import ShellNLDKGQState
 from materials.concrete_s import ConcreteSState
 from os import abort
 from sections import LayeredShellSectionDef
 from solver.assembly.parallel_elements import ParallelElementWork
 from solver.run_case.input_types import ElementInput, NodeInput, SectionInput
 from solver.threads import solver_thread_count
+from tag_types import GeomTransfTag
 
 
 # Bound result storage to about 2.5 MB, even for very large models.
@@ -29,6 +45,13 @@ struct ShellAssemblyEntry(ImplicitlyCopyable, Movable):
     var offset: Int
     var state_offset: Int
     var concrete_offset: Int
+    var dof_count: Int
+    var nonlinear_index: Int
+    var corotational_index: Int
+
+    @always_inline
+    fn uses_cached_matrix(self) -> Bool:
+        return self.section < 0 and self.nonlinear_index < 0 and self.corotational_index < 0
 
 
 struct ShellAssemblyCache(Movable):
@@ -47,23 +70,41 @@ struct ShellAssemblyCache(Movable):
 
     var entry_by_element: List[Int]
     var entries: List[ShellAssemblyEntry]
+    var masses: List[ShellMass]
+    var nonlinear: List[ShellNLDKGQState]
+    var corotational: List[ASDCorotational]
     var layered_geometry: List[Float64]
     var elastic_matrices: List[Float64]
     var concrete_states: List[ConcreteSState]
     var work: ParallelElementWork
+    var has_alternative_shells: Bool
 
     fn __init__(out self):
         self.entry_by_element = []
         self.entries = []
+        self.masses = []
+        self.nonlinear = []
+        self.corotational = []
         self.layered_geometry = []
         self.elastic_matrices = []
         self.concrete_states = []
         self.work = ParallelElementWork()
+        self.has_alternative_shells = False
 
     fn commit_layered_states(mut self):
         """Commit every ConcreteS trial state. Rebar states commit with the uniaxial list."""
         for i in range(len(self.concrete_states)):
             self.concrete_states[i].commit()
+        for i in range(len(self.nonlinear)):
+            self.nonlinear[i].commit()
+        for i in range(len(self.corotational)):
+            self.corotational[i].commit()
+
+    fn revert_trial(mut self):
+        for i in range(len(self.nonlinear)):
+            self.nonlinear[i].revert()
+        for i in range(len(self.corotational)):
+            self.corotational[i].revert()
 
     fn prepare(
         mut self,
@@ -81,11 +122,20 @@ struct ShellAssemblyCache(Movable):
 
         self.entry_by_element.resize(len(elements), -1)
         var layered_count = 0
+        var elastic_count = 0
         for e in shell_indices:
-            if sections[elements[e].section].type == "LayeredShellSection":
-                layered_count += 1
+            if elements[e].type != "shell":
+                self.has_alternative_shells = True
+            if elements[e].type != "ShellNLDKGQ":
+                if (
+                    elements[e].type != "ASDShellQ4"
+                    and sections[elements[e].section].type == "LayeredShellSection"
+                ):
+                    layered_count += 1
+                else:
+                    elastic_count += 1
         self.layered_geometry.resize(layered_count * SHELL4_GEOMETRY_SIZE, 0.0)
-        self.elastic_matrices.resize((len(shell_indices) - layered_count) * SHELL4_MATRIX_SIZE, 0.0)
+        self.elastic_matrices.resize(elastic_count * SHELL4_MATRIX_SIZE, 0.0)
         self.work = ParallelElementWork(
             min(_BATCH_SIZE, len(shell_indices)),
             SHELL4_MATRIX_SIZE,
@@ -104,11 +154,79 @@ struct ShellAssemblyCache(Movable):
             ref n1 = nodes[elem.node_index_1]
             ref n2 = nodes[elem.node_index_2]
             ref n3 = nodes[elem.node_index_3]
-            ref n4 = nodes[elem.node_index_4]
-            var x = [n1.x, n2.x, n3.x, n4.x]
-            var y = [n1.y, n2.y, n3.y, n4.y]
-            var z = [n1.z, n2.z, n3.z, n4.z]
+            var x: List[Float64]
+            var y: List[Float64]
+            var z: List[Float64]
+            if elem.node_count == 4:
+                ref n4 = nodes[elem.node_index_4]
+                x = [n1.x, n2.x, n3.x, n4.x]
+                y = [n1.y, n2.y, n3.y, n4.y]
+                z = [n1.z, n2.z, n3.z, n4.z]
+            else:
+                x = [n1.x, n2.x, n3.x]
+                y = [n1.y, n2.y, n3.y]
+                z = [n1.z, n2.z, n3.z]
+            var is_discrete_kirchhoff = elem.type == "ShellDKGT" or elem.type == "ShellDKGQ"
+            var nonlinear_index = -1
+            if elem.type == "ShellNLDKGQ":
+                nonlinear_index = len(self.nonlinear)
+                var state = ShellNLDKGQState(x, y, z)
+                if sec.type != "LayeredShellSection":
+                    if sec.type == "PlateFiber":
+                        state.elastic_section.elastic_tangent = elastic_plate_fiber_section_tangent(
+                            sec.E, sec.nu, sec.h
+                        )
+                    else:
+                        state.elastic_section.elastic_tangent = elastic_membrane_plate_tangent(
+                            sec.E, sec.nu, sec.h, sec.plate_mod
+                        )
+                self.nonlinear.append(state^)
             self.entry_by_element[e] = len(self.entries)
+            if elem.type == "ASDShellQ4":
+                var tangent: InlineArray[Float64, 64]
+                if sec.type == "LayeredShellSection":
+                    ref definition = layered_sections[section_index[elem.section]]
+                    if len(definition.rebars) != 0 or len(definition.concretes) != 0:
+                        abort("ASDShellQ4 currently requires an elastic shell section")
+                    tangent = definition.elastic_tangent.copy()
+                elif sec.type == "PlateFiber":
+                    tangent = elastic_plate_fiber_section_tangent(sec.E, sec.nu, sec.h)
+                else:
+                    tangent = elastic_membrane_plate_tangent(sec.E, sec.nu, sec.h, sec.plate_mod)
+                var points = ASDPoints(fill=ASDPoint(0.0))
+                for i in range(4):
+                    points[i] = ASDPoint(x[i], y[i], z[i], 0.0)
+                var frame = ASDFrame(points)
+                var gp_geometry = asd_shell_elastic_geometry(
+                    frame,
+                    UnsafePointer(to=tangent[0]),
+                    elem.shell_eas,
+                    max(0.0, min(1.0, elem.shell_drilling_stab)),
+                )
+                var matrix = self.elastic_matrices.unsafe_ptr() + elastic_offset
+                var local_stiffness = InlineArray[Float64, SHELL4_MATRIX_SIZE](fill=0.0)
+                var local = UnsafePointer(to=local_stiffness[0])
+                shell4_integrate_tangent(
+                    UnsafePointer(to=tangent[0]),
+                    UnsafePointer(to=gp_geometry[0]),
+                    local,
+                    0.233 * tangent[18],
+                )
+                var corotational_index = -1
+                if elem.geom_tag == GeomTransfTag.Corotational:
+                    corotational_index = len(self.corotational)
+                    self.corotational.append(ASDCorotational(points))
+                    for i in range(SHELL4_MATRIX_SIZE):
+                        matrix[i] = local[i]
+                else:
+                    asd_linear_stiffness(local, frame, matrix)
+                self.entries.append(
+                    ShellAssemblyEntry(
+                        -1, elastic_offset, 0, 0, SHELL4_DOFS, -1, corotational_index
+                    )
+                )
+                elastic_offset += SHELL4_MATRIX_SIZE
+                continue
             if sec.type == "LayeredShellSection":
                 var section = section_index[elem.section]
                 var instance = element_instance_offsets[e]
@@ -121,22 +239,52 @@ struct ShellAssemblyCache(Movable):
                     concrete_offset + 4 * len(definition.concretes), ConcreteSState()
                 )
                 self.entries.append(
-                    ShellAssemblyEntry(section, layer_offset, state_offset, concrete_offset)
+                    ShellAssemblyEntry(
+                        section,
+                        layer_offset,
+                        state_offset,
+                        concrete_offset,
+                        elem.dof_count,
+                        nonlinear_index,
+                        -1,
+                    )
                 )
-                shell4_precompute_geometry(
-                    x, y, z, self.layered_geometry.unsafe_ptr() + layer_offset
-                )
-                layer_offset += SHELL4_GEOMETRY_SIZE
-            elif sec.type == "ElasticMembranePlateSection":
-                self.entries.append(ShellAssemblyEntry(-1, elastic_offset, 0, 0))
-                shell4_precompute_geometry(x, y, z, UnsafePointer(to=geometry[0]))
-                shell4_mindlin_stiffness(
-                    sec.E,
-                    sec.nu,
-                    sec.h,
-                    UnsafePointer(to=geometry[0]),
-                    self.elastic_matrices.unsafe_ptr() + elastic_offset,
-                )
-                elastic_offset += SHELL4_MATRIX_SIZE
+                if nonlinear_index < 0:
+                    var target = self.layered_geometry.unsafe_ptr() + layer_offset
+                    if is_discrete_kirchhoff:
+                        discrete_kirchhoff_geometry(x, y, z, target)
+                    else:
+                        shell4_precompute_geometry(x, y, z, target)
+                    layer_offset += SHELL4_GEOMETRY_SIZE
             else:
-                abort("shell requires ElasticMembranePlateSection or LayeredShellSection")
+                self.entries.append(
+                    ShellAssemblyEntry(
+                        -1, elastic_offset, 0, 0, elem.dof_count, nonlinear_index, -1
+                    )
+                )
+                if nonlinear_index >= 0:
+                    continue
+                var gp_geometry = UnsafePointer(to=geometry[0])
+                var matrix = self.elastic_matrices.unsafe_ptr() + elastic_offset
+                if is_discrete_kirchhoff:
+                    for i in range(SHELL4_GEOMETRY_SIZE):
+                        gp_geometry[i] = 0.0
+                    discrete_kirchhoff_geometry(x, y, z, gp_geometry)
+                else:
+                    shell4_precompute_geometry(x, y, z, gp_geometry)
+                if sec.type == "PlateFiber":
+                    var tangent = elastic_plate_fiber_section_tangent(sec.E, sec.nu, sec.h)
+                    var drill = 0.0
+                    if not is_discrete_kirchhoff:
+                        drill = tangent[18]
+                    shell4_integrate_tangent(
+                        UnsafePointer(to=tangent[0]), gp_geometry, matrix, drill
+                    )
+                else:
+                    # The DK Gauss blocks have zero independent drilling and shear rows.
+                    shell4_mindlin_stiffness(
+                        sec.E, sec.nu, sec.h, gp_geometry, matrix, sec.plate_mod
+                    )
+                if elem.dof_count != SHELL4_DOFS:
+                    compact_shell_matrix(matrix, elem.dof_count)
+                elastic_offset += SHELL4_MATRIX_SIZE

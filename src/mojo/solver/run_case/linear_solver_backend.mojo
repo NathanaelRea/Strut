@@ -14,6 +14,7 @@ from solver.sparse_pattern import (
     build_transpose_slots,
 )
 from solver.run_case.input_types import AnalysisInput
+from solver.run_case.profile_ldlt import factor_profile_ldlt, solve_profile_ldlt
 from tag_types import AnalysisSystemTag
 
 
@@ -75,6 +76,8 @@ struct LinearSolverBackend(ElementMatrixSink, Movable):
     var profile_col_start: List[Int]
     var profile_first_row: List[Int]
     var profile_values: List[Float64]
+    var profile_uses_ldlt: Bool
+    var profile_inverse_diagonal: List[Float64]
     # Pattern-driven loading (see initialize_symbolic_from_pattern): storage
     # index of every pattern slot (-1 for upper-triangle slots of symmetric
     # storage) and the transpose slot used for symmetry checks.
@@ -134,6 +137,8 @@ struct LinearSolverBackend(ElementMatrixSink, Movable):
         self.profile_col_start = []
         self.profile_first_row = []
         self.profile_values = []
+        self.profile_uses_ldlt = False
+        self.profile_inverse_diagonal = []
         self.pattern_nnz = -1
         self.pattern_slot_map = []
         self.pattern_transpose = []
@@ -609,48 +614,42 @@ fn _update_profile_values_from_dense(mut backend: LinearSolverBackend, A: List[L
 
 
 fn _factorize_profile_spd_loaded(mut backend: LinearSolverBackend):
-    var n = backend.free_count
-    for col in range(n):
-        var first_col = backend.profile_first_row[col]
-        for row in range(first_col, col):
-            var idx_col_row = _profile_value_index(
-                backend.profile_col_start, backend.profile_first_row, col, row
-            )
-            var sum = backend.profile_values[idx_col_row]
-            var first_row = backend.profile_first_row[row]
-            var k_start = first_col
-            if first_row > k_start:
-                k_start = first_row
-            for k in range(k_start, row):
-                var idx_col_k = _profile_value_index(
-                    backend.profile_col_start, backend.profile_first_row, col, k
-                )
-                var idx_row_k = _profile_value_index(
-                    backend.profile_col_start, backend.profile_first_row, row, k
-                )
-                sum -= backend.profile_values[idx_col_k] * backend.profile_values[idx_row_k]
-
-            var idx_row_diag = _profile_value_index(
-                backend.profile_col_start, backend.profile_first_row, row, row
-            )
-            var diag = backend.profile_values[idx_row_diag]
-            if diag == 0.0:
-                abort("ProfileSPD matrix is not positive definite")
-            backend.profile_values[idx_col_row] = sum / diag
-
-        var idx_diag = _profile_value_index(
-            backend.profile_col_start, backend.profile_first_row, col, col
+    if backend.profile_uses_ldlt:
+        factor_profile_ldlt(
+            backend.profile_first_row,
+            backend.profile_col_start,
+            backend.profile_values,
+            backend.profile_inverse_diagonal,
         )
-        var sum_diag = backend.profile_values[idx_diag]
-        for k in range(first_col, col):
-            var idx_col_k = _profile_value_index(
-                backend.profile_col_start, backend.profile_first_row, col, k
-            )
-            var l = backend.profile_values[idx_col_k]
-            sum_diag -= l * l
-        if sum_diag <= 0.0:
-            abort("ProfileSPD matrix is not positive definite")
-        backend.profile_values[idx_diag] = sqrt(sum_diag)
+        return
+    var n = backend.free_count
+    ref starts = backend.profile_col_start
+    ref first_rows = backend.profile_first_row
+    ref values = backend.profile_values
+    for col in range(n):
+        var first_col = first_rows[col]
+        for row in range(first_col, col):
+            var entry = _profile_value_index(starts, first_rows, col, row)
+            var sum = values[entry]
+            for k in range(max(first_col, first_rows[row]), row):
+                var col_k = _profile_value_index(starts, first_rows, col, k)
+                var row_k = _profile_value_index(starts, first_rows, row, k)
+                sum -= values[col_k] * values[row_k]
+            values[entry] = sum
+
+        var diagonal = _profile_value_index(starts, first_rows, col, col)
+        var pivot = values[diagonal]
+        for row in range(first_col, col):
+            var entry = _profile_value_index(starts, first_rows, col, row)
+            var previous_diagonal = _profile_value_index(starts, first_rows, row, row)
+            var scaled_entry = values[entry] / values[previous_diagonal]
+            pivot -= scaled_entry * values[entry]
+            values[entry] = scaled_entry
+        # OpenSees' skyline solve uses unit triangular factors and a signed
+        # diagonal. Only the leading pivot is required to be positive.
+        if (col == 0 and pivot <= 0.0) or (col > 0 and abs(pivot) <= 1.0e-12):
+            abort("ProfileSPD has a rejected diagonal pivot")
+        values[diagonal] = pivot
 
 
 fn _factorize_profile_spd(mut backend: LinearSolverBackend, A: List[List[Float64]]):
@@ -662,6 +661,16 @@ fn _factorize_profile_spd(mut backend: LinearSolverBackend, A: List[List[Float64
 fn _solve_profile_spd(
     mut backend: LinearSolverBackend, rhs: List[Float64], mut solution_out: List[Float64]
 ):
+    if backend.profile_uses_ldlt:
+        solve_profile_ldlt(
+            backend.profile_first_row,
+            backend.profile_col_start,
+            backend.profile_values,
+            backend.profile_inverse_diagonal,
+            rhs,
+            solution_out,
+        )
+        return
     var n = backend.free_count
     if len(solution_out) != n:
         solution_out.resize(n, 0.0)
@@ -675,18 +684,13 @@ fn _solve_profile_spd(
                 backend.profile_col_start, backend.profile_first_row, row, col
             )
             sum -= backend.profile_values[idx] * backend.solve_work[col]
-        var idx_diag = _profile_value_index(
+        backend.solve_work[row] = sum
+
+    for row in range(n - 1, -1, -1):
+        var diagonal = _profile_value_index(
             backend.profile_col_start, backend.profile_first_row, row, row
         )
-        var diag = backend.profile_values[idx_diag]
-        if diag == 0.0:
-            abort("singular profile cholesky factor")
-        backend.solve_work[row] = sum / diag
-
-    for i in range(n):
-        solution_out[i] = 0.0
-    for row in range(n - 1, -1, -1):
-        var sum = backend.solve_work[row]
+        var sum = backend.solve_work[row] / backend.profile_values[diagonal]
         for col in range(row + 1, n):
             if backend.profile_first_row[col] > row:
                 continue
@@ -694,13 +698,7 @@ fn _solve_profile_spd(
                 backend.profile_col_start, backend.profile_first_row, col, row
             )
             sum -= backend.profile_values[idx] * solution_out[col]
-        var idx_diag = _profile_value_index(
-            backend.profile_col_start, backend.profile_first_row, row, row
-        )
-        var diag = backend.profile_values[idx_diag]
-        if diag == 0.0:
-            abort("singular profile cholesky factor")
-        solution_out[row] = sum / diag
+        solution_out[row] = sum
 
 
 fn _copy_band_general_values_to_dense_flat(
@@ -1576,11 +1574,16 @@ fn _factorize_sparse_unsymmetric_loaded(mut backend: LinearSolverBackend):
     var n = backend.free_count
     var row_permutation = _identity_permutation(n)
     var pivot_tol = 1.0e-14
+    # OpenSees configures UMFPACK with a pivot tolerance of 1.0. The
+    # symmetric LDLᵀ path is tried before this unsymmetric factorization.
+    var pivot_rows = backend.system_tag == AnalysisSystemTag.UmfPack or (
+        backend.system_tag == AnalysisSystemTag.SuperLU and backend.superlu_enable_pivot
+    )
 
     for k in range(n):
         var pivot_row = k
         var pivot_value = _sparse_row_value(row_cols_rows[k], row_vals_rows[k], k)
-        if backend.system_tag == AnalysisSystemTag.SuperLU and backend.superlu_enable_pivot:
+        if pivot_rows:
             var max_value = abs(pivot_value)
             for row in range(k + 1, n):
                 var candidate = _sparse_row_value(row_cols_rows[row], row_vals_rows[row], k)
@@ -3143,7 +3146,8 @@ fn add_pattern_values(
                 if tag == AnalysisSystemTag.BandSPD:
                     backend.band_spd_values[idx] += scale * values[s]
                 elif tag == AnalysisSystemTag.ProfileSPD:
-                    backend.profile_values[idx] += scale * values[s]
+                    var source = backend.pattern_transpose[s] if backend.profile_uses_ldlt else s
+                    backend.profile_values[idx] += scale * values[source]
                 else:
                     backend.sparse_values[idx] += scale * values[s]
     elif tag == AnalysisSystemTag.BandGeneral:

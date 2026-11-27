@@ -53,12 +53,16 @@ fn two_node_link_global_stiffness(
 
 
 fn link_element_dof_count(ndm: Int, ndf: Int) -> Int:
+    if ndm == 1 and ndf == 1:
+        return 2
     if ndm == 2 and ndf == 2:
         return 4
     if ndm == 2 and ndf == 3:
         return 6
     if ndm == 3 and ndf == 3:
         return 6
+    if ndm == 3 and ndf == 4:
+        return 8
     if ndm == 3 and ndf == 6:
         return 12
     abort("unsupported link ndm/ndf combination")
@@ -66,6 +70,8 @@ fn link_element_dof_count(ndm: Int, ndf: Int) -> Int:
 
 
 fn zero_length_internal_dir(dir: Int, ndm: Int, ndf: Int) -> Int:
+    if ndm == 1 and ndf == 1 and dir == 1:
+        return dir
     if ndm == 2 and ndf == 2:
         if dir == 1 or dir == 2:
             return dir
@@ -76,10 +82,10 @@ fn zero_length_internal_dir(dir: Int, ndm: Int, ndf: Int) -> Int:
         if dir == 3:
             return 6
         abort("zeroLength requires dirs 1, 2, or 6 for ndm=2 ndf=3")
-    if ndm == 3 and ndf == 3:
+    if ndm == 3 and (ndf == 3 or ndf == 4):
         if dir >= 1 and dir <= 3:
             return dir
-        abort("zeroLength requires dirs 1..3 for ndm=3 ndf=3")
+        abort("translational zeroLength requires dirs 1..3 in 3D")
     if ndm == 3 and ndf == 6:
         if dir >= 1 and dir <= 6:
             return dir

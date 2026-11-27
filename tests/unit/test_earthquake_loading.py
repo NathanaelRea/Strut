@@ -471,6 +471,58 @@ def test_transient_linear_uniform_excitation_direction_sign():
     assert min(row[0] for row in rows) < 0.0
 
 
+@pytest.mark.parametrize("analysis_type", ["transient_linear", "transient_nonlinear"])
+def test_uniform_excitations_apply_independent_axes_and_initial_velocity(
+    tmp_path: Path, analysis_type: str
+):
+    case_data = {
+        "model": {"ndm": 3, "ndf": 3},
+        "nodes": [
+            {"id": 1, "x": 0, "y": 0, "z": 0, "constraints": [1, 2, 3]},
+            {"id": 2, "x": 1, "y": 0, "z": 0, "constraints": [2, 3]},
+            {"id": 3, "x": 0, "y": 0, "z": 1, "constraints": [1, 2]},
+        ],
+        "materials": [{"id": 1, "type": "Elastic", "params": {"E": 100.0}}],
+        "elements": [
+            {"id": 1, "type": "truss", "nodes": [1, 2], "area": 1, "material": 1},
+            {"id": 2, "type": "truss", "nodes": [1, 3], "area": 1, "material": 1},
+        ],
+        "masses": [
+            {"node": 2, "dof": 1, "value": 1},
+            {"node": 3, "dof": 3, "value": 1},
+        ],
+        "time_series": [
+            {"tag": 1, "type": "Constant", "factor": 2.0},
+            {"tag": 2, "type": "Constant", "factor": -3.0},
+        ],
+        "pattern": {
+            "type": "UniformExcitation",
+            "excitations": [
+                {"direction": 1, "accel": 1, "vel0": 0.4},
+                {"direction": 3, "accel": 2},
+            ],
+        },
+        "analysis": {"type": analysis_type, "steps": 1, "dt": 0.1},
+        "recorders": [
+            {
+                "type": "node_displacement",
+                "nodes": [2, 3],
+                "dofs": [1, 3],
+                "output": "disp",
+            }
+        ],
+    }
+
+    _run_strut_case(case_data, tmp_path)
+
+    assert _read_rows(tmp_path / "disp_node2.out") == [
+        pytest.approx([14.0 / 500.0, 0.0])
+    ]
+    assert _read_rows(tmp_path / "disp_node3.out") == [
+        pytest.approx([0.0, 3.0 / 500.0])
+    ]
+
+
 def test_transient_nonlinear_newmark_newton_smoke():
     case_data = _base_truss_dynamic_case(
         {"id": 1, "type": "Steel01", "params": {"Fy": 10.0, "E0": 100.0, "b": 0.01}}

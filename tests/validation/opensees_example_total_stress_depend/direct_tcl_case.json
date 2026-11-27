@@ -1,0 +1,14 @@
+{
+  "name": "opensees_example_total_stress_depend",
+  "entry_tcl": "tests/fixtures/opensees/OpenSeesExamplesPractical/site_response_analysis_of_a_layered_soil_column_total_stress_analysis/siteResponseAnalysis/freeFieldDepend.tcl",
+  "tcl_source_version": "3.7.1",
+  "enabled": false,
+  "benchmark_size": "large",
+  "source_url": "https://opensees.berkeley.edu/wiki/index.php?title=Site_Response_Analysis_of_a_Layered_Soil_Column_(Total_Stress_Analysis)",
+  "reference": "Site Response Analysis of a Layered Soil Column, Chris McGann, HyungSuk Shin, Pedro Arduino, and Peter Mackenzie-Helnwein, University of Washington.",
+  "disabled_reason": "Changing only the OpenSees equation numberer causes 94 acceleration recorder mismatches against the original OpenSees run at the normal step-by-step tolerances.",
+  "parity_mode": "step",
+  "parity_tolerance": {},
+  "parity_tolerance_by_category": {},
+  "parity_tolerance_by_recorder": {}
+}

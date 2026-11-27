@@ -1,0 +1,7 @@
+{
+  "enabled": false,
+  "entry_tcl": "tests/fixtures/opensees/STAIRlabGallery/content/en/examples/SantiagoDRM/main.tcl",
+  "tcl_source_version": "3.7.1",
+  "source_url": "https://github.com/peer-open-source/opensees-gallery/blob/fd3958fde8a3d0a350321b3fbdd3f415ee16e2a2/content/en/examples/SantiagoDRM/main.tcl",
+  "disabled_reason": "The gallery does not include nodes.tcl. Strut also lacks domain reduction loading."
+}

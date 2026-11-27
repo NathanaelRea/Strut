@@ -126,6 +126,7 @@ def _merge_direct_tcl_manifest_metadata(case_data: dict, manifest_data: dict) ->
         "parity_tolerance_by_category",
         "parity_tolerance_by_recorder",
         "parity_mode",
+        "comparison",
     ):
         if key in manifest_data:
             merged[key] = manifest_data[key]

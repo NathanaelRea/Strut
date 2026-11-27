@@ -1,0 +1,13 @@
+{
+  "name": "opensees_source_verification_aisc25",
+  "entry_tcl": "tests/fixtures/opensees/OpenSeesSource/EXAMPLES/verification/AISC25.tcl",
+  "tcl_source_version": "3.7.1",
+  "source_url": "https://github.com/OpenSees/OpenSees/blob/v3.7.1/EXAMPLES/verification/AISC25.tcl",
+  "enabled": false,
+  "disabled_reason": "The CBDI sweep runs. The free-end moment in element-force query row 38 differs from OpenSees by 1.99e-8, above the default 1e-8 absolute tolerance.",
+  "parity_tolerance": {},
+  "parity_tolerance_by_category": {},
+  "parity_tolerance_by_recorder": {},
+  "parity_mode": "step",
+  "replay_tcl": "live"
+}

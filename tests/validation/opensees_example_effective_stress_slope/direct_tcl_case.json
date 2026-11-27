@@ -1,0 +1,15 @@
+{
+  "name": "opensees_example_effective_stress_slope",
+  "entry_tcl": "tests/fixtures/opensees/OpenSeesExamplesPractical/dynamic_2d_effective_stress_analysis_of_slope/SlopeAnalysis2Deff.tcl",
+  "tcl_source_version": "3.7.1",
+  "enabled": false,
+  "benchmark_size": "large",
+  "disabled_reason": "Both engines complete gravity and 200 shaking steps. The solvers diverge in plastic gravity and the resulting displacement and strain histories exceed the normal recorder tolerances.",
+  "source_url": "https://opensees.berkeley.edu/wiki/index.php/File:SlopeAnalysis2Deff.tcl",
+  "reference": "Dynamic 2D Effective Stress Analysis of Slope, Christopher McGann and Pedro Arduino, University of Washington.",
+  "transient_step_cap": {
+    "step_variable": "nSteps",
+    "max_steps": 200
+  },
+  "notes": "The October 26, 2010 Wiki script, reconstructed byte for byte. Both engines run the published gravity sequence and up to 200 shaking steps at the computed time increment."
+}

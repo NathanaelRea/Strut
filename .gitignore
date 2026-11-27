@@ -25,6 +25,7 @@ benchmark/archive/
 modular/
 notes/
 tests/validation/*/reference/*
+tests/validation/*/reference-original/*
 tests/validation/*/generated/*
 tests/validation/**/*.out
 tests/validation/**/*.txt
@@ -35,6 +36,7 @@ tests/validation/**/tmpDsteps.tcl
 tests/validation/**/phase_times_us.json
 tests/validation/**/run_progress.json
 tests/validation/**/.parser-check
+tests/validation/**/.direct_tcl_recorders.json
 
 # Temporary files
 plans/

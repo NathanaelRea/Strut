@@ -105,10 +105,13 @@ run_script() {
   local run_start_stamp="${work_root}/run_start.stamp"
   cp -a "${script_parent}/." "${mirrored_parent}/"
   # Some wiki examples were written on case-insensitive filesystems: they run
-  # `file mkdir data` and then record to `Data/...`. Provide `Data/` up front
-  # so those recorders can open their files on Linux.
+  # `file mkdir data` and record to `Data/...`, or `file mkdir Data` and record
+  # to `data/...`. Provide both up front so recorders can open files on Linux.
   if [[ ! -e "${mirrored_script_dir}/Data" ]]; then
     mkdir -p "${mirrored_script_dir}/Data"
+  fi
+  if [[ ! -e "${mirrored_script_dir}/data" ]]; then
+    mkdir -p "${mirrored_script_dir}/data"
   fi
   : >"$run_start_stamp"
 

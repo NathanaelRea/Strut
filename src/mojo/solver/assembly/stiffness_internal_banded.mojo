@@ -1,3 +1,4 @@
+from elements.force_beam_column2d import elastic_beam_column2d_global_tangent_and_internal
 from collections import List
 from os import abort
 
@@ -221,30 +222,60 @@ fn assemble_global_stiffness_banded_frame2d_typed(
             u_elem[4] = u[d4]
             u_elem[5] = u[d5]
             if sec.type == "ElasticSection2d":
-                var geom = elem.geom_transf
-                if geom == "Linear":
-                    k_global6 = beam_global_stiffness(
-                        sec.E,
-                        sec.A,
-                        sec.I,
-                        node1.x,
-                        node1.y,
-                        node2.x,
-                        node2.y,
-                    )
-                elif geom == "PDelta":
-                    k_global6 = beam2d_pdelta_global_stiffness(
-                        sec.E,
-                        sec.A,
-                        sec.I,
+                if (
+                    sec.cbdi.enabled()
+                    or sec.shear_rigidity_y != 0.0
+                    or sec.hinge_radau.is_defined()
+                    or elem.geom_tag == GeomTransfTag.Corotational
+                ):
+                    _ = elastic_beam_column2d_global_tangent_and_internal(
+                        e,
                         node1.x,
                         node1.y,
                         node2.x,
                         node2.y,
                         u_elem,
+                        elem.geom_transf,
+                        elem.integration,
+                        elem.num_int_pts,
+                        sec,
+                        elem_type == ElementTypeTag.ForceBeamColumn2d,
+                        element_loads,
+                        elem_load_offsets,
+                        elem_load_pool,
+                        load_scale,
+                        force_beam_column2d_scratch,
+                        k_global6,
+                        f_dummy,
                     )
                 else:
-                    abort("forceBeamColumn2d/dispBeamColumn2d supports geomTransf Linear or PDelta")
+                    var geom = elem.geom_transf
+                    if geom == "Linear":
+                        k_global6 = beam_global_stiffness(
+                            sec.E,
+                            sec.A,
+                            sec.I,
+                            node1.x,
+                            node1.y,
+                            node2.x,
+                            node2.y,
+                        )
+                    elif geom == "PDelta":
+                        k_global6 = beam2d_pdelta_global_stiffness(
+                            sec.E,
+                            sec.A,
+                            sec.I,
+                            node1.x,
+                            node1.y,
+                            node2.x,
+                            node2.y,
+                            u_elem,
+                        )
+                    else:
+                        abort(
+                            "forceBeamColumn2d/dispBeamColumn2d supports geomTransf Linear or"
+                            " PDelta"
+                        )
             else:
                 var sec_index = fiber_section_index_by_id[elem.section]
                 ref sec_def = fiber_section_defs[sec_index]
@@ -278,6 +309,7 @@ fn assemble_global_stiffness_banded_frame2d_typed(
                         force_beam_column2d_scratch,
                         k_global6,
                         f_dummy,
+                        sec.hinge_radau,
                     )
                 else:
                     disp_beam_column2d_global_tangent_and_internal(
@@ -581,14 +613,41 @@ fn assemble_global_stiffness_banded_frame2d_soa(
         u_elem[4] = u[d4]
         u_elem[5] = u[d5]
         if sec.type == "ElasticSection2d":
-            if geom_tag == GeomTransfTag.Linear:
-                k_global6 = beam_global_stiffness(sec.E, sec.A, sec.I, x1, y1, x2, y2)
-            elif geom_tag == GeomTransfTag.PDelta:
-                k_global6 = beam2d_pdelta_global_stiffness(
-                    sec.E, sec.A, sec.I, x1, y1, x2, y2, u_elem
+            if (
+                sec.cbdi.enabled()
+                or sec.shear_rigidity_y != 0.0
+                or sec.hinge_radau.is_defined()
+                or geom_tag == GeomTransfTag.Corotational
+            ):
+                _ = elastic_beam_column2d_global_tangent_and_internal(
+                    e,
+                    x1,
+                    y1,
+                    x2,
+                    y2,
+                    u_elem,
+                    _geom_transf_name_from_tag(geom_tag),
+                    _beam_integration_name_from_tag(elem_integration_tags[e]),
+                    elem_num_int_pts[e],
+                    sec,
+                    elem_type == ElementTypeTag.ForceBeamColumn2d,
+                    element_loads,
+                    elem_load_offsets,
+                    elem_load_pool,
+                    load_scale,
+                    force_beam_column2d_scratch,
+                    k_global6,
+                    f_dummy,
                 )
             else:
-                abort("forceBeamColumn2d/dispBeamColumn2d supports geomTransf Linear or PDelta")
+                if geom_tag == GeomTransfTag.Linear:
+                    k_global6 = beam_global_stiffness(sec.E, sec.A, sec.I, x1, y1, x2, y2)
+                elif geom_tag == GeomTransfTag.PDelta:
+                    k_global6 = beam2d_pdelta_global_stiffness(
+                        sec.E, sec.A, sec.I, x1, y1, x2, y2, u_elem
+                    )
+                else:
+                    abort("forceBeamColumn2d/dispBeamColumn2d supports geomTransf Linear or PDelta")
         else:
             var sec_index = fiber_section_index_by_id[elem_section_ids[e]]
             ref sec_def = fiber_section_defs[sec_index]
@@ -624,6 +683,7 @@ fn assemble_global_stiffness_banded_frame2d_soa(
                     force_beam_column2d_scratch,
                     k_global6,
                     f_dummy,
+                    sec.hinge_radau,
                 )
             else:
                 disp_beam_column2d_global_tangent_and_internal(

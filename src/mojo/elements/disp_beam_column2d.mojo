@@ -2,7 +2,7 @@ from collections import List
 from math import hypot
 from os import abort
 
-from elements.beam_loads import beam2d_basic_fixed_end_and_reactions
+from elements.beam_loads import beam2d_basic_fixed_end_and_reactions, beam2d_thermal_load
 from elements.beam_integration import beam_integration_rule
 from elements.utils import (
     _beam2d_transform_force_local_to_global_in_place,
@@ -13,6 +13,7 @@ from elements.utils import (
 )
 from materials import UniMaterialDef, UniMaterialState
 from solver.run_case.input_types import ElementLoadInput
+from sections.thermal_profile2d import ThermalProfile2d
 from sections import (
     FiberCell,
     FiberSection2dDef,
@@ -50,6 +51,7 @@ fn _fiber_section2d_set_trial_from_offset(
     section_state_count: Int,
     eps0: Float64,
     kappa: Float64,
+    thermal: ThermalProfile2d,
 ) -> FiberSection2dResponse:
     return fiber_section2d_set_trial_from_offset(
         sec_def,
@@ -58,6 +60,7 @@ fn _fiber_section2d_set_trial_from_offset(
         section_state_count,
         eps0,
         kappa,
+        thermal,
     )
 
 
@@ -157,6 +160,9 @@ fn disp_beam_column2d_global_tangent_and_internal(
         and elem_index + 1 < len(elem_load_offsets)
         and elem_load_offsets[elem_index] < elem_load_offsets[elem_index + 1]
     )
+    var thermal = beam2d_thermal_load(
+        element_loads, elem_load_offsets, elem_load_pool, elem_index, load_scale
+    )
 
     _ensure_zero_matrix(k_global_out, 6, 6)
     _ensure_zero_vector(f_global_out, 6)
@@ -183,13 +189,15 @@ fn disp_beam_column2d_global_tangent_and_internal(
             fibers_per_section,
             eps0,
             kappa,
+            thermal,
         )
         var wL = weight * L
         if has_element_loads:
-            q_basic_0 += wL * resp.axial_force
+            var basic_weight = weight if thermal.count > 0 else wL
+            q_basic_0 += basic_weight * resp.axial_force
             var xi6 = 6.0 * xi
-            q_basic_1 += (xi6 - 4.0) * wL * resp.moment_z
-            q_basic_2 += (xi6 - 2.0) * wL * resp.moment_z
+            q_basic_1 += (xi6 - 4.0) * basic_weight * resp.moment_z
+            q_basic_2 += (xi6 - 2.0) * basic_weight * resp.moment_z
         else:
             axial_force_avg += weight * resp.axial_force
 

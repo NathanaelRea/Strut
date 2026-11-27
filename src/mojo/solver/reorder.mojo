@@ -25,7 +25,11 @@ fn _elem_node_index(elem: ElementInput, idx: Int) -> Int:
         return elem.node_index_2
     if idx == 2:
         return elem.node_index_3
-    return elem.node_index_4
+    if idx == 3:
+        return elem.node_index_4
+    if elem.solid_extra_nodes:
+        return elem.solid_extra_nodes.value()[idx - 4]
+    return elem.extra_node_indices[idx - 4]
 
 
 fn build_node_adjacency_typed(elements: List[ElementInput], node_count: Int) -> List[List[Int]]:
@@ -57,6 +61,39 @@ fn build_node_adjacency_typed(elements: List[ElementInput], node_count: Int) -> 
                 _append_unique(adjacency[b], a)
 
     return adjacency^
+
+
+fn opensees_rcm_node_order(
+    elements: List[ElementInput], node_count: Int, extra_dofs: List[Int], ndf: Int
+) -> List[Int]:
+    var adjacency = build_node_adjacency_typed(elements, node_count)
+    for i in range(0, len(extra_dofs), 2):
+        var retained = extra_dofs[i] // ndf
+        var constrained = extra_dofs[i + 1] // ndf
+        _append_unique(adjacency[retained], constrained)
+        _append_unique(adjacency[constrained], retained)
+    for i in range(node_count):
+        sort(adjacency[i])
+    var order: List[Int] = []
+    var seen: List[Bool] = []
+    seen.resize(node_count, False)
+    var head = 0
+    for node in range(node_count):
+        if seen[node]:
+            continue
+        order.append(node)
+        seen[node] = True
+        while head < len(order):
+            var current = order[head]
+            head += 1
+            for neighbor in adjacency[current]:
+                if not seen[neighbor]:
+                    seen[neighbor] = True
+                    order.append(neighbor)
+    var reversed_order: List[Int] = []
+    for i in range(node_count - 1, -1, -1):
+        reversed_order.append(order[i])
+    return reversed_order^
 
 
 fn _sort_by_degree(mut neighbors: List[Int], degrees: List[Int]):

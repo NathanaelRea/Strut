@@ -306,6 +306,14 @@ fn _parse_section_input(
             patch.z_k = _json_get_float(doc, patch_index, "z_k", 0.0)
             patch.y_l = _json_get_float(doc, patch_index, "y_l", 0.0)
             patch.z_l = _json_get_float(doc, patch_index, "z_l", 0.0)
+            patch.num_subdiv_circ = _json_get_int(doc, patch_index, "num_subdiv_circ", 0)
+            patch.num_subdiv_rad = _json_get_int(doc, patch_index, "num_subdiv_rad", 0)
+            patch.y_center = _json_get_float(doc, patch_index, "y_center", 0.0)
+            patch.z_center = _json_get_float(doc, patch_index, "z_center", 0.0)
+            patch.int_rad = _json_get_float(doc, patch_index, "int_rad", 0.0)
+            patch.ext_rad = _json_get_float(doc, patch_index, "ext_rad", 0.0)
+            patch.start_ang = _json_get_float(doc, patch_index, "start_ang", 0.0)
+            patch.end_ang = _json_get_float(doc, patch_index, "end_ang", 360.0)
             patches.append(patch)
     var layers_index = _json_key(doc, params_index, "layers")
     if _json_has_value(doc, layers_index):
@@ -321,6 +329,15 @@ fn _parse_section_input(
             layer.z_start = _json_get_float(doc, layer_index, "z_start", 0.0)
             layer.y_end = _json_get_float(doc, layer_index, "y_end", 0.0)
             layer.z_end = _json_get_float(doc, layer_index, "z_end", 0.0)
+            layer.y_center = _json_get_float(doc, layer_index, "y_center", 0.0)
+            layer.z_center = _json_get_float(doc, layer_index, "z_center", 0.0)
+            layer.radius = _json_get_float(doc, layer_index, "radius", 0.0)
+            if _json_has_value(doc, _json_key(doc, layer_index, "start_ang")) and _json_has_value(
+                doc, _json_key(doc, layer_index, "end_ang")
+            ):
+                layer.start_ang = _json_get_float(doc, layer_index, "start_ang", 0.0)
+                layer.end_ang = _json_get_float(doc, layer_index, "end_ang", 360.0)
+                layer.has_angles = True
             layers.append(layer)
     var fibers_index = _json_key(doc, params_index, "fibers")
     if _json_has_value(doc, fibers_index):

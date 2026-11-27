@@ -1,0 +1,32 @@
+{
+  "schema_version": "1.0",
+  "enabled": true,
+  "interactive_tcl": true,
+  "name": "opensees_example_rigid_diaphragm_consequences",
+  "entry_tcl": "tests/fixtures/opensees/OpenSeesExamplesPractical/rigid_diaphragm_consequences/RigidDiaphragmConsequences.tcl",
+  "tcl_source_version": "3.7.1",
+  "source_files": [
+    "RigidDiaphragmConsequences.tcl"
+  ],
+  "compare_files": [
+    "rigid_diaphragm_summary.out"
+  ],
+  "tcl_prelude": [
+    "set _strut_rd_fp [open \"rigid_diaphragm_summary.out\" w]",
+    "rename puts _strut_orig_puts",
+    "proc puts {args} {",
+    "    global _strut_rd_fp",
+    "    if {[llength $args] == 1} {",
+    "        set msg [lindex $args 0]",
+    "        if {[regexp {^eleType: .* axialForce ([-+0-9.eE]+) axialDeformation: ([-+0-9.eE]+)$} $msg -> af ad]} {",
+    "            _strut_orig_puts $_strut_rd_fp \"$af $ad\"",
+    "        }",
+    "    }",
+    "    uplevel 1 [linsert $args 0 _strut_orig_puts]",
+    "}"
+  ],
+  "tcl_postlude": [
+    "close $_strut_rd_fp"
+  ],
+  "source_url": "https://opensees.berkeley.edu/wiki/index.php/Rigid_Diaphragm_Consequences"
+}

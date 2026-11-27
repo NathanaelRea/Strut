@@ -1,0 +1,12 @@
+{
+  "name": "opensees_example_total_stress_depend_envelope",
+  "entry_tcl": "tests/fixtures/opensees/OpenSeesExamplesPractical/site_response_analysis_of_a_layered_soil_column_total_stress_analysis/siteResponseAnalysis/freeFieldDepend.tcl",
+  "tcl_source_version": "3.7.1",
+  "enabled": false,
+  "benchmark_size": "large",
+  "source_url": "https://opensees.berkeley.edu/wiki/index.php?title=Site_Response_Analysis_of_a_Layered_Soil_Column_(Total_Stress_Analysis)",
+  "reference": "Site Response Analysis of a Layered Soil Column, Chris McGann, HyungSuk Shin, Pedro Arduino, and Peter Mackenzie-Helnwein, University of Washington.",
+  "disabled_reason": "Both engines complete all 7,990 shaking steps. Acceleration and soil stress envelopes still exceed the normal tolerances. In the OpenSees run, node 1 horizontal peak absolute acceleration is 27.4518.",
+  "comparison": "envelope",
+  "notes": "Changing only the OpenSees equation numberer causes 94 acceleration recorder mismatches against the original OpenSees run. This case compares full-run componentwise recorder envelopes at the normal tolerances."
+}

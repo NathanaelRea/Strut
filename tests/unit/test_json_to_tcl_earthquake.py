@@ -362,6 +362,53 @@ def test_json_to_tcl_emits_staged_analysis_with_load_const_and_pattern_override(
     assert text.count("analysis Transient\n") == 1
 
 
+def test_json_to_tcl_reuses_plain_pattern_when_registering_a_late_recorder():
+    case = _base_uniform_case()
+    case["time_series"] = [{"type": "Linear", "tag": 1, "factor": 1.0}]
+    pattern = {"type": "Plain", "tag": 1, "time_series": 1}
+    loads = [{"node": 2, "dof": 1, "value": 1.0}]
+    case["analysis"] = {
+        "type": "staged",
+        "stages": [
+            {
+                "pattern": pattern,
+                "loads": loads,
+                "analysis": {
+                    "type": "static_nonlinear",
+                    "steps": 2,
+                    "integrator": {
+                        "type": "DisplacementControl",
+                        "node": 2,
+                        "dof": 1,
+                        "du": increment,
+                    },
+                },
+            }
+            for increment in (0.01, -0.01)
+        ],
+    }
+    case["recorders"].append(
+        {
+            "type": "envelope_element_force",
+            "elements": [1],
+            "output": "late_forces",
+            "raw_path": "late_forces.out",
+            "include_time": True,
+            "start_stage": 1,
+        }
+    )
+
+    text = _run_json_to_tcl(case)
+    assert text.count("pattern Plain 1 1 {\n") == 1
+    assert text.count("analysis Static\n") == 2
+    recorder_line = (
+        "recorder EnvelopeElement -file late_forces_ele1.out -ele 1 forces\n"
+    )
+    assert text.count(recorder_line) == 1
+    assert text.index("[analyze 1]") < text.index(recorder_line)
+    assert text.index(recorder_line) < text.rindex("analysis Static\n")
+
+
 def test_json_to_tcl_emits_staged_plain_element_beam_point_load():
     case = {
         "schema_version": "1.0",

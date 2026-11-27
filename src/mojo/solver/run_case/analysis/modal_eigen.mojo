@@ -1,9 +1,10 @@
+from solver.assembly.shell_mass import add_shell_mass_reduced
 from collections import List
 from math import sqrt
 from os import abort
 
 from materials import UniMaterialDef, UniMaterialState
-from solver.assembly.shell_cache import ShellAssemblyCache
+from solver.assembly.surface_cache import SurfaceAssemblyCache
 from solver.assembly import assemble_global_stiffness_typed
 from solver.dof import node_dof_index, require_dof_in_range
 from solver.eigen import jacobi_symmetric_eigen
@@ -14,6 +15,7 @@ from solver.run_case.input_types import (
     RecorderInput,
     SectionInput,
 )
+from solver.run_case.load_state import ActiveElementLoadState
 from sections import FiberCell, FiberSection2dDef, FiberSection3dDef, LayeredShellSectionDef
 
 from solver.run_case.helpers import (
@@ -63,7 +65,7 @@ fn _cholesky_factor_dense_spd(matrix: List[List[Float64]]) -> List[List[Float64]
                 value -= factor[i][k] * factor[j][k]
             if i == j:
                 if value <= eps:
-                    abort("modal_eigen mass matrix is not positive definite")
+                    abort("modal_eigen matrix is not positive definite")
                 factor[i][j] = sqrt(value)
             else:
                 factor[i][j] = value / factor[j][j]
@@ -171,7 +173,8 @@ fn run_modal_eigen(
     fiber_section3d_cells: List[FiberCell],
     fiber_section3d_index_by_id: List[Int],
     layered_shell_section_defs: List[LayeredShellSectionDef],
-    mut shell_cache: ShellAssemblyCache,
+    mut shell_cache: SurfaceAssemblyCache,
+    active_element_loads: ActiveElementLoadState,
     M_total: List[Float64],
     constrained: List[Bool],
     free: List[Int],
@@ -186,10 +189,16 @@ fn run_modal_eigen(
     recorder_modes_pool: List[Int],
     mut static_output_files: List[String],
     mut static_output_buffers: List[String],
+    finite_modes: Bool = False,
+    standard: Bool = False,
 ) raises:
     var K = assemble_global_stiffness_typed(
         typed_nodes,
         typed_elements,
+        active_element_loads.element_loads,
+        active_element_loads.elem_load_offsets,
+        active_element_loads.elem_load_pool,
+        1.0,
         typed_sections_by_id,
         typed_materials_by_id,
         id_to_index,
@@ -227,64 +236,121 @@ fn run_modal_eigen(
         var row: List[Float64] = []
         row.resize(free_count, 0.0)
         K_ff.append(row^)
-    var M_f: List[Float64] = []
-    M_f.resize(free_count, 0.0)
-    var free_index: List[Int] = []
-    free_index.resize(total_dofs, -1)
-    var max_mass = 0.0
     for i in range(free_count):
-        free_index[free[i]] = i
         for j in range(free_count):
             K_ff[i][j] = K[free[i]][free[j]]
-    var M_ff = _build_reduced_diagonal_matrix_by_mpc(
-        M_total,
-        free_index,
-        mpc_row_offsets,
-        mpc_dof_pool,
-        mpc_coeff_pool,
-    )
-    var has_mass = False
-    for i in range(free_count):
-        M_f[i] = M_ff[i][i]
-        if M_f[i] > max_mass:
-            max_mass = M_f[i]
-        for j in range(free_count):
-            if M_ff[i][j] != 0.0:
-                has_mass = True
-    if not has_mass:
-        abort("modal_eigen requires masses on free dofs")
-    var msmall = 1.0e-10
-    var mass_floor = max_mass * 1.0e-12
-    if mass_floor <= 0.0:
-        mass_floor = 1.0e-12
-    for i in range(free_count):
-        if M_f[i] == 0.0:
-            M_f[i] = K_ff[i][i] * msmall
-        if M_f[i] <= 0.0:
-            M_f[i] = mass_floor
-        M_ff[i][i] = M_f[i]
-
-    var mass_cholesky = _cholesky_factor_dense_spd(M_ff)
-    var mass_inverse: List[List[Float64]] = []
-    for _ in range(free_count):
-        var row: List[Float64] = []
-        row.resize(free_count, 0.0)
-        mass_inverse.append(row^)
-    for col in range(free_count):
-        var basis: List[Float64] = []
-        basis.resize(free_count, 0.0)
-        basis[col] = 1.0
-        var inverse_col = _solve_lower_triangular(mass_cholesky, basis)
-        for row in range(free_count):
-            mass_inverse[row][col] = inverse_col[row]
-
-    var A = _multiply_dense_matrices(mass_inverse, K_ff)
-    A = _multiply_dense_by_transpose(A, mass_inverse)
-
     var eigvals_raw: List[Float64] = []
     var eigvecs: List[List[Float64]] = []
-    jacobi_symmetric_eigen(A, eigvals_raw, eigvecs)
-    var order = _sorted_indices_ascending(eigvals_raw)
+    var factor: List[List[Float64]] = []
+    var order: List[Int]
+    var reciprocal_eigenvalues = not standard and (ndm == 3 or finite_modes)
+    if standard:
+        var scale = 0.0
+        for i in range(free_count):
+            for j in range(free_count):
+                scale = max(scale, abs(K_ff[i][j]))
+        jacobi_symmetric_eigen(
+            K_ff, eigvals_raw, eigvecs, 8 * free_count * free_count, scale * 1.0e-15
+        )
+        order = _sorted_indices_ascending(eigvals_raw)
+    else:
+        var M_f: List[Float64] = []
+        M_f.resize(free_count, 0.0)
+        var free_index: List[Int] = []
+        free_index.resize(total_dofs, -1)
+        var max_mass = 0.0
+        for i in range(free_count):
+            free_index[free[i]] = i
+        var M_ff = _build_reduced_diagonal_matrix_by_mpc(
+            M_total,
+            free_index,
+            mpc_row_offsets,
+            mpc_dof_pool,
+            mpc_coeff_pool,
+        )
+        shell_cache.continuum.add_modal_mass(
+            free_index,
+            mpc_row_offsets,
+            mpc_dof_pool,
+            mpc_coeff_pool,
+            M_ff,
+        )
+        add_shell_mass_reduced(
+            shell_cache.shell.masses,
+            free_index,
+            mpc_row_offsets,
+            mpc_dof_pool,
+            mpc_coeff_pool,
+            M_ff,
+        )
+        var has_mass = False
+        for i in range(free_count):
+            M_f[i] = M_ff[i][i]
+            if M_f[i] > max_mass:
+                max_mass = M_f[i]
+            for j in range(free_count):
+                if M_ff[i][j] != 0.0:
+                    has_mass = True
+        if not has_mass:
+            abort("modal_eigen requires masses on free dofs")
+        var matrix: List[List[Float64]]
+        if reciprocal_eigenvalues:
+            # Factor K instead of M so massless DOFs need no artificial mass.
+            # The largest eigenvalues of L_K^-1 M L_K^-T are the reciprocals
+            # of the smallest finite eigenvalues of K v = lambda M v.
+            factor = _cholesky_factor_dense_spd(K_ff)
+            matrix = M_ff^
+        else:
+            var msmall = 1.0e-10
+            var mass_floor = max_mass * 1.0e-12
+            if mass_floor <= 0.0:
+                mass_floor = 1.0e-12
+            for i in range(free_count):
+                if M_f[i] == 0.0:
+                    M_f[i] = K_ff[i][i] * msmall
+                if M_f[i] <= 0.0:
+                    M_f[i] = mass_floor
+                M_ff[i][i] = M_f[i]
+            factor = _cholesky_factor_dense_spd(M_ff)
+            matrix = K_ff^
+        var inverse_factor: List[List[Float64]] = []
+        for _ in range(free_count):
+            var row: List[Float64] = []
+            row.resize(free_count, 0.0)
+            inverse_factor.append(row^)
+        for col in range(free_count):
+            var basis: List[Float64] = []
+            basis.resize(free_count, 0.0)
+            basis[col] = 1.0
+            var inverse_col = _solve_lower_triangular(factor, basis)
+            for row in range(free_count):
+                inverse_factor[row][col] = inverse_col[row]
+
+        var A = _multiply_dense_matrices(inverse_factor, matrix)
+        A = _multiply_dense_by_transpose(A, inverse_factor)
+
+        if reciprocal_eigenvalues:
+            var scale = 0.0
+            for i in range(free_count):
+                scale = max(scale, abs(A[i][i]))
+            jacobi_symmetric_eigen(
+                A, eigvals_raw, eigvecs, 8 * free_count * free_count, scale * 1.0e-13
+            )
+        else:
+            jacobi_symmetric_eigen(A, eigvals_raw, eigvecs)
+        order = _sorted_indices_ascending(eigvals_raw)
+        if reciprocal_eigenvalues:
+            for i in range(free_count // 2):
+                var j = free_count - i - 1
+                var col = order[i]
+                order[i] = order[j]
+                order[j] = col
+            var threshold = eigvals_raw[order[0]] * 1.0e-12
+            for i in range(modal_num_modes):
+                var col = order[i]
+                if eigvals_raw[col] <= threshold:
+                    abort("modal_eigen num_modes exceeds the number of finite modes")
+                eigvals_raw[col] = 1.0 / eigvals_raw[col]
 
     var wrote_eigenvalues = False
     for r in range(len(recorders)):
@@ -317,7 +383,12 @@ fn run_modal_eigen(
             reduced_mode.resize(free_count, 0.0)
             for i in range(free_count):
                 reduced_mode[i] = eigvecs[i][col]
-            reduced_mode = _solve_upper_from_lower_transpose(mass_cholesky, reduced_mode)
+            if not standard:
+                reduced_mode = _solve_upper_from_lower_transpose(factor, reduced_mode)
+            if reciprocal_eigenvalues:
+                var scale = sqrt(eigvals_raw[col])
+                for i in range(free_count):
+                    reduced_mode[i] *= scale
             var full_mode: List[Float64] = []
             full_mode.resize(total_dofs, 0.0)
             for i in range(free_count):

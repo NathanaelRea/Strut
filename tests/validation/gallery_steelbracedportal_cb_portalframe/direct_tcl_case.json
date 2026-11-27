@@ -1,0 +1,8 @@
+{
+  "enabled": false,
+  "entry_tcl": "tests/fixtures/opensees/STAIRlabGallery/content/en/examples/SteelBracedPortal/CB_PortalFrame.tcl",
+  "tcl_source_version": "openseesrt-fd3958f",
+  "tcl_upgrade_note": "Maps the OpenSeesRT FiberSec alias to Fiber.",
+  "source_url": "https://github.com/peer-open-source/opensees-gallery/blob/fd3958fde8a3d0a350321b3fbdd3f415ee16e2a2/content/en/examples/SteelBracedPortal/CB_PortalFrame.tcl",
+  "disabled_reason": "Strut stops at the OpenSeesRT ForceBeamColumn declaration. The model also uses OpenSeesRT ElasticFrame sections and PrismFrame elements, which have no one-to-one translation for the pinned OpenSees 3.7.1 interpreter."
+}

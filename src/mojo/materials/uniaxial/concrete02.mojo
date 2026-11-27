@@ -1,4 +1,9 @@
-from materials.uniaxial.core import _abs, StressTangent, UniMaterialDef, UniMaterialState
+from materials.uniaxial.core import (
+    _abs,
+    StressTangent,
+    UniMaterialDefinition,
+    UniMaterialPointState,
+)
 
 
 fn _concrete02_tens_envlp(
@@ -32,7 +37,9 @@ fn _concrete02_compr_envlp(
         return StressTangent(fcu, 1.0e-10)
 
 
-fn _concrete02_set_trial(mat_def: UniMaterialDef, mut state: UniMaterialState, strain: Float64):
+fn _concrete02_set_trial(
+    mat_def: UniMaterialDefinition, mut state: UniMaterialPointState, strain: Float64
+):
     var fc = mat_def.p0
     var epsc0 = mat_def.p1
     var fcu = mat_def.p2

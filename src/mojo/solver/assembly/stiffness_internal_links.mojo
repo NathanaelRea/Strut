@@ -1,21 +1,34 @@
+from elements.coupled_zero_length import evaluate_coupled_zero_length
 from collections import List
 from math import sqrt
 from os import abort
 
 from elements import link_orientation_matrix
-from materials import UniMaterialDef, UniMaterialState, uniaxial_set_trial_strain
+from elements.catenary_cable import CableResponse, CableVector, catenary_cable_response
+from elements.sfi_mvlem import sfi_mvlem_response
+from elements.mvlem import mvlem_response
+from tag_types import ElementTypeTag
+from materials import (
+    UniMaterialDef,
+    UniMaterialState,
+    uniaxial_set_trial_strain,
+    uniaxial_set_trial_strain_rate,
+)
 from solver.assembly.stiffness_internal_shared import (
     _elem_dir,
     _elem_dof_map,
     _gather_element_u,
 )
 from solver.sparse_pattern import ElementMatrixSink
-from solver.run_case.input_types import ElementInput, NodeInput
+from solver.run_case.input_types import ElementInput, ElementLoadInput, NodeInput
+from tag_types import UniMaterialTypeTag
 
 
 fn _zero_length_row(dir: Int, ndm: Int, ndf: Int, trans: List[List[Float64]]) -> List[Float64]:
     var row: List[Float64] = []
     row.resize(2 * ndf, 0.0)
+    if ndm == 1 and ndf == 1:
+        return [-trans[0][0], trans[0][0]]
     if ndm == 2 and ndf == 2:
         var axis = dir - 1
         row[0] = -trans[axis][0]
@@ -34,14 +47,11 @@ fn _zero_length_row(dir: Int, ndm: Int, ndf: Int, trans: List[List[Float64]]) ->
             row[2] = -trans[2][2]
             row[5] = trans[2][2]
         return row^
-    if ndm == 3 and ndf == 3:
+    if ndm == 3 and (ndf == 3 or ndf == 4):
         var axis = dir - 1
-        row[0] = -trans[axis][0]
-        row[1] = -trans[axis][1]
-        row[2] = -trans[axis][2]
-        row[3] = trans[axis][0]
-        row[4] = trans[axis][1]
-        row[5] = trans[axis][2]
+        for i in range(3):
+            row[i] = -trans[axis][i]
+            row[ndf + i] = trans[axis][i]
         return row^
     if ndm == 3 and ndf == 6:
         if dir <= 3:
@@ -285,6 +295,39 @@ fn _two_node_link_add_pdelta_stiff(
             k_local[11][7] += elem.pdelta_4 * axial
 
 
+fn _coupled_zero_length_system(
+    element: ElementInput,
+    ndf: Int,
+    displacement: List[Float64],
+    material: UniMaterialDef,
+    mut state: UniMaterialState,
+) -> Tuple[List[Float64], List[List[Float64]]]:
+    var first = _elem_dir(element, 0) - 1
+    var second = _elem_dir(element, 1) - 1
+    var dx = displacement[first + ndf] - displacement[first]
+    var dy = displacement[second + ndf] - displacement[second]
+    var force = evaluate_coupled_zero_length(material, state, dx, dy)
+    var residual: List[Float64] = []
+    residual.resize(element.dof_count, 0.0)
+    var stiffness: List[List[Float64]] = []
+    for _ in range(element.dof_count):
+        var row: List[Float64] = []
+        row.resize(element.dof_count, 0.0)
+        stiffness.append(row^)
+    var directions = [first, second]
+    for axis in range(2):
+        var i = directions[axis]
+        var j = i + ndf
+        var component = force[0] if axis == 0 else force[1]
+        residual[i] = -component
+        residual[j] = component
+        stiffness[i][i] = state.tangent_t
+        stiffness[j][j] = state.tangent_t
+        stiffness[i][j] = -state.tangent_t
+        stiffness[j][i] = -state.tangent_t
+    return (residual^, stiffness^)
+
+
 fn _assemble_zero_length_element(
     e: Int,
     elem: ElementInput,
@@ -301,6 +344,23 @@ fn _assemble_zero_length_element(
     mut K: List[List[Float64]],
     mut F_int: List[Float64],
 ):
+    if elem.type == "CoupledZeroLength":
+        var dof_map = _elem_dof_map(elem)
+        var index = elem_uniaxial_state_ids[elem_uniaxial_offsets[e]]
+        var system = _coupled_zero_length_system(
+            elem,
+            ndf,
+            _gather_element_u(dof_map, u),
+            uniaxial_defs[uniaxial_state_defs[index]],
+            uniaxial_states[index],
+        )
+        ref residual = system[0]
+        ref stiffness = system[1]
+        for i in range(elem.dof_count):
+            F_int[dof_map[i]] += residual[i]
+            for j in range(elem.dof_count):
+                K[dof_map[i]][dof_map[j]] += stiffness[i][j]
+        return
     var node1 = nodes[elem.node_index_1]
     var node2 = nodes[elem.node_index_2]
     var trans = link_orientation_matrix(
@@ -368,6 +428,23 @@ fn _assemble_zero_length_element_native[
     mut backend: S,
     mut F_int: List[Float64],
 ):
+    if elem.type == "CoupledZeroLength":
+        var dof_map = _elem_dof_map(elem)
+        var index = elem_uniaxial_state_ids[elem_uniaxial_offsets[e]]
+        var system = _coupled_zero_length_system(
+            elem,
+            ndf,
+            _gather_element_u(dof_map, u),
+            uniaxial_defs[uniaxial_state_defs[index]],
+            uniaxial_states[index],
+        )
+        ref residual = system[0]
+        for i in range(elem.dof_count):
+            F_int[dof_map[i]] += residual[i]
+        backend.add_element_matrix(
+            e, elem_free_pool, elem_free_offsets[e], elem.dof_count, system[1]
+        )
+        return
     var node1 = nodes[elem.node_index_1]
     var node2 = nodes[elem.node_index_2]
     var trans = link_orientation_matrix(
@@ -427,6 +504,33 @@ fn _assemble_zero_length_element_native[
     )
 
 
+fn _catenary_response(
+    e: Int,
+    elem: ElementInput,
+    nodes: List[NodeInput],
+    u: List[Float64],
+    element_loads: List[ElementLoadInput],
+    elem_load_offsets: List[Int],
+    elem_load_pool: List[Int],
+    load_scale: Float64,
+) -> CableResponse:
+    ref first = nodes[elem.node_index_1]
+    ref last = nodes[elem.node_index_2]
+    var dofs = _elem_dof_map(elem)
+    var chord = CableVector(
+        last.x + u[dofs[3]] - (first.x + u[dofs[0]]),
+        last.y + u[dofs[4]] - (first.y + u[dofs[1]]),
+        last.z + u[dofs[5]] - (first.z + u[dofs[2]]),
+        0.0,
+    )
+    var weight = CableVector(0.0, 0.0, elem.cable.weight, 0.0)
+    if len(elem_load_offsets) > e + 1 and elem_load_offsets[e + 1] > elem_load_offsets[e]:
+        ref load = element_loads[elem_load_pool[elem_load_offsets[e + 1] - 1]]
+        # CatenaryCable reads the three uniform-load entries in global order.
+        weight = load_scale * CableVector(load.wy, load.wz, load.wx, 0.0)
+    return catenary_cable_response(elem.cable, chord, weight)
+
+
 fn _assemble_two_node_link_element(
     e: Int,
     elem: ElementInput,
@@ -442,7 +546,62 @@ fn _assemble_two_node_link_element(
     elem_uniaxial_state_ids: List[Int],
     mut K: List[List[Float64]],
     mut F_int: List[Float64],
+    v: List[Float64] = List[Float64](),
+    dt: Float64 = 0.0,
+    element_loads: List[ElementLoadInput] = List[ElementLoadInput](),
+    elem_load_offsets: List[Int] = List[Int](),
+    elem_load_pool: List[Int] = List[Int](),
+    load_scale: Float64 = 1.0,
 ):
+    if elem.type_tag == ElementTypeTag.CatenaryCable:
+        var response = _catenary_response(
+            e,
+            elem,
+            nodes,
+            u,
+            element_loads,
+            elem_load_offsets,
+            elem_load_pool,
+            load_scale,
+        )
+        var dofs = _elem_dof_map(elem)
+        var force = response.force()
+        var tangent = response.tangent()
+        for i in range(6):
+            F_int[dofs[i]] += force[i]
+            for j in range(6):
+                K[dofs[i]][dofs[j]] += tangent[i][j]
+        return
+    if elem.type_tag == ElementTypeTag.SFIMVLEM:
+        var dof_map = _elem_dof_map(elem)
+        var response = sfi_mvlem_response(
+            elem.wall,
+            _gather_element_u(dof_map, u),
+            elem_uniaxial_offsets[e],
+            elem_uniaxial_state_ids,
+            uniaxial_states,
+        )
+        for i in range(elem.dof_count):
+            F_int[dof_map[i]] += response.force[i]
+            for j in range(elem.dof_count):
+                K[dof_map[i]][dof_map[j]] += response.tangent[i][j]
+        return
+    if elem.type_tag == ElementTypeTag.MVLEM:
+        var dof_map = _elem_dof_map(elem)
+        var response = mvlem_response(
+            elem.wall,
+            _gather_element_u(dof_map, u),
+            elem_uniaxial_offsets[e],
+            elem_uniaxial_state_ids,
+            uniaxial_state_defs,
+            uniaxial_defs,
+            uniaxial_states,
+        )
+        for i in range(6):
+            F_int[dof_map[i]] += response.force[i]
+            for j in range(6):
+                K[dof_map[i]][dof_map[j]] += response.tangent[i][j]
+        return
     var node1 = nodes[elem.node_index_1]
     var node2 = nodes[elem.node_index_2]
     var dx = node2.x - node1.x
@@ -480,6 +639,14 @@ fn _assemble_two_node_link_element(
     for i in range(elem.dof_count):
         for j in range(elem.dof_count):
             ul[i] += tgl[i][j] * ug[j]
+    var has_vel = len(v) > 0 and dt > 0.0
+    var vl: List[Float64] = []
+    if has_vel:
+        var vg = _gather_element_u(dof_map, v)
+        vl.resize(elem.dof_count, 0.0)
+        for i in range(elem.dof_count):
+            for j in range(elem.dof_count):
+                vl[i] += tgl[i][j] * vg[j]
     var offset = elem_uniaxial_offsets[e]
     var count = elem_uniaxial_counts[e]
     var q_basic: List[Float64] = []
@@ -494,9 +661,21 @@ fn _assemble_two_node_link_element(
         var def_index = uniaxial_state_defs[state_index]
         var mat_def = uniaxial_defs[def_index]
         ref state = uniaxial_states[state_index]
-        uniaxial_set_trial_strain(mat_def, state, ub)
-        q_basic[m] = state.sig_t
-        k_basic[m] = state.tangent_t
+        if mat_def.mat_type == UniMaterialTypeTag.ViscousDamper:
+            if has_vel:
+                var vb = 0.0
+                for j in range(elem.dof_count):
+                    vb += tlb[m][j] * vl[j]
+                uniaxial_set_trial_strain_rate(mat_def, state, ub, vb, dt)
+                q_basic[m] = state.sig_t
+                k_basic[m] = state.tangent_t
+            else:
+                q_basic[m] = state.sig_c
+                k_basic[m] = 0.0
+        else:
+            uniaxial_set_trial_strain(mat_def, state, ub)
+            q_basic[m] = state.sig_t
+            k_basic[m] = state.tangent_t
     var k_local: List[List[Float64]] = []
     for _ in range(elem.dof_count):
         var row: List[Float64] = []
@@ -556,7 +735,74 @@ fn _assemble_two_node_link_element_native[
     elem_free_pool: List[Int],
     mut backend: S,
     mut F_int: List[Float64],
+    v: List[Float64] = List[Float64](),
+    dt: Float64 = 0.0,
+    initial_wall_tangent: Bool = False,
+    element_loads: List[ElementLoadInput] = List[ElementLoadInput](),
+    elem_load_offsets: List[Int] = List[Int](),
+    elem_load_pool: List[Int] = List[Int](),
+    load_scale: Float64 = 1.0,
 ):
+    if elem.type_tag == ElementTypeTag.CatenaryCable:
+        var response = _catenary_response(
+            e,
+            elem,
+            nodes,
+            u,
+            element_loads,
+            elem_load_offsets,
+            elem_load_pool,
+            load_scale,
+        )
+        var dofs = _elem_dof_map(elem)
+        var force = response.force()
+        var tangent = response.tangent()
+        for i in range(6):
+            F_int[dofs[i]] += force[i]
+        backend.add_element_matrix(e, elem_free_pool, elem_free_offsets[e], 6, tangent)
+        return
+    if elem.type_tag == ElementTypeTag.SFIMVLEM:
+        var dof_map = _elem_dof_map(elem)
+        var response = sfi_mvlem_response(
+            elem.wall,
+            _gather_element_u(dof_map, u),
+            elem_uniaxial_offsets[e],
+            elem_uniaxial_state_ids,
+            uniaxial_states,
+            initial_wall_tangent,
+        )
+        for i in range(elem.dof_count):
+            F_int[dof_map[i]] += response.force[i]
+        backend.add_element_matrix(
+            e,
+            elem_free_pool,
+            elem_free_offsets[e],
+            elem.dof_count,
+            response.tangent,
+        )
+        return
+    if elem.type_tag == ElementTypeTag.MVLEM:
+        var dof_map = _elem_dof_map(elem)
+        var response = mvlem_response(
+            elem.wall,
+            _gather_element_u(dof_map, u),
+            elem_uniaxial_offsets[e],
+            elem_uniaxial_state_ids,
+            uniaxial_state_defs,
+            uniaxial_defs,
+            uniaxial_states,
+            initial_wall_tangent,
+        )
+        for i in range(6):
+            F_int[dof_map[i]] += response.force[i]
+        backend.add_element_matrix(
+            e,
+            elem_free_pool,
+            elem_free_offsets[e],
+            elem.dof_count,
+            response.tangent,
+        )
+        return
     var node1 = nodes[elem.node_index_1]
     var node2 = nodes[elem.node_index_2]
     var dx = node2.x - node1.x
@@ -594,6 +840,14 @@ fn _assemble_two_node_link_element_native[
     for i in range(elem.dof_count):
         for j in range(elem.dof_count):
             ul[i] += tgl[i][j] * ug[j]
+    var has_vel = len(v) > 0 and dt > 0.0
+    var vl: List[Float64] = []
+    if has_vel:
+        var vg = _gather_element_u(dof_map, v)
+        vl.resize(elem.dof_count, 0.0)
+        for i in range(elem.dof_count):
+            for j in range(elem.dof_count):
+                vl[i] += tgl[i][j] * vg[j]
     var offset = elem_uniaxial_offsets[e]
     var count = elem_uniaxial_counts[e]
     var q_basic: List[Float64] = []
@@ -608,9 +862,21 @@ fn _assemble_two_node_link_element_native[
         var def_index = uniaxial_state_defs[state_index]
         var mat_def = uniaxial_defs[def_index]
         ref state = uniaxial_states[state_index]
-        uniaxial_set_trial_strain(mat_def, state, ub)
-        q_basic[m] = state.sig_t
-        k_basic[m] = state.tangent_t
+        if mat_def.mat_type == UniMaterialTypeTag.ViscousDamper:
+            if has_vel:
+                var vb = 0.0
+                for j in range(elem.dof_count):
+                    vb += tlb[m][j] * vl[j]
+                uniaxial_set_trial_strain_rate(mat_def, state, ub, vb, dt)
+                q_basic[m] = state.sig_t
+                k_basic[m] = state.tangent_t
+            else:
+                q_basic[m] = state.sig_c
+                k_basic[m] = 0.0
+        else:
+            uniaxial_set_trial_strain(mat_def, state, ub)
+            q_basic[m] = state.sig_t
+            k_basic[m] = state.tangent_t
     var k_local: List[List[Float64]] = []
     for _ in range(elem.dof_count):
         var row: List[Float64] = []

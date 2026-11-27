@@ -725,3 +725,215 @@ def test_fiber_section3d_tangent_matches_finite_difference():
     assert math.isclose(base["k13"], d_mz_deps, rel_tol=1e-5, abs_tol=1e-2)
     assert math.isclose(base["k23"], d_mz_dky, rel_tol=1e-5, abs_tol=1e-2)
     assert math.isclose(base["k33"], d_mz_dkz, rel_tol=1e-5, abs_tol=1e-2)
+
+
+def _discretize_circ_fibers(section_params):
+    fibers = []
+    for patch in section_params.get("patches", []):
+        assert patch["type"] == "circ"
+        nc = patch["num_subdiv_circ"]
+        nr = patch["num_subdiv_rad"]
+        yc = patch["y_center"]
+        zc = patch["z_center"]
+        ri = patch["int_rad"]
+        re = patch["ext_rad"]
+        start_rad = math.radians(patch.get("start_ang", 0.0))
+        end_rad = math.radians(patch.get("end_ang", 360.0))
+        d_rad = (re - ri) / nr
+        d_theta = (end_rad - start_rad) / nc
+        for j in range(nr):
+            r1 = ri + j * d_rad
+            r2 = r1 + d_rad
+            for i in range(nc):
+                t1 = start_rad + i * d_theta
+                t2 = t1 + d_theta
+                area = 0.5 * abs(t2 - t1) * (r2 * r2 - r1 * r1)
+                if abs(t2 - t1) > 1.0e-12 and (r2 * r2 - r1 * r1) > 0.0:
+                    r_bar = (
+                        (4.0 / 3.0)
+                        * (math.sin(0.5 * (t2 - t1)) / (0.5 * (t2 - t1)))
+                        * (r2 * r2 * r2 - r1 * r1 * r1)
+                        / (r2 * r2 - r1 * r1)
+                    )
+                    # OpenSees CircSectionCell::getCentroidPosition uses 4/3 * sin(dtheta/2)/dtheta * ...
+                    # Wait: check exact factor 2/3 * sin(dtheta/2)/(dtheta/2) = 4/3 * sin(dtheta/2)/dtheta!
+                    r_bar *= 0.5
+                else:
+                    r_bar = 0.5 * (r1 + r2)
+                theta_mid = 0.5 * (t1 + t2)
+                y = yc + r_bar * math.cos(theta_mid)
+                z = zc + r_bar * math.sin(theta_mid)
+                fibers.append((y, z, area, patch["material"]))
+    for layer in section_params.get("layers", []):
+        assert layer["type"] == "circ"
+        n = layer["num_bars"]
+        area = layer["bar_area"]
+        yc = layer["y_center"]
+        zc = layer["z_center"]
+        rad = layer["radius"]
+        has_angles = "start_ang" in layer and "end_ang" in layer
+        if has_angles:
+            a0 = layer["start_ang"]
+            a1 = layer["end_ang"]
+        else:
+            a0 = 0.0
+            a1 = 360.0 - 360.0 / n
+        if n == 1:
+            angles = [math.radians(a0)]
+        else:
+            d_ang = math.radians(a1 - a0) / (n - 1)
+            angles = [math.radians(a0) + i * d_ang for i in range(n)]
+        for ang in angles:
+            fibers.append(
+                (
+                    yc + rad * math.cos(ang),
+                    zc + rad * math.sin(ang),
+                    area,
+                    layer["material"],
+                )
+            )
+    return fibers
+
+
+def test_fiber_section2d_circ_patch_and_layer_elastic_aggregation():
+    case_data = {
+        "materials": [
+            {"id": 1, "type": "Elastic", "params": {"E": 3.0e10}},
+            {"id": 2, "type": "Elastic", "params": {"E": 2.0e11}},
+        ],
+        "section": {
+            "id": 1,
+            "type": "FiberSection2d",
+            "params": {
+                "patches": [
+                    {
+                        "type": "circ",
+                        "material": 1,
+                        "num_subdiv_circ": 8,
+                        "num_subdiv_rad": 4,
+                        "y_center": 0.05,
+                        "z_center": -0.02,
+                        "int_rad": 0.1,
+                        "ext_rad": 0.3,
+                        "start_ang": 0.0,
+                        "end_ang": 180.0,
+                    }
+                ],
+                "layers": [
+                    {
+                        "type": "circ",
+                        "material": 2,
+                        "num_bars": 8,
+                        "bar_area": 0.0003,
+                        "y_center": 0.05,
+                        "z_center": -0.02,
+                        "radius": 0.25,
+                        "start_ang": 22.5,
+                        "end_ang": 337.5,
+                    }
+                ],
+            },
+        },
+        "deformation_path": [{"eps0": 1.5e-4, "kappa": 2.0e-3}],
+    }
+    rows = _run_section_path(case_data)
+    assert len(rows) == 1
+    got = rows[0]
+
+    e_by_mat = {m["id"]: m["params"]["E"] for m in case_data["materials"]}
+    fibers = _discretize_circ_fibers(case_data["section"]["params"])
+    a_sum = sum(area for _y, _z, area, _mat in fibers)
+    y_bar = sum(area * y for y, _z, area, _mat in fibers) / a_sum
+    eps0 = 1.5e-4
+    kappa = 2.0e-3
+    n = mz = k11 = k12 = k22 = 0.0
+    for y, _z, area, mat in fibers:
+        e = e_by_mat[mat]
+        y_rel = y - y_bar
+        strain = eps0 - y_rel * kappa
+        fs = e * strain * area
+        ks = e * area
+        n += fs
+        mz += -fs * y_rel
+        k11 += ks
+        k12 += -ks * y_rel
+        k22 += ks * y_rel * y_rel
+
+    assert math.isclose(got["N"], n, rel_tol=1e-10, abs_tol=1e-8)
+    assert math.isclose(got["Mz"], mz, rel_tol=1e-10, abs_tol=1e-8)
+    assert math.isclose(got["k11"], k11, rel_tol=1e-10, abs_tol=1e-8)
+    assert math.isclose(got["k12"], k12, rel_tol=1e-10, abs_tol=1e-6)
+    assert math.isclose(got["k22"], k22, rel_tol=1e-10, abs_tol=1e-8)
+
+
+def test_fiber_section3d_circ_patch_and_default_angle_layer_elastic_aggregation():
+    case_data = {
+        "materials": [
+            {"id": 1, "type": "Elastic", "params": {"E": 2.8e10}},
+            {"id": 2, "type": "Elastic", "params": {"E": 2.0e11}},
+        ],
+        "section": {
+            "id": 1,
+            "type": "FiberSection3d",
+            "params": {
+                "patches": [
+                    {
+                        "type": "circ",
+                        "material": 1,
+                        "num_subdiv_circ": 12,
+                        "num_subdiv_rad": 3,
+                        "y_center": 0.0,
+                        "z_center": 0.0,
+                        "int_rad": 0.0,
+                        "ext_rad": 0.25,
+                        "start_ang": 0.0,
+                        "end_ang": 360.0,
+                    }
+                ],
+                "layers": [
+                    {
+                        "type": "circ",
+                        "material": 2,
+                        "num_bars": 6,
+                        "bar_area": 0.0002,
+                        "y_center": 0.0,
+                        "z_center": 0.0,
+                        "radius": 0.2,
+                    }
+                ],
+            },
+        },
+        "deformation_path": [{"eps0": -1.0e-4, "kappa_y": 8.0e-4, "kappa_z": -1.2e-3}],
+    }
+    rows = _run_section_path(case_data)
+    assert len(rows) == 1
+    got = rows[0]
+
+    e_by_mat = {m["id"]: m["params"]["E"] for m in case_data["materials"]}
+    fibers = _discretize_circ_fibers(case_data["section"]["params"])
+    eps0, ky, kz = -1.0e-4, 8.0e-4, -1.2e-3
+    n = my = mz = k11 = k12 = k13 = k22 = k23 = k33 = 0.0
+    for y, z, area, mat in fibers:
+        e = e_by_mat[mat]
+        strain = eps0 + z * ky - y * kz
+        fs = e * strain * area
+        ks = e * area
+        n += fs
+        my += fs * z
+        mz += -fs * y
+        k11 += ks
+        k12 += ks * z
+        k13 += -ks * y
+        k22 += ks * z * z
+        k23 += -ks * z * y
+        k33 += ks * y * y
+
+    assert math.isclose(got["N"], n, rel_tol=1e-10, abs_tol=1e-8)
+    assert math.isclose(got["My"], my, rel_tol=1e-10, abs_tol=1e-8)
+    assert math.isclose(got["Mz"], mz, rel_tol=1e-10, abs_tol=1e-8)
+    assert math.isclose(got["k11"], k11, rel_tol=1e-10, abs_tol=1e-8)
+    assert math.isclose(got["k12"], k12, rel_tol=1e-8, abs_tol=1e-6)
+    assert math.isclose(got["k13"], k13, rel_tol=1e-8, abs_tol=1e-6)
+    assert math.isclose(got["k22"], k22, rel_tol=1e-10, abs_tol=1e-8)
+    assert math.isclose(got["k23"], k23, rel_tol=1e-8, abs_tol=1e-6)
+    assert math.isclose(got["k33"], k33, rel_tol=1e-10, abs_tol=1e-8)

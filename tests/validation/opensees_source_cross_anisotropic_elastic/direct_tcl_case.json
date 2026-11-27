@@ -1,0 +1,12 @@
+{
+  "name": "opensees_source_cross_anisotropic_elastic",
+  "entry_tcl": "tests/fixtures/opensees/OpenSeesSource/EXAMPLES/ExampleScripts/CrossAnisotropicElastic.tcl",
+  "tcl_source_version": "3.7.1",
+  "source_url": "https://github.com/OpenSees/OpenSees/blob/v3.7.1/EXAMPLES/ExampleScripts/CrossAnisotropicElastic.tcl",
+  "enabled": false,
+  "disabled_reason": "Pinned OpenSees 3.7.1 rejects the legacy ElasticCrossAnisotropic command before reaching HSConstraint.",
+  "parity_tolerance": {},
+  "parity_tolerance_by_category": {},
+  "parity_tolerance_by_recorder": {},
+  "parity_mode": "step"
+}

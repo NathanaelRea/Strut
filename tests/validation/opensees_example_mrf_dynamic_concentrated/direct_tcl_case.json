@@ -1,0 +1,9 @@
+{
+  "name": "opensees_example_mrf_dynamic_concentrated",
+  "entry_tcl": "tests/fixtures/opensees/OpenSeesExamplesPractical/dynamic_analysis_of_2_story_moment_frame/MRF_2Story_Concentrated.tcl",
+  "tcl_source_version": "3.7.1",
+  "enabled": true,
+  "source_files": [
+    "MRF_2Story_Concentrated.tcl"
+  ]
+}

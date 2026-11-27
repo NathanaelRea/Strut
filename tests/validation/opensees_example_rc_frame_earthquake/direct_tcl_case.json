@@ -1,0 +1,8 @@
+{
+  "name": "opensees_example_rc_frame_earthquake",
+  "entry_tcl": "tests/fixtures/opensees/OpenSeesExamplesBasic/reinforced_concrete_frame_earthquake_analysis/RCFrameEarthquake.tcl",
+  "tcl_source_version": "3.7.1",
+  "enabled": true,
+  "source_url": "https://opensees.berkeley.edu/wiki/index.php/Reinforced_Concrete_Frame_Earthquake_Analysis",
+  "reference": "https://github.com/OpenSees/OpenSees/blob/v3.7.1/EXAMPLES/ExampleScripts/ARL360.at2"
+}

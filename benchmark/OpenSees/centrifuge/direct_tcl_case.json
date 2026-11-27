@@ -1,0 +1,10 @@
+{
+  "name": "opensees_centrifuge_full",
+  "entry_tcl": "tests/fixtures/opensees/OpenSeesManual/Centrifuge/CentrifugeFull.tcl",
+  "opensees_only": true,
+  "status": "benchmark",
+  "benchmark_size": "large",
+  "source_url": "https://opensees.berkeley.edu/OpenSees/manuals/usermanual/documents/CentrifugeExample.tcl",
+  "reference": "Antonios Vytiniotis, Simulating a Centrifuge Test using the OpenSees Framework, OpenSees User Manual, chapter 4188.",
+  "notes": "Full gravity, shaking and drainage to 360 s using the OpenSees 3.7.1 Newmark syntax."
+}

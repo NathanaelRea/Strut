@@ -347,11 +347,20 @@ fn shell4_mindlin_stiffness(
     h: Float64,
     geometry: UnsafePointer[Float64],
     matrix: UnsafePointer[Float64],
+    plate_mod: Float64 = 1.0,
 ):
     """Fill the constant elastic shell stiffness during model setup."""
+    var d = elastic_membrane_plate_tangent(E, nu, h, plate_mod)
+    var drill = E / (2.0 * (1.0 + nu)) * h
+    shell4_integrate_tangent(UnsafePointer(to=d[0]), geometry, matrix, drill)
+
+
+fn elastic_membrane_plate_tangent(
+    E: Float64, nu: Float64, h: Float64, plate_mod: Float64
+) -> InlineArray[Float64, 64]:
     var d = InlineArray[Float64, 64](fill=0.0)
     var factor = E / (1.0 - nu * nu)
-    var bend_factor = E * h * h * h / (12.0 * (1.0 - nu * nu))
+    var bend_factor = E * plate_mod * h * h * h / (12.0 * (1.0 - nu * nu))
     var G = E / (2.0 * (1.0 + nu))
     d[0] = factor * h
     d[1] = factor * nu * h
@@ -363,16 +372,34 @@ fn shell4_mindlin_stiffness(
     d[35] = d[28]
     d[36] = d[27]
     d[45] = -(bend_factor * (1.0 - nu) / 2.0)
-    d[54] = (5.0 / 6.0) * G * h
+    d[54] = (5.0 / 6.0) * G * h * plate_mod
     d[63] = d[54]
+    return d^
+
+
+fn shell4_integrate_tangent(
+    tangent: UnsafePointer[Float64],
+    geometry: UnsafePointer[Float64],
+    matrix: UnsafePointer[Float64],
+    drill_stiffness: Float64,
+):
     _clear_matrix(matrix)
     for gp in range(4):
         var point = geometry + gp * SHELL4_POINT_SIZE
-        _add_gauss_tangent(point, UnsafePointer(to=d[0]), matrix, G * h, point[216])
+        _add_gauss_tangent(point, tangent, matrix, drill_stiffness, point[216])
+
+
+fn compact_shell_matrix(matrix: UnsafePointer[Float64], dof_count: Int):
+    # Assembly consumes a packed square block, while the Gauss kernel uses
+    # the same 24-column strides for both element shapes.
+    for row in range(1, dof_count):
+        for col in range(dof_count):
+            matrix[row * dof_count + col] = matrix[row * SHELL4_DOFS + col]
 
 
 fn shell4_layered_stiffness_and_residual[
-    tangent: Bool
+    tangent: Bool,
+    incremental: Bool = False,
 ](
     sec_def: LayeredShellSectionDef,
     uniaxial_defs: UnsafePointer[UniMaterialDef],
@@ -383,6 +410,9 @@ fn shell4_layered_stiffness_and_residual[
     matrix: UnsafePointer[Float64],
     force: UnsafePointer[Float64],
     scratch: UnsafePointer[Float64],
+    committed_strain: UnsafePointer[Float64] = UnsafePointer[Float64](),
+    trial_strain: UnsafePointer[Float64] = UnsafePointer[Float64](),
+    geometric: UnsafePointer[Float64] = UnsafePointer[Float64](),
 ):
     var strain = scratch
     var stress = scratch + 8
@@ -401,6 +431,11 @@ fn shell4_layered_stiffness_and_residual[
         var dvol = point[216]
         for row in range(8):
             strain[row] = shell4_dot_row(point + row * 24, u)
+
+            @parameter
+            if incremental:
+                strain[row] += committed_strain[gp * 8 + row]
+                trial_strain[gp * 8 + row] = strain[row]
         layered_shell_set_trial_from_offset[tangent](
             sec_def,
             uniaxial_defs,
@@ -428,3 +463,13 @@ fn shell4_layered_stiffness_and_residual[
         @parameter
         if tangent:
             _add_gauss_tangent(point, d, matrix, ktt, dvol)
+
+            @parameter
+            if incremental:
+                var dx = geometric + gp * 48
+                var dy = dx + 24
+                for i in range(24):
+                    var nx = dvol * (dx[i] * stress[0] + dy[i] * stress[2])
+                    var ny = dvol * (dx[i] * stress[2] + dy[i] * stress[1])
+                    for j in range(24):
+                        matrix[i * 24 + j] += nx * dx[j] + ny * dy[j]

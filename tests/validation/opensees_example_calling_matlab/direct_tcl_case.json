@@ -1,0 +1,44 @@
+{
+  "schema_version": "1.0",
+  "enabled": true,
+  "interactive_tcl": true,
+  "name": "opensees_example_calling_matlab",
+  "entry_tcl": "tests/fixtures/opensees/OpenSeesExamplesPractical/calling_matlab_from_a_scipt/CallingMatlab.tcl",
+  "tcl_source_version": "3.7.1",
+  "source_files": [
+    "CallingMatlab.tcl"
+  ],
+  "compare_files": [
+    "calling_matlab_summary.out"
+  ],
+  "tcl_prelude": [
+    "set _strut_cm_fp [open \"calling_matlab_summary.out\" w]",
+    "proc exec {args} {",
+    "    if {[lindex $args 0] eq \"matlab\"} {",
+    "        set fin [open data1 r]",
+    "        set vals [split [string trim [read $fin]]]",
+    "        close $fin",
+    "        set fout [open data2 w]",
+    "        puts $fout [expr {([lindex $vals 0] + [lindex $vals 1]) / 2.0}]",
+    "        close $fout",
+    "        return \"\"",
+    "    }",
+    "    error \"unexpected external command: $args\"",
+    "}",
+    "rename puts _strut_orig_puts",
+    "proc puts {args} {",
+    "    global _strut_cm_fp",
+    "    if {[llength $args] == 1} {",
+    "        set msg [lindex $args 0]",
+    "        if {[regexp {^\\s*([-+0-9.eE]+)\\s+([-+0-9.eE]+)\\s*$} $msg -> aVal dVal]} {",
+    "            _strut_orig_puts $_strut_cm_fp \"$aVal $dVal\"",
+    "        }",
+    "    }",
+    "    uplevel 1 [linsert $args 0 _strut_orig_puts]",
+    "}"
+  ],
+  "tcl_postlude": [
+    "close $_strut_cm_fp"
+  ],
+  "source_url": "https://opensees.berkeley.edu/wiki/index.php/Calling_Matlab_from_a_Scipt"
+}

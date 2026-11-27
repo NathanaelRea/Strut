@@ -1,8 +1,10 @@
 from collections import List
 from os import abort
 
-from solver.run_case.input_types import ElementInput, ElementLoadInput
+from solver.run_case.helpers import _collapse_load_keeping_restrained
+from solver.run_case.input_types import ElementInput, ElementLoadInput, UniformExcitationInput
 from solver.run_case.loader import _build_element_load_index
+from solver.time_series import TimeSeriesInput, eval_time_series_input
 
 
 struct ActiveElementLoadState(Movable):
@@ -18,7 +20,7 @@ struct ActiveElementLoadState(Movable):
 
 @always_inline
 fn _scaled_element_load(load: ElementLoadInput, scale: Float64) -> ElementLoadInput:
-    return ElementLoadInput(
+    var scaled = ElementLoadInput(
         load.element,
         load.type,
         load.type_tag,
@@ -30,6 +32,9 @@ fn _scaled_element_load(load: ElementLoadInput, scale: Float64) -> ElementLoadIn
         load.px * scale,
         load.x,
     )
+    scaled.thermal = load.thermal
+    scaled.thermal.scale(scale)
+    return scaled^
 
 
 fn build_active_nodal_load(
@@ -42,6 +47,49 @@ fn build_active_nodal_load(
     for i in range(len(const_load)):
         active_load[i] = const_load[i] + pattern_scale * pattern_load[i]
     return active_load^
+
+
+fn add_uniform_excitation_load(
+    excitations: List[UniformExcitationInput],
+    t: Float64,
+    time_series: List[TimeSeriesInput],
+    time_series_values: List[Float64],
+    time_series_times: List[Float64],
+    mass: List[Float64],
+    ndf: Int,
+    has_transformation_mpc: Bool,
+    mpc_row_offsets: List[Int],
+    mpc_dof_pool: List[Int],
+    mpc_coeff_pool: List[Float64],
+    mut load: List[Float64],
+) raises:
+    var inertia: List[Float64] = []
+    inertia.resize(len(mass), 0.0)
+    for excitation in excitations:
+        var accel = eval_time_series_input(
+            time_series[excitation.accel], t, time_series_values, time_series_times
+        )
+        for idx in range(excitation.direction - 1, len(mass), ndf):
+            inertia[idx] -= mass[idx] * accel
+    if has_transformation_mpc:
+        inertia = _collapse_load_keeping_restrained(
+            inertia, mpc_row_offsets, mpc_dof_pool, mpc_coeff_pool
+        )
+    for i in range(len(mass)):
+        load[i] += inertia[i]
+
+
+fn set_uniform_excitation_initial_velocity(
+    excitations: List[UniformExcitationInput],
+    free: List[Int],
+    ndf: Int,
+    mut velocity: List[Float64],
+):
+    for excitation in excitations:
+        if excitation.initial_velocity != 0.0:
+            for i in range(len(free)):
+                if free[i] % ndf + 1 == excitation.direction:
+                    velocity[i] = excitation.initial_velocity
 
 
 fn append_scaled_element_loads(

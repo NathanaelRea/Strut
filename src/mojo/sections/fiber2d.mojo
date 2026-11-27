@@ -1,6 +1,11 @@
-from sections.patch_cells import quad_cell_centroid
+from sections.patch_cells import (
+    circ_cell_area_and_centroid,
+    circ_layer_effective_angles,
+    quad_cell_centroid,
+)
 from algorithm import vectorize
 from collections import List
+from math import acos, cos, sin
 from os import abort
 from python import PythonObject
 
@@ -9,10 +14,15 @@ from materials import (
     UniMaterialState,
     uni_mat_is_elastic,
     uni_mat_initial_tangent,
+    uniaxial_commit,
+    uniaxial_revert_trial,
+    uniaxial_set_trial_strain,
 )
 from materials.uniaxial.concrete01 import _concrete01_reload
 from materials.uniaxial.concrete02 import _concrete02_compr_envlp, _concrete02_tens_envlp
 from materials.uniaxial.core import _abs, _pow_abs, _sign
+from materials.uniaxial.steel01_thermal import steel01_thermal_set_trial
+from sections.thermal_profile2d import ThermalProfile2d
 from simd_math import pow_nonneg
 from sections.fiber_kernels import (
     _concrete02_eval_simd_step,
@@ -137,6 +147,7 @@ struct FiberSection2dDef(Defaultable, ImplicitlyCopyable, Movable):
     var concrete02_padded_count: Int
     var concrete02_instance_stride: Int
     var other_nonlinear_indices: List[Int]
+    var runtime_other_states: List[UniMaterialState]
     var runtime_state_offset_base: Int
     var runtime_state_count: Int
     var runtime_s2_state_count: Int
@@ -267,6 +278,7 @@ struct FiberSection2dDef(Defaultable, ImplicitlyCopyable, Movable):
         self.concrete02_padded_count = 0
         self.concrete02_instance_stride = 0
         self.other_nonlinear_indices = []
+        self.runtime_other_states = []
         self.runtime_state_offset_base = 0
         self.runtime_state_count = 0
         self.runtime_s2_state_count = 0
@@ -397,6 +409,7 @@ struct FiberSection2dDef(Defaultable, ImplicitlyCopyable, Movable):
         self.concrete02_padded_count = 0
         self.concrete02_instance_stride = 0
         self.other_nonlinear_indices = []
+        self.runtime_other_states = []
         self.runtime_state_offset_base = 0
         self.runtime_state_count = 0
         self.runtime_s2_state_count = 0
@@ -531,6 +544,7 @@ struct FiberSection2dDef(Defaultable, ImplicitlyCopyable, Movable):
         self.concrete02_padded_count = existing.concrete02_padded_count
         self.concrete02_instance_stride = existing.concrete02_instance_stride
         self.other_nonlinear_indices = existing.other_nonlinear_indices.copy()
+        self.runtime_other_states = existing.runtime_other_states.copy()
         self.runtime_state_offset_base = existing.runtime_state_offset_base
         self.runtime_state_count = existing.runtime_state_count
         self.runtime_s2_state_count = existing.runtime_s2_state_count
@@ -976,14 +990,17 @@ fn fiber_section2d_runtime_alloc_instances(
         var instance_offset = old_count + inst * sec_def.fiber_count
         var steel02_instance_offset = old_s2_count + inst * sec_def.steel02_instance_stride
         var concrete02_instance_offset = old_c2_count + inst * sec_def.concrete02_instance_stride
+        for j in range(len(sec_def.other_nonlinear_indices)):
+            var material = sec_def.nonlinear_mat_defs[sec_def.other_nonlinear_indices[j]]
+            sec_def.runtime_other_states.append(UniMaterialState(material))
         for i in range(sec_def.nonlinear_count):
             var mat_def = sec_def.nonlinear_mat_defs[i]
-            if mat_def.mat_type == UniMaterialTypeTag.Steel02:
+            if sec_def.steel02_family_position_by_nonlinear_index[i] >= 0:
                 var steel02_pos = sec_def.steel02_family_position_by_nonlinear_index[i]
                 _fiber_section2d_runtime_init_steel02_slot(
                     sec_def, steel02_instance_offset + steel02_pos, mat_def
                 )
-            elif mat_def.mat_type == UniMaterialTypeTag.Concrete02:
+            elif sec_def.concrete02_family_position_by_nonlinear_index[i] >= 0:
                 var concrete02_pos = sec_def.concrete02_family_position_by_nonlinear_index[i]
                 _fiber_section2d_runtime_init_concrete02_slot(
                     sec_def, concrete02_instance_offset + concrete02_pos, mat_def
@@ -996,17 +1013,6 @@ fn fiber_section2d_runtime_alloc_instances(
     sec_def.runtime_s2_state_count = new_s2_count
     sec_def.runtime_c2_state_count = new_c2_count
     return sec_def.runtime_state_offset_base + old_count
-
-
-@always_inline
-fn _fiber_section2d_runtime_apply_elastic(
-    mat_def: UniMaterialDef, mut sec_def: FiberSection2dDef, slot: Int, eps: Float64
-):
-    sec_def.runtime_eps_t[slot] = eps
-    sec_def.runtime_sig_t[slot] = mat_def.p0 * eps
-    sec_def.runtime_tangent_t[slot] = mat_def.p0
-    sec_def.runtime_eps_p_t[slot] = sec_def.runtime_eps_p_c[slot]
-    sec_def.runtime_alpha_t[slot] = sec_def.runtime_alpha_c[slot]
 
 
 @always_inline
@@ -1275,48 +1281,6 @@ fn _fiber_section2d_runtime_concrete02_slot(
 
 
 @always_inline
-fn _fiber_section2d_runtime_set_trial(
-    mat_def: UniMaterialDef, mut sec_def: FiberSection2dDef, slot: Int, eps: Float64
-):
-    if mat_def.mat_type == UniMaterialTypeTag.Elastic:
-        _fiber_section2d_runtime_apply_elastic(mat_def, sec_def, slot, eps)
-        return
-    if mat_def.mat_type == UniMaterialTypeTag.Steel01:
-        _fiber_section2d_runtime_apply_steel01(mat_def, sec_def, slot, eps)
-        return
-    if mat_def.mat_type == UniMaterialTypeTag.Concrete01:
-        _fiber_section2d_runtime_apply_concrete01(mat_def, sec_def, slot, eps)
-        return
-    if mat_def.mat_type == UniMaterialTypeTag.Steel02:
-        abort("Steel02 requires dedicated family runtime slot")
-    if mat_def.mat_type == UniMaterialTypeTag.Concrete02:
-        abort("Concrete02 requires dedicated family runtime slot")
-    abort("unsupported uniaxial material")
-
-
-fn _fiber_section2d_runtime_commit_slot(mut sec_def: FiberSection2dDef, slot: Int):
-    sec_def.runtime_eps_c[slot] = sec_def.runtime_eps_t[slot]
-    sec_def.runtime_sig_c[slot] = sec_def.runtime_sig_t[slot]
-    sec_def.runtime_tangent_c[slot] = sec_def.runtime_tangent_t[slot]
-    sec_def.runtime_eps_p_c[slot] = sec_def.runtime_eps_p_t[slot]
-    sec_def.runtime_alpha_c[slot] = sec_def.runtime_alpha_t[slot]
-    sec_def.runtime_min_strain_c[slot] = sec_def.runtime_min_strain_t[slot]
-    sec_def.runtime_end_strain_c[slot] = sec_def.runtime_end_strain_t[slot]
-    sec_def.runtime_unload_slope_c[slot] = sec_def.runtime_unload_slope_t[slot]
-
-
-fn _fiber_section2d_runtime_revert_slot(mut sec_def: FiberSection2dDef, slot: Int):
-    sec_def.runtime_eps_t[slot] = sec_def.runtime_eps_c[slot]
-    sec_def.runtime_sig_t[slot] = sec_def.runtime_sig_c[slot]
-    sec_def.runtime_tangent_t[slot] = sec_def.runtime_tangent_c[slot]
-    sec_def.runtime_eps_p_t[slot] = sec_def.runtime_eps_p_c[slot]
-    sec_def.runtime_alpha_t[slot] = sec_def.runtime_alpha_c[slot]
-    sec_def.runtime_min_strain_t[slot] = sec_def.runtime_min_strain_c[slot]
-    sec_def.runtime_end_strain_t[slot] = sec_def.runtime_end_strain_c[slot]
-    sec_def.runtime_unload_slope_t[slot] = sec_def.runtime_unload_slope_c[slot]
-
-
-@always_inline
 fn _fiber_section2d_batch_accumulate_nonlinear_response(
     y_rel: Float64,
     area: Float64,
@@ -1408,19 +1372,25 @@ fn _fiber_section2d_apply_other_nonlinear_fallback_from_offset(
     mut k11: Float64,
     mut k12: Float64,
     mut k22: Float64,
+    thermal: ThermalProfile2d = ThermalProfile2d(),
 ):
-    if len(sec_def.other_nonlinear_indices) <= 0:
-        return
-    var nonlinear_state_offset = local_offset + sec_def.elastic_count
-    for j in range(len(sec_def.other_nonlinear_indices)):
+    var count = len(sec_def.other_nonlinear_indices)
+    var first_state = (local_offset // sec_def.fiber_count) * count
+    for j in range(count):
         var i = sec_def.other_nonlinear_indices[j]
         var y_rel = sec_def.nonlinear_y_rel[i]
         var area = sec_def.nonlinear_area[i]
-        var state_index = nonlinear_state_offset + i
-        var mat_def = sec_def.nonlinear_mat_defs[i]
-        _fiber_section2d_runtime_set_trial(mat_def, sec_def, state_index, eps0 - y_rel * kappa)
-        var fs = sec_def.runtime_sig_t[state_index] * area
-        var ks = sec_def.runtime_tangent_t[state_index] * area
+        ref state = sec_def.runtime_other_states[first_state + j]
+        ref mat = sec_def.nonlinear_mat_defs[i]
+        var strain = eps0 - y_rel * kappa
+        if mat.mat_type == UniMaterialTypeTag.Steel01Thermal:
+            steel01_thermal_set_trial(
+                mat, state, strain, thermal.temperature_at(y_rel + sec_def.y_bar)
+            )
+        else:
+            uniaxial_set_trial_strain(mat, state, strain)
+        var fs = state.sig_t * area
+        var ks = state.tangent_t * area
         axial_force += fs
         moment_z += -fs * y_rel
         k11 += ks
@@ -2199,38 +2169,6 @@ fn _fiber_section2d_batch_apply_concrete02_family(
             )
 
 
-fn _fiber_section2d_batch_apply_other_family(
-    mut sec_def: FiberSection2dDef,
-    subgroup_indices: List[Int],
-    points: List[FiberSection2dBatchPoint],
-    mut uniaxial_states: List[UniMaterialState],
-    mut results: List[FiberSection2dBatchResult],
-):
-    for j in range(len(subgroup_indices)):
-        var nonlinear_index = subgroup_indices[j]
-        var y_rel = sec_def.nonlinear_y_rel[nonlinear_index]
-        var area = sec_def.nonlinear_area[nonlinear_index]
-        var mat_def = sec_def.nonlinear_mat_defs[nonlinear_index]
-        for i in range(len(points)):
-            var point = points[i]
-            var state_index = (
-                _fiber_section2d_runtime_local_offset(
-                    sec_def, point.section_state_offset, point.section_state_count
-                )
-                + sec_def.elastic_count
-                + nonlinear_index
-            )
-            var eps = point.eps0 - y_rel * point.kappa
-            _fiber_section2d_runtime_set_trial(mat_def, sec_def, state_index, eps)
-            _fiber_section2d_batch_accumulate_nonlinear_response(
-                y_rel,
-                area,
-                sec_def.runtime_sig_t[state_index],
-                sec_def.runtime_tangent_t[state_index],
-                results[i].response,
-            )
-
-
 @always_inline
 fn _fiber_section2d_commit_response_slot(mut sec_def: FiberSection2dDef, slot: Int):
     sec_def.runtime_eps_c[slot] = sec_def.runtime_eps_t[slot]
@@ -2789,6 +2727,8 @@ fn _build_fiber_section2d_def(
         if def_index < 0 or def_index >= len(uniaxial_defs):
             abort("FiberSection2d fiber material definition out of range")
         var mat_def = uniaxial_defs[def_index]
+        if mat_def.fatigue.enabled:
+            abort("FiberSection2d does not support Fatigue material state")
         var y_rel = cell.y - y_bar
         var initial_ks = uni_mat_initial_tangent(mat_def) * cell.area
         initial_k11 += initial_ks
@@ -2807,7 +2747,9 @@ fn _build_fiber_section2d_def(
             sec_def.nonlinear_mat_defs.append(mat_def)
             sec_def.steel02_family_position_by_nonlinear_index.append(-1)
             sec_def.concrete02_family_position_by_nonlinear_index.append(-1)
-            if mat_def.mat_type == UniMaterialTypeTag.Steel01:
+            if mat_def.strain_limits:
+                sec_def.other_nonlinear_indices.append(nonlinear_index)
+            elif mat_def.mat_type == UniMaterialTypeTag.Steel01:
                 sec_def.steel01_nonlinear_indices.append(nonlinear_index)
             elif mat_def.mat_type == UniMaterialTypeTag.Concrete01:
                 sec_def.concrete01_nonlinear_indices.append(nonlinear_index)
@@ -3245,6 +3187,85 @@ fn _condense_fiber_cells_by_y(mut fibers: List[FiberCell], fiber_offset: Int):
     fibers.resize(fiber_offset + merged_count, FiberCell())
 
 
+fn _append_circ_patch_cells(
+    patch: PythonObject,
+    uniaxial_def_by_id: List[Int],
+    mut fibers: List[FiberCell],
+    mut area_sum: Float64,
+    mut qz_sum: Float64,
+) raises:
+    var mat_id = Int(py=patch["material"])
+    var n_circ = Int(py=patch["num_subdiv_circ"])
+    var n_rad = Int(py=patch["num_subdiv_rad"])
+    if n_circ <= 0 or n_rad <= 0:
+        abort("FiberSection2d patch circ requires num_subdiv_circ and num_subdiv_rad > 0")
+    var y_center = Float64(py=patch["y_center"])
+    var z_center = Float64(py=patch["z_center"])
+    var int_rad = Float64(py=patch["int_rad"])
+    var ext_rad = Float64(py=patch["ext_rad"])
+    var start_ang = Float64(py=patch.get("start_ang", 0.0))
+    var end_ang = Float64(py=patch.get("end_ang", 360.0))
+    if int_rad < 0.0 or ext_rad <= int_rad:
+        abort("FiberSection2d patch circ requires 0 <= int_rad < ext_rad")
+    var def_index = _resolve_uniaxial_def_index(mat_id, uniaxial_def_by_id)
+    var pi = acos(-1.0)
+    var init_rad = pi * start_ang / 180.0
+    var final_rad = pi * end_ang / 180.0
+    var delta_rad = (ext_rad - int_rad) / Float64(n_rad)
+    var delta_theta = (final_rad - init_rad) / Float64(n_circ)
+    if delta_theta == 0.0:
+        abort("FiberSection2d patch circ requires non-zero angular span")
+    for j in range(n_rad):
+        var rad_j = int_rad + delta_rad * Float64(j)
+        var rad_j1 = rad_j + delta_rad
+        for i in range(n_circ):
+            var theta_mid = init_rad + delta_theta * Float64(i) + delta_theta / 2.0
+            var cell = circ_cell_area_and_centroid(
+                rad_j, rad_j1, delta_theta, theta_mid, y_center, z_center
+            )
+            var cell_area = cell[0]
+            var y = cell[1]
+            var z = cell[2]
+            if cell_area <= 0.0:
+                abort("FiberSection2d patch circ generated non-positive area cell")
+            fibers.append(FiberCell(y, z, cell_area, def_index))
+            area_sum += cell_area
+            qz_sum += cell_area * y
+
+
+fn _append_circ_layer_cells(
+    layer: PythonObject,
+    uniaxial_def_by_id: List[Int],
+    mut fibers: List[FiberCell],
+    mut area_sum: Float64,
+    mut qz_sum: Float64,
+) raises:
+    var mat_id = Int(py=layer["material"])
+    var num_bars = Int(py=layer["num_bars"])
+    if num_bars <= 0:
+        abort("FiberSection2d layer circ requires num_bars > 0")
+    var bar_area = Float64(py=layer["bar_area"])
+    if bar_area <= 0.0:
+        abort("FiberSection2d layer circ requires bar_area > 0")
+    var y_center = Float64(py=layer["y_center"])
+    var z_center = Float64(py=layer["z_center"])
+    var radius = Float64(py=layer["radius"])
+    var has_angles = ("start_ang" in layer) and ("end_ang" in layer)
+    var start_ang = Float64(py=layer.get("start_ang", 0.0))
+    var end_ang = Float64(py=layer.get("end_ang", 360.0))
+    var def_index = _resolve_uniaxial_def_index(mat_id, uniaxial_def_by_id)
+    var ang = circ_layer_effective_angles(num_bars, start_ang, end_ang, has_angles)
+    var init_rad = ang[0]
+    var dtheta = ang[1]
+    for i in range(num_bars):
+        var theta = init_rad + dtheta * Float64(i)
+        var y = y_center + radius * cos(theta)
+        var z = z_center + radius * sin(theta)
+        fibers.append(FiberCell(y, z, bar_area, def_index))
+        area_sum += bar_area
+        qz_sum += bar_area * y
+
+
 fn append_fiber_section2d_from_json(
     sec: PythonObject,
     uniaxial_def_by_id: List[Int],
@@ -3274,6 +3295,8 @@ fn append_fiber_section2d_from_json(
             _append_rect_patch_cells(patch, uniaxial_def_by_id, fibers, area_sum, qz_sum)
         elif patch_type == "quadr":
             _append_quadr_patch_cells(patch, uniaxial_def_by_id, fibers, area_sum, qz_sum)
+        elif patch_type == "circ":
+            _append_circ_patch_cells(patch, uniaxial_def_by_id, fibers, area_sum, qz_sum)
         else:
             abort("unsupported FiberSection2d patch type: " + patch_type)
 
@@ -3282,6 +3305,8 @@ fn append_fiber_section2d_from_json(
         var layer_type = String(layer["type"])
         if layer_type == "straight":
             _append_straight_layer_cells(layer, uniaxial_def_by_id, fibers, area_sum, qz_sum)
+        elif layer_type == "circ":
+            _append_circ_layer_cells(layer, uniaxial_def_by_id, fibers, area_sum, qz_sum)
         else:
             abort("unsupported FiberSection2d layer type: " + layer_type)
 
@@ -3503,6 +3528,71 @@ fn _append_direct_fibers_input(
         qz_sum += fiber.area * fiber.y
 
 
+fn _append_circ_patch_cells_input(
+    patch: FiberPatchInput,
+    uniaxial_def_by_id: List[Int],
+    mut fibers: List[FiberCell],
+    mut area_sum: Float64,
+    mut qz_sum: Float64,
+):
+    var n_circ = patch.num_subdiv_circ
+    var n_rad = patch.num_subdiv_rad
+    if n_circ <= 0 or n_rad <= 0:
+        abort("FiberSection2d patch circ requires num_subdiv_circ and num_subdiv_rad > 0")
+    if patch.int_rad < 0.0 or patch.ext_rad <= patch.int_rad:
+        abort("FiberSection2d patch circ requires 0 <= int_rad < ext_rad")
+    var def_index = _resolve_uniaxial_def_index(patch.material, uniaxial_def_by_id)
+    var pi = acos(-1.0)
+    var init_rad = pi * patch.start_ang / 180.0
+    var final_rad = pi * patch.end_ang / 180.0
+    var delta_rad = (patch.ext_rad - patch.int_rad) / Float64(n_rad)
+    var delta_theta = (final_rad - init_rad) / Float64(n_circ)
+    if delta_theta == 0.0:
+        abort("FiberSection2d patch circ requires non-zero angular span")
+    for j in range(n_rad):
+        var rad_j = patch.int_rad + delta_rad * Float64(j)
+        var rad_j1 = rad_j + delta_rad
+        for i in range(n_circ):
+            var theta_mid = init_rad + delta_theta * Float64(i) + delta_theta / 2.0
+            var cell = circ_cell_area_and_centroid(
+                rad_j, rad_j1, delta_theta, theta_mid, patch.y_center, patch.z_center
+            )
+            var cell_area = cell[0]
+            var y = cell[1]
+            var z = cell[2]
+            if cell_area <= 0.0:
+                abort("FiberSection2d patch circ generated non-positive area cell")
+            fibers.append(FiberCell(y, z, cell_area, def_index))
+            area_sum += cell_area
+            qz_sum += cell_area * y
+
+
+fn _append_circ_layer_cells_input(
+    layer: FiberLayerInput,
+    uniaxial_def_by_id: List[Int],
+    mut fibers: List[FiberCell],
+    mut area_sum: Float64,
+    mut qz_sum: Float64,
+):
+    if layer.num_bars <= 0:
+        abort("FiberSection2d layer circ requires num_bars > 0")
+    if layer.bar_area <= 0.0:
+        abort("FiberSection2d layer circ requires bar_area > 0")
+    var def_index = _resolve_uniaxial_def_index(layer.material, uniaxial_def_by_id)
+    var ang = circ_layer_effective_angles(
+        layer.num_bars, layer.start_ang, layer.end_ang, layer.has_angles
+    )
+    var init_rad = ang[0]
+    var dtheta = ang[1]
+    for i in range(layer.num_bars):
+        var theta = init_rad + dtheta * Float64(i)
+        var y = layer.y_center + layer.radius * cos(theta)
+        var z = layer.z_center + layer.radius * sin(theta)
+        fibers.append(FiberCell(y, z, layer.bar_area, def_index))
+        area_sum += layer.bar_area
+        qz_sum += layer.bar_area * y
+
+
 fn append_fiber_section2d_from_input(
     sec: SectionInput,
     fiber_patches: List[FiberPatchInput],
@@ -3528,6 +3618,8 @@ fn append_fiber_section2d_from_input(
             _append_rect_patch_cells_input(patch, uniaxial_def_by_id, fibers, area_sum, qz_sum)
         elif patch.type == "quadr":
             _append_quadr_patch_cells_input(patch, uniaxial_def_by_id, fibers, area_sum, qz_sum)
+        elif patch.type == "circ":
+            _append_circ_patch_cells_input(patch, uniaxial_def_by_id, fibers, area_sum, qz_sum)
         else:
             abort("unsupported FiberSection2d patch type: " + patch.type)
 
@@ -3535,6 +3627,8 @@ fn append_fiber_section2d_from_input(
         var layer = fiber_layers[sec.fiber_layer_offset + i]
         if layer.type == "straight":
             _append_straight_layer_cells_input(layer, uniaxial_def_by_id, fibers, area_sum, qz_sum)
+        elif layer.type == "circ":
+            _append_circ_layer_cells_input(layer, uniaxial_def_by_id, fibers, area_sum, qz_sum)
         else:
             abort("unsupported FiberSection2d layer type: " + layer.type)
 
@@ -3600,6 +3694,7 @@ fn fiber_section2d_set_trial_from_offset(
     section_state_count: Int,
     eps0: Float64,
     kappa: Float64,
+    thermal: ThermalProfile2d = ThermalProfile2d(),
 ) -> FiberSection2dResponse:
     var local_offset = _fiber_section2d_runtime_local_offset(
         sec_def, section_state_offset, section_state_count
@@ -3632,7 +3727,7 @@ fn fiber_section2d_set_trial_from_offset(
         sec_def, local_offset, eps0, kappa, axial_force, moment_z, k11, k12, k22
     )
     _fiber_section2d_apply_other_nonlinear_fallback_from_offset(
-        sec_def, local_offset, eps0, kappa, axial_force, moment_z, k11, k12, k22
+        sec_def, local_offset, eps0, kappa, axial_force, moment_z, k11, k12, k22, thermal
     )
 
     return FiberSection2dResponse(axial_force, moment_z, k11, k12, k22)
@@ -3700,10 +3795,10 @@ fn fiber_section2d_commit_from_offset(
             (local_offset // sec_def.fiber_count) * sec_def.concrete02_instance_stride,
             sec_def.concrete02_padded_count,
         )
-    for j in range(len(sec_def.other_nonlinear_indices)):
-        _fiber_section2d_runtime_commit_slot(
-            sec_def, nonlinear_state_offset + sec_def.other_nonlinear_indices[j]
-        )
+    var other_count = len(sec_def.other_nonlinear_indices)
+    var other_base = (local_offset // sec_def.fiber_count) * other_count
+    for j in range(other_count):
+        uniaxial_commit(sec_def.runtime_other_states[other_base + j])
 
 
 fn fiber_section2d_revert_trial_from_offset(
@@ -3736,10 +3831,10 @@ fn fiber_section2d_revert_trial_from_offset(
             (local_offset // sec_def.fiber_count) * sec_def.concrete02_instance_stride,
             sec_def.concrete02_padded_count,
         )
-    for j in range(len(sec_def.other_nonlinear_indices)):
-        _fiber_section2d_runtime_revert_slot(
-            sec_def, nonlinear_state_offset + sec_def.other_nonlinear_indices[j]
-        )
+    var other_count = len(sec_def.other_nonlinear_indices)
+    var other_base = (local_offset // sec_def.fiber_count) * other_count
+    for j in range(other_count):
+        uniaxial_revert_trial(sec_def.runtime_other_states[other_base + j])
 
 
 fn fiber_section2d_commit(
@@ -3828,10 +3923,8 @@ fn fiber_section2d_commit_runtime_all(mut defs: List[FiberSection2dDef]):
                 inst * sec_def.concrete02_instance_stride,
                 sec_def.concrete02_padded_count,
             )
-            for j in range(len(sec_def.other_nonlinear_indices)):
-                _fiber_section2d_runtime_commit_slot(
-                    sec_def, base + sec_def.other_nonlinear_indices[j]
-                )
+        for j in range(len(sec_def.runtime_other_states)):
+            uniaxial_commit(sec_def.runtime_other_states[j])
 
 
 fn fiber_section2d_revert_trial_runtime_all(mut defs: List[FiberSection2dDef]):
@@ -3860,7 +3953,5 @@ fn fiber_section2d_revert_trial_runtime_all(mut defs: List[FiberSection2dDef]):
                 inst * sec_def.concrete02_instance_stride,
                 sec_def.concrete02_padded_count,
             )
-            for j in range(len(sec_def.other_nonlinear_indices)):
-                _fiber_section2d_runtime_revert_slot(
-                    sec_def, base + sec_def.other_nonlinear_indices[j]
-                )
+        for j in range(len(sec_def.runtime_other_states)):
+            uniaxial_revert_trial(sec_def.runtime_other_states[j])

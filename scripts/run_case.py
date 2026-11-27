@@ -132,30 +132,76 @@ def _prepare_direct_tcl_entry(
     )
 
 
-def _prepare_opensees_compat_entry(entry_tcl: Path) -> Path:
+def _prepare_opensees_compat_entry(
+    entry_tcl: Path, replay_mode: str | None = None
+) -> Path:
     wrapper_path = entry_tcl.parent / f"__strut_opensees_{entry_tcl.stem}_entry.tcl"
+    replay_setup = []
+    replay_finish = []
+    if replay_mode:
+        from interactive_tcl_runner import QUERY_COMMANDS
+
+        setup = Path(__file__).with_name("direct_tcl_replay.tcl").read_text()
+        replay_setup.append(setup)
+        for name in QUERY_COMMANDS:
+            if name != "analyze" or replay_mode == "live":
+                replay_setup.append(
+                    f"trace add execution {name} leave [list ::strut_replay::query {name}]"
+                )
+        replay_finish = [
+            "remove recorders",
+            "::strut_replay::snapshot",
+            "close [open __strut_replay_complete.out w]",
+        ]
     wrapper_path.write_text(
         "\n".join(
             [
                 "set __strut_ndm 0",
                 "set __strut_ndf 0",
+                "set __strut_has_diaphragm 0",
+                "proc __strut_collect_fiber {command op} {",
+                "    lappend ::__strut_fiber_commands $command",
+                "}",
                 "proc __strut_install_section_compat {} {",
                 "    if {![llength [info commands section]] || [llength [info commands __strut_builtin_section]]} {",
                 "        return",
                 "    }",
                 "    rename section __strut_builtin_section",
                 "    proc section {args} {",
-                "        global __strut_ndm",
-                '        if {$__strut_ndm == 3 && [llength $args] >= 3 && [lindex $args 0] eq "Fiber"} {',
+                "        global __strut_ndm __strut_legacy_fibers __strut_fiber_commands",
+                "        # Recreate historical Fiber + T sections with the supplied",
+                "        # torsion material. Adding a compatibility torsion to",
+                "        # the base and then aggregating T would duplicate torsion.",
+                "        if {$__strut_ndm == 3 && [llength $args] == 6 &&",
+                '            [lindex $args 0] eq "Aggregator" && [lrange $args 3 4] eq {T -section}} {',
+                "            set base [lindex $args 5]",
+                "            if {[info exists __strut_legacy_fibers($base)]} {",
+                "                set args [list Fiber [lindex $args 1] -torsion [lindex $args 2] $__strut_legacy_fibers($base)]",
+                "            }",
+                "        }",
+                "        if {$__strut_ndm == 3 && [llength $args] >= 3 && [lindex $args 0] in {Fiber fiberSec}} {",
                 "            set has_gj 0",
                 "            for {set idx 2} {$idx < [llength $args] - 1} {incr idx} {",
-                '                if {[lindex $args $idx] eq "-GJ"} {',
+                "                if {[lindex $args $idx] in {-GJ -torsion}} {",
                 "                    set has_gj 1",
                 "                    break",
                 "                }",
                 "            }",
                 "            if {!$has_gj} {",
-                "                set args [linsert $args 2 -GJ 1.0e-12]",
+                "                set __strut_fiber_commands {}",
+                "                foreach command {patch layer fiber} {",
+                "                    trace add execution $command enter __strut_collect_fiber",
+                "                }",
+                "                try {",
+                "                    set args [linsert $args 2 -GJ 1.0e-12]",
+                "                    set result [uplevel 1 [linsert $args 0 __strut_builtin_section]]",
+                r'                    set __strut_legacy_fibers([lindex $args 1]) [join $__strut_fiber_commands "\n"]',
+                "                    return $result",
+                "                } finally {",
+                "                    foreach command {patch layer fiber} {",
+                "                        trace remove execution $command enter __strut_collect_fiber",
+                "                    }",
+                "                }",
                 "            }",
                 "        }",
                 "        return [uplevel 1 [linsert $args 0 __strut_builtin_section]]",
@@ -164,7 +210,9 @@ def _prepare_opensees_compat_entry(entry_tcl: Path) -> Path:
                 "if {[llength [info commands model]] > 0 && ![llength [info commands __strut_builtin_model]]} {",
                 "    rename model __strut_builtin_model",
                 "    proc model {args} {",
-                "        global __strut_ndm __strut_ndf",
+                "        global __strut_ndm __strut_ndf __strut_has_diaphragm __strut_legacy_fibers",
+                "        set __strut_has_diaphragm 0",
+                "        array unset __strut_legacy_fibers",
                 "        set idx [lsearch -exact $args -ndm]",
                 "        if {$idx >= 0 && ($idx + 1) < [llength $args]} {",
                 "            set __strut_ndm [lindex $args [expr {$idx + 1}]]",
@@ -175,10 +223,27 @@ def _prepare_opensees_compat_entry(entry_tcl: Path) -> Path:
                 "        }",
                 "        set __strut_model_result [uplevel 1 [linsert $args 0 __strut_builtin_model]]",
                 "        __strut_install_section_compat",
+                "        if {[llength [info commands rigidDiaphragm]] && ![llength [trace info execution rigidDiaphragm]]} {",
+                "            trace add execution rigidDiaphragm leave __strut_note_diaphragm",
+                "        }",
                 "        return $__strut_model_result",
                 "    }",
                 "}",
                 "__strut_install_section_compat",
+                "proc __strut_note_diaphragm {command code result op} {",
+                "    if {$code == 0} {set ::__strut_has_diaphragm 1}",
+                "}",
+                "# OpenSees 3.7.1's Lagrange handler rejects diaphragm constraints",
+                "# because they constrain only three of the node's six DOFs.",
+                "# Penalty preserves the nodal equation IDs used by DisplacementControl.",
+                "rename constraints __strut_builtin_constraints",
+                "proc constraints {args} {",
+                "    global __strut_ndm __strut_has_diaphragm",
+                '    if {$__strut_ndm == 3 && $__strut_has_diaphragm && [lindex $args 0] eq "Lagrange"} {',
+                "        set args {Penalty 1.0e10 1.0e10}",
+                "    }",
+                "    return [uplevel 1 [linsert $args 0 __strut_builtin_constraints]]",
+                "}",
                 "if {[llength [info commands mass]] > 0 && ![llength [info commands __strut_builtin_mass]]} {",
                 "    rename mass __strut_builtin_mass",
                 "    proc mass {args} {",
@@ -210,7 +275,18 @@ def _prepare_opensees_compat_entry(entry_tcl: Path) -> Path:
                 "        return -options $opts $result",
                 "    }",
                 "}",
+                "# Keep GUI recorders out of headless parity runs.",
+                "rename recorder __strut_builtin_recorder",
+                "proc recorder {args} {",
+                "    if {[lindex $args 0] in {display plot plotDifferent}} {return}",
+                "    return [uplevel 1 [linsert $args 0 __strut_builtin_recorder]]",
+                "}",
+                "foreach command {prp vrp vpn vup plane projection fill port display viewWindow} {",
+                "    proc $command {args} {}",
+                "}",
+                *replay_setup,
                 f"source {{{entry_tcl.name}}}",
+                *replay_finish,
                 "",
             ]
         ),
@@ -246,6 +322,8 @@ def _normalized_recorder_outputs(recorder: dict):
     if rec_type in (
         "node_displacement",
         "node_reaction",
+        "node_velocity",
+        "node_acceleration",
         "envelope_node_displacement",
         "envelope_node_acceleration",
     ):
@@ -266,6 +344,13 @@ def _normalized_recorder_outputs(recorder: dict):
         "element_local_force",
         "element_basic_force",
         "element_deformation",
+        "quad_stress",
+        "quad_strain",
+        "quad_state",
+        "contact_secondary_force",
+        "contact_friction_force",
+        "contact_scalar_force",
+        "contact_primary_force",
     ):
         elements = recorder.get("elements", [])
         if len(elements) != 1:
@@ -364,40 +449,32 @@ def _normalize_reference_outputs(case_data: dict | Path, reference_dir: Path):
                 widths.append(int(width_by_item[items[0]]))
             if widths:
                 expected = sum(widths)
-                paired_payloads = [[] for _ in targets]
-                used_paired_layout = False
+                columns_per_value = None
                 for parts in normalized_rows:
                     if len(parts) == expected:
-                        if used_paired_layout:
-                            raise SystemExit(
-                                f"mixed grouped envelope layouts in {raw_path}"
-                            )
-                        offset = 0
-                        for idx, width in enumerate(widths):
-                            payloads[idx].append(
-                                " ".join(parts[offset : offset + width])
-                            )
-                            offset += width
-                        continue
-                    if strip_time and len(parts) == 2 * expected:
-                        used_paired_layout = True
-                        offset = 0
-                        for idx, width in enumerate(widths):
-                            segment = parts[offset : offset + 2 * width]
-                            paired_payloads[idx].extend(segment[1::2])
-                            offset += 2 * width
-                        continue
-                    if expected != len(parts):
-                        if preserve_existing_targets:
-                            payloads = []
-                            break
+                        stride = 1
+                    elif strip_time and len(parts) == 2 * expected:
+                        stride = 2
+                    elif preserve_existing_targets:
+                        payloads = []
+                        break
+                    else:
                         raise SystemExit(
                             "cannot split grouped recorder output "
                             f"{raw_path}: expected {expected} values, got {len(parts)}"
                         )
-                if used_paired_layout and payloads:
-                    for idx in range(len(targets)):
-                        payloads[idx] = [" ".join(paired_payloads[idx])]
+                    if columns_per_value is not None and columns_per_value != stride:
+                        raise SystemExit(
+                            f"mixed grouped envelope layouts in {raw_path}"
+                        )
+                    columns_per_value = stride
+                    offset = 0
+                    for idx, width in enumerate(widths):
+                        end = offset + stride * width
+                        payloads[idx].append(
+                            " ".join(parts[offset + stride - 1 : end : stride])
+                        )
+                        offset = end
             else:
                 group_layout = None
         if not group_layout:
@@ -435,12 +512,16 @@ def _merge_direct_tcl_manifest_metadata(
     merged = dict(case_data)
     for key in (
         "enabled",
+        "source_url",
+        "reference",
         "status",
         "benchmark_size",
         "parity_tolerance",
         "parity_tolerance_by_category",
         "parity_tolerance_by_recorder",
         "parity_mode",
+        "comparison",
+        "parity_history",
     ):
         if key in manifest:
             merged[key] = manifest[key]
@@ -494,6 +575,8 @@ def _canonical_reference_ready(case_data: dict, reference_dir: Path) -> bool:
         if rec_type in {
             "node_displacement",
             "node_reaction",
+            "node_velocity",
+            "node_acceleration",
             "envelope_node_displacement",
             "envelope_node_acceleration",
         }:
@@ -506,6 +589,13 @@ def _canonical_reference_ready(case_data: dict, reference_dir: Path) -> bool:
             "element_local_force",
             "element_basic_force",
             "element_deformation",
+            "quad_stress",
+            "quad_strain",
+            "quad_state",
+            "contact_secondary_force",
+            "contact_friction_force",
+            "contact_scalar_force",
+            "contact_primary_force",
             "envelope_element_force",
             "envelope_element_local_force",
         }:
@@ -664,20 +754,36 @@ def main():
     (case_root / "strut").mkdir(parents=True, exist_ok=True)
     runtime_entry_tcl = entry_tcl
     opensees_entry_tcl = entry_tcl
+    replay_mode = None
     if is_tcl:
         assert entry_tcl is not None
         source_files = _resolve_direct_tcl_source_files(entry_tcl, manifest_path)
         runtime_entry_tcl, runtime_hash_inputs = _prepare_direct_tcl_entry(
             entry_tcl, case_root, source_files, manifest_path=manifest_path
         )
-        hash_inputs.extend(runtime_hash_inputs)
+        if manifest_path is not None:
+            replay_mode = _load_direct_tcl_manifest(manifest_path).get("replay_tcl")
+        if replay_mode not in {None, "domains", "live"}:
+            raise SystemExit("replay_tcl must be domains or live")
+        opensees_entry_tcl = _prepare_opensees_compat_entry(
+            runtime_entry_tcl, replay_mode
+        )
+        hash_inputs.extend([*runtime_hash_inputs, opensees_entry_tcl])
 
     verbose = os.getenv("STRUT_VERBOSE") == "1"
     env = os.environ.copy()
     case_data = None
     use_generated_direct_tcl = False
+    is_interactive_tcl = bool(replay_mode) or bool(
+        is_tcl
+        and manifest_path is not None
+        and _load_direct_tcl_manifest(manifest_path).get("interactive_tcl", False)
+    )
 
-    if is_tcl:
+    if is_interactive_tcl:
+        assert runtime_entry_tcl is not None
+        tcl_out = runtime_entry_tcl
+    elif is_tcl:
         assert runtime_entry_tcl is not None
         import tcl_to_strut
 
@@ -685,7 +791,6 @@ def main():
             tcl_to_strut.convert_tcl_to_solver_input(runtime_entry_tcl, repo_root),
             manifest_path,
         )
-        opensees_entry_tcl = _prepare_opensees_compat_entry(runtime_entry_tcl)
         try:
             case_json = _write_generated_direct_tcl_case(case_data, case_root)
             hash_inputs.append(case_json)
@@ -761,6 +866,12 @@ def main():
 
     if is_tcl and not use_generated_direct_tcl:
         if refresh_reference:
+            if replay_mode:
+                reference_dir = case_root / "reference"
+                shutil.rmtree(reference_dir / "__strut_domains", ignore_errors=True)
+                for path in reference_dir.glob("__strut_query_*.out"):
+                    path.unlink()
+                (reference_dir / "__strut_replay_complete.out").unlink(missing_ok=True)
             run(
                 [
                     str(repo_root / "scripts" / "run_opensees.sh"),
@@ -772,12 +883,13 @@ def main():
                 env=env,
                 verbose=verbose,
             )
-            _normalize_reference_outputs(case_data, case_root / "reference")
+            if not is_interactive_tcl and case_data is not None:
+                _normalize_reference_outputs(case_data, case_root / "reference")
         ref_hash_file.parent.mkdir(parents=True, exist_ok=True)
         ref_hash_file.write_text(
             _compute_combined_hash(hash_inputs) + "\n", encoding="utf-8"
         )
-    elif refresh_reference:
+    elif refresh_reference and not is_tcl:
         run(
             [
                 str(repo_root / "scripts" / "run_opensees.sh"),
@@ -807,7 +919,11 @@ def main():
         "--output",
         str(case_root / "strut"),
     ]
-    if is_tcl and not use_generated_direct_tcl:
+    if is_interactive_tcl:
+        strut_cmd += ["--interactive-tcl", str(runtime_entry_tcl)]
+        if replay_mode:
+            strut_cmd += ["--replay-mode", replay_mode]
+    elif is_tcl and not use_generated_direct_tcl:
         strut_cmd += ["--input-tcl", str(runtime_entry_tcl)]
     else:
         strut_cmd += ["--input", str(case_json)]

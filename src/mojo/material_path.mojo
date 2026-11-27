@@ -9,7 +9,11 @@ from materials import (
     uniaxial_commit,
     uniaxial_set_trial_strain,
 )
-from solver.run_case.input_types import MaterialInput
+from solver.run_case.input_types import (
+    MaterialInput,
+    read_small_material_def,
+    read_wall_material_def,
+)
 from strut_io import load_json_native
 from tag_types import UniMaterialTypeTag
 
@@ -77,6 +81,12 @@ fn _parse_material_input(doc: JsonDocument, material_index: Int) raises -> Mater
     var params_index = _json_key(doc, material_index, "params")
     parsed.id = _json_get_int(doc, material_index, "id", -1)
     parsed.type = _json_get_string(doc, material_index, "type", "")
+    if parsed.type == "ElasticPP" or parsed.type == "ElasticBilin" or parsed.type == "Ratchet":
+        parsed.direct_uniaxial_def = read_small_material_def(doc, params_index, parsed.type)
+        return parsed^
+    if parsed.type == "ConcreteCM" or parsed.type == "SteelMPF":
+        parsed.direct_uniaxial_def = read_wall_material_def(doc, params_index, parsed.type)
+        return parsed^
     parsed.E = _json_get_float(doc, params_index, "E", 0.0)
     parsed.Fy = _json_get_float(doc, params_index, "Fy", 0.0)
     parsed.E0 = _json_get_float(doc, params_index, "E0", 0.0)
@@ -147,6 +157,14 @@ def make_uniaxial_def(material: MaterialInput) -> UniMaterialDef:
         if epscu > 0.0:
             epscu = -epscu
         return UniMaterialDef(UniMaterialTypeTag.Concrete01, fpc, epsc0, fpcu, epscu)
+    if (
+        mat_type == "ConcreteCM"
+        or mat_type == "SteelMPF"
+        or mat_type == "ElasticPP"
+        or mat_type == "ElasticBilin"
+        or mat_type == "Ratchet"
+    ):
+        return material.direct_uniaxial_def
     if mat_type == "Steel02":
         var R0 = 15.0
         var cR1 = 0.925

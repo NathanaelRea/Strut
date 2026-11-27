@@ -1,0 +1,11 @@
+{
+  "name": "opensees_source_rc_frame_5",
+  "entry_tcl": "tests/fixtures/opensees/OpenSeesSource/EXAMPLES/ExampleScripts/RCFrame5.tcl",
+  "tcl_source_version": "3.7.1",
+  "source_url": "https://github.com/OpenSees/OpenSees/blob/v3.7.1/EXAMPLES/ExampleScripts/RCFrame5.tcl",
+  "enabled": true,
+  "parity_tolerance": {},
+  "parity_tolerance_by_category": {},
+  "parity_tolerance_by_recorder": {},
+  "parity_mode": "step"
+}

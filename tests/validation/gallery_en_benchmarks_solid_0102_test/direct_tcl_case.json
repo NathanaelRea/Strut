@@ -1,0 +1,8 @@
+{
+  "enabled": false,
+  "entry_tcl": "tests/fixtures/opensees/STAIRlabGallery/content/en/benchmarks/solid-0102/test.tcl",
+  "tcl_source_version": "openseesrt-fd3958f",
+  "tcl_upgrade_note": "Translates keyword DruckerPrager parameters to the OpenSees 3.7.1 order.",
+  "source_url": "https://github.com/peer-open-source/opensees-gallery/blob/fd3958fde8a3d0a350321b3fbdd3f415ee16e2a2/content/en/benchmarks/solid-0102/test.tcl",
+  "disabled_reason": "Uses the OpenSeesRT verify command to run and check the analysis."
+}

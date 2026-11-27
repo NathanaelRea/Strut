@@ -1,6 +1,7 @@
 {
   "name": "opensees_megatall_building_model1_dynamiccpu",
   "entry_tcl": "tests/fixtures/opensees/OpenSeesExamples/MegaTallBuildingBenchmark/Model1/dynamiccpu.tcl",
+  "tcl_source_version": "3.7.1",
   "enabled": true,
   "status": "benchmark",
   "benchmark_size": "large",
