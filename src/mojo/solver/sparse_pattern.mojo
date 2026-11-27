@@ -246,11 +246,36 @@ struct SparseAssembler(ElementMatrixSink, Movable):
 
     var scatter: ElementScatterMap
     var values: List[Float64]
+    var support_columns: List[Int]
+    var support_values: List[Float64]
+    var support_count: Int
 
     fn __init__(out self, var scatter: ElementScatterMap, nnz: Int):
         self.scatter = scatter^
         self.values = []
         self.values.resize(nnz, 0.0)
+        self.support_columns = []
+        self.support_values = []
+        self.support_count = 0
+
+    fn prepare_support_columns(
+        mut self, elem_dof_pool: List[Int], dofs: List[Int], free_count: Int
+    ):
+        self.support_count = len(dofs)
+        self.support_columns.resize(len(elem_dof_pool), -1)
+        self.support_values.resize(free_count * len(dofs), 0.0)
+        for i in range(len(elem_dof_pool)):
+            for j in range(len(dofs)):
+                if elem_dof_pool[i] == dofs[j]:
+                    self.support_columns[i] = j
+                    break
+
+    fn add_support_entry(mut self, dof: Int, col: Int, value: Float64):
+        for term in range(self.scatter.dof_term_start[dof], self.scatter.dof_term_start[dof + 1]):
+            var row = self.scatter.term_free[term]
+            self.support_values[row * self.support_count + col] += (
+                self.scatter.term_coeff[term] * value
+            )
 
     fn accepts_element_matrices(self) -> Bool:
         return True
@@ -258,6 +283,8 @@ struct SparseAssembler(ElementMatrixSink, Movable):
     fn zero_matrix(mut self):
         for i in range(len(self.values)):
             self.values[i] = 0.0
+        for i in range(len(self.support_values)):
+            self.support_values[i] = 0.0
 
     @always_inline
     fn _check(self, elem_index: Int, dof_count: Int):
@@ -279,6 +306,12 @@ struct SparseAssembler(ElementMatrixSink, Movable):
     ):
         self._check(elem_index, dof_count)
         var dof0 = self.scatter.elem_dof_start[elem_index]
+        if self.support_count > 0:
+            for b in range(dof_count):
+                var col = self.support_columns[dof0 + b]
+                if col >= 0:
+                    for a in range(dof_count):
+                        self.add_support_entry(dof0 + a, col, k_elem[a][b])
         var t_base = self.scatter.dof_term_start[dof0]
         var t_count = self.scatter.dof_term_start[dof0 + dof_count] - t_base
         var slot_base = self.scatter.elem_slot_start[elem_index] - t_base * t_count - t_base
@@ -329,6 +362,12 @@ struct SparseAssembler(ElementMatrixSink, Movable):
         var t_base = self.scatter.dof_term_start[dof0]
         var t_count = self.scatter.dof_term_start[dof0 + dof_count] - t_base
         var matrix = k_flat.unsafe_ptr() + k_offset
+        if self.support_count > 0:
+            for b in range(dof_count):
+                var col = self.support_columns[dof0 + b]
+                if col >= 0:
+                    for a in range(dof_count):
+                        self.add_support_entry(dof0 + a, col, matrix[a * dof_count + b])
         var elem_slot = self.scatter.elem_slot_start[elem_index]
         var slots = self.scatter.slots.unsafe_ptr() + elem_slot
         var values = self.values.unsafe_ptr()

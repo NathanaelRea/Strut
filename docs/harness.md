@@ -151,7 +151,7 @@ Current limitation: `forceBeamColumn3d`/`dispBeamColumn3d` support is currently 
 ## Harness Workflow
 
 1. JSON-authored cases use `scripts/json_to_tcl.py` to convert JSON models to deterministic Tcl when OpenSees reference generation is needed.
-2. Direct-Tcl cases stage the Tcl bundle for OpenSees and parse the same staged Tcl into Strut input. A `direct_tcl_case.json` can set `"tcl_source_version": "3.7.1"` next to `entry_tcl`. For the legacy wiki syntax, staging converts inline `Series` assignments into tagged `timeSeries Path` commands for OpenSees 3.8.0.
+2. Direct-Tcl cases stage the Tcl bundle for OpenSees and parse the same staged Tcl into Strut input. A `direct_tcl_case.json` can set `"tcl_source_version": "3.7.1"` next to `entry_tcl`. Staging converts legacy inline `Series` and `Path` assignments into tagged `timeSeries Path` commands for OpenSees 3.8.0.
 3. `scripts/run_case.py` runs native Linux OpenSees to produce reference outputs, then runs Strut on either JSON input or direct Tcl input.
 4. `scripts/run_strut_case.py` runs the current Strut implementation and writes outputs.
 5. `scripts/compare_case.py` compares recorder outputs with recorder-specific tolerances and can load direct-Tcl parity metadata straight from the Tcl parser.
@@ -230,6 +230,29 @@ upgrade under `3.7.1` so both existing dialects pick it up automatically.
   [3.7.1 SSPquad parser](https://github.com/OpenSees/OpenSees/blob/v3.7.1/SRC/element/UWelements/SSPquad.cpp#L54-L118) ·
   [xara LayeredShell parser](https://github.com/peer-open-source/xara/blob/856acc159ca789d4796cf3234ee499a422781c14/SRC/runtime/commands/modeling/section/shell.cpp#L143-L218) ·
   [3.7.1 LayeredShell parser](https://github.com/OpenSees/OpenSees/blob/v3.7.1/SRC/material/section/LayeredShellFiberSection.cpp#L41-L137)
+
+### OpenSees 3.8.0 behaviour
+
+- Tcl `groundMotion` derives missing velocity and acceleration with the
+  trapezoidal recurrence and integrates missing displacement. Strut samples
+  from the source series' start time and holds the generated Path's last
+  value. Tcl defaults to `-dtInt 0.01`. The separate OPS entry point uses
+  the source series' time increment. [GroundMotion](https://github.com/OpenSees/OpenSees/blob/v3.8.0/SRC/domain/groundMotion/GroundMotion.cpp) · [Tcl parser](https://github.com/OpenSees/OpenSees/blob/v3.8.0/SRC/domain/groundMotion/TclGroundMotionCommand.cpp) · [Trapezoidal integrator](https://github.com/OpenSees/OpenSees/blob/v3.8.0/SRC/domain/pattern/TrapezoidalTimeSeriesIntegrator.cpp)
+- The 3D frame examples retain the existing fixed support displacements and
+  apply the imposed velocities and accelerations during Newmark analysis.
+  For the constant-velocity `quadUP` boundary, Strut applies the generated
+  acceleration through the coupled pressure mass matrix.
+  [ImposedMotionSP](https://github.com/OpenSees/OpenSees/blob/v3.8.0/SRC/domain/constraints/ImposedMotionSP.cpp)
+- The excavation case uses `updateMaterialStage` with
+  `PressureDependMultiYield02`. OpenSees routes a bare `materialState`
+  on `FourNodeQuad` to the material-point handler, which requires a point
+  number and parameter name. The pinned binary uses
+  OpenBLAS `DGELS` for the KrylovNewton least-squares step, and swapping
+  that routine alone reproduces the difference from the 3.7.1 reference
+  build. The case is disabled because late-lift shear stresses exceed the
+  existing parity tolerance. For `PressureIndependMultiYield`, the OPS
+  parser requires friction angle, reference pressure, and pressure exponent.
+  The legacy Tcl parser defaults them to 0, 100, and 0. [Quad parameter routing](https://github.com/OpenSees/OpenSees/blob/v3.8.0/SRC/element/fourNodeQuad/FourNodeQuad.cpp) · [KrylovNewton](https://github.com/OpenSees/OpenSees/blob/v3.8.0/SRC/analysis/algorithm/equiSolnAlgo/KrylovNewton.cpp) · [Tcl material parser](https://github.com/OpenSees/OpenSees/blob/v3.8.0/SRC/material/nD/TclModelBuilderNDMaterialCommand.cpp)
 
 ### Multi-domain and live Tcl
 

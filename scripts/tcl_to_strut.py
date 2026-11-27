@@ -95,6 +95,7 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 from direct_tcl_support import read_tcl_text
+from tcl_ground_motion import trapezoidal_path
 from tcl_case_types import (
     Analysis,
     AnalysisStage,
@@ -488,9 +489,9 @@ class TclStrutBuilder:
         self.uniform_excitation_count_since_analyze = 0
         self.has_complex_transient_excitation = False
         self.transient_eigen_initialized = False
-        self.ground_displacement_series: dict[int, int] | None = None
-        self.imposed_motion_patterns: dict[int, list[dict[str, int]]] = {}
-        self.active_imposed_motions: list[dict[str, int]] | None = None
+        self.ground_motion_series: dict[int, dict[str, int | float]] | None = None
+        self.imposed_motion_patterns: dict[int, list[dict[str, int | float]]] = {}
+        self.active_imposed_motions: list[dict[str, int | float]] | None = None
 
         self.constraints_handler: Optional[str] = None
         self.penalty_coefficients: tuple[float, float] | None = None
@@ -514,8 +515,8 @@ class TclStrutBuilder:
         self.material_stages: dict[int, int] = {}
         self.permeability_parameters: dict[int, tuple[int, str]] = {}
         self.permeability_updates: dict[tuple[int, str], float] = {}
-        self.active_pressure_motions: dict[int, float] | None = None
-        self.prescribed_pressures: dict[tuple[int, int], float] = {}
+        self.active_pressure_motions: dict[int, dict[str, float]] | None = None
+        self.prescribed_pressures: dict[tuple[int, int], dict[str, float]] = {}
         self.pending_recorders: list[int] = []
         self.node_displacements: dict[tuple[int, int], float] = {}
         self.last_eigenvalues: list[float] = []
@@ -1134,20 +1135,34 @@ class TclStrutBuilder:
             self.time_series_by_tag[new_tag] = old_entry
             self.generated_time_series_tags.discard(tag)
             self.generated_time_series_tags.add(new_tag)
+            motion_series_keys = (
+                "time_series",
+                "velocity_series",
+                "acceleration_series",
+            )
+            for motion in (self.ground_motion_series or {}).values():
+                for key in motion_series_keys:
+                    if motion.get(key) == tag:
+                        motion[key] = new_tag
             for stage in self.analysis_stages:
                 for motion in stage["analysis"].get("support_motions", []):
-                    if motion["time_series"] == tag:
-                        motion["time_series"] = new_tag
+                    for key in motion_series_keys:
+                        if motion.get(key) == tag:
+                            motion[key] = new_tag
                 pattern = stage.get("pattern")
                 if isinstance(pattern, dict):
                     if pattern.get("time_series") == tag:
                         pattern["time_series"] = new_tag
                     if pattern.get("accel") == tag:
                         pattern["accel"] = new_tag
-            for motions in self.imposed_motion_patterns.values():
+            patterns = list(self.imposed_motion_patterns.values())
+            if self.active_imposed_motions is not None:
+                patterns.append(self.active_imposed_motions)
+            for motions in patterns:
                 for motion in motions:
-                    if motion["time_series"] == tag:
-                        motion["time_series"] = new_tag
+                    for key in motion_series_keys:
+                        if motion.get(key) == tag:
+                            motion[key] = new_tag
             if isinstance(self.current_pattern, dict):
                 if self.current_pattern.get("time_series") == tag:
                     self.current_pattern["time_series"] = new_tag
@@ -1449,6 +1464,9 @@ class TclStrutBuilder:
                 if token == "-factor" and idx + 1 < len(parts):
                     options["factor"] = float(parts[idx + 1])
                     idx += 2
+                elif token == "-zeroShift" and idx + 1 < len(parts):
+                    options["zero_shift"] = float(parts[idx + 1])
+                    idx += 2
                 elif token in {"-shift", "-phaseShift"} and idx + 1 < len(parts):
                     options["phase_shift"] = float(parts[idx + 1])
                     idx += 2
@@ -1469,9 +1487,18 @@ class TclStrutBuilder:
         idx = 1
         while idx < len(parts):
             token = parts[idx]
-            if token == "-dt":
+            if token in {"-dt", "-dT"}:
                 options["dt"] = float(parts[idx + 1])
                 idx += 2
+            elif token in {"-startTime", "-tStart"}:
+                options["start_time"] = float(parts[idx + 1])
+                idx += 2
+            elif token == "-useLast":
+                options["use_last"] = True
+                idx += 1
+            elif token == "-prependZero":
+                options["_prepend_zero"] = True
+                idx += 1
             elif token == "-filePath":
                 options["values_path"] = self._resolve_values_path(parts[idx + 1])
                 idx += 2
@@ -1502,7 +1529,19 @@ class TclStrutBuilder:
                 "pattern",
                 tuple(parts),
             )
+        self._prepend_path_zero(options)
         return options
+
+    @staticmethod
+    def _prepend_path_zero(options: dict[str, Any]) -> None:
+        if not options.pop("_prepend_zero", False) or "time" in options:
+            return
+        if "values_path" in options:
+            options["values"] = [
+                float(value)
+                for value in Path(options.pop("values_path")).read_text().split()
+            ]
+        options["values"] = [0.0, *options["values"]]
 
     def _cmd_record(self, *args: str) -> str:
         if args:
@@ -5672,9 +5711,18 @@ class TclStrutBuilder:
             idx = 2
             while idx < len(args):
                 token = args[idx]
-                if token == "-dt":
+                if token in {"-dt", "-dT"}:
                     options["dt"] = float(args[idx + 1])
                     idx += 2
+                elif token in {"-startTime", "-tStart"}:
+                    options["start_time"] = float(args[idx + 1])
+                    idx += 2
+                elif token == "-useLast":
+                    options["use_last"] = True
+                    idx += 1
+                elif token == "-prependZero":
+                    options["_prepend_zero"] = True
+                    idx += 1
                 elif token == "-filePath":
                     options["values_path"] = self._resolve_values_path(args[idx + 1])
                     idx += 2
@@ -5722,8 +5770,9 @@ class TclStrutBuilder:
                     "timeSeries",
                     args,
                 )
+            self._prepend_path_zero(options)
             entry = {"type": "Path", "tag": tag, **options}
-        elif ts_type == "Trig":
+        elif ts_type in {"Trig", "Sine"}:
             if len(args) < 5:
                 raise self._error(
                     "Trig timeSeries expects tag tStart tFinish period",
@@ -5744,7 +5793,10 @@ class TclStrutBuilder:
                 if token == "-factor":
                     entry["factor"] = float(args[idx + 1])
                     idx += 2
-                elif token == "-shift":
+                elif token == "-zeroShift":
+                    entry["zero_shift"] = float(args[idx + 1])
+                    idx += 2
+                elif token in {"-shift", "-phaseShift"}:
                     entry["phase_shift"] = float(args[idx + 1])
                     idx += 2
                 else:
@@ -5975,13 +6027,13 @@ class TclStrutBuilder:
                     self.active_pressure_motions = None
                 return ""
             tag = int(args[1])
-            self.ground_displacement_series = {}
+            self.ground_motion_series = {}
             self.active_imposed_motions = []
             try:
                 self._eval_tcl(args[2], "pattern", args)
                 self.imposed_motion_patterns[tag] = self.active_imposed_motions
             finally:
-                self.ground_displacement_series = None
+                self.ground_motion_series = None
                 self.active_imposed_motions = None
             if self.current_pattern is None:
                 self.pattern_removed = True
@@ -5990,46 +6042,101 @@ class TclStrutBuilder:
         raise self._error(f"unsupported pattern type `{pattern_type}`", "pattern", args)
 
     def _cmd_ground_motion(self, *args: str) -> str:
-        if self.active_pressure_motions is not None:
-            if len(args) != 4 or args[1:3] != ("Plain", "-vel"):
+        if (
+            (self.ground_motion_series is None and self.active_pressure_motions is None)
+            or len(args) < 4
+            or len(args) % 2
+            or args[1] not in {"Series", "Plain"}
+        ):
+            raise self._error(
+                "groundMotion requires a Series or Plain motion",
+                "groundMotion",
+                args,
+            )
+        series_flags = {
+            "-disp": "time_series",
+            "-displacement": "time_series",
+            "-vel": "velocity_series",
+            "-velocity": "velocity_series",
+            "-accel": "acceleration_series",
+            "-acceleration": "acceleration_series",
+        }
+        series_tags = {}
+        dt = 0.01
+        factor = 1.0
+        for flag, value in zip(args[2::2], args[3::2]):
+            if flag in series_flags:
+                try:
+                    series = int(value)
+                except ValueError:
+                    series = self._register_time_series_entry(
+                        self._parse_inline_series_spec(value), generated=True
+                    )
+                if series not in self.time_series_by_tag:
+                    raise self._error(
+                        f"timeSeries tag {series} not found", "groundMotion", args
+                    )
+                series_tags[series_flags[flag]] = series
+            elif flag in {"-dtInt", "-dtIntegrator", "-deltaT"}:
+                dt = float(value)
+                if not math.isfinite(dt):
+                    raise self._error(
+                        "invalid groundMotion time step", "groundMotion", args
+                    )
+            elif flag in {"-fact", "-factor", "-scale"}:
+                factor = float(value)
+            elif flag not in {"-int", "-integrator"} or value != "Trapezoidal":
                 raise self._error(
-                    "a pore-pressure motion requires Plain -vel", "groundMotion", args
+                    f"unsupported groundMotion option {flag} {value}",
+                    "groundMotion",
+                    args,
                 )
-            parts = tuple(self.interp.tk.splitlist(args[3]))
-            if parts == ("Constant",):
-                factor = 1.0
-            elif len(parts) == 3 and parts[:2] == ("Constant", "-factor"):
-                factor = float(parts[2])
-            else:
+        if not series_tags:
+            raise self._error(
+                "groundMotion requires a time series", "groundMotion", args
+            )
+        if self.active_pressure_motions is not None:
+            if set(series_tags) != {"velocity_series"}:
                 raise self._error(
                     "a pore-pressure motion requires a Constant velocity series",
                     "groundMotion",
                     args,
                 )
-            self.active_pressure_motions[int(args[0])] = factor
+            entry = self.time_series_by_tag[series_tags["velocity_series"]]
+            if entry["type"] != "Constant":
+                raise self._error(
+                    "a pore-pressure motion requires a Constant velocity series",
+                    "groundMotion",
+                    args,
+                )
+            # A Constant series has zero duration, so each generated Path
+            # holds its single trapezoidal sample for the duration of motion.
+            value = entry.get("factor", 1.0)
+            self.active_pressure_motions[int(args[0])] = {
+                "value": factor * value,
+                "displacement": factor * (0.5 * dt * value) if dt > 0.0 else 0.0,
+                "acceleration": factor * (2.0 * value / dt) if dt > 0.0 else 0.0,
+            }
             return ""
-        if (
-            self.ground_displacement_series is None
-            or len(args) != 4
-            or args[1] not in {"Series", "Plain"}
-            or args[2] not in {"-disp", "-displacement"}
+        assert self.ground_motion_series is not None
+        for target, source, differentiate in (
+            ("velocity_series", "acceleration_series", False),
+            ("time_series", "velocity_series", False),
+            ("velocity_series", "time_series", True),
+            ("acceleration_series", "velocity_series", True),
         ):
-            raise self._error(
-                "groundMotion requires Series or Plain with a displacement series",
-                "groundMotion",
-                args,
-            )
-        try:
-            series = int(args[3])
-        except ValueError:
-            series = self._register_time_series_entry(
-                self._parse_inline_series_spec(args[3]), generated=True
-            )
-        if series not in self.time_series_by_tag:
-            raise self._error(
-                f"timeSeries tag {series} not found", "groundMotion", args
-            )
-        self.ground_displacement_series[int(args[0])] = series
+            if target not in series_tags and source in series_tags:
+                entry = trapezoidal_path(
+                    self.time_series_by_tag[series_tags[source]],
+                    dt,
+                    differentiate=differentiate,
+                )
+                if entry is not None:
+                    entry["tag"] = self._next_time_series_tag()
+                    series_tags[target] = self._register_time_series_entry(
+                        entry, generated=True
+                    )
+        self.ground_motion_series[int(args[0])] = {**series_tags, "factor": factor}
         return ""
 
     def _cmd_imposed_motion(self, *args: str) -> str:
@@ -6058,11 +6165,11 @@ class TclStrutBuilder:
                 "imposedMotion",
                 args,
             )
-        assert self.ground_displacement_series is not None
+        assert self.ground_motion_series is not None
         node, dof, motion = map(int, args)
         if (
             not 1 <= dof <= self.node_ndfs.get(node, 0)
-            or motion not in self.ground_displacement_series
+            or motion not in self.ground_motion_series
         ):
             raise self._error(
                 "imposed motion requires an existing DOF and ground motion",
@@ -6073,7 +6180,7 @@ class TclStrutBuilder:
             {
                 "node": node,
                 "dof": dof,
-                "time_series": self.ground_displacement_series[motion],
+                **self.ground_motion_series[motion],
             }
         )
         return ""
@@ -6732,8 +6839,11 @@ class TclStrutBuilder:
                     "analyze",
                     args,
                 )
-            # Plain treats nonhomogeneous SPs as homogeneous. A previously
-            # initialized Transformation handler keeps the existing fixed SPs.
+            elif self.analysis_type == "Transient":
+                # The existing fixed SPs own displacement. ImposedMotionSP
+                # still sets the nodal velocity and acceleration at each step.
+                stage["analysis"]["support_motions"] = motions
+                stage["analysis"]["type"] = "transient_nonlinear"
         if self.constant_patterns:
             constant_loads, constant_element_loads = self._constant_pattern_loads()
             stage["constant_loads"] = constant_loads
@@ -6755,8 +6865,8 @@ class TclStrutBuilder:
                 )
             stage["analysis"]["type"] = "transient_nonlinear"
             stage["prescribed_pressures"] = [
-                {"node": node, "dof": dof, "value": value}
-                for (node, dof), value in self.prescribed_pressures.items()
+                {"node": node, "dof": dof, **response}
+                for (node, dof), response in self.prescribed_pressures.items()
             ]
         if self.permeability_updates:
             stage["permeability_updates"] = [

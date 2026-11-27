@@ -443,23 +443,32 @@ struct SurfaceAssemblyCache(Movable):
         self,
         dof_offsets: List[Int],
         dof_pool: List[Int],
-        pressure: List[Float64],
+        velocity: List[Float64],
+        acceleration: List[Float64],
         mut force: List[Float64],
     ):
         for entry in self.up_quads:
-            var offset = dof_offsets[entry.element]
-            for j in range(entry.dofs):
-                var value = pressure[dof_pool[offset + j]]
-                if value != 0.0:
-                    for i in range(entry.dofs):
-                        force[dof_pool[offset + i]] -= entry.damping[entry.dofs * i + j] * value
+            _subtract_prescribed_pressure_force(
+                dof_offsets[entry.element],
+                dof_pool,
+                entry.dofs,
+                entry.damping,
+                entry.mass,
+                velocity,
+                acceleration,
+                force,
+            )
         for brick in self.up_bricks:
-            var offset = dof_offsets[brick.element]
-            for j in range(32):
-                var value = pressure[dof_pool[offset + j]]
-                if value != 0.0:
-                    for i in range(32):
-                        force[dof_pool[offset + i]] -= brick.damping[32 * i + j] * value
+            _subtract_prescribed_pressure_force(
+                dof_offsets[brick.element],
+                dof_pool,
+                32,
+                brick.damping,
+                brick.mass,
+                velocity,
+                acceleration,
+                force,
+            )
 
     fn has_coupled_elements(self) -> Bool:
         return len(self.up_quads) > 0 or len(self.up_bricks) > 0
@@ -546,3 +555,23 @@ struct SurfaceAssemblyCache(Movable):
         for i in range(len(self.up_bricks)):
             if self.up_bricks[i].material == material:
                 self.up_bricks[i].stage = stage
+
+
+fn _subtract_prescribed_pressure_force(
+    offset: Int,
+    dof_pool: List[Int],
+    dof_count: Int,
+    damping: List[Float64],
+    mass: List[Float64],
+    velocity: List[Float64],
+    acceleration: List[Float64],
+    mut force: List[Float64],
+):
+    for j in range(dof_count):
+        var dof = dof_pool[offset + j]
+        var v = velocity[dof]
+        var a = acceleration[dof]
+        if v != 0.0 or a != 0.0:
+            for i in range(dof_count):
+                var slot = dof_count * i + j
+                force[dof_pool[offset + i]] -= damping[slot] * v + mass[slot] * a

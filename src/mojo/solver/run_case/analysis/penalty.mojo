@@ -22,6 +22,7 @@ struct PenaltyConstraints(Movable):
     var sp_target: List[Float64]
     var motion_equations: List[Int]
     var motion_series: List[Int]
+    var motion_factors: List[Float64]
     var alpha_sp: Float64
     var alpha_mp: Float64
 
@@ -33,6 +34,7 @@ struct PenaltyConstraints(Movable):
         self.sp_target = []
         self.motion_equations = []
         self.motion_series = []
+        self.motion_factors = []
         self.alpha_sp = 0.0
         self.alpha_mp = 0.0
 
@@ -84,10 +86,11 @@ struct PenaltyConstraints(Movable):
             require_dof_in_range(motion.dof, nodes[node].ndf, "imposed motion")
             var eq = free_index[node_dof_index(node, motion.dof, ndf)]
             var series = find_time_series_input(time_series, motion.time_series)
-            if series < 0:
+            if motion.time_series >= 0 and series < 0:
                 abort("imposed-motion time series not found")
             self.motion_equations.append(eq)
             self.motion_series.append(series)
+            self.motion_factors.append(motion.factor)
             self.stiffness[pattern.diag_slot[eq]] += self.alpha_sp
         self.sp_target.resize(len(self.sp_equations) + len(self.motion_equations), 0.0)
 
@@ -102,9 +105,12 @@ struct PenaltyConstraints(Movable):
         for i in range(len(self.sp_values)):
             self.sp_target[i] = scale * self.sp_values[i]
         for i in range(len(self.motion_equations)):
-            self.sp_target[len(self.sp_values) + i] = eval_time_series_input(
-                series[self.motion_series[i]], time, values, times
-            )
+            var index = self.motion_series[i]
+            self.sp_target[len(self.sp_values) + i] = 0.0
+            if time >= 0.0 and index >= 0:
+                self.sp_target[len(self.sp_values) + i] = self.motion_factors[i] * (
+                    eval_time_series_input(series[index], time, values, times)
+                )
 
     fn subtract_force(
         self,

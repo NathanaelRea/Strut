@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -102,6 +103,7 @@ def test_prepare_direct_tcl_entry_upgrades_versioned_sourced_series(tmp_path: Pa
     original = (
         'set accel "Series -dt $dt -filePath $record -factor $scale"; # acceleration\n'
         'set disp "Series -dT $dt -filePath $record"\n'
+        'set pathFirst "Path -filePath $record -dt $dt -factor $scale"\n'
         'set tagged "Series 7 -dt $dt -filePath $record"\n'
         "pattern UniformExcitation 2 1 -accel $accel\n"
     )
@@ -115,6 +117,9 @@ def test_prepare_direct_tcl_entry_upgrades_versioned_sourced_series(tmp_path: Pa
     staged = runtime_entry.with_name(motion.name).read_text(encoding="utf-8")
     assert "timeSeries Path $accel -dt $dt -filePath $record -factor $scale" in staged
     assert "timeSeries Path $disp -dt $dt -filePath $record" in staged
+    assert (
+        "timeSeries Path $pathFirst -filePath $record -dt $dt -factor $scale" in staged
+    )
     assert 'set tagged "Series 7 -dt $dt -filePath $record"' in staged
     assert "pattern UniformExcitation 2 1 -accel $accel" in staged
     assert motion in inputs
@@ -3286,3 +3291,90 @@ def test_inline_series_arguments_get_tagged_paths_for_3_8():
     )
     assert tcl.eval("lrange [lindex $patterns 0] 0 2") == "Plain 10 1000000001"
     assert tcl.eval("lrange [lindex $patterns 1] 0 3") == "UniformExcitation 2 1 -accel"
+
+
+def test_convert_ground_motion_completes_missing_series(tmp_path: Path):
+    entry = tmp_path / "motions.tcl"
+    entry.write_text(
+        """model BasicBuilder -ndm 3 -ndf 6
+node 1 0 0 0
+node 2 0 0 1
+fix 1 1 1 1 1 1 1
+mass 2 1 1 1 0 0 0
+geomTransf Linear 1 1 0 0
+element elasticBeamColumn 1 1 2 1 1000 400 1 1 1 1
+timeSeries Path 1 -dt 0.5 -startTime 2 -useLast -values {0 1 2}
+timeSeries Constant 2 -factor 3
+timeSeries Constant 3 -factor 7
+pattern MultipleSupport 1 {
+    groundMotion 1 Plain -disp 1 -dtInt 0.25
+    imposedMotion 1 1 1
+    groundMotion 2 Series -velocity 2
+    imposedMotion 1 2 2
+    groundMotion 3 Plain -displacement 1 -vel 2 -accel 3 -factor 2
+    imposedMotion 1 3 3
+}
+recorder Node -file vel.out -node 1 -dof 1 2 3 vel
+recorder Node -file accel.out -node 1 -dof 1 2 3 accel
+constraints Plain
+integrator Newmark 0.5 0.25
+analysis Transient
+setTime 2.0
+analyze 1 0.25
+""",
+        encoding="utf-8",
+    )
+
+    case = tcl_to_strut.convert_tcl_to_case(entry, REPO_ROOT)
+    series = {item["tag"]: item for item in case["time_series"]}
+    disp_only, vel_only, complete = case["analysis"]["stages"][0]["analysis"][
+        "support_motions"
+    ]
+
+    velocity = series[disp_only["velocity_series"]]
+    assert velocity["start_time"] == 2.0
+    assert velocity["dt"] == 0.25
+    assert velocity["use_last"]
+    assert velocity["values"] == [0, 4, 0, 4, 0, 0, 0]
+    assert series[disp_only["acceleration_series"]]["values"] == [
+        0,
+        32,
+        -64,
+        96,
+        -128,
+        128,
+        -128,
+        128,
+    ]
+
+    assert vel_only["velocity_series"] == 2
+    assert series[vel_only["time_series"]]["values"] == [0.015]
+    assert series[vel_only["acceleration_series"]]["values"] == [600.0]
+
+    assert complete == {
+        "node": 1,
+        "dof": 3,
+        "time_series": 1,
+        "velocity_series": 2,
+        "acceleration_series": 3,
+        "factor": 2.0,
+    }
+
+    output = tmp_path / "output"
+    subprocess.run(
+        [
+            sys.executable,
+            str(REPO_ROOT / "scripts" / "run_strut_case.py"),
+            "--input-tcl",
+            str(entry),
+            "--output",
+            str(output),
+        ],
+        check=True,
+    )
+    assert [
+        float(value) for value in (output / "vel_node1.out").read_text().split()
+    ] == [4.0, 3.0, 6.0]
+    assert [
+        float(value) for value in (output / "accel_node1.out").read_text().split()
+    ] == [32.0, 600.0, 14.0]

@@ -55,6 +55,7 @@ from solver.run_case.input_types import (
     ElementLoadInput,
     ElementInput,
     NodalLoadInput,
+    PrescribedPressureInput,
     NodeInput,
     RecorderInput,
     StageInput,
@@ -695,6 +696,7 @@ def run_case_input(
         or (
             analysis_type_tag == AnalysisTypeTag.TransientNonlinear
             and supports_linear_transient_fast_path
+            and len(analysis.supplemental.support_motions) == 0
             and analysis.constraints_tag != ConstraintHandlerTag.Penalty
             and len(analysis.supplemental.modal_damping) == 0
         )
@@ -809,7 +811,7 @@ def run_case_input(
         run_transient_nonlinear(
             analysis,
             transient_state,
-            List[NodalLoadInput](),
+            List[PrescribedPressureInput](),
             penalty_sp[0],
             state.penalty_mp_dofs,
             penalty_sp[1],
@@ -1550,6 +1552,7 @@ def run_case_input(
                 or (
                     stage_type_tag == AnalysisTypeTag.TransientNonlinear
                     and supports_linear_transient_fast_path
+                    and len(stage_analysis.supplemental.support_motions) == 0
                     and not stage_is_penalty
                     and len(stage_analysis.supplemental.modal_damping) == 0
                 )

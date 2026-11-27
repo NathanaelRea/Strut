@@ -3029,9 +3029,12 @@ fn load_case_state_from_input(var input: CaseInput, progress_path: String) raise
 
     var root_uses_penalty = analysis_input.constraints_tag == ConstraintHandlerTag.Penalty
     var uses_penalty = root_uses_penalty
+    var has_stage_support_motions = False
     for stage in input.stages:
         if stage.analysis.constraints_tag == ConstraintHandlerTag.Penalty:
             uses_penalty = True
+        if len(stage.analysis.supplemental.support_motions) > 0:
+            has_stage_support_motions = True
     if root_uses_penalty and (
         analysis_input.type_tag != AnalysisTypeTag.Staged
         and analysis_input.type_tag != AnalysisTypeTag.TransientNonlinear
@@ -3519,8 +3522,10 @@ fn load_case_state_from_input(var input: CaseInput, progress_path: String) raise
             abort("unsupported pattern type: " + pattern_type)
     if len(time_series) > 0 or pattern_input.has_pattern:
         if not pattern_input.has_pattern:
-            if analysis_type_tag == AnalysisTypeTag.Staged and shell_cache.has_coupled_elements():
-                # The staged solver resolves these series when their pattern starts.
+            if analysis_type_tag == AnalysisTypeTag.Staged and (
+                shell_cache.has_coupled_elements() or has_stage_support_motions
+            ):
+                # Stage patterns and support motions resolve their own series.
                 pass
             elif len(time_series) == 1:
                 var ts_tag = time_series[0].tag

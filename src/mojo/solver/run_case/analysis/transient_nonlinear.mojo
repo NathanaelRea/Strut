@@ -61,6 +61,7 @@ from solver.sparse_pattern import (
 )
 from solver.run_case.analysis.modal_damping import build_modal_damping
 from solver.run_case.analysis.penalty import append_penalty_pairs
+from solver.run_case.analysis.support_motion import SupportKinematics
 from solver.run_case.analysis.transient_sparse import TransientSparseMatrices
 from solver.run_case.analysis.regional_rayleigh import assemble_regional_rayleigh
 from solver.dof import node_dof_index, require_dof_in_range
@@ -95,6 +96,7 @@ from solver.run_case.input_types import (
     SectionInput,
     UniformExcitationInput,
     SolverAttemptInput,
+    PrescribedPressureInput,
 )
 from solver.run_case.load_state import (
     add_uniform_excitation_load,
@@ -344,6 +346,7 @@ fn _transient_residual(
             mpc_row_offsets,
             mpc_dof_pool,
             mpc_coeff_pool,
+            len(mats.supports.dofs) > 0,
         )
     var F_int = assemble_internal_forces_typed_soa(
         typed_nodes,
@@ -470,6 +473,20 @@ fn _assemble_transient_residual(
             - mats.inertia_force[i]
         )
     mats.penalty.subtract_force(u_f, R_f)
+    if len(mats.supports.dofs) > 0:
+        mats.supports.subtract_force(
+            mats.support_k_current, mats.supports.velocity, mats.beta_k, R_f
+        )
+        mats.supports.subtract_force(
+            mats.support_k_init, mats.supports.velocity, mats.beta_k_init, R_f
+        )
+        mats.supports.subtract_force(
+            mats.support_k_comm, mats.supports.velocity, mats.beta_k_comm, R_f
+        )
+        mats.supports.subtract_force(
+            mats.support_mass_rayleigh, mats.supports.velocity, mats.alpha_m, R_f
+        )
+        mats.supports.subtract_force(mats.support_mass, mats.supports.acceleration, 1.0, R_f)
 
 
 fn _uniaxial_revert_trial_active_states(
@@ -849,6 +866,7 @@ fn _assemble_link_filter_pair(
 ):
     """Assemble all-link and Rayleigh-participating-link tangents into
     `mats.k_link_all` / `mats.k_link_rayleigh` (assembler target restored)."""
+    var support_tangent = mats.assembler.support_values.copy()
     swap(mats.assembler.values, mats.k_link_all)
     assemble_link_stiffness_native(
         typed_nodes,
@@ -871,6 +889,7 @@ fn _assemble_link_filter_pair(
         F_link_scratch,
     )
     swap(mats.assembler.values, mats.k_link_all)
+    var support_link_all = mats.assembler.support_values.copy()
     swap(mats.assembler.values, mats.k_link_rayleigh)
     assemble_link_stiffness_native(
         typed_nodes,
@@ -893,12 +912,15 @@ fn _assemble_link_filter_pair(
         F_link_scratch,
     )
     swap(mats.assembler.values, mats.k_link_rayleigh)
+    for i in range(len(support_tangent)):
+        support_tangent[i] += mats.assembler.support_values[i] - support_link_all[i]
+    mats.assembler.support_values = support_tangent^
 
 
 fn run_transient_nonlinear(
     analysis: AnalysisInput,
     mut transient_state: TransientState,
-    prescribed_pressures: List[NodalLoadInput],
+    prescribed_pressures: List[PrescribedPressureInput],
     penalty_sp_dofs: List[Int],
     penalty_mp_dofs: List[Int],
     penalty_sp_values: List[Float64],
@@ -1092,6 +1114,7 @@ fn run_transient_nonlinear(
     var pressure_dofs: List[Int] = []
     var pressure_load: List[Float64] = []
     var prescribed_velocity: List[Float64] = []
+    var prescribed_acceleration: List[Float64] = []
     if has_prescribed_pressures:
         if (
             not has_coupled_elements
@@ -1099,6 +1122,7 @@ fn run_transient_nonlinear(
         ):
             abort("prescribed pore pressure requires coupled elements and Transformation")
         prescribed_velocity.resize(total_dofs, 0.0)
+        prescribed_acceleration.resize(total_dofs, 0.0)
         pressure_load.resize(total_dofs, 0.0)
         for pressure in prescribed_pressures:
             if (
@@ -1114,17 +1138,20 @@ fn run_transient_nonlinear(
             if constrained[index] or mpc_slave_dof[index]:
                 abort("prescribed pore pressure overlaps an existing constraint")
             pressure_dofs.append(index)
-            prescribed_velocity[index] = pressure.value
-            # OpenSees integrates the zero-duration Constant series to a
-            # one-point Path without useLast. Its displacement is zero.
-            u[index] = 0.0
+            prescribed_velocity[index] = pressure.velocity
+            prescribed_acceleration[index] = pressure.acceleration
+            u[index] = pressure.displacement
         for i in range(total_dofs):
             if mpc_slave_dof[i]:
                 for term in range(mpc_row_offsets[i], mpc_row_offsets[i + 1]):
                     if mpc_dof_pool[term] in pressure_dofs:
                         abort("prescribed pore pressure cannot retain an MPC")
         shell_cache.add_up_prescribed_pressure_load(
-            elem_dof_offsets, elem_dof_pool, prescribed_velocity, pressure_load
+            elem_dof_offsets,
+            elem_dof_pool,
+            prescribed_velocity,
+            prescribed_acceleration,
+            pressure_load,
         )
         if has_transformation_mpc:
             pressure_load = _collapse_vector_by_mpc(
@@ -1262,6 +1289,27 @@ fn run_transient_nonlinear(
     add_shell_mass_sparse(shell_cache.shell.masses, mats.assembler, mats.mass)
     if rayleigh_alpha_m != 0.0:
         add_shell_mass_sparse(shell_cache.shell.masses, mats.assembler, mats.mass_rayleigh)
+    if len(analysis.supplemental.support_motions) > 0:
+        mats.supports = SupportKinematics(
+            analysis.supplemental.support_motions, typed_nodes, id_to_index, ndf, time_series
+        )
+    if not use_penalty and len(mats.supports.dofs) > 0:
+        for dof in mats.supports.dofs:
+            if free_index[dof] >= 0:
+                abort("imposed motion requires an existing fixed DOF with this constraint handler")
+        mats.assembler.prepare_support_columns(elem_dof_pool, mats.supports.dofs, free_count)
+
+        # The diagonal masses of independent fixed DOFs have no free row.
+        # Retain the columns of consistent element masses when present.
+        var support_mass_scratch: List[Float64] = []
+        support_mass_scratch.resize(mats.nnz(), 0.0)
+        shell_cache.continuum.add_consistent_mass(
+            mats.assembler, support_mass_scratch, elem_dof_offsets, elem_free_pool
+        )
+        add_shell_mass_sparse(shell_cache.shell.masses, mats.assembler, support_mass_scratch)
+        mats.support_mass = mats.assembler.support_values.copy()
+        if rayleigh_alpha_m != 0.0:
+            mats.support_mass_rayleigh = mats.support_mass.copy()
     if len(uniform_excitations) > 0 and len(shell_cache.shell.masses) > 0:
         if has_coupled_elements:
             excitation_mass = shell_excitation_mass(shell_cache.shell.masses, excitation_mass)
@@ -1555,6 +1603,10 @@ fn run_transient_nonlinear(
             copy_values(mats.k_init_damp, mats.k_init)
         if need_comm_damp_tangent:
             copy_values(mats.k_comm_damp, mats.assembler.values)
+    if need_comm_tangent:
+        mats.support_k_comm = mats.assembler.support_values.copy()
+    if rayleigh_beta_k_init != 0.0:
+        mats.support_k_init = mats.assembler.support_values.copy()
     if do_profile:
         var t_revert_start = Int(time.perf_counter_ns())
         var revert_start_us = (t_revert_start - t0) // 1000
@@ -1583,7 +1635,7 @@ fn run_transient_nonlinear(
     ref a = transient_state.acceleration
     for index in pressure_dofs:
         v[index] = prescribed_velocity[index]
-        a[index] = 0.0
+        a[index] = prescribed_acceleration[index]
     var u_f: List[Float64] = []
     u_f.resize(free_count, 0.0)
     var v_f: List[Float64] = []
@@ -1853,6 +1905,7 @@ fn run_transient_nonlinear(
                 mpc_row_offsets,
                 mpc_dof_pool,
                 mpc_coeff_pool,
+                len(mats.supports.dofs) > 0,
             )
             _enforce_mpc_values(
                 a,
@@ -1861,6 +1914,7 @@ fn run_transient_nonlinear(
                 mpc_row_offsets,
                 mpc_dof_pool,
                 mpc_coeff_pool,
+                len(mats.supports.dofs) > 0,
             )
             if do_profile:
                 var t_constraints_end = Int(time.perf_counter_ns())
@@ -1917,6 +1971,10 @@ fn run_transient_nonlinear(
             t += dt
         else:
             t = analysis.start_time + Float64(step + 1) * dt
+        if len(mats.supports.dofs) > 0:
+            mats.supports.update(t, time_series, time_series_values, time_series_times)
+            if not use_penalty:
+                mats.supports.apply(v, a)
         if use_penalty:
             var factor = 1.0
             if ts_index >= 0:
@@ -2102,8 +2160,13 @@ fn run_transient_nonlinear(
                     v_trial[i] = (1.0 - gamma / beta) * v_n[i] + dt * (
                         1.0 - 0.5 * gamma / beta
                     ) * a_n[i]
-            for _ in range(attempt_max_iters):
+            for iteration in range(attempt_max_iters):
                 var iter_closed = False
+                var use_imposed_predictor = (
+                    iteration == 0 and use_penalty and len(mats.supports.dofs) > 0
+                )
+                var predictor_v: List[Float64] = []
+                var predictor_a: List[Float64] = []
                 if runtime_metrics.enabled:
                     runtime_metrics.global_nonlinear_iterations += 1
                 if do_profile:
@@ -2120,6 +2183,17 @@ fn run_transient_nonlinear(
                     _build_trial_state_newmark_simd(
                         u_f, u_n, v_n, a_n, a0, a2, a3, gamma, dt, a_trial, v_trial
                     )
+                if use_imposed_predictor:
+                    # Newmark applies the domain load after setting its predictor.
+                    # The first correction restores Newmark kinematics at penalty DOFs.
+                    predictor_v = v_trial.copy()
+                    predictor_a = a_trial.copy()
+                    for i in range(len(mats.supports.dofs)):
+                        var eq = free_index[mats.supports.dofs[i]]
+                        if mats.supports.velocities[i] >= 0:
+                            v_trial[eq] = mats.supports.velocity[i]
+                        if mats.supports.accelerations[i] >= 0:
+                            a_trial[eq] = mats.supports.acceleration[i]
                 if has_viscous_damper:
                     _scatter_free_vector_to_full(free, v_trial, v)
                     if has_transformation_mpc:
@@ -2130,6 +2204,7 @@ fn run_transient_nonlinear(
                             mpc_row_offsets,
                             mpc_dof_pool,
                             mpc_coeff_pool,
+                            len(mats.supports.dofs) > 0,
                         )
                 if do_profile:
                     var t_asm_iter_start = Int(time.perf_counter_ns())
@@ -2306,6 +2381,8 @@ fn run_transient_nonlinear(
                         )
                 elif need_current_damp_tangent:
                     copy_values(mats.k_current_damp, mats.assembler.values)
+                if rayleigh_beta_k != 0.0 and len(mats.assembler.support_values) > 0:
+                    mats.support_k_current = mats.assembler.support_values.copy()
                 if attempt_algorithm_mode == NonlinearAlgorithmMode.Newton:
                     if need_tangent_matrix:
                         copy_values(mats.k_tangent, mats.assembler.values)
@@ -2382,6 +2459,9 @@ fn run_transient_nonlinear(
                     u_f,
                     R_f,
                 )
+                if use_imposed_predictor:
+                    v_trial = predictor_v^
+                    a_trial = predictor_a^
                 if attempt_test_mode == 2:
                     var residual_norm = sqrt(sum_sq_float64_contiguous(R_f, free_count))
                     if residual_norm <= attempt_tol:
@@ -2940,6 +3020,7 @@ fn run_transient_nonlinear(
                 mpc_row_offsets,
                 mpc_dof_pool,
                 mpc_coeff_pool,
+                len(mats.supports.dofs) > 0,
             )
             _enforce_mpc_values(
                 a,
@@ -2948,6 +3029,7 @@ fn run_transient_nonlinear(
                 mpc_row_offsets,
                 mpc_dof_pool,
                 mpc_coeff_pool,
+                len(mats.supports.dofs) > 0,
             )
             if do_profile:
                 var t_constraints_end = Int(time.perf_counter_ns())
@@ -3092,6 +3174,7 @@ fn run_transient_nonlinear(
                 else:
                     if need_comm_damp_tangent:
                         copy_values(mats.k_comm_damp, mats.k_comm)
+                mats.support_k_comm = mats.assembler.support_values.copy()
         if do_profile:
             var t_commit_start = Int(time.perf_counter_ns())
             var commit_start_us = (t_commit_start - t0) // 1000

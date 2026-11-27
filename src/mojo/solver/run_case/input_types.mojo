@@ -869,6 +869,9 @@ struct SupportMotionInput(ImplicitlyCopyable, Movable):
     var node: Int
     var dof: Int
     var time_series: Int
+    var velocity_series: Int
+    var acceleration_series: Int
+    var factor: Float64
 
 
 struct AnalysisConstraintsInput(ImplicitlyCopyable, Movable):
@@ -1262,6 +1265,15 @@ struct PermeabilityUpdate(ImplicitlyCopyable, Movable):
     var value: Float64
 
 
+@fieldwise_init
+struct PrescribedPressureInput(ImplicitlyCopyable, Movable):
+    var node: Int
+    var dof: Int
+    var velocity: Float64
+    var displacement: Float64
+    var acceleration: Float64
+
+
 struct StageInput(ImplicitlyCopyable, Movable):
     var constant_loads: List[NodalLoadInput]
     var constant_element_loads: List[ElementLoadInput]
@@ -1274,7 +1286,7 @@ struct StageInput(ImplicitlyCopyable, Movable):
     var removed_nodes: List[Int]
     var removed_elements: List[Int]
     var permeability_updates: List[PermeabilityUpdate]
-    var prescribed_pressures: List[NodalLoadInput]
+    var prescribed_pressures: List[PrescribedPressureInput]
     var analysis: AnalysisInput
     var analysis_integrator_targets_pool: List[Float64]
     var analysis_solver_chain_pool: List[SolverAttemptInput]
@@ -2371,6 +2383,9 @@ fn parse_analysis_input_from_native(
                 _json_get_int(doc, motion, "node", -1),
                 _json_get_int(doc, motion, "dof", -1),
                 _json_get_int(doc, motion, "time_series", -1),
+                _json_get_int(doc, motion, "velocity_series", -1),
+                _json_get_int(doc, motion, "acceleration_series", -1),
+                _json_get_float(doc, motion, "factor", 1.0),
             )
         )
     analysis.numberer_tag = numberer_tag(_json_get_string(doc, analysis_index, "numberer", ""))
@@ -2858,8 +2873,16 @@ fn parse_stage_input_from_native(
     var pressures = _json_key(doc, stage_index, "prescribed_pressures")
     if _json_has_value(doc, pressures):
         for i in range(_json_expect_array_len(doc, pressures, "prescribed pressures")):
+            var pressure = doc.array_item(pressures, i)
+            var load = parse_nodal_load_input_from_native(doc, pressure)
             stage.prescribed_pressures.append(
-                parse_nodal_load_input_from_native(doc, doc.array_item(pressures, i))
+                PrescribedPressureInput(
+                    load.node,
+                    load.dof,
+                    load.value,
+                    _json_get_float(doc, pressure, "displacement", 0.0),
+                    _json_get_float(doc, pressure, "acceleration", 0.0),
+                )
             )
     stage.pattern = parse_pattern_input_from_native(doc, _json_key(doc, stage_index, "pattern"))
     stage.rayleigh = parse_rayleigh_input_from_native(doc, _json_key(doc, stage_index, "rayleigh"))

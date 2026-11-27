@@ -165,7 +165,7 @@ def _upgrade_gallery_rt(text: bytes) -> bytes:
 # `timeSeries Path`; high tags avoid collisions with the fixture's own tags.
 _LEGACY_PATH_ASSIGNMENT = re.compile(
     rb"^(?P<indent>[ \t]*)set[ \t]+(?P<variable>\w+)[ \t]+"
-    rb'"(?:Series|Path)[ \t]+-d[tT](?P<options>[ \t]+[^"\r\n]+)"'
+    rb'"(?:Series|Path)[ \t]+(?P<options>-[A-Za-z][^"\r\n]*)"'
     rb"(?=[ \t]*(?:;|\r?$))",
     re.MULTILINE,
 )
@@ -173,8 +173,9 @@ _LEGACY_PATH_ASSIGNMENT = re.compile(
 
 def _upgrade_legacy_path_series_match(match: re.Match[bytes]) -> bytes:
     indent, variable, options = match.group("indent", "variable", "options")
+    options = re.sub(rb"(?<!\S)-dT(?=[ \t])", b"-dt", options)
     return (
-        b"%sset %s [expr {1000000000 + [incr ::__strut_legacy_path_tag]}]\n%stimeSeries Path $%s -dt%s"
+        b"%sset %s [expr {1000000000 + [incr ::__strut_legacy_path_tag]}]\n%stimeSeries Path $%s %s"
         % (indent, variable, indent, variable, options)
     )
 

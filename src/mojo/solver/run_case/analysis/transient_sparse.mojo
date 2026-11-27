@@ -22,6 +22,7 @@ and the effective Newmark matrix is
 from collections import List
 
 from solver.run_case.analysis.penalty import PenaltyConstraints
+from solver.run_case.analysis.support_motion import SupportKinematics
 from os import abort
 
 from solver.run_case.linear_solver_backend import (
@@ -49,6 +50,12 @@ struct TransientSparseMatrices(Movable):
     var c_zero_length: List[Float64]
     var c_coupled: List[Float64]
     var penalty: PenaltyConstraints
+    var supports: SupportKinematics
+    var support_k_current: List[Float64]
+    var support_k_init: List[Float64]
+    var support_k_comm: List[Float64]
+    var support_mass: List[Float64]
+    var support_mass_rayleigh: List[Float64]
     var regional_damping: List[Float64]
     var modal_damping: List[Float64]
     var k_zero_length_damp: List[Float64]
@@ -85,6 +92,12 @@ struct TransientSparseMatrices(Movable):
         self.c_zero_length = []
         self.c_coupled = []
         self.penalty = PenaltyConstraints()
+        self.supports = SupportKinematics([], [], [], 0, [])
+        self.support_k_current = []
+        self.support_k_init = []
+        self.support_k_comm = []
+        self.support_mass = []
+        self.support_mass_rayleigh = []
         self.regional_damping = []
         self.modal_damping = []
         self.k_zero_length_damp = []
