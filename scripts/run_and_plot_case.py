@@ -146,6 +146,7 @@ def _load_plot_case_data(
         entry_tcl,
         direct_tcl_support.resolve_direct_tcl_source_files(entry_tcl, case_json),
         case_root / "generated" / "_direct_tcl_context",
+        manifest_path=case_json,
         excluded_roots=[case_root],
     )
     return _merge_direct_tcl_manifest_metadata(

@@ -1,6 +1,7 @@
 {
   "name": "opensees_example_ex1b_portal2d_eq",
   "entry_tcl": "tests/fixtures/opensees/OpenSeesExamplesAdvanced/opensees_example_1b_elastic_portal_frame/Ex1b.Portal2D.EQ.tcl",
+  "tcl_source_version": "3.7.1",
   "enabled": true,
   "benchmark_size": "medium"
 }

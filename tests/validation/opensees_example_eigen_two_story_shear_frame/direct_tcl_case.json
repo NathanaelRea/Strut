@@ -1,5 +1,6 @@
 {
   "name": "opensees_example_eigen_two_story_shear_frame",
   "entry_tcl": "tests/fixtures/opensees/OpenSeesExamplesBasic/eigen_analysis_of_a_two_story_shear_frame/EigenAnal_twoStoreyShearFrame7.tcl",
+  "tcl_source_version": "3.7.1",
   "enabled": true
 }

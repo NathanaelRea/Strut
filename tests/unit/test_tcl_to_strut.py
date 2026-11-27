@@ -93,6 +93,42 @@ def _convert_direct_tcl_manifest(case_name: str) -> dict:
     return tcl_to_strut.convert_tcl_to_case(runtime_entry, REPO_ROOT)
 
 
+def test_prepare_direct_tcl_entry_upgrades_versioned_sourced_series(tmp_path: Path):
+    bundle = tmp_path / "fixtures" / "example"
+    bundle.mkdir(parents=True)
+    entry = bundle / "entry.tcl"
+    entry.write_text("source motion.tcl\n", encoding="utf-8")
+    motion = bundle / "motion.tcl"
+    original = (
+        'set accel "Series -dt $dt -filePath $record -factor $scale"; # acceleration\n'
+        'set disp "Series -dT $dt -filePath $record"\n'
+        'set tagged "Series 7 -dt $dt -filePath $record"\n'
+        "pattern UniformExcitation 2 1 -accel $accel\n"
+    )
+    motion.write_text(original, encoding="utf-8")
+    manifest = tmp_path / "direct_tcl_case.json"
+    manifest.write_text('{"tcl_source_version": "3.7.1"}', encoding="utf-8")
+
+    runtime_entry, inputs = run_case._prepare_direct_tcl_entry(
+        entry, tmp_path / "case", manifest_path=manifest
+    )
+    staged = runtime_entry.with_name(motion.name).read_text(encoding="utf-8")
+    assert "timeSeries Path $accel -dt $dt -filePath $record -factor $scale" in staged
+    assert "timeSeries Path $disp -dt $dt -filePath $record" in staged
+    assert 'set tagged "Series 7 -dt $dt -filePath $record"' in staged
+    assert "pattern UniformExcitation 2 1 -accel $accel" in staged
+    assert motion in inputs
+    assert motion.read_text(encoding="utf-8") == original
+    assert runtime_entry.read_text(encoding="utf-8") == "source {entry.tcl}\n"
+
+    unversioned_entry, _ = run_case._prepare_direct_tcl_entry(
+        entry, tmp_path / "unversioned"
+    )
+    assert (
+        unversioned_entry.with_name(motion.name).read_text(encoding="utf-8") == original
+    )
+
+
 def test_prepare_direct_tcl_entry_preserves_legacy_mass_arity_in_source(tmp_path: Path):
     bundle_root = tmp_path / "OpenSeesExamplesAdvanced"
     script_dir = bundle_root / "example"

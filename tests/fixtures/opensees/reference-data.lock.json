@@ -124,8 +124,8 @@
       "name": "OpenSees",
       "path": "OpenSees",
       "url": "https://github.com/OpenSees/OpenSees.git",
-      "ref": "v3.7.1",
-      "commit": "fe578a5b51333e5489097f327f89d16de0797f56"
+      "ref": "v3.8.0",
+      "commit": "6e55293513192aa05c7e1205e66a5a1a1ed088c4"
     },
     {
       "name": "modular",

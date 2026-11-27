@@ -1,5 +1,6 @@
 {
   "name": "opensees_example_ex4_portal2d_build_elasticelement",
   "entry_tcl": "tests/fixtures/opensees/OpenSeesExamplesAdvanced/opensees_example_4_portal_frame/Ex4.Portal2D.build.ElasticElement.tcl",
+  "tcl_source_version": "3.7.1",
   "enabled": true
 }

@@ -863,6 +863,7 @@ def _load_direct_tcl_case(case: CaseSpec, repo_root: Path) -> tuple[dict, Path]:
         case.tcl_path,
         _direct_case_root(case) / "generated" / "_direct_tcl_context",
         source_files=source_files,
+        manifest_path=case.metadata_path,
     )
     case_data = tcl_to_strut.convert_tcl_to_solver_input(parser_entry, repo_root)
     metadata = _load_case_metadata(_case_metadata_path(case))
@@ -1197,12 +1198,17 @@ def _resolve_direct_tcl_source_files(case: CaseSpec) -> list[Path]:
 
 
 def _prepare_direct_tcl_entry(
-    entry_tcl: Path, mirror_root: Path, source_files: list[Path] | None = None
+    entry_tcl: Path,
+    mirror_root: Path,
+    source_files: list[Path] | None = None,
+    *,
+    manifest_path: Path | None = None,
 ) -> Path:
     entry_wrapper, _ = direct_tcl_support.prepare_direct_tcl_entry(
         entry_tcl,
         source_files or [entry_tcl],
         mirror_root,
+        manifest_path=manifest_path,
     )
     return entry_wrapper
 
@@ -1217,7 +1223,10 @@ def _prepare_direct_tcl_wrappers(
     source_files = _resolve_direct_tcl_source_files(case)
     mirror_root = tcl_root / "_direct_tcl_mirror" / case.name
     entry_wrapper = _prepare_direct_tcl_entry(
-        script_path, mirror_root, source_files=source_files
+        script_path,
+        mirror_root,
+        source_files=source_files,
+        manifest_path=case.metadata_path,
     )
     opensees_entry = _prepare_opensees_compat_entry(entry_wrapper)
     mirrored_script_dir = entry_wrapper.parent

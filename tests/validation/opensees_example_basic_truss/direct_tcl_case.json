@@ -1,5 +1,6 @@
 {
   "name": "opensees_example_basic_truss",
   "entry_tcl": "tests/fixtures/opensees/OpenSeesExamplesBasic/basic_truss_example/Truss.tcl",
+  "tcl_source_version": "3.7.1",
   "enabled": true
 }

@@ -38,13 +38,9 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 LOCK_FILE = REPO_ROOT / "scripts" / "opensees" / "opensees-linux-64.lock"
 
 # Spec that `lock` resolves. Edit here, then run `setup_opensees.py lock`.
-# Pinned to 3.7.1 on purpose: from OpenSees commit a1a506a (Feb 2025, first
-# released in 3.8.0) Tcl `Path`/`Series` require a tag, which breaks the
-# inline `-accel "Series -dt ... -filePath ..."` form the wiki examples use.
-# Keep the OpenSees source in tests/fixtures/opensees/reference-data.lock.json
-# on the same tag.
+# Keep the OpenSees source in the reference-data lock on the binary release tag.
 CONDA_CHANNEL = "conda-forge"
-CONDA_SPECS = ("opensees=3.7.1=*_6", "python=3.12")
+CONDA_SPECS = ("opensees=3.8.0", "python=3.12")
 
 MICROMAMBA_VERSION = "2.10.0-0"
 MICROMAMBA_URL = (
@@ -321,7 +317,7 @@ def cmd_lock() -> None:
             capture=True,
         )
     actions = json.loads(raw).get("actions", {})
-    packages = actions.get("FETCH") or actions.get("LINK") or []
+    packages = actions.get("LINK", [])
     if not any(pkg["name"] == "opensees" for pkg in packages):
         die("resolution did not include the opensees package")
     lines = [
