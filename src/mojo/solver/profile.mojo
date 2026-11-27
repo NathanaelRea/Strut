@@ -40,6 +40,7 @@ struct RuntimeProfileMetrics(Movable):
     var local_force_beam_column_iterations: Int
     var subdivision_fallback_iterations: Int
     var tangent_factorizations: Int
+    var gpu_factorizations: Int
     var section_evaluations: Int
     var active_bandwidth: Int
     var active_nnz: Int
@@ -60,6 +61,7 @@ struct RuntimeProfileMetrics(Movable):
         self.local_force_beam_column_iterations = 0
         self.subdivision_fallback_iterations = 0
         self.tangent_factorizations = 0
+        self.gpu_factorizations = 0
         self.section_evaluations = 0
         self.active_bandwidth = 0
         self.active_nnz = 0

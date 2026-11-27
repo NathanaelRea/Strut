@@ -1,10 +1,11 @@
 from collections import List
-from os import abort
+from os import abort, getenv
 from python import Python, PythonObject
 from time import perf_counter_ns
 
 from solver.assembly import assemble_internal_forces_typed_soa
 from solver.dof import node_dof_index, require_dof_in_range
+from solver.gpu_backend import require_gpu_backend
 from solver.profile import (
     PROFILE_FRAME_ASSEMBLE,
     PROFILE_FRAME_ASSEMBLE_FIBER,
@@ -50,6 +51,7 @@ from solver.run_case.analysis.transient_linear import run_transient_linear
 from solver.run_case.analysis.transient_nonlinear import run_transient_nonlinear
 from solver.run_case.analysis.modal_eigen import run_modal_eigen
 from solver.run_case.input_types import (
+    AnalysisInput,
     CaseInput,
     ElementLoadInput,
     ElementInput,
@@ -84,6 +86,7 @@ from solver.run_case.loader import load_case_state_from_input
 from solver.run_case.precheck import precheck_case_input_native
 from solver.time_series import TimeSeriesInput, eval_time_series_input, find_time_series_input
 from tag_types import (
+    AnalysisSystemTag,
     AnalysisTypeTag,
     ElementTypeTag,
     IntegratorTypeTag,
@@ -158,7 +161,12 @@ fn _append_stage_time_series(
 
 
 def run_case_input(
-    var input: CaseInput, output_path: String, profile_path: String, case_load_us: Int
+    var input: CaseInput,
+    output_path: String,
+    profile_path: String,
+    case_load_us: Int,
+    backend: String = "",
+    explain_backend: Bool = False,
 ):
     var time = Python.import_module("time")
     var pathlib = Python.import_module("pathlib")
@@ -1653,6 +1661,20 @@ def run_case_input(
 
     var analysis_us = (t_solve_end - t_solve_start) // 1000
 
+    var gpu_factors = runtime_metrics.gpu_factorizations
+    if backend == "gpu" and gpu_factors == 0:
+        raise Error("GPU backend performed no factorizations for this analysis")
+    if explain_backend or backend == "gpu":
+        if gpu_factors > 0:
+            print(
+                "Backend used for",
+                output_path,
+                "- GPU sparse LDLT factorizations:",
+                gpu_factors,
+                "(CPU assembly and triangular solves)",
+            )
+        else:
+            print("Backend used for", output_path, "- CPU")
     _write_run_progress(progress_path, "writing_output", analysis_type, 0, 0, 0, 0)
     var analysis_path = out_dir.joinpath("analysis_time_us.txt")
     analysis_path.write_text(PythonObject(String(analysis_us) + "\n"))
@@ -2121,6 +2143,7 @@ def run_case_input(
     phase_json += (
         '  "tangent_factorizations": ' + String(runtime_metrics.tangent_factorizations) + ",\n"
     )
+    phase_json += '  "gpu_factorizations": ' + String(gpu_factors) + ",\n"
     phase_json += '  "section_evaluations": ' + String(runtime_metrics.section_evaluations) + ",\n"
     phase_json += '  "active_bandwidth": ' + String(runtime_metrics.active_bandwidth) + ",\n"
     phase_json += '  "active_nnz": ' + String(runtime_metrics.active_nnz) + ",\n"
@@ -2169,6 +2192,14 @@ def run_case_input(
         _write_speedscope(profile_path, frames, events, total_us)
 
 
+fn _supports_gpu_factorization(analysis: AnalysisInput) -> Bool:
+    return analysis.type_tag != AnalysisTypeTag.ModalEigen and (
+        analysis.system_tag == AnalysisSystemTag.SparseSYM
+        or analysis.system_tag == AnalysisSystemTag.SuperLU
+        or analysis.system_tag == AnalysisSystemTag.UmfPack
+    )
+
+
 def run_case_from_native_source(
     doc: JsonDocument,
     source_info: CaseSourceInfo,
@@ -2176,11 +2207,53 @@ def run_case_from_native_source(
     profile_path: String,
     case_load_us: Int,
     include_recorders: Bool,
+    backend: String = "",
+    explain_backend: Bool = False,
 ):
     precheck_case_input_native(doc, include_recorders)
-    run_case_input(
-        parse_case_input_native_from_source(doc, source_info, include_recorders),
-        output_path,
-        profile_path,
-        case_load_us,
-    )
+    var input = parse_case_input_native_from_source(doc, source_info, include_recorders)
+    var supports_gpu = _supports_gpu_factorization(input.analysis)
+    if input.analysis.type_tag == AnalysisTypeTag.Staged:
+        supports_gpu = len(input.stages) > 0
+        for stage in input.stages:
+            supports_gpu = supports_gpu and _supports_gpu_factorization(stage.analysis)
+
+    if backend == "gpu":
+        if not supports_gpu:
+            raise Error(
+                "GPU backend requires SparseSYM, SuperLU, or UmfPack in every stage "
+                "(modal eigen analysis uses the CPU)"
+            )
+        require_gpu_backend()
+        input.analysis.gpu_requested = True
+        for i in range(len(input.stages)):
+            input.stages[i].analysis.gpu_requested = True
+
+    var explain = explain_backend or getenv("STRUT_VERBOSE") == "1" and backend != ""
+    if explain:
+        if backend == "gpu":
+            print("Backend requested for", output_path, "- GPU symmetric sparse LDLT")
+        elif backend == "cpu":
+            print("Backend requested for", output_path, "- CPU")
+        elif not supports_gpu:
+            print("Backend selected for", output_path, "- CPU. Analysis needs a CPU solver.")
+        elif len(input.nodes) * input.model.ndf < 256:
+            print(
+                "Backend selected for", output_path, "- CPU. Model has fewer than 256 nodal DOFs."
+            )
+        elif backend == "auto":
+            print(
+                "Backend selected for",
+                output_path,
+                "- CPU. No validated automatic GPU rule for this solver.",
+            )
+        else:
+            print(
+                "Backend selected for",
+                output_path,
+                (
+                    "- CPU by default. You can benchmark --backend gpu for a large symmetric sparse"
+                    " case."
+                ),
+            )
+    run_case_input(input^, output_path, profile_path, case_load_us, backend, explain)

@@ -24,8 +24,10 @@ def _profile_build_requested() -> bool:
     return os.getenv("STRUT_PROFILE") == "1"
 
 
-def _default_solver_path(repo_root: Path) -> Path:
-    solver_name = "strut_profile" if _profile_build_requested() else "strut"
+def _default_solver_path(repo_root: Path, *, gpu: bool = False) -> Path:
+    solver_name = "strut_gpu" if gpu else "strut"
+    if _profile_build_requested():
+        solver_name += "_profile"
     return repo_root / "build" / "strut" / solver_name
 
 
@@ -194,6 +196,8 @@ def main():
     parser.add_argument("--input-tcl")
     parser.add_argument("--output", required=True)
     parser.add_argument("--compute-only", action="store_true")
+    parser.add_argument("--backend", choices=("cpu", "gpu", "auto"))
+    parser.add_argument("--explain-backend", action="store_true")
     args = parser.parse_args()
     if bool(args.input) == bool(args.input_tcl):
         raise SystemExit("exactly one of --input or --input-tcl is required")
@@ -208,9 +212,10 @@ def main():
     if solver_bin:
         solver_path = Path(solver_bin)
     else:
-        solver_path = _default_solver_path(repo_root)
+        solver_path = _default_solver_path(repo_root, gpu=args.backend == "gpu")
 
-    rebuild = not solver_path.exists()
+    # GPU builds also key their cache by the visible devices.
+    rebuild = args.backend == "gpu" or not solver_path.exists()
     if not rebuild and not solver_bin:
         src_dir = repo_root / "src" / "mojo"
         latest_src = max(
@@ -232,6 +237,7 @@ def main():
                 "run",
                 "python",
                 str(repo_root / "scripts" / "build_mojo_solver.py"),
+                *(["--gpu"] if args.backend == "gpu" else []),
             ],
             env=build_env,
             verbose=verbose,
@@ -289,8 +295,14 @@ def main():
             cmd += ["--input", str(normalized_input)]
         if args.compute_only:
             cmd.append("--compute-only")
+        if args.backend:
+            cmd += ["--backend", args.backend]
+        if args.explain_backend:
+            cmd.append("--explain-backend")
         cmd += ["--output", args.output]
         run(cmd, verbose=verbose)
+    except subprocess.CalledProcessError as error:
+        raise SystemExit(error.returncode) from None
     finally:
         if tmp_path is not None:
             tmp_path.unlink(missing_ok=True)

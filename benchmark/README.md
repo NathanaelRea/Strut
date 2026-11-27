@@ -2,6 +2,41 @@
 
 Tools for comparing native Linux OpenSees, OpenSeesMP, and Strut runtime performance.
 
+## When the GPU helps
+
+The best GPU results here came from workloads with many parallel operations
+that keep their working data on the device. The table compares the Radeon
+RX 9070 XT with eight threads on a Ryzen 7 9800X3D. Crossover sizes depend on
+the hardware, mesh, and solver.
+
+| Workload | Measured result | What was timed |
+| --- | --- | --- |
+| Homogeneous elastic plane strain on a regular grid | CPU led through 512² cells. GPU was 1.71× faster at 1024² with eight loads and 6.06× faster at 2048² with eight loads. | Setup and all eight linear solves using matrix-free multigrid-preconditioned CG. [Plane-strain results](gpu/geotech/README.md#elastic-plane-strain-multigrid) |
+| Batched Steel02 and Concrete01 fibers | GPU was 4.44× faster at about 4.56 million fibers over 40 increments. Grouping by material saved about 5% of GPU time. | Local material updates and history writes with GPU-resident state. [Fiber results](gpu/fibers/README.md#rx-9070-xt-results) |
+| Batched Drucker–Prager integration points | GPU was 7.90× faster at about 4.19 million points over 40 increments. | Local return mapping with GPU-resident state. [Drucker–Prager results](gpu/geotech/README.md#local-druckerprager-return-mapping) |
+| MegaTall replay with STRUMPACK | GPU was 1.16× faster than STRUMPACK CPU across the timed calls and took longer than Strut CPU LDLᵀ for factorization and solves. | Reordering, value updates, factorization, and solves on captured matrices. [STRUMPACK results](gpu/multifrontal/README.md#measured-replay) |
+| MegaTall with Strut's GPU LDLᵀ | The GPU analysis took 26.80 s versus 21.65 s on the CPU with the same NESDIS ordering. | Ten gravity steps and thirty earthquake steps, including CPU assembly and triangular solves. [MegaTall results](#large-models) |
+
+Strut's `--backend gpu` currently offloads numeric LDLᵀ. The plane-strain
+and material experiments run through their own benchmark programs. The
+plane-strain result depends on a repeated stencil and a multigrid hierarchy
+that stays on the device. Irregular meshes, variable materials, and different
+preconditioners can shift the crossover. A material kernel's improvement
+applies to its share of the analysis time.
+
+Strut requires at least 256 free DOFs to try its GPU backend. Measure the
+crossover on your workload. Use the same input, CPU thread count, and solver
+settings for both runs. Use separate output directories and compare
+`analysis_time_us.txt` across repeated runs. Check the recorder results and
+confirm that the GPU run reports factorizations on-device.
+
+```bash
+STRUT_THREADS=8 uv run python scripts/run_strut_case.py --input model.json \
+    --output out-cpu --backend cpu --explain-backend
+STRUT_THREADS=8 uv run python scripts/run_strut_case.py --input model.json \
+    --output out-gpu --backend gpu --explain-backend
+```
+
 ## Micro
 
 Focused section/material microbenchmarks live in `benchmark/micro/`.
@@ -151,6 +186,124 @@ uv run scripts/run_benchmarks.py --engine both --no-batch --strut-single-thread 
 ```
 
 Expect about 15 minutes, nearly all of it OpenSees.
+
+**Mega-tall Mojo GPU spike.** Run the same 10 gravity and 30 earthquake steps
+with eight CPU threads and with the experimental Mojo GPU numeric LDLᵀ
+factorization.
+
+```bash
+HIP_VISIBLE_DEVICES=0 uv run benchmark/gpu/run_megatall.py benchmark/.tmp/gpu-run
+```
+
+The runner builds the CPU and GPU executables, runs compute-only timings,
+checks that all 40 GPU factors ran on-device, and compares all 40 rows of
+the 371 recorders. The new output directory receives solver logs and
+`summary.json`. Use `--repeat` for multiple timing pairs. On NVIDIA, select
+the device with `CUDA_VISIBLE_DEVICES`.
+
+The spike uploads changing matrix values to a reusable GPU schedule built
+from Strut's symbolic factorization. It downloads the packed factor for the
+CPU triangular solve. The report includes the analysis speedup and an
+upper bound that treats numeric LDLᵀ as free. It also estimates the analysis
+time if every LDLᵀ operation ran at the measured register-resident FP64
+throughput.
+
+To try nested dissection on both engines, build the optional ordering library
+using the SuiteSparse development package and pass it to the same runner:
+
+```bash
+mkdir -p benchmark/.tmp
+c++ -O3 -shared -fPIC benchmark/gpu/nested_dissection.cpp \
+    $(pkg-config --cflags --libs CHOLMOD) -o benchmark/.tmp/libstrut_nesdis.so
+uv run benchmark/gpu/run_megatall.py benchmark/.tmp/gpu-nesdis \
+    --ordering-library benchmark/.tmp/libstrut_nesdis.so
+```
+
+On the Ryzen 7 9800X3D and Radeon RX 9070 XT, one paired compute-only
+run with CHOLMOD NESDIS gave the following times.
+
+| Backend | Full analysis | Numeric LDLᵀ |
+| --- | ---: | ---: |
+| CPU (8 threads) | 21.65 s | 6.47 s |
+| Mojo GPU | 26.80 s | 11.10 s |
+
+The GPU performed all 40 factorizations. The paired recorder runs matched
+across 371 files with a worst scaled difference of `3.50e-11`. The
+register-resident FP64 measurement gives an optimistic 1.26× speedup over
+the CPU run with the rest of the CPU timing held fixed. Making numeric LDLᵀ
+instant would cap the analysis speedup at 1.43× under the same assumption.
+
+The earlier standalone HIP spike was measured on a Ryzen 7 9800X3D and
+Radeon RX 9070 XT with ROCm 7.1.1.
+Each entry is one compute-only run. The GPU column includes CPU assembly,
+symbolic analysis, transfers, and the CPU triangular solve.
+
+| Ordering | Structural work per factor | CPU analysis | ROCm analysis |
+| --- | ---: | ---: | ---: |
+| Strut default | 100.3 GFLOP | 30.37 s | 38.29 s |
+| CHOLMOD NESDIS | 29.1 GFLOP | 20.87 s | 23.61 s |
+
+With the default ordering, numeric LDLᵀ consumed 13.97 seconds on the CPU
+and 22.11 seconds on the GPU, including 0.38 seconds of GPU factor readback.
+The 0.64 TFLOP/s register-resident FP64 probe gives an optimistic 22.71-second
+analysis with that ordering and the rest of the CPU timing held fixed.
+With NESDIS, the same estimate is 16.57 seconds, or 1.26× the measured
+NESDIS CPU run. Each GPU run matched its CPU recorder pass with a worst
+scaled difference below `8e-11`.
+
+**Sparse solver replay.** Capture the real mega-tall tangents and Newton
+right-hand sides in a fresh file. Capture is a separate CPU run because the
+trace writes about 1.4 GB. The reference solutions come from Strut's FP64
+LDLᵀ solve.
+
+```bash
+uv run python scripts/build_mojo_solver.py
+mkdir -p benchmark/.tmp/replay
+STRUT_THREADS=8 STRUT_LINEAR_TRACE="$PWD/benchmark/.tmp/replay/megatall.bin" \
+    uv run build/strut/strut \
+    --input benchmark/.tmp/megatall_model1_40steps/megatall_model1_40steps.json \
+    --output benchmark/.tmp/replay/capture --compute-only
+uv run python benchmark/gpu/linear_trace.py benchmark/.tmp/replay/megatall.bin
+```
+
+The trace has little-endian 64-bit record tags. Pattern records `1` store
+`n`, `nnz`, and the zero-based lower-triangle CSC column pointers and row
+indices. Tangent records `2` store `nnz` FP64 values. Solve records `3`
+store the length-`n` FP64 right-hand side and solution. A new pattern starts
+another symbolic analysis, and one tangent can have several solves.
+
+Build the replay executable. To replay on GPU, pass `-D STRUT_GPU=1` to
+`mojo build` on the GPU host and set `STRUT_REPLAY_GPU=1` for the run.
+
+```bash
+uv run mojo build -I src/mojo benchmark/gpu/replay_ldlt.mojo \
+    -o benchmark/.tmp/replay/replay_ldlt
+uv run benchmark/.tmp/replay/replay_ldlt benchmark/.tmp/replay/megatall.bin 8 equilibrate gmres
+```
+
+Use the same `STRUT_LDLT_NESDIS` library for each replay to compare with
+the NESDIS results. Replay arguments set the maximum number of refinements,
+enable symmetric diagonal equilibration, and select right-preconditioned
+GMRES. Omitting `gmres` uses residual correction with the factor directly.
+The report checks every solution against the CPU capture at a relative
+infinity-norm tolerance of `1e-5`. GPU factor timings include value uploads,
+factor readback, and any enabled equilibration. Triangular solves and
+refinement are reported separately.
+
+In the earlier HIP experiment on the 40-tangent, 50-RHS NESDIS trace,
+the FP32 GPU factorization took
+3.37 seconds with equilibration. GMRES recovered all 50 solutions with
+worst relative error `3.37e-6`, and spent 7.52 seconds on refinement.
+Including each first triangular solve, numeric replay took 12.02 seconds.
+The FP64 GPU and FP64 CPU numeric replays took 10.16 and 9.37 seconds
+respectively. Direct residual correction with up to eight corrections
+missed the solution tolerance for 20 right-hand sides both with and
+without equilibration. These are replay timings, with CPU triangular
+solves and CPU FP64 residuals.
+
+The companion experiments cover [HIP STRUMPACK replay](gpu/multifrontal/README.md),
+[GPU fiber material updates](gpu/fibers/README.md), and
+[plane-strain multigrid and Drucker–Prager updates](gpu/geotech/README.md).
 
 **Synthetic 3D frames.** Fiber beam-column frames big enough to thread:
 

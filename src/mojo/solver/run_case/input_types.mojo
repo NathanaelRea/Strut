@@ -574,6 +574,7 @@ struct MassInput(ImplicitlyCopyable, Movable):
 
 
 struct AnalysisInput(ImplicitlyCopyable, Movable):
+    var gpu_requested: Bool
     var type: String
     var type_tag: Int
     var constraints: String
@@ -637,6 +638,7 @@ struct AnalysisInput(ImplicitlyCopyable, Movable):
     var integrator_targets_count: Int
 
     fn __init__(out self):
+        self.gpu_requested = False
         self.type = "static_linear"
         self.type_tag = AnalysisTypeTag.StaticLinear
         self.constraints = "Plain"
