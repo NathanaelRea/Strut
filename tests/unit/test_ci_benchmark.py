@@ -161,3 +161,19 @@ def test_new_case_the_baseline_cannot_run_passes(tmp_path, monkeypatch):
 
     assert _compare(monkeypatch, suite, base, cand) == 0
     assert _results(suite)["timed_case"]["status"] == "NEW"
+
+
+def test_timed_cases_with_records_get_synthetic_ground_motions(tmp_path: Path):
+    timed = {case.name for case in ci_benchmark.TIMED_VALIDATION_CASES}
+    assert set(ci_benchmark.SYNTHETIC_RECORDS) <= timed
+    for name, records in ci_benchmark.SYNTHETIC_RECORDS.items():
+        path = ci_benchmark._with_synthetic_records(name, tmp_path)
+        assert path == tmp_path / name / "direct_tcl_case.json"
+        data = json.loads(path.read_text(encoding="utf-8"))
+        assert data["synthetic_ground_motions"][-len(records) :] == records
+    untouched = "opensees_example_ex1a_canti2d_push"
+    assert (
+        ci_benchmark._with_synthetic_records(untouched, tmp_path).parent.name
+        == untouched
+    )
+    assert not (tmp_path / untouched).exists()

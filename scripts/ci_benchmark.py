@@ -7,8 +7,8 @@ machine instead, alternating them run by run, and compares their medians.
 
 `prepare` writes the suite: generated models sized to take about 0.1-2 s each
 and chosen to cover the element, section, transformation, constraint, solver
-and analysis paths, plus the validation cases that run without pinned ground
-motions. `compare` times the timed cases on both binaries, checks that every
+and analysis paths, plus the validation cases. Seeded synthetic records stand in for the
+downloaded ground motions that timed cases read (`SYNTHETIC_RECORDS`). `compare` times the timed cases on both binaries, checks that every
 case's outputs match, and writes a markdown table.
 
 `compare` fails when the candidate crashes on a case the baseline runs, or when
@@ -246,6 +246,35 @@ TIMED_VALIDATION_CASES = (
 )
 
 
+# Runners have no downloaded reference data, so timed cases that read a recorded
+# ground motion get a seeded synthetic one instead: the same file name, format,
+# step and length, written into the staged copy of the script. Every machine
+# then times the same input. Paths are relative to the entry script's directory.
+SYNTHETIC_RECORDS: dict[str, list[dict]] = {
+    "opensees_example_ex6_genericframe2d_analyze_dynamic_eq_multiplesupport": [
+        # Stands in for PEER H-E12140 (Imperial Valley 1979): 7802 steps of 0.005 s.
+        {"path": "../GMfiles/H-e12140.dt2", "seed": 12140, "dt": 0.005, "npts": 7802},
+    ],
+}
+
+
+def _with_synthetic_records(name: str, manifest_dir: Path) -> Path:
+    """The case's manifest, or a copy that writes its synthetic records."""
+    case_path = ab_compare._resolve_named_case(name)
+    records = SYNTHETIC_RECORDS.get(name)
+    if not records:
+        return case_path
+    data = json.loads(case_path.read_text(encoding="utf-8"))
+    data["synthetic_ground_motions"] = [
+        *data.get("synthetic_ground_motions", []),
+        *records,
+    ]
+    path = manifest_dir / name / "direct_tcl_case.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    return path
+
+
 # ---------------------------------------------------------------- prepare
 
 
@@ -360,7 +389,8 @@ def cmd_prepare(args: argparse.Namespace) -> int:
         outcomes = list(
             pool.map(
                 lambda name: ab_compare._resolve_in_subprocess(
-                    ab_compare._resolve_named_case(name), validation_dir
+                    _with_synthetic_records(name, suite_dir / "_manifests"),
+                    validation_dir,
                 ),
                 names,
             )
