@@ -19,6 +19,7 @@ from tag_types import AnalysisSystemTag
 
 struct LinearSolverBackend(ElementMatrixSink, Movable):
     var system_tag: Int
+    var gpu_required: Bool
     var free_count: Int
     var initialized: Bool
     var factorized: Bool
@@ -84,6 +85,7 @@ struct LinearSolverBackend(ElementMatrixSink, Movable):
 
     fn __init__(out self):
         self.system_tag = AnalysisSystemTag.Unknown
+        self.gpu_required = False
         self.free_count = 0
         self.initialized = False
         self.factorized = False
@@ -1952,6 +1954,10 @@ fn _force_refactor_every_solve(backend: LinearSolverBackend) -> Bool:
 
 fn initialize_structure(mut backend: LinearSolverBackend, analysis: AnalysisInput, free_count: Int):
     backend.system_tag = analysis.system_tag
+    backend.sparse_ldlt.gpu_requested = analysis.gpu_requested
+    backend.gpu_required = analysis.gpu_requested
+    if backend.gpu_required and free_count < 256:
+        abort("GPU backend requires at least 256 free DOFs")
     backend.free_count = free_count
     backend.initialized = True
     backend.factorized = False
@@ -2629,7 +2635,9 @@ fn _analyze_sparse_ldlt(mut backend: LinearSolverBackend) -> Bool:
             )
         try:
             backend.sparse_ldlt.analyze(n, backend.sparse_col_start, backend.sparse_row_indices)
-        except:
+        except error:
+            if backend.gpu_required:
+                abort("GPU backend setup failed. " + String(error))
             return False
         _report_sparse_ldlt(backend, len(backend.sparse_row_indices))
         return True
@@ -2677,7 +2685,9 @@ fn _analyze_sparse_ldlt(mut backend: LinearSolverBackend) -> Bool:
         )
     try:
         backend.sparse_ldlt.analyze(n, backend.sparse_ldlt_col_start, backend.sparse_ldlt_rows)
-    except:
+    except error:
+        if backend.gpu_required:
+            abort("GPU backend setup failed. " + String(error))
         return False
     _report_sparse_ldlt(backend, len(backend.sparse_ldlt_rows))
     return True
@@ -2733,7 +2743,10 @@ fn factorize_loaded(mut backend: LinearSolverBackend, mut metrics: RuntimeProfil
     if not backend.initialized:
         abort("linear solver backend not initialized")
 
-    if backend.system_tag == AnalysisSystemTag.BandGeneral:
+    if backend.gpu_required:
+        if not _try_factorize_sparse_ldlt(backend) or not backend.sparse_ldlt.uses_gpu():
+            abort("GPU backend could not factor this matrix with symmetric sparse LDLT")
+    elif backend.system_tag == AnalysisSystemTag.BandGeneral:
         _factorize_band_general_loaded(backend)
     elif backend.system_tag == AnalysisSystemTag.BandSPD:
         _factorize_band_spd_loaded(backend)
@@ -2755,6 +2768,8 @@ fn factorize_loaded(mut backend: LinearSolverBackend, mut metrics: RuntimeProfil
         abort("unsupported analysis system tag")
 
     backend.factorized = True
+    if backend.sparse_ldlt_active and backend.sparse_ldlt.uses_gpu():
+        metrics.gpu_factorizations += 1
     if metrics.enabled:
         metrics.tangent_factorizations += 1
     _update_active_structure_metrics(backend, metrics)

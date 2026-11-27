@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import argparse
 import hashlib
 import json
 import os
@@ -61,13 +62,12 @@ def _normalized_diagnostics_json(text: str) -> str:
     return "".join(f"{json.dumps(doc)}\n" for doc in docs)
 
 
-def main() -> int:
-    repo_root = Path(__file__).resolve().parents[1]
+def _build_mojo(repo_root: Path, *, gpu: bool) -> int:
     src_root = repo_root / "src" / "mojo"
     out_dir = repo_root / "build" / "strut"
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    out_name = "strut"
+    out_name = "strut_gpu" if gpu else "strut"
     target_args = mojo_target_args()
     build_cmd = [
         "uv",
@@ -80,18 +80,36 @@ def main() -> int:
         str(src_root / "strut.mojo"),
     ]
     if os.getenv("STRUT_PROFILE", "0") == "1":
-        out_name = "strut_profile"
+        out_name += "_profile"
         build_cmd.extend(["-D", "STRUT_PROFILE=1"])
+
+    if gpu:
+        build_cmd.extend(["-D", "STRUT_GPU=1"])
 
     out_bin = out_dir / out_name
     stamp_file = Path(f"{out_bin}.src-sha256")
-    source_fingerprint = _source_fingerprint(src_root, out_name, target_args)
+    fingerprint_args = target_args
+    if gpu:
+        fingerprint_args = [
+            *target_args,
+            *(
+                f"{name}={os.environ.get(name)}"
+                for name in (
+                    "CUDA_VISIBLE_DEVICES",
+                    "HIP_VISIBLE_DEVICES",
+                    "ROCR_VISIBLE_DEVICES",
+                )
+            ),
+        ]
+    source_fingerprint = _source_fingerprint(src_root, out_name, fingerprint_args)
 
     if out_bin.exists() and stamp_file.exists():
         cached_fingerprint = stamp_file.read_text(encoding="utf-8").strip()
         if cached_fingerprint == source_fingerprint:
             print(f"Build cache hit {out_bin}")
-            return 0
+            if not gpu:
+                return 0
+            return subprocess.call([str(out_bin), "--check-gpu"])
 
     stamp_file.unlink(missing_ok=True)
     build_cmd.extend(["-o", str(out_bin)])
@@ -127,11 +145,26 @@ def main() -> int:
 
         if diagnostics:
             sys.stdout.write(diagnostics)
+        if gpu:
+            status = subprocess.call([str(out_bin), "--check-gpu"])
+            if status != 0:
+                out_bin.unlink(missing_ok=True)
+                return status
         stamp_file.write_text(f"{source_fingerprint}\n", encoding="utf-8")
         print(f"Built {out_bin}")
         return 0
     finally:
         Path(tmp_handle.name).unlink(missing_ok=True)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Build the Strut solver.")
+    parser.add_argument(
+        "--gpu", action="store_true", help="build for Mojo's detected GPU target"
+    )
+    args = parser.parse_args()
+    repo_root = Path(__file__).resolve().parents[1]
+    return _build_mojo(repo_root, gpu=args.gpu)
 
 
 if __name__ == "__main__":

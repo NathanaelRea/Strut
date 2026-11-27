@@ -55,6 +55,35 @@ uv run scripts/run_benchmarks.py --cases 'opensees_example_*' # time Strut again
 
 The tests and benchmarks install a pinned OpenSees 3.8.0 and the test data on first use, with no sudo. Details are in [docs/setup.md](./docs/setup.md). The model format is described in [docs/harness.md](./docs/harness.md).
 
+### Choosing a backend
+
+Start with the CPU for general analyses. The default, `--backend cpu`, and
+`--backend auto` all select the CPU. Try `--backend gpu` when symmetric sparse
+factorization takes a large share of your CPU run, then time the full analysis
+on both backends. On the RX 9070 XT, the MegaTall analysis took 26.80 s with
+GPU factorization and 21.65 s on eight CPU threads. The large regular
+plane-strain solver and batched material updates showed GPU gains in standalone
+benchmarks. [When the GPU helps](./benchmark/README.md#when-the-gpu-helps)
+
+The experimental `--backend gpu` runs symmetric sparse LDLᵀ factorization on
+a compatible GPU. Mojo builds the same FP64 kernels for the GPU target it
+detects on the build host. The GPU path requires at least 256
+free DOFs and `SparseSYM`, `SuperLU`, or `UmfPack` with a symmetric matrix.
+Assembly and triangular solves run on the CPU. If the requested GPU cannot
+factor the case, the analysis fails with a backend error.
+`--explain-backend` reports the selection and the number of GPU factorizations.
+
+```bash
+uv run python scripts/build_mojo_solver.py --gpu
+uv run python scripts/run_strut_case.py --input model.json --output out-gpu \
+    --backend gpu --explain-backend
+```
+
+The GPU build produces `build/strut/strut_gpu`. The kernels target AMD and
+NVIDIA GPUs supported by Mojo. The build needs the driver runtime for the
+selected device. Set `HIP_VISIBLE_DEVICES` on AMD or `CUDA_VISIBLE_DEVICES`
+on NVIDIA before building and running.
+
 ## What it supports
 
 | | Supported |

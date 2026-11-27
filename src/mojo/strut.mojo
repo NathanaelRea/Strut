@@ -1,6 +1,8 @@
 from os import abort
+from sys.arg import argv
 from python import Python, PythonObject
 
+from solver.gpu_backend import require_gpu_backend
 from solver.run_case import run_case_from_native_source
 from strut_io import (
     load_case_document,
@@ -11,6 +13,10 @@ from strut_io import (
 
 
 def main():
+    var args = argv()
+    if len(args) == 2 and args[1] == "--check-gpu":
+        require_gpu_backend()
+        return
     var (
         input_path,
         input_bin_path,
@@ -19,6 +25,8 @@ def main():
         batch_path,
         profile_path,
         compute_only,
+        backend,
+        explain_backend,
     ) = parse_args()
     if batch_path != "":
         var batch = load_json(batch_path)
@@ -45,6 +53,8 @@ def main():
                 entry_profile,
                 case_load_us,
                 not compute_only,
+                backend,
+                explain_backend,
             )
             var t_case_end = Int(time.perf_counter_ns())
             var elapsed_us = (t_case_end - t_case_start) // 1000
@@ -62,7 +72,7 @@ def main():
         abort(
             "usage: strut.mojo -- (--input <case.json> | --input-bin <case.bin>) --output <dir>"
             " [--batch <manifest.json>] [--profile <speedscope.json>] [--compute-only]"
-            " [--write-input-bin <case.bin>]"
+            " [--write-input-bin <case.bin>] [--backend cpu|gpu|auto] [--explain-backend]"
         )
     var time = Python.import_module("time")
     var t_load_start = Int(time.perf_counter_ns())
@@ -76,4 +86,6 @@ def main():
         profile_path,
         case_load_us,
         not compute_only,
+        backend,
+        explain_backend,
     )

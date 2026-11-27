@@ -26,10 +26,16 @@ from algorithm import parallelize
 from collections import InlineArray, List
 from math import fma, isfinite, sqrt
 from memory import memset_zero
+from os import abort, getenv
 from os.atomic import Atomic, Consistency
+from solver.gpu_backend import gpu_build_enabled, require_gpu_backend
+from solver.gpu_ldlt import GpuLdlt, PanelUpdate
+from gpu.host import DeviceContext
+from solver.linear_trace import LinearTrace
 from solver.simd_contiguous import FLOAT64_SIMD_WIDTH
 from sys import CompilationTarget, num_performance_cores
-from sys.ffi import external_call
+from sys.ffi import DLHandle, external_call
+from time import perf_counter_ns
 
 
 struct SparseOrdering:
@@ -55,6 +61,22 @@ fn _floats(n: Int) -> List[Float64]:
     var result: List[Float64] = []
     result.resize(n, 0.0)
     return result^
+
+
+fn _nested_dissection_order(
+    path: String, n: Int, col_ptr: List[Int], row_idx: List[Int]
+) raises -> List[Int]:
+    var library = DLHandle(path)
+    var reorder = library.get_function[
+        fn (Int, Int, UnsafePointer[Int], UnsafePointer[Int], UnsafePointer[Int]) -> Int32
+    ]("strut_nested_dissection")
+    var order = _ints(n)
+    if (
+        reorder(n, len(row_idx), col_ptr.unsafe_ptr(), row_idx.unsafe_ptr(), order.unsafe_ptr())
+        != 0
+    ):
+        abort("nested dissection failed")
+    return order^
 
 
 # Labels are 32-bit. Offsets use the compact representation when their
@@ -1362,17 +1384,6 @@ fn _factor_blocked_panel(
     return negative
 
 
-struct _PanelUpdate(ImplicitlyCopyable, Movable):
-    var source: Int
-    var first: Int
-    var split: Int
-
-    fn __init__(out self, source: Int, first: Int, split: Int):
-        self.source = source
-        self.first = first
-        self.split = split
-
-
 struct _PanelJob(ImplicitlyCopyable, Movable):
     var first: Int
     var end: Int
@@ -1428,7 +1439,7 @@ struct _NumericPanels(ImplicitlyCopyable):
     var compact_input: Bool
     var compact_scatter: Bool
     var updates_ptr: UnsafePointer[Int]
-    var updates: UnsafePointer[_PanelUpdate]
+    var updates: UnsafePointer[PanelUpdate]
     var work: UnsafePointer[Int]
     var cuts: UnsafePointer[Int32]
     var lane_stride: Int
@@ -1725,7 +1736,7 @@ struct SparseLDLT(Movable):
     var _pool: _WorkerPool
     var _indices: List[Int]
     var _updates_ptr: List[Int]
-    var _updates: List[_PanelUpdate]
+    var _updates: List[PanelUpdate]
     var _panel_work: List[Int]
     var _row_cuts: List[Int32]
     var _panel_post: List[Int]
@@ -1741,6 +1752,10 @@ struct SparseLDLT(Movable):
     var _mode: Int
     var _analyzed: Bool
     var _valid: Bool
+    var _gpu: Optional[GpuLdlt]
+    var gpu_requested: Bool
+    var _time_numeric: Bool
+    var _trace: LinearTrace
 
     fn __init__(out self, threads: Int = 0):
         self._threads = max(1, num_performance_cores() if threads == 0 else threads)
@@ -1787,6 +1802,13 @@ struct SparseLDLT(Movable):
         self._mode = SparseFactorMode.Supernodal
         self._analyzed = False
         self._valid = False
+        self._gpu = None
+        self.gpu_requested = False
+        self._time_numeric = getenv("STRUT_LDLT_TIMING") == "1"
+        self._trace = LinearTrace()
+
+    fn uses_gpu(self) -> Bool:
+        return Bool(self._gpu)
 
     fn factor_nnz(self) -> Int:
         """Number of structural entries in L, including its unit diagonal."""
@@ -1827,13 +1849,17 @@ struct SparseLDLT(Movable):
         if mode != SparseFactorMode.Supernodal and mode != SparseFactorMode.Simplicial:
             raise Error("unknown sparse LDLT factorization mode")
 
-        var custom_order = len(permutation) > 0
+        var requested_order = permutation.copy()
+        var order_library = getenv("STRUT_LDLT_NESDIS")
+        if order_library != "" and len(requested_order) == 0 and n >= 256:
+            requested_order = _nested_dissection_order(order_library, n, col_ptr, row_idx)
+        var custom_order = len(requested_order) > 0
         if custom_order:
-            if len(permutation) != n:
+            if len(requested_order) != n:
                 raise Error("sparse LDLT permutation length does not match the dimension")
             var seen = _ints(n)
             for j in range(n):
-                var col = permutation[j]
+                var col = requested_order[j]
                 if col < 0 or col >= n or seen[col] != 0:
                     raise Error("invalid sparse LDLT permutation")
                 seen[col] = 1
@@ -1844,7 +1870,7 @@ struct SparseLDLT(Movable):
         self._mode = mode
         var graph = _adjacency(n, col_ptr, row_idx)
         var symbolic = _choose_symbolic(
-            graph, len(row_idx), ordering, permutation, dense_multiplier
+            graph, len(row_idx), ordering, requested_order, dense_multiplier
         )
         symbolic.apply_postorder()
         self._order = symbolic.order.copy()
@@ -1869,13 +1895,39 @@ struct SparseLDLT(Movable):
         self._mark = _ints(n)
         self._reach = _ints(n)
         self._active_threads = 1
+        self._gpu = None
+        if self.gpu_requested:
+            require_gpu_backend()
+            if mode != SparseFactorMode.Supernodal:
+                raise Error("GPU LDLT requires supernodal factorization")
         if mode == SparseFactorMode.Supernodal:
-            if n >= 256 and self._flops >= _MIN_PARALLEL_WORK:
+            if not self.gpu_requested and n >= 256 and self._flops >= _MIN_PARALLEL_WORK:
                 self._active_threads = self._threads
             self._schedule_panels()
-            self._pool.start(self._active_threads)
+            if not self.gpu_requested:
+                self._pool.start(self._active_threads)
         self._factor.resize(self._col_start[n], 0.0)
+
+        @parameter
+        if gpu_build_enabled():
+            if self.gpu_requested:
+                if not self._matrix_input.compact or not self._scatter.compact:
+                    raise Error("GPU LDLT requires compact offsets")
+                if len(row_idx) >= 2_147_483_647 or len(self._factor) >= 2_147_483_647:
+                    raise Error("GPU LDLT requires signed 32-bit indexing")
+                self._gpu = GpuLdlt(
+                    DeviceContext(),
+                    self._panel_start,
+                    self._panel_row_ptr,
+                    self._panel_rows,
+                    self._col_start,
+                    self._updates_ptr,
+                    self._updates,
+                    self._matrix_input.narrow,
+                    self._scatter.narrow,
+                )
         self._analyzed = True
+        self._trace.pattern(n, col_ptr, row_idx)
 
     fn _install_pattern(mut self, col_ptr: List[Int], row_idx: List[Int]):
         var simple = self._mode == SparseFactorMode.Simplicial
@@ -1991,6 +2043,7 @@ struct SparseLDLT(Movable):
 
     fn factorize(mut self, values: List[Float64]) -> Bool:
         """Replace the numeric factor. Return False if a pivot is unsafe."""
+        var start = perf_counter_ns() if self._time_numeric else UInt64(0)
         self._negative = 0
         self._valid = False
         if not self._analyzed or len(values) != len(self._scale_row):
@@ -2014,11 +2067,33 @@ struct SparseLDLT(Movable):
                 largest = max(largest, magnitude)
                 scale[j] = max(scale[j], magnitude)
             scale[i] = largest
-        if self._mode == SparseFactorMode.Simplicial:
-            self._valid = self._factorize_simplicial(values)
-        else:
-            self._valid = self._factorize_supernodal(values)
+        self._valid = self._factorize_numeric(values)
+        if self._time_numeric:
+            print(
+                "LDLT numeric us:",
+                (perf_counter_ns() - start) // 1000,
+                "negative pivots:",
+                self._negative,
+            )
+        if self._valid:
+            self._trace.tangent(values)
         return self._valid
+
+    fn _factorize_numeric(mut self, values: List[Float64]) -> Bool:
+        @parameter
+        if gpu_build_enabled():
+            if self._gpu:
+                try:
+                    if not self._gpu.value().factorize(values, self._scale, self._factor):
+                        return False
+                except error:
+                    abort("Mojo GPU factorization failed. " + String(error))
+                for j in range(len(self._order)):
+                    self._negative += Int(self._factor[self._col_start[j]] < 0.0)
+                return True
+        if self._mode == SparseFactorMode.Simplicial:
+            return self._factorize_simplicial(values)
+        return self._factorize_supernodal(values)
 
     @always_inline
     fn _accept_pivot(mut self, k: Int, pivot: Float64) -> Bool:
@@ -2124,7 +2199,7 @@ struct SparseLDLT(Movable):
                 first = split
         for s in range(count):
             self._updates_ptr[s + 1] += self._updates_ptr[s]
-        self._updates.resize(self._updates_ptr[count], _PanelUpdate(0, 0, 0))
+        self._updates.resize(self._updates_ptr[count], PanelUpdate(0, 0, 0))
         var cursor = self._updates_ptr.copy()
         for s in range(count - 1, -1, -1):
             var first = row_ptr[s]
@@ -2134,7 +2209,7 @@ struct SparseLDLT(Movable):
                 var split = first + 1
                 while split < limit and Int(rows[split]) < panels[target + 1]:
                     split += 1
-                self._updates[cursor[target]] = _PanelUpdate(s, first, split)
+                self._updates[cursor[target]] = PanelUpdate(s, first, split)
                 cursor[target] += 1
                 first = split
         self._indices.resize(self._active_threads * (len(self._order) + 2 * self._max_front), 0)
@@ -2406,3 +2481,4 @@ struct SparseLDLT(Movable):
                 y[j] = pivot_rhs
         for i in range(n):
             output[order[i]] = y[i]
+        self._trace.solution(rhs, x)

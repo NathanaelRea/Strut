@@ -297,7 +297,7 @@ fn load_case_document(
     return loaded^
 
 
-fn parse_args() -> (String, String, String, String, String, String, Bool):
+fn parse_args() raises -> (String, String, String, String, String, String, Bool, String, Bool):
     var args = argv()
     var input_path = arg_value(args, "--input")
     var input_bin_path = arg_value(args, "--input-bin")
@@ -306,10 +306,27 @@ fn parse_args() -> (String, String, String, String, String, String, Bool):
     var batch_path = arg_value(args, "--batch")
     var profile_path = arg_value(args, "--profile")
     var compute_only = False
+    var backend = ""
+    var explain_backend = False
     for i in range(len(args)):
-        if String(args[i]) == "--compute-only":
+        var option = String(args[i])
+        if option == "--compute-only":
             compute_only = True
-            break
+        elif option == "--explain-backend":
+            explain_backend = True
+        elif option == "--backend" or option.startswith("--backend="):
+            if backend != "":
+                raise Error("--backend can only be supplied once")
+            if option == "--backend":
+                if i + 1 >= len(args):
+                    raise Error("--backend requires one value: cpu, gpu, or auto")
+                backend = String(args[i + 1])
+            else:
+                backend = String(StringSlice(unsafe_from_utf8=option.as_bytes()[10:]))
+            if backend == "":
+                raise Error("--backend requires one value: cpu, gpu, or auto")
+            if backend != "cpu" and backend != "gpu" and backend != "auto":
+                raise Error("--backend must be cpu, gpu, or auto")
     return (
         input_path,
         input_bin_path,
@@ -318,4 +335,6 @@ fn parse_args() -> (String, String, String, String, String, String, Bool):
         batch_path,
         profile_path,
         compute_only,
+        backend,
+        explain_backend,
     )
