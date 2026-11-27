@@ -892,6 +892,13 @@ def _clear_parser_check(case_root: Path) -> None:
     (case_root / ".parser-check").unlink(missing_ok=True)
 
 
+def _has_direct_tcl_parser_check(case: CaseSpec) -> bool:
+    return (
+        case.tcl_path is not None
+        and (_direct_case_root(case) / ".parser-check").exists()
+    )
+
+
 def _require_direct_tcl_parser_check(case: CaseSpec) -> Path:
     if case.tcl_path is None:
         raise SystemExit(
@@ -2875,8 +2882,12 @@ def main() -> None:
                 case.tcl_path is not None
                 and require_direct_tcl_parser_check
                 and not case.opensees_only
+                and not _has_direct_tcl_parser_check(case)
             ):
-                _require_direct_tcl_parser_check(case)
+                log(
+                    f"{case.name}: OpenSees runs the original Tcl because the "
+                    "generated Tcl has no parser-check."
+                )
             prepared_case_data[case.name] = case_data
         except (OSError, ValueError, subprocess.CalledProcessError, SystemExit) as exc:
             setup_failures.append(
@@ -2939,8 +2950,10 @@ def main() -> None:
                 return case_entry
             direct_case_root = _direct_case_root(case)
             generated_tcl = direct_case_root / "generated" / "model.tcl"
-            _require_direct_tcl_parser_check(case)
-            if generated_tcl.exists():
+            # Time OpenSees on the round-tripped Tcl when it was checked against
+            # the original; otherwise on the original script, which the parity
+            # suite already checks against Strut.
+            if generated_tcl.exists() and _has_direct_tcl_parser_check(case):
                 generated_copy = results_root / "tcl" / f"{case_name}.tcl"
                 shutil.copy2(generated_tcl, generated_copy)
                 generated_compute = (
@@ -2969,6 +2982,7 @@ def main() -> None:
                 )
                 case_entry["tcl"] = str(tcl_compute)
                 case_entry["uses_eigen"] = _tcl_uses_eigen(tcl_compute)
+                case_entry["opensees_input"] = "original"
         else:
             case_json = _case_json_path(case)
             tcl_out = _emit_case_tcl(
