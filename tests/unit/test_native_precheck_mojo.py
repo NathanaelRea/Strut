@@ -1,6 +1,8 @@
 import subprocess
 from pathlib import Path
 
+from scripts.mojo_target import mojo_target_args
+
 
 def _run_precheck_script(tmp_path: Path, case_json: str, include_recorders: bool):
     repo_root = Path(__file__).resolve().parents[2]
@@ -25,6 +27,7 @@ def _run_precheck_script(tmp_path: Path, case_json: str, include_recorders: bool
             "uv",
             "run",
             "mojo",
+            *mojo_target_args(),
             "-I",
             str(repo_root / "src" / "mojo"),
             str(script_path),

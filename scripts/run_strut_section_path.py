@@ -30,7 +30,7 @@ def main():
     verbose = os.getenv("STRUT_VERBOSE") == "1"
     bin_path = repo_root / "build" / "strut" / "section_path"
     entry = repo_root / "src" / "mojo" / "section_path.mojo"
-    ensure_built(
+    bin_path = ensure_built(
         uv,
         entry,
         bin_path,

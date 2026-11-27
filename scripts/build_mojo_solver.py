@@ -7,6 +7,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+from mojo_target import mojo_target_args
+
 
 def _run_capture_output(cmd: list[str]) -> tuple[int, str]:
     proc = subprocess.run(
@@ -19,9 +21,11 @@ def _run_capture_output(cmd: list[str]) -> tuple[int, str]:
     return proc.returncode, proc.stdout
 
 
-def _source_fingerprint(src_root: Path, out_name: str) -> str:
+def _source_fingerprint(src_root: Path, out_name: str, target_args: list[str]) -> str:
     digest = hashlib.sha256()
     digest.update(f"out_name={out_name}\n".encode("utf-8"))
+    for arg in target_args:
+        digest.update(f"{arg}\n".encode("utf-8"))
     for src_path in sorted(src_root.rglob("*.mojo")):
         rel_path = src_path.relative_to(src_root).as_posix()
         digest.update(rel_path.encode("utf-8"))
@@ -64,11 +68,13 @@ def main() -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     out_name = "strut"
+    target_args = mojo_target_args()
     build_cmd = [
         "uv",
         "run",
         "mojo",
         "build",
+        *target_args,
         "--diagnostic-format",
         "json",
         str(src_root / "strut.mojo"),
@@ -79,7 +85,7 @@ def main() -> int:
 
     out_bin = out_dir / out_name
     stamp_file = Path(f"{out_bin}.src-sha256")
-    source_fingerprint = _source_fingerprint(src_root, out_name)
+    source_fingerprint = _source_fingerprint(src_root, out_name, target_args)
 
     if out_bin.exists() and stamp_file.exists():
         cached_fingerprint = stamp_file.read_text(encoding="utf-8").strip()
@@ -87,6 +93,7 @@ def main() -> int:
             print(f"Build cache hit {out_bin}")
             return 0
 
+    stamp_file.unlink(missing_ok=True)
     build_cmd.extend(["-o", str(out_bin)])
 
     tmp_handle = tempfile.NamedTemporaryFile(

@@ -1,6 +1,8 @@
 import subprocess
 from pathlib import Path
 
+from scripts.mojo_target import mojo_target_args
+
 
 def test_json_cache_mojo_suite():
     repo_root = Path(__file__).resolve().parents[2]
@@ -10,6 +12,7 @@ def test_json_cache_mojo_suite():
             "run",
             "mojo",
             "test",
+            *mojo_target_args(),
             "-I",
             str(repo_root / "src" / "mojo"),
             str(repo_root / "tests" / "mojo" / "test_json_cache.mojo"),
