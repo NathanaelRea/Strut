@@ -118,7 +118,11 @@ def _resolve_in_subprocess(case_path: Path, work_dir: Path) -> tuple[str, Path] 
         check=False,
     )
     if proc.returncode != 0:
-        lines = (proc.stderr or proc.stdout).strip().splitlines()
+        output = proc.stderr or proc.stdout
+        if "MemoryError" in output:
+            limit_gb = SETUP_MEMORY_LIMIT_BYTES // 1024**3
+            return f"conversion needs more than {limit_gb} GB (static unroll of a live-replay script)"
+        lines = output.strip().splitlines()
         return lines[-1] if lines else f"exit {proc.returncode}"
     name, path = json.loads(proc.stdout.strip().splitlines()[-1])
     return name, Path(path)

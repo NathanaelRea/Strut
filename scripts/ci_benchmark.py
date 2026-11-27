@@ -37,6 +37,7 @@ import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass, field
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -352,17 +353,26 @@ def cmd_prepare(args: argparse.Namespace) -> int:
     timed = {case.name: case for case in TIMED_VALIDATION_CASES}
     skipped = []
     validation_dir = suite_dir / "_validation"
-    for name in _validation_names():
-        try:
-            _, path = ab_compare._resolved_input(
-                ab_compare._resolve_named_case(name), validation_dir
+    names = _validation_names()
+    # Capped subprocesses, as in ab_compare: converting some live-replay scripts
+    # statically needs more memory than a runner has.
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        outcomes = list(
+            pool.map(
+                lambda name: ab_compare._resolve_in_subprocess(
+                    ab_compare._resolve_named_case(name), validation_dir
+                ),
+                names,
             )
-        except (Exception, SystemExit) as exc:  # noqa: BLE001 - report and continue
-            reason = str(exc).splitlines()[0]
+        )
+    for name, outcome in zip(names, outcomes):
+        if isinstance(outcome, str):
+            reason = outcome
             # Name the missing file, not the scratch path it was looked up in.
             reason = re.sub(r'"[^"]*/([^"/]+)"', r'"\1"', reason).split(" at /")[0]
             skipped.append({"name": name, "reason": reason})
             continue
+        _, path = outcome
         spec = timed.get(name)
         entries.append(
             _entry(
