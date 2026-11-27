@@ -13,6 +13,7 @@ from collections import Dict, List
 from math import atan2, sqrt
 from os import abort
 from python import Python, PythonObject
+from time import perf_counter_ns
 
 from elements import (
     beam2d_basic_fixed_end_and_reactions,
@@ -157,6 +158,42 @@ fn _write_run_progress(
     text += "}\n"
     file_obj.write(PythonObject(text))
     file_obj.close()
+
+
+# Step and stage progress is advisory, and one write costs more than a whole step of a
+# small model, so it is rate limited by wall time. Model size needs no special case:
+# steps slower than the interval still report every step.
+alias RUN_PROGRESS_MIN_INTERVAL_NS: Int = 100_000_000
+
+
+fn _write_run_progress_throttled(
+    progress_path: String,
+    status: String,
+    analysis_type: String,
+    stage_number: Int,
+    stage_count: Int,
+    step_number: Int,
+    step_count: Int,
+    mut last_write_ns: Int,
+) raises:
+    if len(progress_path) == 0:
+        return
+    # A negative `last_write_ns` turns the limit off: the interactive Tcl replay
+    # reads the failed step from this file, so there it must be exact.
+    if last_write_ns >= 0:
+        var now_ns = Int(perf_counter_ns())
+        if now_ns - last_write_ns < RUN_PROGRESS_MIN_INTERVAL_NS:
+            return
+        last_write_ns = now_ns
+    _write_run_progress(
+        progress_path,
+        status,
+        analysis_type,
+        stage_number,
+        stage_count,
+        step_number,
+        step_count,
+    )
 
 
 fn _elem_dof_map(elem: ElementInput) -> List[Int]:

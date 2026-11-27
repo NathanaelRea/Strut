@@ -7,6 +7,9 @@ from time import perf_counter_ns
 from elements import (
     ForceBeamColumn2dScratch,
     beam2d_element_load_global,
+    beam2d_element_load_global_array,
+    beam2d_global_stiffness_flat,
+    beam2d_pdelta_global_stiffness_flat,
     beam2d_corotational_global_tangent_and_internal,
     beam2d_pdelta_global_stiffness,
     beam2d_pdelta_global_internal_force,
@@ -81,6 +84,7 @@ fn _assemble_frame2d_native_soa_indices[
     mut force_beam_column2d_scratch: ForceBeamColumn2dScratch,
     mut dof_map6: List[Int],
     mut u_elem6: List[Float64],
+    mut k_flat: List[Float64],
     mut backend: S,
     mut F_int: List[Float64],
     do_profile: Bool,
@@ -147,9 +151,7 @@ fn _assemble_frame2d_native_soa_indices[
                 backend.add_element_matrix(e, elem_free_pool, free_offset, 6, initial)
                 continue
         if elem_type == ElementTypeTag.ElasticBeamColumn2d:
-            var k_global: List[List[Float64]] = []
-            var f_elem: List[Float64] = []
-            var f_load_global = beam2d_element_load_global(
+            var f_load_global = beam2d_element_load_global_array(
                 element_loads,
                 elem_load_offsets,
                 elem_load_pool,
@@ -160,35 +162,42 @@ fn _assemble_frame2d_native_soa_indices[
                 x2,
                 y2,
             )
-            if elem_geom_tags[e] == GeomTransfTag.Linear:
-                k_global = beam_global_stiffness(sec.E, sec.A, sec.I, x1, y1, x2, y2)
-            elif elem_geom_tags[e] == GeomTransfTag.PDelta:
-                for i in range(6):
-                    u_elem6[i] = u[dof_map6[i]]
-                k_global = beam2d_pdelta_global_stiffness(
-                    sec.E, sec.A, sec.I, x1, y1, x2, y2, u_elem6
-                )
-                f_elem = beam2d_pdelta_global_internal_force(
-                    sec.E, sec.A, sec.I, x1, y1, x2, y2, u_elem6
-                )
-            elif elem_geom_tags[e] == GeomTransfTag.Corotational:
+            if elem_geom_tags[e] == GeomTransfTag.Corotational:
+                var k_global: List[List[Float64]] = []
+                var f_elem: List[Float64] = []
                 for i in range(6):
                     u_elem6[i] = u[dof_map6[i]]
                 beam2d_corotational_global_tangent_and_internal(
                     sec.E, sec.A, sec.I, x1, y1, x2, y2, u_elem6, k_global, f_elem
                 )
-            else:
-                abort("unsupported geomTransf tag")
-
-            backend.add_element_matrix(e, elem_free_pool, free_offset, 6, k_global)
-            if len(f_elem) != 0:
+                backend.add_element_matrix(e, elem_free_pool, free_offset, 6, k_global)
                 for a in range(6):
                     F_int[dof_map6[a]] += f_elem[a] - f_load_global[a]
             else:
-                for a in range(6):
-                    F_int[dof_map6[a]] += (
-                        _dot_row_simd(k_global[a], dof_map6, u, 6) - f_load_global[a]
+                if elem_geom_tags[e] == GeomTransfTag.Linear:
+                    beam2d_global_stiffness_flat(sec.E, sec.A, sec.I, x1, y1, x2, y2, k_flat)
+                elif elem_geom_tags[e] == GeomTransfTag.PDelta:
+                    for i in range(6):
+                        u_elem6[i] = u[dof_map6[i]]
+                    beam2d_pdelta_global_stiffness_flat(
+                        sec.E, sec.A, sec.I, x1, y1, x2, y2, u_elem6, k_flat
                     )
+                else:
+                    abort("unsupported geomTransf tag")
+                backend.add_element_matrix_flat(e, elem_free_pool, free_offset, 6, k_flat)
+                if elem_geom_tags[e] == GeomTransfTag.PDelta:
+                    # Basic forces first, as ElasticBeam2d does: K*u cancels large
+                    # terms on nearly released, axially rigid members.
+                    var f_elem = beam2d_pdelta_global_internal_force(
+                        sec.E, sec.A, sec.I, x1, y1, x2, y2, u_elem6
+                    )
+                    for a in range(6):
+                        F_int[dof_map6[a]] += f_elem[a] - f_load_global[a]
+                else:
+                    for a in range(6):
+                        F_int[dof_map6[a]] += (
+                            _dot_row_simd(k_flat, dof_map6, u, 6, a * 6) - f_load_global[a]
+                        )
             if runtime_metrics.enabled:
                 _profile_metrics_note_element_timing(
                     runtime_metrics,

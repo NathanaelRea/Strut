@@ -3,6 +3,7 @@ from solver.run_case.analysis.transient_state import TransientState
 from collections import List
 from os import abort, getenv
 from python import Python, PythonObject
+from time import perf_counter_ns
 
 from solver.assembly import assemble_internal_forces_typed_soa
 from solver.dof import node_dof_index, require_dof_in_range
@@ -74,6 +75,7 @@ from solver.run_case.helpers import (
     _has_recorder_type,
     _section_response_for_recorder,
     _write_run_progress,
+    _write_run_progress_throttled,
     _update_envelope,
 )
 from strut_io import CaseSourceInfo
@@ -204,6 +206,10 @@ def run_case_input(
     var runtime_metrics = RuntimeProfileMetrics()
     runtime_metrics.enabled = do_profile
     _write_run_progress(progress_path, "loading", "case", 0, 0, 0, 0)
+    var progress_last_ns = Int(perf_counter_ns())
+    if replay != "" and replay != "1":
+        # The `progress` and `hs-window` replays read the failed step back.
+        progress_last_ns = -1
 
     var frame_total = PROFILE_FRAME_TOTAL
     var frame_assemble = PROFILE_FRAME_ASSEMBLE
@@ -568,6 +574,7 @@ def run_case_input(
                 progress_path,
                 1,
                 1,
+                progress_last_ns,
                 do_profile,
                 t0,
                 events,
@@ -668,6 +675,7 @@ def run_case_input(
                 progress_path,
                 1,
                 1,
+                progress_last_ns,
                 do_profile,
                 t0,
                 events,
@@ -899,6 +907,7 @@ def run_case_input(
             progress_path,
             1,
             1,
+            progress_last_ns,
             has_transformation_mpc,
             mpc_slave_dof,
             mpc_row_offsets,
@@ -1159,7 +1168,7 @@ def run_case_input(
                 stage_rayleigh_beta_k = stage.rayleigh.beta_k
                 stage_rayleigh_beta_k_init = stage.rayleigh.beta_k_init
                 stage_rayleigh_beta_k_comm = stage.rayleigh.beta_k_comm
-            _write_run_progress(
+            _write_run_progress_throttled(
                 progress_path,
                 "running_stage",
                 stage_type,
@@ -1167,6 +1176,7 @@ def run_case_input(
                 len(stages),
                 0,
                 stage_analysis.steps,
+                progress_last_ns,
             )
             var stage_const_F = F_const.copy()
             if len(stage.constant_loads) > 0:
@@ -1402,6 +1412,7 @@ def run_case_input(
                         progress_path,
                         stage_idx + 1,
                         len(stages),
+                        progress_last_ns,
                         do_profile,
                         t0,
                         events,
@@ -1519,6 +1530,7 @@ def run_case_input(
                         progress_path,
                         stage_idx + 1,
                         len(stages),
+                        progress_last_ns,
                         do_profile,
                         t0,
                         events,
@@ -1766,6 +1778,7 @@ def run_case_input(
                     progress_path,
                     stage_idx + 1,
                     len(stages),
+                    progress_last_ns,
                     has_transformation_mpc,
                     mpc_slave_dof,
                     mpc_row_offsets,

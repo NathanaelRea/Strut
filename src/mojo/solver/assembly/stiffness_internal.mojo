@@ -2280,6 +2280,7 @@ fn assemble_global_stiffness_and_internal_native_soa[
         force_beam_column2d_scratch,
         dof_map6,
         u_elem6,
+        k_flat,
         backend,
         F_int,
         do_profile,

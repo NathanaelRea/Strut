@@ -130,7 +130,7 @@ from solver.run_case.helpers import (
     _section_response_for_recorder,
     _select_element_recorder_dofs,
     _sync_force_beam_column2d_committed_basic_states,
-    _write_run_progress,
+    _write_run_progress_throttled,
     _update_envelope,
 )
 from tag_types import (
@@ -1008,6 +1008,7 @@ fn run_transient_nonlinear(
     progress_path: String,
     progress_stage_number: Int,
     progress_stage_count: Int,
+    mut progress_last_ns: Int,
     base_has_transformation_mpc: Bool,
     mpc_slave_dof: List[Bool],
     mpc_row_offsets: List[Int],
@@ -1035,7 +1036,7 @@ fn run_transient_nonlinear(
     mut runtime_metrics: RuntimeProfileMetrics,
 ) raises:
     var time = Python.import_module("time")
-    _write_run_progress(
+    _write_run_progress_throttled(
         progress_path,
         "running_stage",
         "transient_nonlinear",
@@ -1043,6 +1044,7 @@ fn run_transient_nonlinear(
         progress_stage_count,
         0,
         steps,
+        progress_last_ns,
     )
     var asm_dof_map6: List[Int] = []
     var asm_dof_map12: List[Int] = []
@@ -1865,7 +1867,7 @@ fn run_transient_nonlinear(
 
     var t = analysis.start_time
     for step in range(steps):
-        _write_run_progress(
+        _write_run_progress_throttled(
             progress_path,
             "running_step",
             "transient_nonlinear",
@@ -1873,6 +1875,7 @@ fn run_transient_nonlinear(
             progress_stage_count,
             step + 1,
             steps,
+            progress_last_ns,
         )
         if do_profile:
             var t_step_start = Int(time.perf_counter_ns())
@@ -3730,7 +3733,7 @@ fn run_transient_nonlinear(
         transient_output_buffers,
         output_file_index,
     )
-    _write_run_progress(
+    _write_run_progress_throttled(
         progress_path,
         "stage_complete",
         "transient_nonlinear",
@@ -3738,4 +3741,5 @@ fn run_transient_nonlinear(
         progress_stage_count,
         steps,
         steps,
+        progress_last_ns,
     )

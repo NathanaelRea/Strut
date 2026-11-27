@@ -26,7 +26,7 @@ fn _ensure_zero_matrix(mut mat: List[List[Float64]], rows: Int, cols: Int):
 
 
 fn _zero_matrix(rows: Int, cols: Int) -> List[List[Float64]]:
-    var out: List[List[Float64]] = []
+    var out = List[List[Float64]](capacity=rows)
     for _ in range(rows):
         var row: List[Float64] = []
         row.resize(cols, 0.0)

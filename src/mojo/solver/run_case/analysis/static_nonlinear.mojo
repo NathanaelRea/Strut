@@ -93,7 +93,7 @@ from solver.run_case.helpers import (
     _has_recorder_type,
     _section_response_for_recorder,
     _sync_force_beam_column2d_committed_basic_states,
-    _write_run_progress,
+    _write_run_progress_throttled,
     _update_envelope,
 )
 from solver.run_case.load_state import (
@@ -803,6 +803,7 @@ fn run_static_nonlinear_load_control(
     progress_path: String,
     progress_stage_number: Int,
     progress_stage_count: Int,
+    mut progress_last_ns: Int,
     do_profile: Bool,
     t0: Int,
     mut events: String,
@@ -828,7 +829,7 @@ fn run_static_nonlinear_load_control(
     previous_iterations: Int = 0,
 ) raises -> Tuple[Float64, Float64, Int]:
     var time = Python.import_module("time")
-    _write_run_progress(
+    _write_run_progress_throttled(
         progress_path,
         "running_stage",
         "static_nonlinear",
@@ -836,6 +837,7 @@ fn run_static_nonlinear_load_control(
         progress_stage_count,
         0,
         steps,
+        progress_last_ns,
     )
     var asm_dof_map6: List[Int] = []
     var asm_dof_map12: List[Int] = []
@@ -1190,7 +1192,7 @@ fn run_static_nonlinear_load_control(
     var next_recorder_time: List[Float64] = []
     next_recorder_time.resize(len(recorders), 0.0)
     for step in range(steps):
-        _write_run_progress(
+        _write_run_progress_throttled(
             progress_path,
             "running_step",
             "static_nonlinear",
@@ -1198,6 +1200,7 @@ fn run_static_nonlinear_load_control(
             progress_stage_count,
             step + 1,
             steps,
+            progress_last_ns,
         )
         if do_profile:
             var t_step_start = Int(time.perf_counter_ns())
@@ -2588,7 +2591,7 @@ fn run_static_nonlinear_load_control(
         static_output_files,
         static_output_buffers,
     )
-    _write_run_progress(
+    _write_run_progress_throttled(
         progress_path,
         "stage_complete",
         "static_nonlinear",
@@ -2596,6 +2599,7 @@ fn run_static_nonlinear_load_control(
         progress_stage_count,
         steps,
         steps,
+        progress_last_ns,
     )
     return (load_control_time, current_step_size, last_step_iters)
 
@@ -2674,6 +2678,7 @@ fn run_static_nonlinear_displacement_control(
     progress_path: String,
     progress_stage_number: Int,
     progress_stage_count: Int,
+    mut progress_last_ns: Int,
     do_profile: Bool,
     t0: Int,
     mut events: String,
@@ -2696,7 +2701,7 @@ fn run_static_nonlinear_displacement_control(
     mut runtime_metrics: RuntimeProfileMetrics,
 ) raises -> Float64:
     var time = Python.import_module("time")
-    _write_run_progress(
+    _write_run_progress_throttled(
         progress_path,
         "running_stage",
         "static_nonlinear",
@@ -2704,6 +2709,7 @@ fn run_static_nonlinear_displacement_control(
         progress_stage_count,
         0,
         steps,
+        progress_last_ns,
     )
     var asm_dof_map6: List[Int] = []
     var asm_dof_map12: List[Int] = []
@@ -3131,7 +3137,7 @@ fn run_static_nonlinear_displacement_control(
                 current_du_step < 0.0 and u[control_idx] <= limit
             ):
                 break
-        _write_run_progress(
+        _write_run_progress_throttled(
             progress_path,
             "running_step",
             "static_nonlinear",
@@ -3139,6 +3145,7 @@ fn run_static_nonlinear_displacement_control(
             progress_stage_count,
             step + 1,
             steps,
+            progress_last_ns,
         )
         if do_profile:
             var t_step_start = Int(time.perf_counter_ns())
@@ -4747,7 +4754,7 @@ fn run_static_nonlinear_displacement_control(
         static_output_files,
         static_output_buffers,
     )
-    _write_run_progress(
+    _write_run_progress_throttled(
         progress_path,
         "stage_complete",
         "static_nonlinear",
@@ -4755,5 +4762,6 @@ fn run_static_nonlinear_displacement_control(
         progress_stage_count,
         steps,
         steps,
+        progress_last_ns,
     )
     return load_scale_derivative * load_factor

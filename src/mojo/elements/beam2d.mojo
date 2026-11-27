@@ -1,4 +1,4 @@
-from collections import List
+from collections import InlineArray, List
 from math import atan2, hypot, sqrt
 from os import abort
 
@@ -22,6 +22,19 @@ fn _beam2d_transform_u_global_to_local(
     return u_local^
 
 
+fn _beam2d_transform_force_local_to_global_array(
+    c: Float64, s: Float64, f_local: InlineArray[Float64, 6]
+) -> InlineArray[Float64, 6]:
+    var f_global = InlineArray[Float64, 6](fill=0.0)
+    f_global[0] = c * f_local[0] - s * f_local[1]
+    f_global[1] = s * f_local[0] + c * f_local[1]
+    f_global[2] = f_local[2]
+    f_global[3] = c * f_local[3] - s * f_local[4]
+    f_global[4] = s * f_local[3] + c * f_local[4]
+    f_global[5] = f_local[5]
+    return f_global
+
+
 fn _beam2d_transform_force_local_to_global(
     c: Float64, s: Float64, f_local: List[Float64]
 ) -> List[Float64]:
@@ -36,76 +49,157 @@ fn _beam2d_transform_force_local_to_global(
     return f_global^
 
 
-fn _beam2d_transform_stiffness_local_to_global(
-    c: Float64, s: Float64, k_local: List[List[Float64]]
-) -> List[List[Float64]]:
-    var tmp = _zero_matrix(6, 6)
-    for i in range(6):
-        var r0 = k_local[i][0]
-        var r1 = k_local[i][1]
-        var r3 = k_local[i][3]
-        var r4 = k_local[i][4]
-        tmp[i][0] = c * r0 - s * r1
-        tmp[i][1] = s * r0 + c * r1
-        tmp[i][2] = k_local[i][2]
-        tmp[i][3] = c * r3 - s * r4
-        tmp[i][4] = s * r3 + c * r4
-        tmp[i][5] = k_local[i][5]
-
-    var k_global = _zero_matrix(6, 6)
-    for j in range(6):
-        var t0 = tmp[0][j]
-        var t1 = tmp[1][j]
-        var t3 = tmp[3][j]
-        var t4 = tmp[4][j]
-        k_global[0][j] = c * t0 - s * t1
-        k_global[1][j] = s * t0 + c * t1
-        k_global[2][j] = tmp[2][j]
-        k_global[3][j] = c * t3 - s * t4
-        k_global[4][j] = s * t3 + c * t4
-        k_global[5][j] = tmp[5][j]
-
-    return k_global^
+# The element matrices below are built in fixed-size stack arrays. A nested
+# List[List[Float64]] costs about ten heap allocations per 6x6 matrix, which is most
+# of a load step for a model with a handful of elements.
 
 
-fn beam_local_stiffness(E: Float64, A: Float64, I: Float64, L: Float64) -> List[List[Float64]]:
-    var k: List[List[Float64]] = []
-    for _ in range(6):
-        var row: List[Float64] = []
-        row.resize(6, 0.0)
-        k.append(row^)
+fn _beam2d_local_stiffness_array(
+    E: Float64, A: Float64, I: Float64, L: Float64
+) -> InlineArray[Float64, 36]:
+    var k = InlineArray[Float64, 36](fill=0.0)
 
     var EA_L = E * A / L
     var EI = E * I
     var L2 = L * L
     var L3 = L2 * L
 
-    k[0][0] = EA_L
-    k[0][3] = -EA_L
-    k[3][0] = -EA_L
-    k[3][3] = EA_L
+    k[0] = EA_L
+    k[3] = -EA_L
+    k[18] = -EA_L
+    k[21] = EA_L
 
-    k[1][1] = 12.0 * EI / L3
-    k[1][2] = 6.0 * EI / L2
-    k[1][4] = -12.0 * EI / L3
-    k[1][5] = 6.0 * EI / L2
+    k[7] = 12.0 * EI / L3
+    k[8] = 6.0 * EI / L2
+    k[10] = -12.0 * EI / L3
+    k[11] = 6.0 * EI / L2
 
-    k[2][1] = 6.0 * EI / L2
-    k[2][2] = 4.0 * EI / L
-    k[2][4] = -6.0 * EI / L2
-    k[2][5] = 2.0 * EI / L
+    k[13] = 6.0 * EI / L2
+    k[14] = 4.0 * EI / L
+    k[16] = -6.0 * EI / L2
+    k[17] = 2.0 * EI / L
 
-    k[4][1] = -12.0 * EI / L3
-    k[4][2] = -6.0 * EI / L2
-    k[4][4] = 12.0 * EI / L3
-    k[4][5] = -6.0 * EI / L2
+    k[25] = -12.0 * EI / L3
+    k[26] = -6.0 * EI / L2
+    k[28] = 12.0 * EI / L3
+    k[29] = -6.0 * EI / L2
 
-    k[5][1] = 6.0 * EI / L2
-    k[5][2] = 2.0 * EI / L
-    k[5][4] = -6.0 * EI / L2
-    k[5][5] = 4.0 * EI / L
+    k[31] = 6.0 * EI / L2
+    k[32] = 2.0 * EI / L
+    k[34] = -6.0 * EI / L2
+    k[35] = 4.0 * EI / L
 
-    return k^
+    return k
+
+
+fn _beam2d_rotate_stiffness_array(
+    c: Float64, s: Float64, k_local: InlineArray[Float64, 36]
+) -> InlineArray[Float64, 36]:
+    var tmp = InlineArray[Float64, 36](fill=0.0)
+    for i in range(6):
+        var row = i * 6
+        var r0 = k_local[row]
+        var r1 = k_local[row + 1]
+        var r3 = k_local[row + 3]
+        var r4 = k_local[row + 4]
+        tmp[row] = c * r0 - s * r1
+        tmp[row + 1] = s * r0 + c * r1
+        tmp[row + 2] = k_local[row + 2]
+        tmp[row + 3] = c * r3 - s * r4
+        tmp[row + 4] = s * r3 + c * r4
+        tmp[row + 5] = k_local[row + 5]
+
+    var k_global = InlineArray[Float64, 36](fill=0.0)
+    for j in range(6):
+        var t0 = tmp[j]
+        var t1 = tmp[6 + j]
+        var t3 = tmp[18 + j]
+        var t4 = tmp[24 + j]
+        k_global[j] = c * t0 - s * t1
+        k_global[6 + j] = s * t0 + c * t1
+        k_global[12 + j] = tmp[12 + j]
+        k_global[18 + j] = c * t3 - s * t4
+        k_global[24 + j] = s * t3 + c * t4
+        k_global[30 + j] = tmp[30 + j]
+
+    return k_global
+
+
+fn _beam2d_matrix_from_array(k: InlineArray[Float64, 36]) -> List[List[Float64]]:
+    var out = List[List[Float64]](capacity=6)
+    for i in range(6):
+        var row = List[Float64](capacity=6)
+        for j in range(6):
+            row.append(k[i * 6 + j])
+        out.append(row^)
+    return out^
+
+
+fn _beam2d_transform_stiffness_local_to_global(
+    c: Float64, s: Float64, k_local: List[List[Float64]]
+) -> List[List[Float64]]:
+    var flat = InlineArray[Float64, 36](fill=0.0)
+    for i in range(6):
+        for j in range(6):
+            flat[i * 6 + j] = k_local[i][j]
+    return _beam2d_matrix_from_array(_beam2d_rotate_stiffness_array(c, s, flat))
+
+
+fn _beam2d_global_stiffness_array(
+    E: Float64,
+    A: Float64,
+    I: Float64,
+    x1: Float64,
+    y1: Float64,
+    x2: Float64,
+    y2: Float64,
+) -> InlineArray[Float64, 36]:
+    var dx = x2 - x1
+    var dy = y2 - y1
+    var L = hypot(dx, dy)
+    if L == 0.0:
+        abort("zero-length element")
+    var c = dx / L
+    var s = dy / L
+
+    return _beam2d_rotate_stiffness_array(c, s, _beam2d_local_stiffness_array(E, A, I, L))
+
+
+fn _beam2d_pdelta_global_stiffness_array(
+    E: Float64,
+    A: Float64,
+    I: Float64,
+    x1: Float64,
+    y1: Float64,
+    x2: Float64,
+    y2: Float64,
+    u_elem_global: List[Float64],
+) -> InlineArray[Float64, 36]:
+    var dx = x2 - x1
+    var dy = y2 - y1
+    var L = hypot(dx, dy)
+    if L == 0.0:
+        abort("zero-length element")
+    var c = dx / L
+    var s = dy / L
+
+    var u_local_0 = c * u_elem_global[0] + s * u_elem_global[1]
+    var u_local_3 = c * u_elem_global[3] + s * u_elem_global[4]
+    var du = u_local_3 - u_local_0
+    var N = (E * A / L) * du
+    var N_over_L = N / L
+
+    var k_local = _beam2d_local_stiffness_array(E, A, I, L)
+    k_local[7] += N_over_L
+    k_local[28] += N_over_L
+    k_local[10] -= N_over_L
+    k_local[25] -= N_over_L
+
+    return _beam2d_rotate_stiffness_array(c, s, k_local)
+
+
+fn beam_local_stiffness(E: Float64, A: Float64, I: Float64, L: Float64) -> List[List[Float64]]:
+    return _beam2d_matrix_from_array(_beam2d_local_stiffness_array(E, A, I, L))
 
 
 fn beam_global_stiffness(
@@ -117,16 +211,40 @@ fn beam_global_stiffness(
     x2: Float64,
     y2: Float64,
 ) -> List[List[Float64]]:
-    var dx = x2 - x1
-    var dy = y2 - y1
-    var L = hypot(dx, dy)
-    if L == 0.0:
-        abort("zero-length element")
-    var c = dx / L
-    var s = dy / L
+    return _beam2d_matrix_from_array(_beam2d_global_stiffness_array(E, A, I, x1, y1, x2, y2))
 
-    var k_local = beam_local_stiffness(E, A, I, L)
-    return _beam2d_transform_stiffness_local_to_global(c, s, k_local)
+
+fn beam2d_global_stiffness_flat(
+    E: Float64,
+    A: Float64,
+    I: Float64,
+    x1: Float64,
+    y1: Float64,
+    x2: Float64,
+    y2: Float64,
+    mut k_flat: List[Float64],
+):
+    """Row-major 6x6 global stiffness into `k_flat[0:36]`, without allocating."""
+    var k = _beam2d_global_stiffness_array(E, A, I, x1, y1, x2, y2)
+    for i in range(36):
+        k_flat[i] = k[i]
+
+
+fn beam2d_pdelta_global_stiffness_flat(
+    E: Float64,
+    A: Float64,
+    I: Float64,
+    x1: Float64,
+    y1: Float64,
+    x2: Float64,
+    y2: Float64,
+    u_elem_global: List[Float64],
+    mut k_flat: List[Float64],
+):
+    """Row-major 6x6 PDelta global stiffness into `k_flat[0:36]`, without allocating."""
+    var k = _beam2d_pdelta_global_stiffness_array(E, A, I, x1, y1, x2, y2, u_elem_global)
+    for i in range(36):
+        k_flat[i] = k[i]
 
 
 fn beam_uniform_load_global_2d(
@@ -167,7 +285,7 @@ fn beam_uniform_load_global(
     return beam_uniform_load_global_2d(x1, y1, x2, y2, w, 0.0)
 
 
-fn beam2d_element_load_global(
+fn beam2d_element_load_global_array(
     element_loads: List[ElementLoadInput],
     elem_load_offsets: List[Int],
     elem_load_pool: List[Int],
@@ -177,11 +295,10 @@ fn beam2d_element_load_global(
     y1: Float64,
     x2: Float64,
     y2: Float64,
-) -> List[Float64]:
-    var f_local: List[Float64] = []
-    f_local.resize(6, 0.0)
+) -> InlineArray[Float64, 6]:
+    var f_local = InlineArray[Float64, 6](fill=0.0)
     if load_scale == 0.0:
-        return _beam2d_transform_force_local_to_global(1.0, 0.0, f_local)
+        return _beam2d_transform_force_local_to_global_array(1.0, 0.0, f_local)
 
     var dx = x2 - x1
     var dy = y2 - y1
@@ -217,7 +334,27 @@ fn beam2d_element_load_global(
             f_local[4] += py * (3.0 * xi2 - 2.0 * xi3)
             f_local[5] += py * L * (-xi2 + xi3)
 
-    return _beam2d_transform_force_local_to_global(c, s, f_local)
+    return _beam2d_transform_force_local_to_global_array(c, s, f_local)
+
+
+fn beam2d_element_load_global(
+    element_loads: List[ElementLoadInput],
+    elem_load_offsets: List[Int],
+    elem_load_pool: List[Int],
+    elem_index: Int,
+    load_scale: Float64,
+    x1: Float64,
+    y1: Float64,
+    x2: Float64,
+    y2: Float64,
+) -> List[Float64]:
+    var f = beam2d_element_load_global_array(
+        element_loads, elem_load_offsets, elem_load_pool, elem_index, load_scale, x1, y1, x2, y2
+    )
+    var out = List[Float64](capacity=6)
+    for i in range(6):
+        out.append(f[i])
+    return out^
 
 
 fn beam2d_pdelta_global_stiffness(
@@ -230,26 +367,9 @@ fn beam2d_pdelta_global_stiffness(
     y2: Float64,
     u_elem_global: List[Float64],
 ) -> List[List[Float64]]:
-    var dx = x2 - x1
-    var dy = y2 - y1
-    var L = hypot(dx, dy)
-    if L == 0.0:
-        abort("zero-length element")
-    var c = dx / L
-    var s = dy / L
-
-    var u_local = _beam2d_transform_u_global_to_local(c, s, u_elem_global)
-    var du = u_local[3] - u_local[0]
-    var N = (E * A / L) * du
-    var N_over_L = N / L
-
-    var k_local = beam_local_stiffness(E, A, I, L)
-    k_local[1][1] += N_over_L
-    k_local[4][4] += N_over_L
-    k_local[1][4] -= N_over_L
-    k_local[4][1] -= N_over_L
-
-    return _beam2d_transform_stiffness_local_to_global(c, s, k_local)
+    return _beam2d_matrix_from_array(
+        _beam2d_pdelta_global_stiffness_array(E, A, I, x1, y1, x2, y2, u_elem_global)
+    )
 
 
 fn beam2d_pdelta_global_internal_force(
