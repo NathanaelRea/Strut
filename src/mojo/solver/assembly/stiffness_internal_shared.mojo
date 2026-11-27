@@ -156,7 +156,7 @@ fn _scatter_add_and_dot_row_simd(
 @always_inline
 fn _dot_row_simd_impl[
     width: Int
-](k_row: List[Float64], dof_map: List[Int], u: List[Float64], count: Int) -> Float64:
+](k_row: List[Float64], dof_map: List[Int], u: List[Float64], count: Int, k_offset: Int) -> Float64:
     var sum = 0.0
     var b = 0
     while b + width <= count:
@@ -166,19 +166,22 @@ fn _dot_row_simd_impl[
         @parameter
         for lane in range(width):
             var bidx = dof_map[b + lane]
-            k_vec[lane] = k_row[b + lane]
+            k_vec[lane] = k_row[k_offset + b + lane]
             u_vec[lane] = u[bidx]
         sum += (k_vec * u_vec).reduce_add()
         b += width
     while b < count:
-        sum += k_row[b] * u[dof_map[b]]
+        sum += k_row[k_offset + b] * u[dof_map[b]]
         b += 1
     return sum
 
 
 @always_inline
-fn _dot_row_simd(k_row: List[Float64], dof_map: List[Int], u: List[Float64], count: Int) -> Float64:
-    return _dot_row_simd_impl[simd_width_of[DType.float64]()](k_row, dof_map, u, count)
+fn _dot_row_simd(
+    k_row: List[Float64], dof_map: List[Int], u: List[Float64], count: Int, k_offset: Int = 0
+) -> Float64:
+    """Dot of `k_row[k_offset : k_offset + count]` with `u` gathered through `dof_map`."""
+    return _dot_row_simd_impl[simd_width_of[DType.float64]()](k_row, dof_map, u, count, k_offset)
 
 
 fn _elem_node(elem: ElementInput, idx: Int) -> Int:
