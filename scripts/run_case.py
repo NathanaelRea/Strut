@@ -117,12 +117,17 @@ def _resolve_direct_tcl_source_files(
 
 
 def _prepare_direct_tcl_entry(
-    entry_tcl: Path, case_root: Path, source_files: list[Path] | None = None
+    entry_tcl: Path,
+    case_root: Path,
+    source_files: list[Path] | None = None,
+    *,
+    manifest_path: Path | None = None,
 ) -> tuple[Path, list[Path]]:
     return direct_tcl_support.prepare_direct_tcl_entry(
         entry_tcl,
         source_files or [entry_tcl],
         case_root / "generated" / "_direct_tcl_context",
+        manifest_path=manifest_path,
         excluded_roots=[case_root],
     )
 
@@ -612,7 +617,19 @@ def main():
     case_input = Path(args.case_input).resolve()
     entry_tcl = None
     manifest_path = None
-    hash_inputs = [case_input]
+    hash_inputs = [
+        case_input,
+        SCRIPT_DIR / "opensees" / "opensees-linux-64.lock",
+        Path(__file__),
+        Path(direct_tcl_support.__file__),
+        SCRIPT_DIR / "json_to_tcl.py",
+    ]
+    override = os.getenv("OPENSEES_BIN")
+    local_opensees = repo_root / ".build" / "opensees-linux" / "OpenSees"
+    if override:
+        hash_inputs.append(Path(override))
+    elif os.access(local_opensees, os.X_OK):
+        hash_inputs.append(local_opensees)
     if case_input.suffix == ".json":
         if _is_direct_tcl_manifest(case_input):
             data = _load_direct_tcl_manifest(case_input)
@@ -651,9 +668,8 @@ def main():
         assert entry_tcl is not None
         source_files = _resolve_direct_tcl_source_files(entry_tcl, manifest_path)
         runtime_entry_tcl, runtime_hash_inputs = _prepare_direct_tcl_entry(
-            entry_tcl, case_root, source_files
+            entry_tcl, case_root, source_files, manifest_path=manifest_path
         )
-        opensees_entry_tcl = _prepare_opensees_compat_entry(runtime_entry_tcl)
         hash_inputs.extend(runtime_hash_inputs)
 
     verbose = os.getenv("STRUT_VERBOSE") == "1"

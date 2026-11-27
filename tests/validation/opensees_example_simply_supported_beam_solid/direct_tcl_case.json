@@ -1,6 +1,7 @@
 {
   "name": "opensees_example_simply_supported_beam_solid",
   "entry_tcl": "tests/fixtures/opensees/OpenSeesExamplesBasic/simply_supported_beam_modeled_with_two_dimensional_solid_elements/Example6_4.tcl",
+  "tcl_source_version": "3.7.1",
   "enabled": true,
 
   "benchmark_size": "medium"

@@ -2,9 +2,33 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 from pathlib import Path
 from typing import Sequence
+
+
+_LEGACY_PATH_ASSIGNMENT = re.compile(
+    rb"^(?P<indent>[ \t]*)set[ \t]+(?P<variable>\w+)[ \t]+"
+    rb'"(?:Series|Path)[ \t]+-d[tT](?P<options>[ \t]+[^"\r\n]+)"'
+    rb"(?=[ \t]*(?:;|\r?$))",
+    re.MULTILINE,
+)
+
+
+def _upgrade_legacy_path_series(match: re.Match[bytes]) -> bytes:
+    indent, variable, options = match.group("indent", "variable", "options")
+    # Reserve high tags for the generated series, away from the fixture tags.
+    return (
+        b"%sset %s [expr {1000000000 + [incr ::__strut_legacy_path_tag]}]\n%stimeSeries Path $%s -dt%s"
+        % (
+            indent,
+            variable,
+            indent,
+            variable,
+            options,
+        )
+    )
 
 
 def ensure_clean_dir(path: Path) -> None:
@@ -185,6 +209,14 @@ def _ensure_direct_tcl_compat_aliases(
 
 
 def _patch_direct_tcl_compatibility(mirrored_tcl: Path, original_tcl: Path) -> None:
+    if original_tcl.name not in {
+        "Ex6.genericFrame2D.build.ElasticSection.tcl",
+        "Ex6.genericFrame2D.build.InelasticSection.tcl",
+        "Ex6.genericFrame2D.build.InelasticFiberRCSection.tcl",
+        "Ex6.genericFrame2D.build.InelasticFiberWSection.tcl",
+    }:
+        return
+
     text = mirrored_tcl.read_text(encoding="utf-8")
 
     if original_tcl.name == "Ex6.genericFrame2D.build.InelasticFiberWSection.tcl":
@@ -196,20 +228,14 @@ def _patch_direct_tcl_compatibility(mirrored_tcl: Path, original_tcl: Path) -> N
             else:
                 text = insert + text
 
-    if original_tcl.name in {
-        "Ex6.genericFrame2D.build.ElasticSection.tcl",
-        "Ex6.genericFrame2D.build.InelasticSection.tcl",
-        "Ex6.genericFrame2D.build.InelasticFiberRCSection.tcl",
-        "Ex6.genericFrame2D.build.InelasticFiberWSection.tcl",
-    }:
-        text = text.replace(
-            "mass $nodeID $MassNode 0.0 0.0 0.0 0.0 0.0;",
-            "mass $nodeID $MassNode 0.0 0.0;",
-        )
-        text = text.replace(
-            "mass $nodeID $MassNode 0. 0. 0. 0. 0.;",
-            "mass $nodeID $MassNode 0. 0.;",
-        )
+    text = text.replace(
+        "mass $nodeID $MassNode 0.0 0.0 0.0 0.0 0.0;",
+        "mass $nodeID $MassNode 0.0 0.0;",
+    )
+    text = text.replace(
+        "mass $nodeID $MassNode 0. 0. 0. 0. 0.;",
+        "mass $nodeID $MassNode 0. 0.;",
+    )
 
     mirrored_tcl.write_text(text, encoding="utf-8")
 
@@ -219,6 +245,7 @@ def prepare_direct_tcl_entry(
     source_files: Sequence[Path],
     mirror_root: Path,
     *,
+    manifest_path: Path | None = None,
     excluded_roots: Sequence[Path] = (),
 ) -> tuple[Path, list[Path]]:
     entry_path = entry_tcl.resolve()
@@ -265,6 +292,19 @@ def prepare_direct_tcl_entry(
         _patch_direct_tcl_compatibility(
             mirrored_script_dir / relative_path, source_path
         )
+    tcl_hash_inputs = list(resolved_sources)
+    if (
+        manifest_path is not None
+        and load_direct_tcl_manifest(manifest_path).get("tcl_source_version") == "3.7.1"
+    ):
+        for script in sorted(mirrored_script_dir.rglob("*.tcl")):
+            text = script.read_bytes()
+            upgraded = _LEGACY_PATH_ASSIGNMENT.sub(_upgrade_legacy_path_series, text)
+            if upgraded != text:
+                script.write_bytes(upgraded)
+            source = script_dir / script.relative_to(mirrored_script_dir)
+            if source.is_file() and source not in tcl_hash_inputs:
+                tcl_hash_inputs.append(source)
 
     wrapper_path = mirrored_script_dir / f"__strut_{entry_path.stem}_entry.tcl"
     wrapper_lines = []
@@ -272,4 +312,4 @@ def prepare_direct_tcl_entry(
         relative_path = os.path.relpath(source_path, script_dir)
         wrapper_lines.append(f"source {{{relative_path}}}")
     wrapper_path.write_text("\n".join(wrapper_lines) + "\n", encoding="utf-8")
-    return wrapper_path, [*resolved_sources, *shared_asset_inputs, *compat_alias_inputs]
+    return wrapper_path, [*tcl_hash_inputs, *shared_asset_inputs, *compat_alias_inputs]

@@ -84,6 +84,7 @@ def _resolved_input(case_path: Path, work_dir: Path) -> tuple[str, Path]:
             entry_tcl,
             source_files or [entry_tcl],
             work_dir / name / "_direct_tcl_context",
+            manifest_path=case_path,
             excluded_roots=[case_path.parent],
         )
         case_data = tcl_to_strut.convert_tcl_to_solver_input(runtime_entry, REPO_ROOT)

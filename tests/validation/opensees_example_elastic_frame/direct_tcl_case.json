@@ -1,5 +1,6 @@
 {
   "name": "opensees_example_elastic_frame",
   "entry_tcl": "tests/fixtures/opensees/OpenSeesExamplesBasic/elastic_frame_example/ElasticFrame.tcl",
+  "tcl_source_version": "3.7.1",
   "enabled": true
 }

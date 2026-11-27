@@ -53,7 +53,7 @@ uv run run_tests.py                                           # unit tests and O
 uv run scripts/run_benchmarks.py --cases 'opensees_example_*' # time Strut against OpenSees
 ```
 
-The tests and benchmarks install a pinned OpenSees 3.7.1 and the test data on first use, with no sudo. Details are in [docs/setup.md](./docs/setup.md). The model format is described in [docs/harness.md](./docs/harness.md).
+The tests and benchmarks install a pinned OpenSees 3.8.0 and the test data on first use, with no sudo. Details are in [docs/setup.md](./docs/setup.md). The model format is described in [docs/harness.md](./docs/harness.md).
 
 ## What it supports
 

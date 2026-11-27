@@ -1,5 +1,6 @@
 {
   "name": "opensees_example_ex3_canti2d_build_inelasticsection",
   "entry_tcl": "tests/fixtures/opensees/OpenSeesExamplesAdvanced/opensees_example_3_cantilever_column_with_units/Ex3.Canti2D.build.InelasticSection.tcl",
+  "tcl_source_version": "3.7.1",
   "enabled": true
 }
