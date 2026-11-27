@@ -179,8 +179,31 @@ def _upgrade_legacy_path_series_match(match: re.Match[bytes]) -> bytes:
     )
 
 
+# 3.7.1 also accepted an untagged inline series as a pattern or ground-motion
+# argument, e.g. `pattern Plain 10 {Series -time {..} -values {..}} {` or
+# `-accel "Series -dt .. -filePath .."`. In 3.8.0 `Series` is an alias of
+# `Path`, which requires a tag (SRC/domain/pattern/TclSeriesCommand.cpp,
+# OPS_PathSeries). Build the tagged series in place and pass its tag.
+_INLINE_SERIES = re.compile(
+    rb"(?P<lead>(?:\bpattern[ \t]+Plain[ \t]+\S+|-(?:accel|vel|disp))[ \t]+)"
+    rb"(?:\{Series(?P<braced>(?:[ \t]+(?:[^{}\s]+|\{[^{}]*\}))+)[ \t]*\}"
+    rb'|"Series(?P<quoted>[ \t]+[^"\r\n]+)")'
+)
+
+
+def _upgrade_inline_series_match(match: re.Match[bytes]) -> bytes:
+    options = (match.group("braced") or match.group("quoted")).strip()
+    return (
+        match.group("lead") + b"[timeSeries Path [set ::__strut_legacy_path_last "
+        b"[expr {1000000000 + [incr ::__strut_legacy_path_tag]}]] "
+        + options
+        + b"; set ::__strut_legacy_path_last]"
+    )
+
+
 def _upgrade_legacy_path_series(text: bytes) -> bytes:
-    return _LEGACY_PATH_ASSIGNMENT.sub(_upgrade_legacy_path_series_match, text)
+    text = _LEGACY_PATH_ASSIGNMENT.sub(_upgrade_legacy_path_series_match, text)
+    return _INLINE_SERIES.sub(_upgrade_inline_series_match, text)
 
 
 # Each edge applies before any edge out of its target.

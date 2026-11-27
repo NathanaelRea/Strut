@@ -361,7 +361,6 @@ def _load_direct_tcl_case_data(
             mirror_root,
             manifest_path=manifest_path,
             excluded_roots=[case_root],
-            manifest_path=manifest_path,
         )
     else:
         parser_entry = parser_source

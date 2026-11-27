@@ -596,14 +596,21 @@ def _patch_direct_tcl_compatibility(
             else:
                 text = insert + text
 
-    text = text.replace(
-        "mass $nodeID $MassNode 0.0 0.0 0.0 0.0 0.0;",
-        "mass $nodeID $MassNode 0.0 0.0;",
-    )
-    text = text.replace(
-        "mass $nodeID $MassNode 0. 0. 0. 0. 0.;",
-        "mass $nodeID $MassNode 0. 0.;",
-    )
+    if original_tcl.name in {
+        "Ex6.genericFrame2D.build.ElasticSection.tcl",
+        "Ex6.genericFrame2D.build.InelasticSection.tcl",
+        "Ex6.genericFrame2D.build.InelasticFiberRCSection.tcl",
+        "Ex6.genericFrame2D.build.InelasticFiberWSection.tcl",
+    }:
+        # These 2D builders pass 6-value masses to 3-DOF nodes.
+        text = text.replace(
+            "mass $nodeID $MassNode 0.0 0.0 0.0 0.0 0.0;",
+            "mass $nodeID $MassNode 0.0 0.0;",
+        )
+        text = text.replace(
+            "mass $nodeID $MassNode 0. 0. 0. 0. 0.;",
+            "mass $nodeID $MassNode 0. 0.;",
+        )
 
     if original_tcl.name in {
         "Ex9b.build.WSection3D.tcl",
@@ -969,7 +976,6 @@ def prepare_direct_tcl_entry(
     *,
     manifest_path: Path | None = None,
     excluded_roots: Sequence[Path] = (),
-    manifest_path: Path | None = None,
 ) -> tuple[Path, list[Path]]:
     entry_path = entry_tcl.resolve()
     resolved_sources = [Path(path).resolve() for path in source_files]
@@ -1082,6 +1088,11 @@ def prepare_direct_tcl_entry(
         dialect_hash_inputs = upgrade_mirrored_tcl(
             tcl_source_version, mirrored_script_dir
         )
+        # Hash the upstream sources as well as the staged rewrites.
+        for staged in list(dialect_hash_inputs):
+            source = script_dir / staged.relative_to(mirrored_script_dir)
+            if source.is_file() and source not in dialect_hash_inputs:
+                dialect_hash_inputs.append(source)
 
     wrapper_path = mirrored_script_dir / f"__strut_{entry_path.stem}_entry.tcl"
     wrapper_lines = list(prelude_lines)

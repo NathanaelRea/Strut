@@ -3258,3 +3258,31 @@ def test_prepare_ex8_uniform_sine_uses_newton_in_runtime_mirror(tmp_path: Path):
         "algorithm $algorithmTypeDynamic\n"
         "analyze 10 0.005\n"
     )
+
+
+def test_inline_series_arguments_get_tagged_paths_for_3_8():
+    import tkinter
+
+    from direct_tcl_dialects import _upgrade_legacy_path_series
+
+    script = (
+        b"pattern Plain 10 {Series -time {0 10 20} -values {0 0 1} -factor 1} {\n"
+        b"  load 1 1.0\n}\n"
+        b'pattern UniformExcitation 2 1 -accel "Series -factor 9.81 -dt 0.01 -filePath a.txt"\n'
+        b"pattern Plain 3 1 {\n}\n"
+    )
+    upgraded = _upgrade_legacy_path_series(script)
+    assert b"{Series" not in upgraded and b'"Series' not in upgraded
+    assert upgraded.endswith(b"pattern Plain 3 1 {\n}\n")
+    tcl = tkinter.Tcl()
+    tcl.eval(
+        "proc timeSeries {args} {lappend ::made $args}\n"
+        "proc pattern {args} {lappend ::patterns [lrange $args 0 3]}"
+    )
+    tcl.eval(upgraded.decode())
+    assert tcl.eval("set made") == (
+        "{Path 1000000001 -time {0 10 20} -values {0 0 1} -factor 1} "
+        "{Path 1000000002 -factor 9.81 -dt 0.01 -filePath a.txt}"
+    )
+    assert tcl.eval("lrange [lindex $patterns 0] 0 2") == "Plain 10 1000000001"
+    assert tcl.eval("lrange [lindex $patterns 1] 0 3") == "UniformExcitation 2 1 -accel"
