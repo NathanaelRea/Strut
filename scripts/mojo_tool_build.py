@@ -13,6 +13,8 @@ import os
 import subprocess
 from pathlib import Path
 
+from mojo_target import mojo_target_args
+
 
 def _latest_mtime(sources: list[Path]) -> float:
     latest = 0.0
@@ -39,19 +41,32 @@ def ensure_built(
     bin_path: Path,
     sources: list[Path],
     verbose: bool = False,
-) -> None:
-    """Rebuild `bin_path` from `entry` if any of `sources` is newer."""
+) -> Path:
+    """Return the tool for the selected architecture, rebuilding if stale."""
+    target_args = mojo_target_args()
+    if target_args:
+        arch = target_args[0].removeprefix("--march=")
+        bin_path = bin_path.with_name(f"{bin_path.name}-{arch}")
     if not _is_stale(bin_path, sources):
-        return
+        return bin_path
     bin_path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = bin_path.with_name(bin_path.name + ".lock")
     with lock_path.open("w") as lock_handle:
         fcntl.flock(lock_handle, fcntl.LOCK_EX)
         # Another caller may have finished the build while we waited.
         if not _is_stale(bin_path, sources):
-            return
+            return bin_path
         tmp_path = bin_path.with_name(f"{bin_path.name}.tmp.{os.getpid()}")
-        cmd = [uv, "run", "mojo", "build", str(entry), "-o", str(tmp_path)]
+        cmd = [
+            uv,
+            "run",
+            "mojo",
+            "build",
+            *target_args,
+            str(entry),
+            "-o",
+            str(tmp_path),
+        ]
         if verbose:
             print("+", " ".join(cmd))
         try:
@@ -59,3 +74,4 @@ def ensure_built(
             os.replace(tmp_path, bin_path)
         finally:
             tmp_path.unlink(missing_ok=True)
+    return bin_path

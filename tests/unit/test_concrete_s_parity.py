@@ -4,6 +4,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from scripts.mojo_target import mojo_target_args
+
 
 ROOT = Path(__file__).resolve().parents[2]
 PATHS = {
@@ -50,6 +52,7 @@ def concrete_s_engines(tmp_path_factory):
             "run",
             "mojo",
             "build",
+            *mojo_target_args(),
             "-I",
             str(ROOT / "src/mojo"),
             str(ROOT / "tests/mojo/concrete_s_path.mojo"),

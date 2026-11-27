@@ -42,7 +42,7 @@ jobs:
       - name: Check out base
         run: git worktree add --detach .bench-base "$BASE_SHA"
 
-      # Mojo compiles for the host CPU; see ci.yml.
+      # Benchmark builds target the host CPU.
       - name: Fingerprint runner CPU
         id: cpu
         run: echo "features=$(grep -m1 '^flags' /proc/cpuinfo | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
@@ -53,7 +53,6 @@ jobs:
           path: .bench-base/build/strut
           key: mojo-bench-base-${{ runner.os }}-${{ steps.cpu.outputs.features }}-${{ hashFiles('.bench-base/uv.lock') }}-${{ hashFiles('.bench-base/src/mojo/**/*.mojo') }}
 
-      # Same key as ci.yml, so a build from the check job is reused.
       - name: Cache PR Mojo build
         uses: actions/cache@v4
         with:
