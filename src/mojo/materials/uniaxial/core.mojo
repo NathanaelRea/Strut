@@ -67,6 +67,30 @@ struct EndStrainSlope(Defaultable, ImplicitlyCopyable, Movable):
 alias MaterialExtension = Defaultable & ImplicitlyCopyable & Movable
 
 
+@fieldwise_init
+struct UniMaterialParams(ImplicitlyCopyable, Movable):
+    """The scalar parameters of a material definition, cheap to copy.
+
+    `UniMaterialDefinition` also carries the Bilin, IMK, Hysteretic and fatigue
+    blocks and a shared component list, so a copy is hundreds of bytes and a
+    reference-count update. Hot loops that only read `p0`..`p11` take this.
+    """
+
+    var mat_type: Int
+    var p0: Float64
+    var p1: Float64
+    var p2: Float64
+    var p3: Float64
+    var p4: Float64
+    var p5: Float64
+    var p6: Float64
+    var p7: Float64
+    var p8: Float64
+    var p9: Float64
+    var p10: Float64
+    var p11: Float64
+
+
 struct UniMaterialDefinition[Components: MaterialExtension](
     Defaultable, ImplicitlyCopyable, Movable
 ):
@@ -89,6 +113,24 @@ struct UniMaterialDefinition[Components: MaterialExtension](
     var fatigue: FatigueParameters
     var strain_limits: Optional[StrainLimits]
     var components: Self.Components
+
+    @always_inline
+    fn params(self) -> UniMaterialParams:
+        return UniMaterialParams(
+            self.mat_type,
+            self.p0,
+            self.p1,
+            self.p2,
+            self.p3,
+            self.p4,
+            self.p5,
+            self.p6,
+            self.p7,
+            self.p8,
+            self.p9,
+            self.p10,
+            self.p11,
+        )
 
     fn __init__(out self):
         self.mat_type = UniMaterialTypeTag.Elastic

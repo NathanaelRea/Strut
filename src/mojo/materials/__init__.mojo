@@ -1,5 +1,6 @@
 from materials.uniaxial import (
     UniMaterialDef,
+    UniMaterialParams,
     UniMaterialState,
     uni_mat_initial_tangent,
     uni_mat_is_elastic,

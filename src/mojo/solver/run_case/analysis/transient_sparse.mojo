@@ -61,6 +61,8 @@ struct TransientSparseMatrices(Movable):
     var k_zero_length_damp: List[Float64]
     var k_link_all: List[Float64]
     var k_link_rayleigh: List[Float64]
+    # C, formed once by `freeze_damping` for analyses whose matrices stay fixed.
+    var frozen_damping: List[Float64]
     # Scratch.
     var k_effective: List[Float64]
     var damping_force: List[Float64]
@@ -103,6 +105,7 @@ struct TransientSparseMatrices(Movable):
         self.k_zero_length_damp = []
         self.k_link_all = []
         self.k_link_rayleigh = []
+        self.frozen_damping = []
         self.k_effective = []
         self.damping_force = []
         self.inertia_force = []
@@ -167,6 +170,41 @@ struct TransientSparseMatrices(Movable):
             for s in range(self.pattern.row_start[i], self.pattern.row_start[i + 1]):
                 sum += self.damping_value(s, True) * v[self.pattern.col_index[s]]
             self.damping_force[i] = sum
+
+    fn freeze_damping(mut self):
+        """Form C slot-wise once, for `newmark_residual_frozen`."""
+        var nnz = self.pattern.nnz()
+        self.frozen_damping.resize(nnz, 0.0)
+        for s in range(nnz):
+            self.frozen_damping[s] = self.damping_value(
+                s, True
+            ) if self.has_effective_damping else 0.0
+
+    fn newmark_residual_frozen(
+        self,
+        free: List[Int],
+        F_ext: List[Float64],
+        u: List[Float64],
+        v: List[Float64],
+        a: List[Float64],
+        mut residual: List[Float64],
+    ):
+        """residual = F_ext[free] - K u - C v - M a in one pass over the pattern.
+
+        The same result as `compute_inertia_force` and `compute_damping_force`
+        followed by a K u product, but it reads the pattern once, and C comes
+        from `freeze_damping` instead of being rebuilt per slot.
+        """
+        for i in range(self.pattern.n):
+            var resisting = 0.0
+            var damping = 0.0
+            var inertia = 0.0
+            for s in range(self.pattern.row_start[i], self.pattern.row_start[i + 1]):
+                var col = self.pattern.col_index[s]
+                resisting += self.k_tangent[s] * u[col]
+                damping += self.frozen_damping[s] * v[col]
+                inertia += self.mass[s] * a[col]
+            residual[i] = F_ext[free[i]] - resisting - damping - inertia
 
     fn compute_inertia_force(mut self, a: List[Float64]):
         """inertia_force = M a."""

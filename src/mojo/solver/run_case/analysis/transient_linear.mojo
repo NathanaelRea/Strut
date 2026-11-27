@@ -182,7 +182,7 @@ fn _build_newmark_residual(
     v_f: List[Float64],
     a_f: List[Float64],
     F_ext_step: List[Float64],
-    mut mats: TransientSparseMatrices,
+    mats: TransientSparseMatrices,
     beta: Float64,
     gamma: Float64,
     dt: Float64,
@@ -200,15 +200,8 @@ fn _build_newmark_residual(
     for i in range(len(free)):
         v_predict[i] = velocity_scale * v_f[i] + velocity_accel_scale * a_f[i]
         a_predict[i] = accel_scale * a_f[i] + accel_velocity_scale * v_f[i]
-    mats.compute_inertia_force(a_predict)
-    mats.compute_damping_force(v_predict)
-    for i in range(len(free)):
-        var resisting_force = 0.0
-        for slot in range(mats.pattern.row_start[i], mats.pattern.row_start[i + 1]):
-            resisting_force += mats.k_tangent[slot] * u_f[mats.pattern.col_index[slot]]
-        residual[i] = (
-            F_ext_step[free[i]] - resisting_force - mats.damping_force[i] - mats.inertia_force[i]
-        )
+    # The matrices do not change during a linear transient, so C is formed once.
+    mats.newmark_residual_frozen(free, F_ext_step, u_f, v_predict, a_predict, residual)
 
 
 @always_inline
@@ -678,6 +671,7 @@ fn run_transient_linear(
     var envelope_max: List[List[Float64]] = []
     var envelope_abs: List[List[Float64]] = []
 
+    mats.freeze_damping()
     var t = analysis.start_time
     for step in range(steps):
         if do_profile:

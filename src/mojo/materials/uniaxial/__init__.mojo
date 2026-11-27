@@ -2,6 +2,7 @@ from materials.uniaxial.core import (
     EndStrainSlope,
     StressTangent,
     UniMaterialDef,
+    UniMaterialParams,
     UniMaterialState,
     uni_mat_initial_tangent,
     uni_mat_is_elastic,

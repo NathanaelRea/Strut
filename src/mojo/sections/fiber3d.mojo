@@ -10,6 +10,7 @@ from python import PythonObject
 
 from materials import (
     UniMaterialDef,
+    UniMaterialParams,
     UniMaterialState,
     uni_mat_initial_tangent,
     uni_mat_is_elastic,
@@ -896,7 +897,7 @@ fn fiber_section3d_runtime_alloc_instances(
         var old_s2 = sec_def.runtime_s2_state_count
         var new_s2 = old_s2 + instance_count * sec_def.steel02_instance_stride
         if sec_def.steel02_single_definition:
-            var mat_def = sec_def.steel02_single_mat_def
+            var mat_def = sec_def.steel02_single_mat_def.params()
             var fy = mat_def.p0
             var e0 = mat_def.p1
             var epsy = fy / e0
@@ -962,7 +963,7 @@ fn fiber_section3d_runtime_alloc_instances(
             for g in range(len(sec_def.steel02_group_offsets)):
                 var g_off = sec_def.steel02_group_offsets[g]
                 var g_pad = sec_def.steel02_group_padded_counts[g]
-                var mat_def = sec_def.steel02_group_mat_defs[g]
+                var mat_def = sec_def.steel02_group_mat_defs[g].params()
                 var fy = mat_def.p0
                 var e0 = mat_def.p1
                 var epsy = fy / e0
@@ -990,7 +991,7 @@ fn fiber_section3d_runtime_alloc_instances(
         var old_c2 = sec_def.runtime_c2_state_count
         var new_c2 = old_c2 + instance_count * sec_def.concrete02_instance_stride
         if sec_def.concrete02_single_definition:
-            var mat_def = sec_def.concrete02_single_mat_def
+            var mat_def = sec_def.concrete02_single_mat_def.params()
             var ec0 = (2.0 * mat_def.p0) / mat_def.p1
             sec_def.runtime_c2_eps_c.resize(new_c2, 0.0)
             sec_def.runtime_c2_sig_c.resize(new_c2, 0.0)
@@ -1019,7 +1020,7 @@ fn fiber_section3d_runtime_alloc_instances(
             for g in range(len(sec_def.concrete02_group_offsets)):
                 var g_off = sec_def.concrete02_group_offsets[g]
                 var g_pad = sec_def.concrete02_group_padded_counts[g]
-                var mat_def = sec_def.concrete02_group_mat_defs[g]
+                var mat_def = sec_def.concrete02_group_mat_defs[g].params()
                 var ec0 = (2.0 * mat_def.p0) / mat_def.p1
                 for inst in range(instance_count):
                     var base = old_c2 + inst * stride + g_off
@@ -1032,7 +1033,7 @@ fn fiber_section3d_runtime_alloc_instances(
         var old_c1 = sec_def.runtime_c1_state_count
         var new_c1 = old_c1 + instance_count * sec_def.concrete01_instance_stride
         if sec_def.concrete01_single_definition:
-            var mat_def = sec_def.concrete01_single_mat_def
+            var mat_def = sec_def.concrete01_single_mat_def.params()
             var ec0 = (2.0 * mat_def.p0) / mat_def.p1
             sec_def.runtime_c1_eps_c.resize(new_c1, 0.0)
             sec_def.runtime_c1_sig_c.resize(new_c1, 0.0)
@@ -1067,7 +1068,7 @@ fn fiber_section3d_runtime_alloc_instances(
             for g in range(len(sec_def.concrete01_group_offsets)):
                 var g_off = sec_def.concrete01_group_offsets[g]
                 var g_pad = sec_def.concrete01_group_padded_counts[g]
-                var mat_def = sec_def.concrete01_group_mat_defs[g]
+                var mat_def = sec_def.concrete01_group_mat_defs[g].params()
                 var ec0 = (2.0 * mat_def.p0) / mat_def.p1
                 for inst in range(instance_count):
                     var base = old_c1 + inst * stride + g_off
@@ -1082,7 +1083,7 @@ fn fiber_section3d_runtime_alloc_instances(
         var old_s1 = sec_def.runtime_s1_state_count
         var new_s1 = old_s1 + instance_count * sec_def.steel01_instance_stride
         if sec_def.steel01_single_definition:
-            var mat_def = sec_def.steel01_single_mat_def
+            var mat_def = sec_def.steel01_single_mat_def.params()
             var e0 = mat_def.p1
             sec_def.runtime_s1_eps_c.resize(new_s1, 0.0)
             sec_def.runtime_s1_sig_c.resize(new_s1, 0.0)
@@ -1111,7 +1112,7 @@ fn fiber_section3d_runtime_alloc_instances(
             for g in range(len(sec_def.steel01_group_offsets)):
                 var g_off = sec_def.steel01_group_offsets[g]
                 var g_pad = sec_def.steel01_group_padded_counts[g]
-                var mat_def = sec_def.steel01_group_mat_defs[g]
+                var mat_def = sec_def.steel01_group_mat_defs[g].params()
                 var e0 = mat_def.p1
                 for inst in range(instance_count):
                     var base = old_s1 + inst * stride + g_off
@@ -1138,7 +1139,7 @@ fn _fiber_section3d_runtime_apply_steel02_group_simd[
     family_offset: Int,
     slot_start: Int,
     count: Int,
-    mat_def: UniMaterialDef,
+    mat_def: UniMaterialParams,
     eps0: Float64,
     kappa_y: Float64,
     kappa_z: Float64,
@@ -1300,7 +1301,7 @@ fn _fiber_section3d_runtime_apply_concrete02_group_simd[
     family_offset: Int,
     slot_start: Int,
     count: Int,
-    mat_def: UniMaterialDef,
+    mat_def: UniMaterialParams,
     eps0: Float64,
     kappa_y: Float64,
     kappa_z: Float64,
@@ -1430,7 +1431,7 @@ fn _fiber_section3d_runtime_apply_concrete01_group_simd[
     family_offset: Int,
     slot_start: Int,
     count: Int,
-    mat_def: UniMaterialDef,
+    mat_def: UniMaterialParams,
     eps0: Float64,
     kappa_y: Float64,
     kappa_z: Float64,
@@ -1557,7 +1558,7 @@ fn _fiber_section3d_runtime_apply_steel01_group_simd[
     family_offset: Int,
     slot_start: Int,
     count: Int,
-    mat_def: UniMaterialDef,
+    mat_def: UniMaterialParams,
     eps0: Float64,
     kappa_y: Float64,
     kappa_z: Float64,
@@ -2785,7 +2786,7 @@ fn fiber_section3d_set_trial_instance(
 
     if sec_def.steel02_only_single_def:
         var slot_start = inst * sec_def.steel02_instance_stride
-        var mat_def = sec_def.steel02_single_mat_def
+        var mat_def = sec_def.steel02_single_mat_def.params()
         _fiber_section3d_runtime_apply_steel02_group_simd[FLOAT64_SIMD_WIDTH](
             sec_def,
             0,
@@ -2843,7 +2844,7 @@ fn fiber_section3d_set_trial_instance(
     if sec_def.steel02_padded_count > 0:
         var slot_start = inst * sec_def.steel02_instance_stride
         if sec_def.steel02_single_definition:
-            var mat_def = sec_def.steel02_single_mat_def
+            var mat_def = sec_def.steel02_single_mat_def.params()
             _fiber_section3d_runtime_apply_steel02_group_simd[FLOAT64_SIMD_WIDTH](
                 sec_def,
                 0,
@@ -2866,7 +2867,7 @@ fn fiber_section3d_set_trial_instance(
         else:
             for g in range(len(sec_def.steel02_group_offsets)):
                 var g_off = sec_def.steel02_group_offsets[g]
-                var mat_def = sec_def.steel02_group_mat_defs[g]
+                var mat_def = sec_def.steel02_group_mat_defs[g].params()
                 _fiber_section3d_runtime_apply_steel02_group_simd[FLOAT64_SIMD_WIDTH](
                     sec_def,
                     g_off,
@@ -2890,7 +2891,7 @@ fn fiber_section3d_set_trial_instance(
     if sec_def.concrete02_padded_count > 0:
         var slot_start = inst * sec_def.concrete02_instance_stride
         if sec_def.concrete02_single_definition:
-            var mat_def = sec_def.concrete02_single_mat_def
+            var mat_def = sec_def.concrete02_single_mat_def.params()
             _fiber_section3d_runtime_apply_concrete02_group_simd[FLOAT64_SIMD_WIDTH](
                 sec_def,
                 0,
@@ -2913,7 +2914,7 @@ fn fiber_section3d_set_trial_instance(
         else:
             for g in range(len(sec_def.concrete02_group_offsets)):
                 var g_off = sec_def.concrete02_group_offsets[g]
-                var mat_def = sec_def.concrete02_group_mat_defs[g]
+                var mat_def = sec_def.concrete02_group_mat_defs[g].params()
                 _fiber_section3d_runtime_apply_concrete02_group_simd[FLOAT64_SIMD_WIDTH](
                     sec_def,
                     g_off,
@@ -2937,7 +2938,7 @@ fn fiber_section3d_set_trial_instance(
     if sec_def.concrete01_padded_count > 0:
         var slot_start = inst * sec_def.concrete01_instance_stride
         if sec_def.concrete01_single_definition:
-            var mat_def = sec_def.concrete01_single_mat_def
+            var mat_def = sec_def.concrete01_single_mat_def.params()
             _fiber_section3d_runtime_apply_concrete01_group_simd[FLOAT64_SIMD_WIDTH](
                 sec_def,
                 0,
@@ -2960,7 +2961,7 @@ fn fiber_section3d_set_trial_instance(
         else:
             for g in range(len(sec_def.concrete01_group_offsets)):
                 var g_off = sec_def.concrete01_group_offsets[g]
-                var mat_def = sec_def.concrete01_group_mat_defs[g]
+                var mat_def = sec_def.concrete01_group_mat_defs[g].params()
                 _fiber_section3d_runtime_apply_concrete01_group_simd[FLOAT64_SIMD_WIDTH](
                     sec_def,
                     g_off,
@@ -2984,7 +2985,7 @@ fn fiber_section3d_set_trial_instance(
     if sec_def.steel01_padded_count > 0:
         var slot_start = inst * sec_def.steel01_instance_stride
         if sec_def.steel01_single_definition:
-            var mat_def = sec_def.steel01_single_mat_def
+            var mat_def = sec_def.steel01_single_mat_def.params()
             _fiber_section3d_runtime_apply_steel01_group_simd[FLOAT64_SIMD_WIDTH](
                 sec_def,
                 0,
@@ -3007,7 +3008,7 @@ fn fiber_section3d_set_trial_instance(
         else:
             for g in range(len(sec_def.steel01_group_offsets)):
                 var g_off = sec_def.steel01_group_offsets[g]
-                var mat_def = sec_def.steel01_group_mat_defs[g]
+                var mat_def = sec_def.steel01_group_mat_defs[g].params()
                 _fiber_section3d_runtime_apply_steel01_group_simd[FLOAT64_SIMD_WIDTH](
                     sec_def,
                     g_off,
