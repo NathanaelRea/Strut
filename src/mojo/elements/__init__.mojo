@@ -1,5 +1,8 @@
 from elements.beam2d import (
     beam2d_element_load_global,
+    beam2d_element_load_global_array,
+    beam2d_global_stiffness_flat,
+    beam2d_pdelta_global_stiffness_flat,
     beam2d_corotational_global_internal_force,
     beam2d_corotational_global_stiffness,
     beam2d_corotational_global_tangent_and_internal,

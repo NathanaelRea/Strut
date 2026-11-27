@@ -436,6 +436,8 @@ fn _assemble_frame3d_native_soa_indices[
     mut runtime_metrics: RuntimeProfileMetrics,
 ) raises:
     var element_count = len(frame3d_elem_indices)
+    if element_count == 0:
+        return
     # Event profiling records one scope per element, which only the serial loop can do.
     var workers = 1
     if not do_profile:
