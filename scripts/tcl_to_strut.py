@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
-import argparse
-import json
+from __future__ import annotations
+
 import math
 import re
-import subprocess
 import sys
-import tempfile
 import tkinter
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -95,7 +93,6 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 from direct_tcl_support import read_tcl_text
-from tcl_ground_motion import trapezoidal_path
 from tcl_case_types import (
     Analysis,
     AnalysisStage,
@@ -6119,6 +6116,8 @@ class TclStrutBuilder:
             }
             return ""
         assert self.ground_motion_series is not None
+        from tcl_ground_motion import trapezoidal_path
+
         for target, source, differentiate in (
             ("velocity_series", "acceleration_series", False),
             ("time_series", "velocity_series", False),
@@ -7729,13 +7728,19 @@ class TclStrutBuilder:
         case = self._build_case(
             [*self.analysis_stages, modal_stage], constraints, [recorder]
         )
+        return self._run_mojo_eigen_case(
+            case.to_solver_input(entry_path=self.entry_path)
+        )
+
+    def _run_mojo_eigen_case(self, case: dict[str, Any]) -> list[float]:
+        import json
+        import subprocess
+        import tempfile
+
         with tempfile.TemporaryDirectory(prefix="strut-eigen-") as directory:
             workdir = Path(directory)
             input_path = workdir / "input.json"
-            input_path.write_text(
-                json.dumps(case.to_solver_input(entry_path=self.entry_path)),
-                encoding="utf-8",
-            )
+            input_path.write_text(json.dumps(case), encoding="utf-8")
             result = subprocess.run(
                 [
                     sys.executable,
@@ -7786,6 +7791,8 @@ def convert_tcl_to_solver_input(
 
 
 def main() -> int:
+    import argparse
+
     parser = argparse.ArgumentParser()
     parser.add_argument("entry_tcl")
     args = parser.parse_args()

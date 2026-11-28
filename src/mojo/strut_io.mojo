@@ -1,6 +1,7 @@
-from os import abort
+from os import abort, mkdir
+from os.path import dirname, realpath
 from pathlib import Path
-from python import Python, PythonObject
+from python import PythonObject
 from sys.arg import argv
 
 from json_native import (
@@ -45,16 +46,26 @@ fn py_len(obj: PythonObject) raises -> Int:
     return Int(obj.__len__())
 
 
-fn load_json(path: String) raises -> PythonObject:
-    var json = Python.import_module("json")
-    var pathlib = Python.import_module("pathlib")
-    var path_obj = pathlib.Path(path)
-    var text = path_obj.read_text()
-    return json.loads(text)
-
-
 fn read_text_native(path: String) raises -> String:
     return Path(path).read_text()
+
+
+fn make_output_dir(path: String) raises:
+    if path == "" or Path(path).is_dir():
+        return
+    make_output_dir(dirname(path))
+    try:
+        mkdir(path)
+    except e:
+        if not Path(path).is_dir():
+            raise e
+
+
+fn output_file_path(directory: Path, filename: String) -> Path:
+    # Preserve absolute recorder output paths accepted by the input schema.
+    if filename.startswith("/"):
+        return Path(filename)
+    return directory / filename
 
 
 fn load_json_native(path: String) raises -> JsonDocument:
@@ -114,10 +125,8 @@ fn _next_tab_field(line: String, field_start: Int) -> (String, Int):
 
 
 fn _case_source_from_path(path: String) raises -> CaseSourceInfo:
-    var pathlib = Python.import_module("pathlib")
-    var path_obj = pathlib.Path(path)
-    var resolved = path_obj.resolve()
-    return CaseSourceInfo(String(resolved), String(resolved.parent))
+    var resolved = realpath(Path(path))
+    return CaseSourceInfo(resolved, dirname(resolved))
 
 
 fn case_source_from_path(path: String) raises -> CaseSourceInfo:
@@ -297,7 +306,7 @@ fn load_case_document(
     return loaded^
 
 
-fn parse_args() -> (String, String, String, String, String, String, Bool):
+fn parse_args() -> (String, String, String, String, String, String, Bool, Bool):
     var args = argv()
     var input_path = arg_value(args, "--input")
     var input_bin_path = arg_value(args, "--input-bin")
@@ -306,10 +315,12 @@ fn parse_args() -> (String, String, String, String, String, String, Bool):
     var batch_path = arg_value(args, "--batch")
     var profile_path = arg_value(args, "--profile")
     var compute_only = False
+    var session = False
     for i in range(len(args)):
         if String(args[i]) == "--compute-only":
             compute_only = True
-            break
+        elif String(args[i]) == "--session":
+            session = True
     return (
         input_path,
         input_bin_path,
@@ -318,4 +329,5 @@ fn parse_args() -> (String, String, String, String, String, String, Bool):
         batch_path,
         profile_path,
         compute_only,
+        session,
     )

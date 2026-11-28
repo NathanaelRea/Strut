@@ -16,7 +16,6 @@ struct _PyParams(Copyable, Movable):
     var yref: Float64
     var np: Float64
     var elast: Float64
-    var nd: Float64
     var far_tang: Float64
     var nf_krig: Float64
 
@@ -47,26 +46,22 @@ struct _PyParams(Copyable, Movable):
         var yref: Float64
         var np: Float64
         var elast: Float64
-        var nd: Float64
         var far_tang: Float64
         if soil_type == 0 or soil_type == 1:
             yref = 10.0 * y50
             np = 5.0
             elast = 0.35
-            nd = 1.0
             far_tang = pult / (8.0 * (elast**2.0) * y50)
         elif soil_type == 2:
             yref = 0.5 * y50
             np = 2.0
             elast = 0.2
-            nd = 1.0
             far_tang = 0.542 * pult / y50
         else:
             abort("PySimple1 only accepts soilType of 1 or 2")
             yref = 0.0
             np = 1.0
             elast = 0.2
-            nd = 1.0
             far_tang = 0.0
 
         self.soil_type = soil_type
@@ -77,7 +72,6 @@ struct _PyParams(Copyable, Movable):
         self.yref = yref
         self.np = np
         self.elast = elast
-        self.nd = nd
         self.far_tang = far_tang
         self.nf_krig = 100.0 * (0.5 * pult) / y50
 
@@ -87,9 +81,7 @@ fn py_simple1_initial_tangent(
 ) -> Float64:
     var p = _PyParams(p0, p1, p2, p3, p4)
     var nf_tang = p.nf_krig
-    var drag_tang = (
-        p.nd * (p.pult * p.drag) * ((p.y50 / 2.0) ** p.nd) * ((p.y50 / 2.0) ** (-p.nd - 1.0))
-    )
+    var drag_tang = (p.pult * p.drag) * (p.y50 / 2.0) * ((p.y50 / 2.0) ** -2.0)
     var close_yleft = -p.y50 / 100.0
     var close_yright = p.y50 / 100.0
     var close_tang = (
@@ -112,6 +104,7 @@ fn py_simple1_init_state(
 ) -> Float64:
     var p = _PyParams(p0, p1, p2, p3, p4)
     s = PyTzQzState()
+    s.py_reference_power = p.yref**p.np
 
     s.t_far_p = 0.0
     s.t_far_y = 0.0
@@ -130,10 +123,9 @@ fn py_simple1_init_state(
     s.t_drag_p = 0.0
     s.t_drag_y = 0.0
     s.t_drag_tang = (
-        p.nd
-        * (p.pult * p.drag - s.t_drag_p)
-        * ((p.y50 / 2.0) ** p.nd)
-        * ((p.y50 / 2.0 - s.t_drag_y + s.t_drag_yin) ** (-p.nd - 1.0))
+        (p.pult * p.drag - s.t_drag_p)
+        * (p.y50 / 2.0)
+        * ((p.y50 / 2.0 - s.t_drag_y + s.t_drag_yin) ** -2.0)
     )
 
     s.t_close_yleft = -p.y50 / 100.0
@@ -218,25 +210,23 @@ fn _py_get_drag(p: _PyParams, mut s: PyTzQzState, ylast: Float64, dy: Float64):
         s.t_drag_yin = s.c_drag_y
 
     if dy_total >= 0.0:
-        s.t_drag_p = pmax - (pmax - s.t_drag_pin) * ((p.y50 / 2.0) ** p.nd) * (
-            (p.y50 / 2.0 + s.t_drag_y - s.t_drag_yin) ** (-p.nd)
+        s.t_drag_p = pmax - (pmax - s.t_drag_pin) * (p.y50 / 2.0) * (
+            (p.y50 / 2.0 + s.t_drag_y - s.t_drag_yin) ** -1.0
         )
         s.t_drag_tang = (
-            p.nd
-            * (pmax - s.t_drag_pin)
-            * ((p.y50 / 2.0) ** p.nd)
-            * ((p.y50 / 2.0 + s.t_drag_y - s.t_drag_yin) ** (-p.nd - 1.0))
+            (pmax - s.t_drag_pin)
+            * (p.y50 / 2.0)
+            * ((p.y50 / 2.0 + s.t_drag_y - s.t_drag_yin) ** -2.0)
         )
 
     if dy_total < 0.0:
-        s.t_drag_p = -pmax + (pmax + s.t_drag_pin) * ((p.y50 / 2.0) ** p.nd) * (
-            (p.y50 / 2.0 - s.t_drag_y + s.t_drag_yin) ** (-p.nd)
+        s.t_drag_p = -pmax + (pmax + s.t_drag_pin) * (p.y50 / 2.0) * (
+            (p.y50 / 2.0 - s.t_drag_y + s.t_drag_yin) ** -1.0
         )
         s.t_drag_tang = (
-            p.nd
-            * (pmax + s.t_drag_pin)
-            * ((p.y50 / 2.0) ** p.nd)
-            * ((p.y50 / 2.0 - s.t_drag_y + s.t_drag_yin) ** (-p.nd - 1.0))
+            (pmax + s.t_drag_pin)
+            * (p.y50 / 2.0)
+            * ((p.y50 / 2.0 - s.t_drag_y + s.t_drag_yin) ** -2.0)
         )
 
     if _abs(s.t_drag_p) >= pmax:
@@ -329,7 +319,7 @@ fn _py_get_near_field(
             s.t_nf_tang = (
                 p.np
                 * (p.pult - s.t_nf_pinr)
-                * (p.yref**p.np)
+                * s.py_reference_power
                 * ((p.yref - s.t_nf_yinr + s.t_nf_y) ** (-p.np - 1.0))
             )
             s.t_nf_p = p.pult - (p.pult - s.t_nf_pinr) * (
@@ -344,7 +334,7 @@ fn _py_get_near_field(
             s.t_nf_tang = (
                 p.np
                 * (p.pult + s.t_nf_pinl)
-                * (p.yref**p.np)
+                * s.py_reference_power
                 * ((p.yref + s.t_nf_yinl - s.t_nf_y) ** (-p.np - 1.0))
             )
             s.t_nf_p = -p.pult + (p.pult + s.t_nf_pinl) * (
@@ -410,20 +400,20 @@ fn py_simple1_set_trial(
             var dy_nf = (tp - s.t_nf_p) / s.t_nf_tang
             _py_get_near_field(p, s, s.t_nf_y, dy_nf, dy_nf_old)
             var p_unbalance = tp - s.t_nf_p
-            var yres_nf = (tp - s.t_nf_p) / s.t_nf_tang
+            var yres_nf = p_unbalance / s.t_nf_tang
             dy_nf_old = dy_nf
 
             var dy_gap = (tp - s.t_gap_p) / s.t_gap_tang
             _py_get_gap(p, s, s.t_gap_y, dy_gap, dy_gap_old)
             var p_unbalance2 = tp - s.t_gap_p
-            var yres_gap = (tp - s.t_gap_p) / s.t_gap_tang
+            var yres_gap = p_unbalance2 / s.t_gap_tang
             dy_gap_old = dy_gap
 
             var dy_far = (tp - s.t_far_p) / s.t_far_tang
             s.t_far_y = s.t_far_y + dy_far
             s.t_far_p = s.t_far_tang * s.t_far_y
             var p_unbalance3 = tp - s.t_far_p
-            var yres_far = (tp - s.t_far_p) / s.t_far_tang
+            var yres_far = p_unbalance3 / s.t_far_tang
 
             ttangent = (1.0 / s.t_gap_tang + 1.0 / s.t_nf_tang + 1.0 / s.t_far_tang) ** -1.0
 

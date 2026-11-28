@@ -7,7 +7,7 @@ from materials.multi_yield import SoilVector, SoilTangent
 
 
 alias QuadVector = StaticTuple[Float64, 8]
-alias QuadMatrix = StaticTuple[Float64, 64]
+alias QuadMatrix = InlineArray[Float64, 64]
 alias PlaneMatrix = StaticTuple[Float64, 9]
 alias PlaneVector = StaticTuple[Float64, 3]
 

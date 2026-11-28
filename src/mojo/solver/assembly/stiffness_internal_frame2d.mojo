@@ -18,6 +18,14 @@ from elements import (
     force_beam_column2d_global_tangent_and_internal,
 )
 from materials import UniMaterialDef, UniMaterialState
+from solver.assembly.frame2d_scratch import (
+    FRAME2D_BATCH,
+    FRAME2D_DOFS,
+    FRAME2D_MINIMUM_WORK,
+    Frame2dAssemblyScratch,
+    Frame2dWorker,
+)
+from solver.assembly.parallel_elements import ParallelElementWork
 from solver.assembly.stiffness_internal_shared import (
     _beam_integration_name_from_tag,
     _dot_row_simd,
@@ -45,6 +53,158 @@ from solver.run_case.input_types import (
 )
 from sections import FiberCell, FiberSection2dDef
 from tag_types import ElementTypeTag, GeomTransfTag
+
+
+@fieldwise_init
+struct _Frame2dComputeContext(ImplicitlyCopyable):
+    var frame2d_elem_indices: UnsafePointer[List[Int]]
+    var node_x: UnsafePointer[List[Float64]]
+    var node_y: UnsafePointer[List[Float64]]
+    var elem_dof_offsets: UnsafePointer[List[Int]]
+    var elem_dof_pool: UnsafePointer[List[Int]]
+    var elem_node_offsets: UnsafePointer[List[Int]]
+    var elem_node_pool: UnsafePointer[List[Int]]
+    var elem_type_tags: UnsafePointer[List[Int]]
+    var elem_geom_tags: UnsafePointer[List[Int]]
+    var elem_section_ids: UnsafePointer[List[Int]]
+    var elem_integration_tags: UnsafePointer[List[Int]]
+    var elem_num_int_pts: UnsafePointer[List[Int]]
+    var element_loads: UnsafePointer[List[ElementLoadInput]]
+    var elem_load_offsets: UnsafePointer[List[Int]]
+    var elem_load_pool: UnsafePointer[List[Int]]
+    var load_scale: Float64
+    var sections_by_id: UnsafePointer[List[SectionInput]]
+    var u: UnsafePointer[List[Float64]]
+    var uniaxial_defs: UnsafePointer[List[UniMaterialDef]]
+    var uniaxial_states: UnsafePointer[List[UniMaterialState]]
+    var elem_uniaxial_offsets: UnsafePointer[List[Int]]
+    var elem_uniaxial_counts: UnsafePointer[List[Int]]
+    var elem_uniaxial_state_ids: UnsafePointer[List[Int]]
+    var force_basic_offsets: UnsafePointer[List[Int]]
+    var force_basic_counts: UnsafePointer[List[Int]]
+    var force_basic_q: UnsafePointer[List[Float64]]
+    var fiber_section_defs: UnsafePointer[List[FiberSection2dDef]]
+    var fiber_section_cells: UnsafePointer[List[FiberCell]]
+    var fiber_section_index_by_id: UnsafePointer[List[Int]]
+    var workers: UnsafePointer[Frame2dWorker]
+    var tangent: Bool
+
+
+fn _evaluate_frame2d_fiber(
+    ctx: _Frame2dComputeContext,
+    e: Int,
+    elem_type: Int,
+    x1: Float64,
+    y1: Float64,
+    x2: Float64,
+    y2: Float64,
+    u_elem6: List[Float64],
+    mut scratch: ForceBeamColumn2dScratch,
+    mut k_global: List[List[Float64]],
+    mut f_global: List[Float64],
+):
+    var sec_index = ctx.fiber_section_index_by_id[][ctx.elem_section_ids[][e]]
+    ref sec = ctx.sections_by_id[][ctx.elem_section_ids[][e]]
+    ref sec_def = ctx.fiber_section_defs[][sec_index]
+    var elem_offset = ctx.elem_uniaxial_offsets[][e]
+    var elem_state_count = ctx.elem_uniaxial_counts[][e]
+    var geom_name = _geom_transf_name_from_tag(ctx.elem_geom_tags[][e])
+    var integration_name = _beam_integration_name_from_tag(ctx.elem_integration_tags[][e])
+    if elem_type == ElementTypeTag.ForceBeamColumn2d:
+        force_beam_column2d_global_tangent_and_internal(
+            e,
+            x1,
+            y1,
+            x2,
+            y2,
+            u_elem6,
+            ctx.element_loads[],
+            ctx.elem_load_offsets[],
+            ctx.elem_load_pool[],
+            ctx.load_scale,
+            sec_def,
+            ctx.fiber_section_cells[],
+            ctx.uniaxial_defs[],
+            ctx.uniaxial_states[],
+            ctx.elem_uniaxial_state_ids[],
+            elem_offset,
+            elem_state_count,
+            geom_name,
+            integration_name,
+            ctx.elem_num_int_pts[][e],
+            ctx.force_basic_q[],
+            ctx.force_basic_offsets[][e],
+            ctx.force_basic_counts[][e],
+            scratch,
+            k_global,
+            f_global,
+            sec.hinge_radau,
+        )
+    else:
+        disp_beam_column2d_global_tangent_and_internal(
+            e,
+            x1,
+            y1,
+            x2,
+            y2,
+            u_elem6,
+            ctx.element_loads[],
+            ctx.elem_load_offsets[],
+            ctx.elem_load_pool[],
+            ctx.load_scale,
+            sec_def,
+            ctx.fiber_section_cells[],
+            ctx.uniaxial_defs[],
+            ctx.uniaxial_states[],
+            ctx.elem_uniaxial_state_ids[],
+            elem_offset,
+            elem_state_count,
+            geom_name,
+            integration_name,
+            ctx.elem_num_int_pts[][e],
+            k_global,
+            f_global,
+        )
+
+
+fn _compute_frame2d_fiber(
+    ctx: _Frame2dComputeContext,
+    idx: Int,
+    worker: Int,
+    matrix: UnsafePointer[Float64],
+    force: UnsafePointer[Float64],
+    _scratch: UnsafePointer[Float64],
+):
+    var e = ctx.frame2d_elem_indices[][idx]
+    if ctx.elem_uniaxial_counts[][e] <= 0:
+        return
+    var node_offset = ctx.elem_node_offsets[][e]
+    var i1 = ctx.elem_node_pool[][node_offset]
+    var i2 = ctx.elem_node_pool[][node_offset + 1]
+    ref local = ctx.workers[worker]
+    var dof_offset = ctx.elem_dof_offsets[][e]
+    for a in range(FRAME2D_DOFS):
+        local.u[a] = ctx.u[][ctx.elem_dof_pool[][dof_offset + a]]
+    _evaluate_frame2d_fiber(
+        ctx,
+        e,
+        ctx.elem_type_tags[][e],
+        ctx.node_x[][i1],
+        ctx.node_y[][i1],
+        ctx.node_x[][i2],
+        ctx.node_y[][i2],
+        local.u,
+        local.kernel,
+        local.matrix,
+        local.force,
+    )
+    for a in range(FRAME2D_DOFS):
+        force[a] = local.force[a]
+    if ctx.tangent:
+        for a in range(FRAME2D_DOFS):
+            var row = local.matrix[a].unsafe_ptr()
+            for b in range(FRAME2D_DOFS):
+                matrix[a * FRAME2D_DOFS + b] = row[b]
 
 
 fn _assemble_frame2d_native_soa_indices[
@@ -82,6 +242,7 @@ fn _assemble_frame2d_native_soa_indices[
     fiber_section_cells: List[FiberCell],
     fiber_section_index_by_id: List[Int],
     mut force_beam_column2d_scratch: ForceBeamColumn2dScratch,
+    mut sweep: Frame2dAssemblyScratch,
     mut dof_map6: List[Int],
     mut u_elem6: List[Float64],
     mut k_flat: List[Float64],
@@ -95,8 +256,95 @@ fn _assemble_frame2d_native_soa_indices[
     mut runtime_metrics: RuntimeProfileMetrics,
     initial_tangent: Bool = False,
 ) raises:
-    for idx in range(len(frame2d_elem_indices)):
+    var count = len(frame2d_elem_indices)
+    if count == 0:
+        return
+    var workers = 1
+    if count > 1 and len(fiber_section_defs) > 0 and not initial_tangent and not do_profile:
+        if len(sweep.work.plan.cumulative) != count + 1:
+            var capacity = min(count, FRAME2D_BATCH)
+            sweep.work = ParallelElementWork(
+                capacity, FRAME2D_DOFS * FRAME2D_DOFS, FRAME2D_DOFS, 0, FRAME2D_MINIMUM_WORK
+            )
+            sweep.work.plan.cumulative.reserve(count + 1)
+            for e in frame2d_elem_indices:
+                sweep.work.plan.append(elem_uniaxial_counts[e])
+        workers = sweep.work.plan.worker_count(0, count)
+        if workers > 1:
+            sweep.ensure_workers(workers)
+    var tangent = backend.accepts_element_matrices()
+    var ctx = _Frame2dComputeContext(
+        UnsafePointer(to=frame2d_elem_indices),
+        UnsafePointer(to=node_x),
+        UnsafePointer(to=node_y),
+        UnsafePointer(to=elem_dof_offsets),
+        UnsafePointer(to=elem_dof_pool),
+        UnsafePointer(to=elem_node_offsets),
+        UnsafePointer(to=elem_node_pool),
+        UnsafePointer(to=elem_type_tags),
+        UnsafePointer(to=elem_geom_tags),
+        UnsafePointer(to=elem_section_ids),
+        UnsafePointer(to=elem_integration_tags),
+        UnsafePointer(to=elem_num_int_pts),
+        UnsafePointer(to=element_loads),
+        UnsafePointer(to=elem_load_offsets),
+        UnsafePointer(to=elem_load_pool),
+        load_scale,
+        UnsafePointer(to=sections_by_id),
+        UnsafePointer(to=u),
+        UnsafePointer(to=uniaxial_defs),
+        UnsafePointer(to=uniaxial_states),
+        UnsafePointer(to=elem_uniaxial_offsets),
+        UnsafePointer(to=elem_uniaxial_counts),
+        UnsafePointer(to=elem_uniaxial_state_ids),
+        UnsafePointer(to=force_basic_offsets),
+        UnsafePointer(to=force_basic_counts),
+        UnsafePointer(to=force_basic_q),
+        UnsafePointer(to=fiber_section_defs),
+        UnsafePointer(to=fiber_section_cells),
+        UnsafePointer(to=fiber_section_index_by_id),
+        sweep.workers.unsafe_ptr(),
+        tangent,
+    )
+    var batch_start = 0
+    var batch_end = 0
+    var per_element_ns = 0
+    for idx in range(count):
         var e = frame2d_elem_indices[idx]
+        if workers > 1:
+            if idx == batch_end:
+                batch_start = idx
+                batch_end = min(count, idx + sweep.work.capacity)
+                var start_ns = 0
+                if runtime_metrics.enabled:
+                    start_ns = Int(perf_counter_ns())
+                sweep.work.compute[_Frame2dComputeContext, _compute_frame2d_fiber](
+                    ctx, batch_start, batch_end - batch_start
+                )
+                if runtime_metrics.enabled:
+                    per_element_ns = (Int(perf_counter_ns()) - start_ns) // (
+                        batch_end - batch_start
+                    )
+            if elem_uniaxial_counts[e] > 0:
+                var slot = idx - batch_start
+                if tangent:
+                    backend.add_element_matrix_flat(
+                        e,
+                        elem_free_pool,
+                        elem_free_offsets[e],
+                        FRAME2D_DOFS,
+                        sweep.work.matrices,
+                        slot * FRAME2D_DOFS * FRAME2D_DOFS,
+                    )
+                for a in range(FRAME2D_DOFS):
+                    F_int[elem_dof_pool[elem_dof_offsets[e] + a]] += sweep.work.forces[
+                        slot * FRAME2D_DOFS + a
+                    ]
+                if runtime_metrics.enabled:
+                    _profile_metrics_note_element_timing(
+                        runtime_metrics, elem_type_tags[e], per_element_ns
+                    )
+                continue
         var t_elem_start = 0
         if runtime_metrics.enabled:
             t_elem_start = Int(perf_counter_ns())
@@ -279,12 +527,6 @@ fn _assemble_frame2d_native_soa_indices[
                 )
             continue
 
-        var sec_index = fiber_section_index_by_id[elem_section_ids[e]]
-        ref sec_def = fiber_section_defs[sec_index]
-        var elem_offset = elem_uniaxial_offsets[e]
-        var elem_state_count = elem_uniaxial_counts[e]
-        var geom_name = _geom_transf_name_from_tag(elem_geom_tags[e])
-        var integration_name = _beam_integration_name_from_tag(elem_integration_tags[e])
         _profile_scope_open(
             do_profile,
             events,
@@ -299,61 +541,19 @@ fn _assemble_frame2d_native_soa_indices[
             PROFILE_FRAME_ASSEMBLE_FIBER_SECTION_RESPONSE,
             t0,
         )
-        if elem_type == ElementTypeTag.ForceBeamColumn2d:
-            force_beam_column2d_global_tangent_and_internal(
-                e,
-                x1,
-                y1,
-                x2,
-                y2,
-                u_elem6,
-                element_loads,
-                elem_load_offsets,
-                elem_load_pool,
-                load_scale,
-                sec_def,
-                fiber_section_cells,
-                uniaxial_defs,
-                uniaxial_states,
-                elem_uniaxial_state_ids,
-                elem_offset,
-                elem_state_count,
-                geom_name,
-                integration_name,
-                elem_num_int_pts[e],
-                force_basic_q,
-                force_basic_offsets[e],
-                force_basic_counts[e],
-                force_beam_column2d_scratch,
-                k_global,
-                f_global,
-                sec.hinge_radau,
-            )
-        else:
-            disp_beam_column2d_global_tangent_and_internal(
-                e,
-                x1,
-                y1,
-                x2,
-                y2,
-                u_elem6,
-                element_loads,
-                elem_load_offsets,
-                elem_load_pool,
-                load_scale,
-                sec_def,
-                fiber_section_cells,
-                uniaxial_defs,
-                uniaxial_states,
-                elem_uniaxial_state_ids,
-                elem_offset,
-                elem_state_count,
-                geom_name,
-                integration_name,
-                elem_num_int_pts[e],
-                k_global,
-                f_global,
-            )
+        _evaluate_frame2d_fiber(
+            ctx,
+            e,
+            elem_type,
+            x1,
+            y1,
+            x2,
+            y2,
+            u_elem6,
+            force_beam_column2d_scratch,
+            k_global,
+            f_global,
+        )
         _profile_scope_close(
             do_profile,
             events,

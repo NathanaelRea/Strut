@@ -181,6 +181,7 @@ fn _compute_shell[
 ](
     ctx: _ShellComputeContext,
     idx: Int,
+    _worker: Int,
     matrix: UnsafePointer[Float64],
     force: UnsafePointer[Float64],
     scratch: UnsafePointer[Float64],
@@ -370,6 +371,184 @@ fn _triangle_stiffness(
     )
 
 
+@fieldwise_init
+struct _SurfaceComputeContext(ImplicitlyCopyable):
+    var elements: UnsafePointer[ElementInput]
+    var indices: UnsafePointer[Int]
+    var node_x: UnsafePointer[List[Float64]]
+    var node_y: UnsafePointer[List[Float64]]
+    var dof_offsets: UnsafePointer[Int]
+    var dof_pool: UnsafePointer[List[Int]]
+    var node_offsets: UnsafePointer[Int]
+    var node_pool: UnsafePointer[Int]
+    var material_ids: UnsafePointer[Int]
+    var cache: UnsafePointer[SurfaceAssemblyCache]
+    var thickness: UnsafePointer[Float64]
+    var materials: UnsafePointer[MaterialInput]
+    var displacements: UnsafePointer[List[Float64]]
+    var tangent: Bool
+
+
+fn _compute_surface_element(
+    ctx: _SurfaceComputeContext,
+    idx: Int,
+    _worker: Int,
+    matrix: UnsafePointer[Float64],
+    force: UnsafePointer[Float64],
+    _scratch: UnsafePointer[Float64],
+):
+    var e = ctx.indices[idx]
+    ref elem = ctx.elements[e]
+    ref cache = ctx.cache[]
+    var dof_offset = ctx.dof_offsets[e]
+    ref u = ctx.displacements[]
+    ref dofs = ctx.dof_pool[]
+    var tangent = ctx.tangent
+    var flat: List[Float64] = []
+    if elem.type_tag == ElementTypeTag.Tri31:
+        var node_offset = ctx.node_offsets[e]
+        ref mat = ctx.materials[ctx.material_ids[e]]
+        var x: List[Float64] = []
+        var y: List[Float64] = []
+        for i in range(elem.node_count):
+            var n = ctx.node_pool[node_offset + i]
+            x.append(ctx.node_x[][n])
+            y.append(ctx.node_y[][n])
+        var local_matrix = _triangle_stiffness(elem, mat, ctx.thickness[e], x, y)
+        var local_dofs: List[Int] = []
+        for a in range(elem.dof_count):
+            local_dofs.append(dofs[dof_offset + a])
+        for a in range(elem.dof_count):
+            force[a] = _dot_row_simd(local_matrix[a], local_dofs, u, elem.dof_count)
+            if tangent:
+                for b in range(elem.dof_count):
+                    matrix[a * elem.dof_count + b] = local_matrix[a][b]
+        return
+    if elem.type_tag == ElementTypeTag.BeamContact2D:
+        var local_force = cache.evaluate_contact(e, u, tangent, flat)
+        for a in range(elem.dof_count):
+            force[a] = local_force[a]
+    elif elem.type_tag == ElementTypeTag.SSPBrickUP:
+        var local_force = BrickUPVector(fill=0.0)
+        cache.evaluate_brick_up(e, dof_offset, dofs, u, tangent, local_force, flat)
+        for a in range(elem.dof_count):
+            force[a] = local_force[a]
+    elif elem.type_tag == ElementTypeTag.QuadUP:
+        var local_force = QuadUPVector(fill=0.0)
+        cache.evaluate_up(e, dof_offset, dofs, u, tangent, local_force, flat)
+        for a in range(elem.dof_count):
+            force[a] = local_force[a]
+    else:
+        var local_u = QuadVector(fill=0.0)
+        for a in range(8):
+            local_u[a] = u[dofs[dof_offset + a]]
+        var local_force = QuadVector(fill=0.0)
+        var local_matrix = QuadMatrix(fill=0.0)
+        cache.quads[cache.quad_index[e]].evaluate(
+            cache.pimy_definitions,
+            cache.pdmy_definitions,
+            local_u,
+            tangent,
+            local_force,
+            local_matrix,
+        )
+        for a in range(8):
+            force[a] = local_force[a]
+        if tangent:
+            for i in range(64):
+                matrix[i] = local_matrix[i]
+        return
+    if tangent:
+        var local = flat.unsafe_ptr()
+        for i in range(len(flat)):
+            matrix[i] = local[i]
+
+
+fn _assemble_quad_family[
+    S: ElementMatrixSink, dense: Bool
+](
+    elements: List[ElementInput],
+    indices: List[Int],
+    node_x: List[Float64],
+    node_y: List[Float64],
+    elem_dof_offsets: List[Int],
+    elem_dof_pool: List[Int],
+    elem_free_offsets: List[Int],
+    elem_free_pool: List[Int],
+    elem_node_offsets: List[Int],
+    elem_node_pool: List[Int],
+    elem_primary_material_ids: List[Int],
+    mut cache: SurfaceAssemblyCache,
+    elem_thickness: List[Float64],
+    materials_by_id: List[MaterialInput],
+    u: List[Float64],
+    mut backend: S,
+    mut K: List[List[Float64]],
+    mut F_int: List[Float64],
+    mut runtime_metrics: RuntimeProfileMetrics,
+):
+    var length = len(indices)
+    if length == 0:
+        return
+    var tangent = dense or backend.accepts_element_matrices()
+    var ctx = _SurfaceComputeContext(
+        elements.unsafe_ptr(),
+        indices.unsafe_ptr(),
+        UnsafePointer(to=node_x),
+        UnsafePointer(to=node_y),
+        elem_dof_offsets.unsafe_ptr(),
+        UnsafePointer(to=elem_dof_pool),
+        elem_node_offsets.unsafe_ptr(),
+        elem_node_pool.unsafe_ptr(),
+        elem_primary_material_ids.unsafe_ptr(),
+        UnsafePointer(to=cache),
+        elem_thickness.unsafe_ptr(),
+        materials_by_id.unsafe_ptr(),
+        UnsafePointer(to=u),
+        tangent,
+    )
+    ref work = cache.quad_work
+    var batch_size = work.capacity
+    if runtime_metrics.enabled:
+        batch_size = 1
+    for start in range(0, length, batch_size):
+        var count = min(batch_size, length - start)
+        var element_start = 0
+        if runtime_metrics.enabled:
+            element_start = Int(perf_counter_ns())
+        work.compute[_SurfaceComputeContext, _compute_surface_element](ctx, start, count)
+        for i in range(count):
+            var e = indices[start + i]
+            var dof_count = elements[e].dof_count
+            var dof_offset = elem_dof_offsets[e]
+            var force = work.forces.unsafe_ptr() + i * work.force_size
+            var matrix_offset = i * work.matrix_size
+
+            @parameter
+            if dense:
+                var matrix = work.matrices.unsafe_ptr() + matrix_offset
+                for a in range(dof_count):
+                    var row = elem_dof_pool[dof_offset + a]
+                    for b in range(dof_count):
+                        K[row][elem_dof_pool[dof_offset + b]] += matrix[a * dof_count + b]
+            else:
+                if tangent:
+                    backend.add_element_matrix_flat(
+                        e,
+                        elem_free_pool,
+                        elem_free_offsets[e],
+                        dof_count,
+                        work.matrices,
+                        matrix_offset,
+                    )
+            for a in range(dof_count):
+                F_int[elem_dof_pool[dof_offset + a]] += force[a]
+            if runtime_metrics.enabled:
+                _profile_metrics_note_element_timing(
+                    runtime_metrics, elements[e].type_tag, Int(perf_counter_ns()) - element_start
+                )
+
+
 fn _assemble_surface_native_soa_indices[
     S: ElementMatrixSink
 ](
@@ -396,98 +575,30 @@ fn _assemble_surface_native_soa_indices[
     mut F_int: List[Float64],
     mut runtime_metrics: RuntimeProfileMetrics,
 ) raises:
-    for idx in range(len(quad_elem_indices)):
-        var e = quad_elem_indices[idx]
-        var t_elem_start = 0
-        if runtime_metrics.enabled:
-            t_elem_start = Int(perf_counter_ns())
-        var elem = elements[e]
-        if elem.type_tag == ElementTypeTag.Tri31:
-            var node_offset = elem_node_offsets[e]
-            var mat = materials_by_id[elem_primary_material_ids[e]]
-            var x: List[Float64] = []
-            var y: List[Float64] = []
-            for local_node in range(elem.node_count):
-                var node_index = elem_node_pool[node_offset + local_node]
-                x.append(node_x[node_index])
-                y.append(node_y[node_index])
-            var k_global = _triangle_stiffness(elem, mat, elem_thickness[e], x, y)
-            var dof_map: List[Int] = []
-            for a in range(elem.dof_count):
-                dof_map.append(elem_dof_pool[elem_dof_offsets[e] + a])
-            backend.add_element_matrix(
-                e, elem_free_pool, elem_free_offsets[e], elem.dof_count, k_global
-            )
-            for a in range(elem.dof_count):
-                F_int[dof_map[a]] += _dot_row_simd(k_global[a], dof_map, u, elem.dof_count)
-        elif elem.type_tag == ElementTypeTag.BeamContact2D:
-            var dof_offset = elem_dof_offsets[e]
-            var flat: List[Float64] = []
-            var tangent = backend.accepts_element_matrices()
-            var force = shell_cache.evaluate_contact(e, u, tangent, flat)
-            if tangent:
-                backend.add_element_matrix_flat(
-                    e, elem_free_pool, elem_free_offsets[e], elem.dof_count, flat
-                )
-            for i in range(elem.dof_count):
-                F_int[elem_dof_pool[dof_offset + i]] += force[i]
-        elif elem.type_tag == ElementTypeTag.SSPBrickUP:
-            var dof_offset = elem_dof_offsets[e]
-            var force = BrickUPVector(fill=0.0)
-            var flat: List[Float64] = []
-            var tangent = backend.accepts_element_matrices()
-            shell_cache.evaluate_brick_up(e, dof_offset, elem_dof_pool, u, tangent, force, flat)
-            if tangent:
-                backend.add_element_matrix_flat(
-                    e, elem_free_pool, elem_free_offsets[e], elem.dof_count, flat
-                )
-            for i in range(elem.dof_count):
-                F_int[elem_dof_pool[dof_offset + i]] += force[i]
-        elif elem.type_tag == ElementTypeTag.QuadUP:
-            var dof_offset = elem_dof_offsets[e]
-            var force = QuadUPVector(fill=0.0)
-            var flat: List[Float64] = []
-            var tangent = backend.accepts_element_matrices()
-            shell_cache.evaluate_up(e, dof_offset, elem_dof_pool, u, tangent, force, flat)
-            if tangent:
-                backend.add_element_matrix_flat(
-                    e, elem_free_pool, elem_free_offsets[e], elem.dof_count, flat
-                )
-            for i in range(elem.dof_count):
-                F_int[elem_dof_pool[dof_offset + i]] += force[i]
-        else:
-            var dof_offset = elem_dof_offsets[e]
-            var local_u = QuadVector(fill=0.0)
-            for i in range(8):
-                local_u[i] = u[elem_dof_pool[dof_offset + i]]
-            var force = QuadVector(fill=0.0)
-            var matrix = QuadMatrix(fill=0.0)
-            var tangent = backend.accepts_element_matrices()
-            shell_cache.quads[shell_cache.quad_index[e]].evaluate(
-                shell_cache.pimy_definitions,
-                shell_cache.pdmy_definitions,
-                local_u,
-                tangent,
-                force,
-                matrix,
-            )
-            if tangent:
-                var flat: List[Float64] = []
-                flat.resize(64, 0.0)
-                for i in range(64):
-                    flat[i] = matrix[i]
-                backend.add_element_matrix_flat(e, elem_free_pool, elem_free_offsets[e], 8, flat)
-            for i in range(8):
-                F_int[elem_dof_pool[dof_offset + i]] += force[i]
-        if runtime_metrics.enabled:
-            _profile_metrics_note_element_timing(
-                runtime_metrics,
-                elem.type_tag,
-                Int(perf_counter_ns()) - t_elem_start,
-            )
+    var K: List[List[Float64]] = []
+    _assemble_quad_family[S, False](
+        elements,
+        quad_elem_indices,
+        node_x,
+        node_y,
+        elem_dof_offsets,
+        elem_dof_pool,
+        elem_free_offsets,
+        elem_free_pool,
+        elem_node_offsets,
+        elem_node_pool,
+        elem_primary_material_ids,
+        shell_cache,
+        elem_thickness,
+        materials_by_id,
+        u,
+        backend,
+        K,
+        F_int,
+        runtime_metrics,
+    )
 
     shell_cache.continuum.assemble_native[S](elem_free_offsets, elem_free_pool, u, backend, F_int)
-    var unused_dense: List[List[Float64]] = []
     _assemble_shell_soa[S, False](
         shell_elem_indices,
         elem_dof_offsets,
@@ -500,7 +611,7 @@ fn _assemble_surface_native_soa_indices[
         uniaxial_states,
         u,
         backend,
-        unused_dense,
+        K,
         F_int,
         runtime_metrics,
     )
@@ -528,89 +639,31 @@ fn _assemble_surface_soa_indices(
     mut F_int: List[Float64],
     mut runtime_metrics: RuntimeProfileMetrics,
 ) raises:
-    for idx in range(len(quad_elem_indices)):
-        var e = quad_elem_indices[idx]
-        var t_elem_start = 0
-        if runtime_metrics.enabled:
-            t_elem_start = Int(perf_counter_ns())
-        var elem = elements[e]
-        if elem.type_tag == ElementTypeTag.Tri31:
-            var node_offset = elem_node_offsets[e]
-            var mat = materials_by_id[elem_primary_material_ids[e]]
-            var x: List[Float64] = []
-            var y: List[Float64] = []
-            for local_node in range(elem.node_count):
-                var node_index = elem_node_pool[node_offset + local_node]
-                x.append(node_x[node_index])
-                y.append(node_y[node_index])
-            var k_global = _triangle_stiffness(elem, mat, elem_thickness[e], x, y)
-            var dof_map: List[Int] = []
-            for a in range(elem.dof_count):
-                dof_map.append(elem_dof_pool[elem_dof_offsets[e] + a])
-            for a in range(elem.dof_count):
-                var global_dof = dof_map[a]
-                F_int[global_dof] += _scatter_add_and_dot_row_simd(
-                    K, global_dof, k_global[a], dof_map, u, elem.dof_count
-                )
-        elif elem.type_tag == ElementTypeTag.BeamContact2D:
-            var dof_offset = elem_dof_offsets[e]
-            var flat: List[Float64] = []
-            var force = shell_cache.evaluate_contact(e, u, True, flat)
-            for i in range(elem.dof_count):
-                var row = elem_dof_pool[dof_offset + i]
-                F_int[row] += force[i]
-                for j in range(elem.dof_count):
-                    K[row][elem_dof_pool[dof_offset + j]] += flat[i * elem.dof_count + j]
-        elif elem.type_tag == ElementTypeTag.SSPBrickUP:
-            var dof_offset = elem_dof_offsets[e]
-            var force = BrickUPVector(fill=0.0)
-            var flat: List[Float64] = []
-            shell_cache.evaluate_brick_up(e, dof_offset, elem_dof_pool, u, True, force, flat)
-            for i in range(elem.dof_count):
-                var row = elem_dof_pool[dof_offset + i]
-                F_int[row] += force[i]
-                for j in range(elem.dof_count):
-                    K[row][elem_dof_pool[dof_offset + j]] += flat[i * elem.dof_count + j]
-        elif elem.type_tag == ElementTypeTag.QuadUP:
-            var dof_offset = elem_dof_offsets[e]
-            var force = QuadUPVector(fill=0.0)
-            var flat: List[Float64] = []
-            shell_cache.evaluate_up(e, dof_offset, elem_dof_pool, u, True, force, flat)
-            for i in range(elem.dof_count):
-                var row = elem_dof_pool[dof_offset + i]
-                F_int[row] += force[i]
-                for j in range(elem.dof_count):
-                    K[row][elem_dof_pool[dof_offset + j]] += flat[i * elem.dof_count + j]
-        else:
-            var dof_offset = elem_dof_offsets[e]
-            var local_u = QuadVector(fill=0.0)
-            for i in range(8):
-                local_u[i] = u[elem_dof_pool[dof_offset + i]]
-            var force = QuadVector(fill=0.0)
-            var matrix = QuadMatrix(fill=0.0)
-            shell_cache.quads[shell_cache.quad_index[e]].evaluate(
-                shell_cache.pimy_definitions,
-                shell_cache.pdmy_definitions,
-                local_u,
-                True,
-                force,
-                matrix,
-            )
-            for i in range(8):
-                var row = elem_dof_pool[dof_offset + i]
-                F_int[row] += force[i]
-                for j in range(8):
-                    K[row][elem_dof_pool[dof_offset + j]] += matrix[8 * i + j]
-        if runtime_metrics.enabled:
-            _profile_metrics_note_element_timing(
-                runtime_metrics,
-                elem.type_tag,
-                Int(perf_counter_ns()) - t_elem_start,
-            )
-
-    shell_cache.continuum.assemble_dense(u, K, F_int)
     var unused_sink = NullMatrixSink()
     var unused_free: List[Int] = []
+    _assemble_quad_family[NullMatrixSink, True](
+        elements,
+        quad_elem_indices,
+        node_x,
+        node_y,
+        elem_dof_offsets,
+        elem_dof_pool,
+        unused_free,
+        unused_free,
+        elem_node_offsets,
+        elem_node_pool,
+        elem_primary_material_ids,
+        shell_cache,
+        elem_thickness,
+        materials_by_id,
+        u,
+        unused_sink,
+        K,
+        F_int,
+        runtime_metrics,
+    )
+
+    shell_cache.continuum.assemble_dense(u, K, F_int)
     _assemble_shell_soa[NullMatrixSink, True](
         shell_elem_indices,
         elem_dof_offsets,

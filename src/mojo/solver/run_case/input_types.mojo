@@ -1,3 +1,4 @@
+from solver.run_case.nonlinear_convergence import RelativeNormDispIncrOptions
 from solver.run_case.analysis.hs_constraint import HSConstraint
 from materials.pressure_depend_multi_yield import PressureDependMultiYieldDef
 from materials.pressure_depend_multi_yield_02 import PressureDependMultiYield02Parameters
@@ -923,6 +924,7 @@ struct AnalysisInput(ImplicitlyCopyable, Movable):
     var tol: Float64
     var test_type: String
     var test_type_tag: Int
+    var relative_disp_test: RelativeNormDispIncrOptions
     var step_retry_enabled: Bool
     var step_retry_restore_primary_after_success: Bool
     var step_retry_continue_after_failure: Bool
@@ -994,6 +996,7 @@ struct AnalysisInput(ImplicitlyCopyable, Movable):
         self.tol = 1.0e-10
         self.test_type = "NormUnbalance"
         self.test_type_tag = NonlinearTestTypeTag.NormUnbalance
+        self.relative_disp_test = RelativeNormDispIncrOptions(2, 0)
         self.step_retry_enabled = False
         self.step_retry_restore_primary_after_success = True
         self.step_retry_continue_after_failure = False
@@ -1038,6 +1041,7 @@ struct SolverAttemptInput(ImplicitlyCopyable, Movable):
     var krylov_max_dim: Int
     var test_type: String
     var test_type_tag: Int
+    var relative_disp_test: RelativeNormDispIncrOptions
     var max_iters: Int
     var tol: Float64
 
@@ -1049,6 +1053,7 @@ struct SolverAttemptInput(ImplicitlyCopyable, Movable):
         self.krylov_max_dim = 0
         self.test_type = "NormUnbalance"
         self.test_type_tag = NonlinearTestTypeTag.NormUnbalance
+        self.relative_disp_test = RelativeNormDispIncrOptions(2, 0)
         self.max_iters = 20
         self.tol = 1.0e-10
 
@@ -1828,6 +1833,8 @@ fn nonlinear_test_type_tag(test_type_name: String) -> Int:
         return NonlinearTestTypeTag.NormDispIncr
     if test_type_name == "NormUnbalance":
         return NonlinearTestTypeTag.NormUnbalance
+    if test_type_name == "RelativeNormDispIncr":
+        return NonlinearTestTypeTag.RelativeNormDispIncr
     if test_type_name == "EnergyIncr":
         return NonlinearTestTypeTag.EnergyIncr
     return NonlinearTestTypeTag.Unknown
@@ -2109,6 +2116,23 @@ fn _json_get_array_item(
     if doc.node_tag(array_index) != JsonValueTag.Array:
         abort(field + " must be an array")
     return doc.array_item(array_index, item_index)
+
+
+fn _relative_disp_test_options(
+    doc: JsonDocument, index: Int, defaults: RelativeNormDispIncrOptions
+) raises -> RelativeNormDispIncrOptions:
+    var print_flag = _json_get_int(doc, index, "test_print_flag", defaults.print_flag)
+    var norm_type = defaults.norm_type
+    var extra_args = _json_key(doc, index, "test_extra_args")
+    if extra_args >= 0:
+        norm_type = 2
+        if _json_expect_array_len(doc, extra_args, "test_extra_args") > 0:
+            var arg = doc.array_item(extra_args, 0)
+            if doc.node_tag(arg) == JsonValueTag.String:
+                norm_type = atol(StringSlice(doc.node_text(arg)))
+            else:
+                norm_type = _json_int_value(doc, arg, "test_extra_args[0]")
+    return RelativeNormDispIncrOptions(norm_type, print_flag)
 
 
 fn _json_get_float_alias2(
@@ -2405,6 +2429,10 @@ fn parse_analysis_input_from_native(
         abort("analysis rel_tol is unsupported")
     analysis.test_type = _json_get_string(doc, analysis_index, "test_type", "NormUnbalance")
     analysis.test_type_tag = nonlinear_test_type_tag(analysis.test_type)
+    if analysis.test_type_tag == NonlinearTestTypeTag.RelativeNormDispIncr:
+        analysis.relative_disp_test = _relative_disp_test_options(
+            doc, analysis_index, analysis.relative_disp_test
+        )
 
     var step_retry_index = _json_key(doc, analysis_index, "step_retry")
     analysis.step_retry_restore_primary_after_success = _json_get_bool(
@@ -2587,6 +2615,10 @@ fn parse_analysis_input_from_native(
                 doc, attempt_index, "test_type", analysis.test_type
             )
             attempt.test_type_tag = nonlinear_test_type_tag(attempt.test_type)
+            if attempt.test_type_tag == NonlinearTestTypeTag.RelativeNormDispIncr:
+                attempt.relative_disp_test = _relative_disp_test_options(
+                    doc, attempt_index, analysis.relative_disp_test
+                )
             attempt.max_iters = _json_get_int(doc, attempt_index, "max_iters", analysis.max_iters)
             attempt.tol = _json_get_float(doc, attempt_index, "tol", analysis.tol)
             if _json_has_key(doc, attempt_index, "rel_tol"):
@@ -2609,6 +2641,7 @@ fn parse_analysis_input_from_native(
     )
     primary_attempt.test_type = analysis.test_type
     primary_attempt.test_type_tag = analysis.test_type_tag
+    primary_attempt.relative_disp_test = analysis.relative_disp_test
     primary_attempt.max_iters = analysis.max_iters
     primary_attempt.tol = analysis.tol
     solver_chain_pool.append(primary_attempt^)

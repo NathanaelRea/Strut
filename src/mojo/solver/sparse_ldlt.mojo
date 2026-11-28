@@ -33,11 +33,12 @@ from sys.ffi import external_call
 
 
 struct SparseOrdering:
-    """Auto compares symbolic factor fill and checks a wider AMD cutoff on hub graphs."""
+    """Auto compares fill, and considers nested dissection on large patterns."""
 
     alias AMD = 0
     alias RCM = 1
     alias Auto = 2
+    alias NestedDissection = 3
 
 
 struct SparseFactorMode:
@@ -230,7 +231,15 @@ fn _rcm(graph: _Graph) -> List[Int]:
     return order^
 
 
-fn _amd(graph: _Graph, dense_multiplier: Int = 8) -> List[Int]:
+fn _amd[
+    partitioned: Bool = False
+](
+    graph: _Graph,
+    dense_multiplier: Int = 8,
+    partitions: List[Int] = [],
+    regions: List[Int] = [],
+    dense_limit_override: Int = 0,
+) -> List[Int]:
     # In the quotient graph, a live variable references direct neighbors
     # (>= 0) and incident elements (< 0). An element represents a clique of its
     # remaining variables. A pivot reuses its variable ID as an element.
@@ -258,6 +267,8 @@ fn _amd(graph: _Graph, dense_multiplier: Int = 8) -> List[Int]:
     var dense_limit = min(
         max(16, Int(10.0 * sqrt(Float64(n)))), max(64, dense_multiplier * mean_degree)
     )
+    if dense_limit_override > 0:
+        dense_limit = dense_limit_override
 
     for i in range(n):
         if ptr[i + 1] - ptr[i] > dense_limit:
@@ -270,12 +281,35 @@ fn _amd(graph: _Graph, dense_multiplier: Int = 8) -> List[Int]:
                 var j = Int(rows[p])
                 if live[j] != 0:
                     neighbors.append(j)
-            buckets.insert(i, len(neighbors))
+
+            @parameter
+            if partitioned:
+                buckets.degree[i] = len(neighbors)
+            else:
+                buckets.insert(i, len(neighbors))
         links.append(neighbors^)
 
     var remaining = n - len(dense)
     var lists = links.unsafe_ptr()
+    var next_partition = 0
+    var active_region = -1
+    var active_count = 0
+    var group = regions.unsafe_ptr()
     while remaining > 0:
+
+        @parameter
+        if partitioned:
+            while active_count == 0:
+                active_region = group[partitions[next_partition]]
+                buckets.minimum = n
+                while next_partition < n and group[partitions[next_partition]] == active_region:
+                    var i = partitions[next_partition]
+                    if live[i] != 0:
+                        buckets.insert(i, buckets.degree[i])
+                        active_count += 1
+                    next_partition += 1
+            active_count -= 1
+
         var pivot = buckets.pop_min()
         live[pivot] = 0
         order.append(pivot)
@@ -309,7 +343,13 @@ fn _amd(graph: _Graph, dense_multiplier: Int = 8) -> List[Int]:
         var members = frontier.unsafe_ptr()
         for k in range(count):
             var i = members[k]
-            buckets.remove(i)
+
+            @parameter
+            if partitioned:
+                if group[i] == active_region:
+                    buckets.remove(i)
+            else:
+                buckets.remove(i)
             var neighbors = lists[i].unsafe_ptr()
             for q in range(len(lists[i])):
                 var entry = neighbors[q]
@@ -346,11 +386,15 @@ fn _amd(graph: _Graph, dense_multiplier: Int = 8) -> List[Int]:
                 neighbors[length] = entry
                 length += 1
 
-            if length == 0:
+            if length == 0 and (not partitioned or group[i] == active_region):
                 # All its neighbors are already in the pivot's clique.
                 order.append(i)
                 live[i] = 0
                 remaining -= 1
+
+                @parameter
+                if partitioned:
+                    active_count -= 1
                 lists[i] = List[Int]()
             else:
                 lists[i].resize(length, 0)
@@ -363,11 +407,183 @@ fn _amd(graph: _Graph, dense_multiplier: Int = 8) -> List[Int]:
         for k in range(kept):
             var i = members[k]
             lists[pivot].append(i)
-            buckets.insert(i, min(remaining - 1, buckets.degree.unsafe_ptr()[i] + kept - 1))
+            var degree = min(remaining - 1, buckets.degree.unsafe_ptr()[i] + kept - 1)
+
+            @parameter
+            if partitioned:
+                if group[i] == active_region:
+                    buckets.insert(i, degree)
+                else:
+                    buckets.degree[i] = degree
+            else:
+                buckets.insert(i, degree)
         size[pivot] = kept
     for i in range(len(dense)):
         order.append(dense[i])
     return order^
+
+
+struct _SeparatorSearch(Movable):
+    var region: List[Int]
+    var seen: List[Int]
+    var distance: List[Int]
+    var queue: List[Int]
+    var scratch: List[Int]
+    var visit: Int
+    var next_region: Int
+
+    fn __init__(out self, n: Int):
+        self.region = _ints(n)
+        self.seen = _ints(n, -1)
+        self.distance = _ints(n)
+        self.queue = _ints(n)
+        self.scratch = _ints(n)
+        self.visit = -1
+        self.next_region = 1
+
+    fn bfs(mut self, graph: _Graph, seed: Int, region_id: Int) -> Int:
+        self.visit += 1
+        var visit = self.visit
+        var seen = self.seen.unsafe_ptr()
+        var distance = self.distance.unsafe_ptr()
+        var queue = self.queue.unsafe_ptr()
+        var region = self.region.unsafe_ptr()
+        var ptr = graph.ptr.unsafe_ptr()
+        var rows = graph.rows.unsafe_ptr()
+        queue[0] = seed
+        seen[seed] = visit
+        distance[seed] = 0
+        var head = 0
+        var end = 1
+        while head < end:
+            var vertex = queue[head]
+            head += 1
+            var next_depth = distance[vertex] + 1
+            for p in range(ptr[vertex], ptr[vertex + 1]):
+                var neighbor = Int(rows[p])
+                if region[neighbor] == region_id and seen[neighbor] != visit:
+                    seen[neighbor] = visit
+                    distance[neighbor] = next_depth
+                    queue[end] = neighbor
+                    end += 1
+        return end
+
+    fn split(
+        mut self, graph: _Graph, order: UnsafePointer[Int], start: Int, end: Int, region_id: Int
+    ):
+        var count = end - start
+        if count < 1024:
+            return
+
+        var reached = self.bfs(graph, order[start], region_id)
+        if reached == count:
+            # A low-degree vertex in the final layer approximates a
+            # peripheral start without relying on coordinates or numbering.
+            var seed = self.queue[reached - 1]
+            var final_level = self.distance[seed]
+            for k in range(reached - 2, -1, -1):
+                var vertex = self.queue[k]
+                if self.distance[vertex] < final_level:
+                    break
+                if (
+                    graph.ptr[vertex + 1] - graph.ptr[vertex]
+                    < graph.ptr[seed + 1] - graph.ptr[seed]
+                ):
+                    seed = vertex
+            _ = self.bfs(graph, seed, region_id)
+
+        var cutoff = -1
+        var left = reached
+        var right = count - reached
+        if reached == count:
+            var best_size = count
+            var k = 0
+            while k < count:
+                var level = self.distance[self.queue[k]]
+                var first = k
+                k += 1
+                while k < count and self.distance[self.queue[k]] == level:
+                    k += 1
+                var size = k - first
+                if min(first, count - k) >= count // 3 and size < best_size:
+                    cutoff = level
+                    best_size = size
+                    left = first
+                    right = count - k
+            if cutoff < 0 or best_size > count // 5:
+                return
+        elif min(left, right) < count // 4:
+            # AMD already handles disconnected components. Avoid repeatedly
+            # stripping tiny components from a large region.
+            return
+
+        var left_region = self.next_region
+        var right_region = left_region + 1
+        var separator_region = left_region + 2
+        self.next_region += 3
+        var scratch = self.scratch.unsafe_ptr()
+        var region = self.region.unsafe_ptr()
+        var visit = self.visit
+        for i in range(start, end):
+            var vertex = order[i]
+            var distance = self.distance[vertex]
+            if self.seen[vertex] == visit and (cutoff < 0 or distance < cutoff):
+                region[vertex] = left_region
+            elif cutoff >= 0 and distance == cutoff:
+                region[vertex] = separator_region
+            else:
+                region[vertex] = right_region
+
+        # A BFS layer includes vertices that only touch one interior.
+        # Move those across the boundary whenever the cut still separates
+        # the two subgraphs. Read the updated side of every neighbor.
+        for i in range(start, end):
+            var vertex = order[i]
+            if region[vertex] != separator_region:
+                continue
+            var touches_left = False
+            var touches_right = False
+            for p in range(graph.ptr[vertex], graph.ptr[vertex + 1]):
+                var neighbor = Int(graph.rows[p])
+                touches_left |= region[neighbor] == left_region
+                touches_right |= region[neighbor] == right_region
+            if not touches_right and (touches_left or left <= right):
+                region[vertex] = left_region
+                left += 1
+            elif not touches_left:
+                region[vertex] = right_region
+                right += 1
+
+        var left_at = start
+        var right_at = start + left
+        var separator_at = right_at + right
+        for i in range(start, end):
+            var vertex = order[i]
+            if region[vertex] == left_region:
+                scratch[left_at] = vertex
+                left_at += 1
+            elif region[vertex] == right_region:
+                scratch[right_at] = vertex
+                right_at += 1
+            else:
+                scratch[separator_at] = vertex
+                separator_at += 1
+        for i in range(start, end):
+            order[i] = scratch[i]
+        self.split(graph, order, start, start + left, left_region)
+        self.split(graph, order, start + left, start + left + right, right_region)
+
+
+fn _bfs_nested_dissection(graph: _Graph, amd_order: List[Int]) -> List[Int]:
+    # Constrain AMD to eliminate each interior before its separator.
+    var order = amd_order.copy()
+    var search = _SeparatorSearch(len(order))
+    search.split(graph, order.unsafe_ptr(), 0, len(order), 0)
+    if search.next_region == 1:
+        return order^
+    # Keep the same relaxed hub cutoff used by the Auto candidate. The
+    # quotient graph can then account for these edges when ordering a cut.
+    return _amd[True](graph, 64, order, search.region)
 
 
 struct _PermutedTriangle(Movable):
@@ -528,6 +744,7 @@ struct _SymbolicOrder(Movable):
         kind: Int,
         permutation: List[Int] = [],
         dense_multiplier: Int = 8,
+        dense_limit_override: Int = 0,
     ):
         self.kind = kind
         if len(permutation) > 0:
@@ -535,7 +752,7 @@ struct _SymbolicOrder(Movable):
         elif kind == SparseOrdering.RCM:
             self.order = _rcm(graph)
         else:
-            self.order = _amd(graph, dense_multiplier)
+            self.order = _amd(graph, dense_multiplier, dense_limit_override=dense_limit_override)
         var inverse = _ints(len(self.order))
         for j in range(len(self.order)):
             inverse[self.order[j]] = j
@@ -552,7 +769,7 @@ struct _SymbolicOrder(Movable):
     fn apply_postorder(mut self):
         # Tree postordering improves locality without changing fill.
         # Keep the RCM numbering intact to preserve its bandwidth.
-        if self.kind != SparseOrdering.AMD:
+        if self.kind == SparseOrdering.RCM:
             return
         var n = len(self.order)
         var old_to_new = _ints(n)
@@ -587,6 +804,7 @@ fn _validate_symbolic_input(
         ordering != SparseOrdering.AMD
         and ordering != SparseOrdering.RCM
         and ordering != SparseOrdering.Auto
+        and ordering != SparseOrdering.NestedDissection
     ):
         raise Error("unknown sparse LDLT ordering")
     if n < 0 or n > 2_147_483_647:
@@ -608,6 +826,15 @@ fn _validate_symbolic_input(
             previous = i
 
 
+fn _nested_symbolic(graph: _Graph, amd_order: List[Int]) -> _SymbolicOrder:
+    var order = _bfs_nested_dissection(graph, amd_order)
+    return _SymbolicOrder(graph, SparseOrdering.NestedDissection, order)
+
+
+fn _reduces_factor_work(current: _SymbolicOrder, trial: _SymbolicOrder) -> Bool:
+    return trial.nnz <= current.nnz and trial.flops <= current.flops - (current.flops // 100 * 15)
+
+
 fn _choose_symbolic(
     graph: _Graph,
     matrix_nnz: Int,
@@ -616,6 +843,8 @@ fn _choose_symbolic(
     dense_multiplier: Int,
 ) -> _SymbolicOrder:
     var custom_order = len(permutation) > 0
+    if not custom_order and ordering == SparseOrdering.NestedDissection:
+        return _nested_symbolic(graph, _amd(graph, dense_multiplier))
     var kind = SparseOrdering.RCM
     if not custom_order and ordering == SparseOrdering.AMD:
         kind = SparseOrdering.AMD
@@ -632,12 +861,35 @@ fn _choose_symbolic(
         var n = len(graph.ptr) - 1
         if n >= 8192 and symbolic.nnz > matrix_nnz:
             var threshold = 16 * max(1, len(graph.rows) // n)
+            var max_degree = 0
             for j in range(n):
-                if graph.ptr[j + 1] - graph.ptr[j] > threshold:
-                    var alternate = _SymbolicOrder(graph, SparseOrdering.AMD, dense_multiplier=64)
-                    if alternate.nnz < symbolic.nnz and alternate.flops < symbolic.flops:
-                        symbolic = alternate^
-                    break
+                max_degree = max(max_degree, graph.ptr[j + 1] - graph.ptr[j])
+            if max_degree > threshold:
+                var alternate = _SymbolicOrder(graph, SparseOrdering.AMD, dense_multiplier=64)
+                if alternate.nnz < symbolic.nnz and alternate.flops < symbolic.flops:
+                    symbolic = alternate^
+                var broad_limit = min(Int(10.0 * sqrt(Float64(n))), 64 * (len(graph.rows) // n))
+                if n >= 32_768 and max_degree <= broad_limit:
+                    # The wide cutoff keeps every hub. Try postponing only
+                    # the highest-degree class, while keeping other hubs in
+                    # the quotient graph.
+                    var defer_largest = _SymbolicOrder(
+                        graph, SparseOrdering.AMD, dense_limit_override=max_degree - 1
+                    )
+                    if _reduces_factor_work(symbolic, defer_largest):
+                        symbolic = defer_largest^
+    # Symbolic work must be large enough to repay a second ordering.
+    # Require at least a 15% predicted FLOP reduction with no fill increase.
+    if (
+        not custom_order
+        and ordering == SparseOrdering.Auto
+        and symbolic.kind == SparseOrdering.AMD
+        and len(graph.ptr) - 1 >= 8192
+        and symbolic.flops >= 50_000_000
+    ):
+        var nd = _nested_symbolic(graph, symbolic.order)
+        if _reduces_factor_work(symbolic, nd):
+            symbolic = nd^
     return symbolic^
 
 

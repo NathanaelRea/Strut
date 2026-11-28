@@ -571,6 +571,11 @@ struct UniMaterialPointState[Components: MaterialExtension](
                 self.components = rebind[Self.Components](Optional(states^))
 
     fn __copyinit__(out self, existing: Self):
+        self = Self()
+        self.copy_from(existing)
+
+    fn copy_from(mut self, existing: Self):
+        """Update a rollback snapshot, reusing storage for fixed material histories."""
         self.eps_c = existing.eps_c
         self.sig_c = existing.sig_c
         self.tangent_c = existing.tangent_c
@@ -607,8 +612,16 @@ struct UniMaterialPointState[Components: MaterialExtension](
         self.c2_dept_c = existing.c2_dept_c
         self.c2_ecmin_t = existing.c2_ecmin_t
         self.c2_dept_t = existing.c2_dept_t
-        self.bilin_history = existing.bilin_history.copy()
-        self.imk_peak_history = existing.imk_peak_history.copy()
+        if len(self.bilin_history) != len(existing.bilin_history):
+            self.bilin_history = existing.bilin_history.copy()
+        else:
+            for i in range(len(self.bilin_history)):
+                self.bilin_history[i] = existing.bilin_history[i]
+        if len(self.imk_peak_history) != len(existing.imk_peak_history):
+            self.imk_peak_history = existing.imk_peak_history.copy()
+        else:
+            for i in range(len(self.imk_peak_history)):
+                self.imk_peak_history[i] = existing.imk_peak_history[i]
         self.imk_peak_has_commit = existing.imk_peak_has_commit
         self.bilin_has_commit = existing.bilin_has_commit
         self.hysteretic_c = existing.hysteretic_c
@@ -629,7 +642,11 @@ struct UniMaterialPointState[Components: MaterialExtension](
         self.ratchet = existing.ratchet
         self.retain_trial_tangent = existing.retain_trial_tangent
         self.retain_trial_response = existing.retain_trial_response
-        self.fsam = existing.fsam.copy()
+        if len(self.fsam) != len(existing.fsam):
+            self.fsam = existing.fsam.copy()
+        else:
+            for i in range(len(self.fsam)):
+                self.fsam[i] = existing.fsam[i]
         self.fsam_components = existing.fsam_components
 
 

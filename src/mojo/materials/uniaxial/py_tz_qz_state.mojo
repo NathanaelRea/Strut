@@ -6,6 +6,8 @@ fn _abs(x: Float64) -> Float64:
 
 struct PyTzQzState(Defaultable, ImplicitlyCopyable, Movable):
     # Committed internal state
+    # Constant in PySimple1; unused by TzSimple1 and QzSimple1.
+    var py_reference_power: Float64
     var c_p_raw: Float64
     var c_nf_pinr: Float64
     var c_nf_pinl: Float64
@@ -69,6 +71,7 @@ struct PyTzQzState(Defaultable, ImplicitlyCopyable, Movable):
     var qz_elast: Float64
 
     fn __init__(out self):
+        self.py_reference_power = 0.0
         self.c_p_raw = 0.0
         self.c_nf_pinr = 0.0
         self.c_nf_pinl = 0.0

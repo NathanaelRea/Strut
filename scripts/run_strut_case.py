@@ -20,6 +20,23 @@ def run(cmd, env=None, verbose=False):
     subprocess.check_call(cmd, env=env)
 
 
+def _solver_environment() -> dict[str, str]:
+    env = os.environ.copy()
+    if env.get("MOJO_PYTHON") or env.get("MOJO_PYTHON_LIBRARY"):
+        return env
+
+    import sysconfig
+
+    lib_dir = sysconfig.get_config_var("LIBDIR")
+    lib_name = sysconfig.get_config_var("INSTSONAME")
+    if lib_dir and lib_name:
+        library = Path(lib_dir) / lib_name
+        if library.is_file():
+            # Mojo otherwise launches Python to discover its shared library.
+            env["MOJO_PYTHON_LIBRARY"] = str(library)
+    return env
+
+
 def _profile_build_requested() -> bool:
     return os.getenv("STRUT_PROFILE") == "1"
 
@@ -282,19 +299,36 @@ def main():
         )
         return
 
-    normalized_input = None
-    tmp_path = None
-    input_cache_json = None
     if args.input_tcl:
+        from tcl_to_strut import convert_tcl_to_solver_input
+
         input_tcl = Path(args.input_tcl).resolve()
-        case_data = __import__("tcl_to_strut").convert_tcl_to_solver_input(
-            input_tcl, repo_root, args.compute_only
-        )
+        case_data = convert_tcl_to_solver_input(input_tcl, repo_root, args.compute_only)
         _lower_one_dimensional_case(case_data)
+        cmd = [str(solver_path), "--input", "-", "--output", args.output]
+        if args.compute_only:
+            cmd.append("--compute-only")
+        if verbose:
+            print("+", " ".join(cmd))
+        subprocess.run(
+            cmd,
+            input=json.dumps(case_data).encode() + b"\n",
+            env=_solver_environment(),
+            check=True,
+        )
+        return
+
+    input_path = Path(args.input).resolve()
+    case_data = json.loads(input_path.read_text(encoding="utf-8"))
+    _warn_zero_length_node_separation(case_data)
+    normalized_input = input_path
+    tmp_path = None
+    paths_changed = _normalize_time_series_paths(case_data, input_path, repo_root)
+    if _lower_one_dimensional_case(case_data) or paths_changed:
         tmp = tempfile.NamedTemporaryFile(
             mode="w",
             suffix=".json",
-            prefix="strut_case_direct_tcl_",
+            prefix="strut_case_resolved_",
             delete=False,
             encoding="utf-8",
         )
@@ -303,46 +337,20 @@ def main():
             tmp.flush()
         finally:
             tmp.close()
-        input_cache_json = Path(tmp.name)
-    else:
-        input_path = Path(args.input).resolve()
-        case_data = json.loads(input_path.read_text(encoding="utf-8"))
-        _warn_zero_length_node_separation(case_data)
-        normalized_input = input_path
-        paths_changed = _normalize_time_series_paths(case_data, input_path, repo_root)
-        if _lower_one_dimensional_case(case_data) or paths_changed:
-            tmp = tempfile.NamedTemporaryFile(
-                mode="w",
-                suffix=".json",
-                prefix="strut_case_resolved_",
-                delete=False,
-                encoding="utf-8",
-            )
-            try:
-                tmp.write(json.dumps(case_data))
-                tmp.flush()
-            finally:
-                tmp.close()
-            tmp_path = Path(tmp.name)
-            normalized_input = tmp_path
-            if verbose:
-                print(f"+ normalized time_series values_path(s) in {tmp_path}")
+        tmp_path = Path(tmp.name)
+        normalized_input = tmp_path
+        if verbose:
+            print(f"+ normalized time_series values_path(s) in {tmp_path}")
 
     try:
-        cmd = [str(solver_path)]
-        if input_cache_json is not None:
-            cmd += ["--input", str(input_cache_json)]
-        else:
-            cmd += ["--input", str(normalized_input)]
+        cmd = [str(solver_path), "--input", str(normalized_input)]
         if args.compute_only:
             cmd.append("--compute-only")
         cmd += ["--output", args.output]
-        run(cmd, verbose=verbose)
+        run(cmd, env=_solver_environment(), verbose=verbose)
     finally:
         if tmp_path is not None:
             tmp_path.unlink(missing_ok=True)
-        if input_cache_json is not None:
-            input_cache_json.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

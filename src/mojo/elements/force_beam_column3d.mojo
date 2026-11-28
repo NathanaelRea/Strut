@@ -6,7 +6,7 @@ from os import abort
 
 from elements.corotational3d import (
     Corotational3dState,
-    corotational3d_basic_displacements,
+    Corotational3dTrial,
     corotational3d_resisting_force_and_tangent,
 )
 from elements.beam_loads import beam3d_basic_fixed_end_and_reactions, beam3d_section_load_response
@@ -36,7 +36,7 @@ alias Beam3dMat3 = StaticTuple[Float64, 9]
 alias Beam3dVec10 = StaticTuple[Float64, 10]
 alias Beam3dMat5 = StaticTuple[Float64, 25]
 alias Beam3dVec5 = StaticTuple[Float64, 5]
-alias Beam3dMat12 = StaticTuple[Float64, 144]
+alias Beam3dMat12 = InlineArray[Float64, 144]
 alias Beam3dVec12 = StaticTuple[Float64, 12]
 
 
@@ -423,102 +423,39 @@ fn _beam3d_transform_stiffness_local_to_global_flat(
     var r0_v4 = SIMD[DType.float64, 4](r00, r01, r02, 0.0)
     var r1_v4 = SIMD[DType.float64, 4](r10, r11, r12, 0.0)
     var r2_v4 = SIMD[DType.float64, 4](r20, r21, r22, 0.0)
+    var local = UnsafePointer(to=k_local[0])
+    var temp = UnsafePointer(to=work[0])
+    # K R, with R applied independently to the four column triples.
     for row in range(12):
         var row_base = row * 12
 
         @parameter
         for col_block in range(4):
             var base = row_base + 3 * col_block
-            var out = r0_v4 * k_local[base] + r1_v4 * k_local[base + 1] + r2_v4 * k_local[base + 2]
-            work[base] = out[0]
-            work[base + 1] = out[1]
-            work[base + 2] = out[2]
+            var out = r0_v4 * local[base] + r1_v4 * local[base + 1] + r2_v4 * local[base + 2]
+            temp[base] = out[0]
+            temp[base + 1] = out[1]
+            temp[base + 2] = out[2]
 
-    var r00_8 = SIMD[DType.float64, 8](r00)
-    var r10_8 = SIMD[DType.float64, 8](r10)
-    var r20_8 = SIMD[DType.float64, 8](r20)
-    var r01_8 = SIMD[DType.float64, 8](r01)
-    var r11_8 = SIMD[DType.float64, 8](r11)
-    var r21_8 = SIMD[DType.float64, 8](r21)
-    var r02_8 = SIMD[DType.float64, 8](r02)
-    var r12_8 = SIMD[DType.float64, 8](r12)
-    var r22_8 = SIMD[DType.float64, 8](r22)
-
-    var r00_4 = SIMD[DType.float64, 4](r00)
-    var r10_4 = SIMD[DType.float64, 4](r10)
-    var r20_4 = SIMD[DType.float64, 4](r20)
-    var r01_4 = SIMD[DType.float64, 4](r01)
-    var r11_4 = SIMD[DType.float64, 4](r11)
-    var r21_4 = SIMD[DType.float64, 4](r21)
-    var r02_4 = SIMD[DType.float64, 4](r02)
-    var r12_4 = SIMD[DType.float64, 4](r12)
-    var r22_4 = SIMD[DType.float64, 4](r22)
-
-    @parameter
+    # R transpose times the intermediate. Load whole contiguous row slices
+    # instead of extracting individual lanes through a runtime tuple index.
     for row_block in range(4):
-        var row_offset = 3 * row_block
-        var w0_base = row_offset * 12
-        var w1_base = (row_offset + 1) * 12
-        var w2_base = (row_offset + 2) * 12
-        var dst0 = k_global[row_offset].unsafe_ptr()
-        var dst1 = k_global[row_offset + 1].unsafe_ptr()
-        var dst2 = k_global[row_offset + 2].unsafe_ptr()
+        var row = 3 * row_block
+        var w0 = temp + row * 12
+        var w1 = w0 + 12
+        var w2 = w1 + 12
+        var w0_lo = w0.load[width=8]()
+        var w1_lo = w1.load[width=8]()
+        var w2_lo = w2.load[width=8]()
+        var w0_hi = w0.load[width=4](8)
+        var w1_hi = w1.load[width=4](8)
+        var w2_hi = w2.load[width=4](8)
 
-        var w0_lo = SIMD[DType.float64, 8](
-            work[w0_base],
-            work[w0_base + 1],
-            work[w0_base + 2],
-            work[w0_base + 3],
-            work[w0_base + 4],
-            work[w0_base + 5],
-            work[w0_base + 6],
-            work[w0_base + 7],
-        )
-        var w1_lo = SIMD[DType.float64, 8](
-            work[w1_base],
-            work[w1_base + 1],
-            work[w1_base + 2],
-            work[w1_base + 3],
-            work[w1_base + 4],
-            work[w1_base + 5],
-            work[w1_base + 6],
-            work[w1_base + 7],
-        )
-        var w2_lo = SIMD[DType.float64, 8](
-            work[w2_base],
-            work[w2_base + 1],
-            work[w2_base + 2],
-            work[w2_base + 3],
-            work[w2_base + 4],
-            work[w2_base + 5],
-            work[w2_base + 6],
-            work[w2_base + 7],
-        )
-        dst0.store(0, r00_8 * w0_lo + r10_8 * w1_lo + r20_8 * w2_lo)
-        dst1.store(0, r01_8 * w0_lo + r11_8 * w1_lo + r21_8 * w2_lo)
-        dst2.store(0, r02_8 * w0_lo + r12_8 * w1_lo + r22_8 * w2_lo)
-
-        var w0_hi = SIMD[DType.float64, 4](
-            work[w0_base + 8],
-            work[w0_base + 9],
-            work[w0_base + 10],
-            work[w0_base + 11],
-        )
-        var w1_hi = SIMD[DType.float64, 4](
-            work[w1_base + 8],
-            work[w1_base + 9],
-            work[w1_base + 10],
-            work[w1_base + 11],
-        )
-        var w2_hi = SIMD[DType.float64, 4](
-            work[w2_base + 8],
-            work[w2_base + 9],
-            work[w2_base + 10],
-            work[w2_base + 11],
-        )
-        dst0.store(8, r00_4 * w0_hi + r10_4 * w1_hi + r20_4 * w2_hi)
-        dst1.store(8, r01_4 * w0_hi + r11_4 * w1_hi + r21_4 * w2_hi)
-        dst2.store(8, r02_4 * w0_hi + r12_4 * w1_hi + r22_4 * w2_hi)
+        @parameter
+        for i in range(3):
+            var dst = k_global[row + i].unsafe_ptr()
+            dst.store(0, R[i] * w0_lo + R[3 + i] * w1_lo + R[6 + i] * w2_lo)
+            dst.store(8, R[i] * w0_hi + R[3 + i] * w1_hi + R[6 + i] * w2_hi)
 
 
 @always_inline
@@ -1954,10 +1891,11 @@ fn force_beam_column3d_global_tangent_and_internal(
     var v_basic_3: Float64
     var v_basic_4: Float64
     var torsion_basic: Float64
-    var corotational = Corotational3dState()
+    var corotational = Optional[Corotational3dTrial]()
     if geom_transf == "Corotational":
-        corotational = scratch.corotational_trial(elem_index, u_elem_global)
-        var basic = corotational3d_basic_displacements(scratch.R, L, u_elem_global, corotational)
+        var state = scratch.corotational_trial(elem_index, u_elem_global)
+        corotational = Corotational3dTrial(scratch.R, L, u_elem_global, state)
+        ref basic = corotational.value().basic
         v_basic_0 = basic[0]
         v_basic_1 = basic[1]
         v_basic_2 = basic[2]
@@ -2071,9 +2009,7 @@ fn force_beam_column3d_global_tangent_and_internal(
     )
     if geom_transf == "Corotational":
         _force_beam_column3d_corotational_response(
-            L,
-            u_elem_global,
-            corotational,
+            corotational.value(),
             q_basic_0,
             q_basic_1,
             q_basic_2,
@@ -2117,9 +2053,7 @@ fn force_beam_column3d_global_tangent_and_internal(
 
 
 fn _force_beam_column3d_corotational_response(
-    length: Float64,
-    u: List[Float64],
-    state: Corotational3dState,
+    trial: Corotational3dTrial,
     q0: Float64,
     q1: Float64,
     q2: Float64,
@@ -2143,8 +2077,16 @@ fn _force_beam_column3d_corotational_response(
     q[3] = q3
     q[4] = q4
     q[5] = q5
+    if len(tangent) != 12:
+        _ensure_zero_matrix(tangent, 12, 12)
+    else:
+        for i in range(12):
+            if len(tangent[i]) != 12:
+                tangent[i].resize(12, 0.0)
+    if len(force) != 12:
+        force.resize(12, 0.0)
     corotational3d_resisting_force_and_tangent(
-        scratch.R, length, u, state, q, scratch.k_basic_flat, torsion, force, tangent
+        trial, q, scratch.k_basic_flat, torsion, force, tangent
     )
     # Fixed-end reactions stay in the reference local axes.
     for k in range(3):
@@ -2849,10 +2791,11 @@ fn _force_beam_column3d_fiber_with_section[
     var v_basic_3: Float64
     var v_basic_4: Float64
     var torsion_basic: Float64
-    var corotational = Corotational3dState()
+    var corotational = Optional[Corotational3dTrial]()
     if geom_transf == "Corotational":
-        corotational = scratch.corotational_trial(elem_index, u_elem_global)
-        var basic = corotational3d_basic_displacements(scratch.R, L, u_elem_global, corotational)
+        var state = scratch.corotational_trial(elem_index, u_elem_global)
+        corotational = Corotational3dTrial(scratch.R, L, u_elem_global, state)
+        ref basic = corotational.value().basic
         v_basic_0 = basic[0]
         v_basic_1 = basic[1]
         v_basic_2 = basic[2]
@@ -3081,9 +3024,7 @@ fn _force_beam_column3d_fiber_with_section[
         torsion_k = G * J * inv_L
     if geom_transf == "Corotational":
         _force_beam_column3d_corotational_response(
-            L,
-            u_elem_global,
-            corotational,
+            corotational.value(),
             q0,
             q1,
             q2,

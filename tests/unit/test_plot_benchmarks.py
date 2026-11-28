@@ -116,20 +116,15 @@ def test_write_opensees_examples_markdown_groups_examples_by_opensees_time(
     assert result == output_path
     text = output_path.read_text(encoding="utf-8")
     assert "# Benchmarks: Strut and OpenSees" in text
-    # Only `opensees_example_*` cases are listed.
-    assert "cantilever_medium" not in text
-    assert "bench_ex5" not in text
-    assert "5 cases, slowest first. Strut is faster in 5 and slower in 0." in text
-    assert (
-        "| OpenSees examples, all 5 cases |  | 6.50 s | 3.50 s (**1.9x faster**) |"
-        in text
-    )
-    # Cases are grouped by OpenSees time; a group with no cases has no heading.
-    assert "### Over one second" in text
-    assert "### 10 ms to one second" not in text
-    assert "### Under 10 ms" in text
-    assert 'title "OpenSees examples: over one second"' in text
-    assert 'title "OpenSees examples: under 10 ms"' not in text
+    assert "cantilever_medium" in text
+    assert "bench_ex5" in text
+    assert "7 of 7 cases have timings for both engines." in text
+    assert "| Validation suite, 7 comparable cases |" in text
+    assert "#### Over one second" in text
+    assert "#### 10 ms to one second" in text
+    assert "#### Under 10 ms" in text
+    assert 'title "OpenSees examples manual: over one second"' in text
+    assert 'title "OpenSees examples manual: under 10 ms"' not in text
     hidden = plot_benchmarks.HIDDEN_LABEL_CHAR
     assert f'x-axis ["{hidden}", "1", "{hidden * 2}", "{hidden * 3}", "2"]' in text
     assert 'y-axis "Analysis time (s)" 0 --> 3.85' in text
@@ -258,6 +253,10 @@ def test_write_opensees_examples_markdown_adds_single_thread_bar_when_measured(
                         "repeat": 3,
                         "strut_threads": "performance cores",
                         "strut_single_thread_pass": True,
+                        "opensees_thread_env": {
+                            "OPENBLAS_NUM_THREADS": "1",
+                            "OMP_NUM_THREADS": "1",
+                        },
                     },
                     "build": {"opensees_version": "3.7.1"},
                 },
@@ -288,6 +287,7 @@ def test_write_opensees_examples_markdown_adds_single_thread_bar_when_measured(
 
     text = output_path.read_text(encoding="utf-8")
     assert "Measured 2026-03-09 on Test CPU (8 cores), OpenSees 3.7.1." in text
+    assert "OpenSees ran with `OPENBLAS_NUM_THREADS=1` and `OMP_NUM_THREADS=1`." in text
     assert "Median of 3 runs per engine." in text
     assert (
         "`opensees` is OpenSees, `strut` is Strut on one thread, and "
@@ -359,3 +359,65 @@ def test_write_opensees_examples_markdown_charts_each_large_model(tmp_path: Path
         "    bar [100.000, 0, 0]\n    bar [0, 20.000, 0]\n    bar [0, 0, 10.000]\n    bar [0, 0, 0]"
         in text
     )
+
+
+def test_markdown_lists_all_families_and_absolute_losses_with_e2e(tmp_path):
+    cases = [
+        {
+            "name": "gallery_slow",
+            "opensees": {"analysis_us": 600},
+            "strut": {"analysis_us": 900},
+        },
+        {
+            "name": "opensees_source_example_99",
+            "opensees": {"analysis_us": 100},
+            "strut": {"analysis_us": 310},
+        },
+        {
+            "name": "opensees_example_soil",
+            "tcl_source": "OpenSeesExamplesPractical/soil.tcl",
+            "opensees": {"analysis_us": 51},
+            "strut": {"analysis_us": 52},
+        },
+        {"name": "strut_incomplete", "strut": {"analysis_us": 10}},
+    ]
+    path = tmp_path / "summary.json"
+    path.write_text(json.dumps({"cases": cases}))
+    e2e = tmp_path / "e2e.json"
+    e2e.write_text(
+        json.dumps(
+            {
+                "cases": [
+                    {
+                        "name": "gallery_live",
+                        "replay_tcl": "live",
+                        "opensees": {"e2e_median_s": 0.01},
+                        "strut": {"e2e_median_s": 0.5},
+                    }
+                ]
+            }
+        )
+    )
+    output = tmp_path / "output.md"
+    output.write_text("# Old\n\n## Large models\n\nKeep exactly.\n\n## Old cases\n")
+    plot_benchmarks.write_opensees_examples_markdown(
+        results_path=path,
+        output_path=output,
+        e2e_results_path=e2e,
+        preserve_large_models=True,
+    )
+    text = output.read_text()
+    assert "## Large models\n\nKeep exactly.\n\n## Analysis time" in text
+    assert "### Practical and geotechnical examples" in text
+    assert "### OpenSees source examples and verification" in text
+    assert "### STAIRlab gallery" in text
+    assert "### Strut validation cases" in text
+    assert "strut_incomplete" in text
+    loss_section, e2e_section = text.split("## Cases where Strut takes longer")[
+        1
+    ].split("## End-to-end time")
+    assert loss_section.index("gallery_slow") < loss_section.index(
+        "opensees_source_example_99"
+    )
+    assert "| `opensees_example_soil` | 51 µs | 52 µs | 1 µs |" in loss_section
+    assert "| `gallery_live` | live | 10.0 ms | 500 ms |" in e2e_section

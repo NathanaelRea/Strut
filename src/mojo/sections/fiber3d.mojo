@@ -1,8 +1,10 @@
+from solver.threads import element_worker_count
 from sections.patch_cells import (
     circ_cell_area_and_centroid,
     circ_layer_effective_angles,
     quad_cell_centroid,
 )
+from algorithm import parallelize
 from collections import List
 from math import acos, cos, sin
 from os import abort
@@ -38,8 +40,6 @@ from solver.run_case.input_types import (
 )
 from solver.simd_contiguous import (
     FLOAT64_SIMD_WIDTH,
-    load_float64_ptr_contiguous_simd,
-    store_float64_ptr_contiguous_simd,
 )
 from strut_io import py_len
 from tag_types import UniMaterialTypeTag
@@ -159,7 +159,10 @@ struct FiberSection3dDef(Defaultable, ImplicitlyCopyable, Movable):
     var runtime_s2_sigr_t: List[Float64]
     var runtime_s2_kon_t: List[Int32]
 
-    # Concrete02 SoA runtime state (allocated only if concrete02_padded_count > 0)
+    # Concrete02 history uses two physical banks, named _c and _t. Each
+    # instance chooses which bank is committed and tracks a pending trial.
+    var runtime_c2_committed_in_trial_bank: List[Bool]
+    var runtime_c2_has_trial: List[Bool]
     var runtime_c2_state_count: Int
     var runtime_c2_eps_c: List[Float64]
     var runtime_c2_sig_c: List[Float64]
@@ -305,6 +308,8 @@ struct FiberSection3dDef(Defaultable, ImplicitlyCopyable, Movable):
         self.runtime_s2_epsr_t = []
         self.runtime_s2_sigr_t = []
         self.runtime_s2_kon_t = []
+        self.runtime_c2_committed_in_trial_bank = []
+        self.runtime_c2_has_trial = []
         self.runtime_c2_state_count = 0
         self.runtime_c2_eps_c = []
         self.runtime_c2_sig_c = []
@@ -448,6 +453,8 @@ struct FiberSection3dDef(Defaultable, ImplicitlyCopyable, Movable):
         self.runtime_s2_epsr_t = existing.runtime_s2_epsr_t.copy()
         self.runtime_s2_sigr_t = existing.runtime_s2_sigr_t.copy()
         self.runtime_s2_kon_t = existing.runtime_s2_kon_t.copy()
+        self.runtime_c2_committed_in_trial_bank = existing.runtime_c2_committed_in_trial_bank.copy()
+        self.runtime_c2_has_trial = existing.runtime_c2_has_trial.copy()
         self.runtime_c2_state_count = existing.runtime_c2_state_count
         self.runtime_c2_eps_c = existing.runtime_c2_eps_c.copy()
         self.runtime_c2_sig_c = existing.runtime_c2_sig_c.copy()
@@ -843,6 +850,8 @@ fn fiber_section3d_runtime_reserve_instances(mut sec_def: FiberSection3dDef, tot
         sec_def.runtime_s2_kon_t.reserve(cap)
     if sec_def.concrete02_instance_stride > 0:
         var cap = total_instances * sec_def.concrete02_instance_stride
+        sec_def.runtime_c2_committed_in_trial_bank.reserve(total_instances)
+        sec_def.runtime_c2_has_trial.reserve(total_instances)
         sec_def.runtime_c2_eps_c.reserve(cap)
         sec_def.runtime_c2_sig_c.reserve(cap)
         sec_def.runtime_c2_tangent_c.reserve(cap)
@@ -1027,6 +1036,10 @@ fn fiber_section3d_runtime_alloc_instances(
                     for k in range(g_pad):
                         tan_c_ptr[base + k] = ec0
                         tan_t_ptr[base + k] = ec0
+        sec_def.runtime_c2_committed_in_trial_bank.resize(
+            sec_def.runtime_instance_count + instance_count, False
+        )
+        sec_def.runtime_c2_has_trial.resize(sec_def.runtime_instance_count + instance_count, False)
         sec_def.runtime_c2_state_count = new_c2
 
     if sec_def.concrete01_instance_stride > 0:
@@ -1131,6 +1144,8 @@ fn fiber_section3d_runtime_alloc_instances(
     return sec_def.runtime_state_offset_base + old_count
 
 
+# These arrays can start at any SIMD alignment. Use unaligned accesses
+# directly to keep the alignment checks out of the material-point loops.
 @always_inline
 fn _fiber_section3d_runtime_apply_steel02_group_simd[
     width: Int
@@ -1222,23 +1237,23 @@ fn _fiber_section3d_runtime_apply_steel02_group_simd[
     while i < count:
         var fi = family_offset + i
         var slot = slot_start + i
-        var y_vec = load_float64_ptr_contiguous_simd[width](y_ptr, fi)
-        var z_vec = load_float64_ptr_contiguous_simd[width](z_ptr, fi)
-        var area_vec = load_float64_ptr_contiguous_simd[width](area_ptr, fi)
+        var y_vec = y_ptr.load[width=width, alignment=1](fi)
+        var z_vec = z_ptr.load[width=width, alignment=1](fi)
+        var area_vec = area_ptr.load[width=width, alignment=1](fi)
         var trial_eps = eps0_vec + z_vec * ky_vec - y_vec * kz_vec
 
         var step = _steel02_eval_simd_step[width](
             trial_eps,
-            load_float64_ptr_contiguous_simd[width](eps_c_ptr, slot),
-            load_float64_ptr_contiguous_simd[width](sig_c_ptr, slot),
-            load_float64_ptr_contiguous_simd[width](tan_c_ptr, slot),
-            load_float64_ptr_contiguous_simd[width](emin_c_ptr, slot),
-            load_float64_ptr_contiguous_simd[width](emax_c_ptr, slot),
-            load_float64_ptr_contiguous_simd[width](epl_c_ptr, slot),
-            load_float64_ptr_contiguous_simd[width](es0_c_ptr, slot),
-            load_float64_ptr_contiguous_simd[width](ss0_c_ptr, slot),
-            load_float64_ptr_contiguous_simd[width](er_c_ptr, slot),
-            load_float64_ptr_contiguous_simd[width](sr_c_ptr, slot),
+            eps_c_ptr.load[width=width, alignment=1](slot),
+            sig_c_ptr.load[width=width, alignment=1](slot),
+            tan_c_ptr.load[width=width, alignment=1](slot),
+            emin_c_ptr.load[width=width, alignment=1](slot),
+            emax_c_ptr.load[width=width, alignment=1](slot),
+            epl_c_ptr.load[width=width, alignment=1](slot),
+            es0_c_ptr.load[width=width, alignment=1](slot),
+            ss0_c_ptr.load[width=width, alignment=1](slot),
+            er_c_ptr.load[width=width, alignment=1](slot),
+            sr_c_ptr.load[width=width, alignment=1](slot),
             load_int32_ptr_contiguous_simd[width](kon_c_ptr, slot),
             fy,
             e0,
@@ -1255,16 +1270,16 @@ fn _fiber_section3d_runtime_apply_steel02_group_simd[
             pos_inv_denom,
             neg_inv_denom,
         )
-        store_float64_ptr_contiguous_simd[width](eps_t_ptr, slot, step[0])
-        store_float64_ptr_contiguous_simd[width](sig_t_ptr, slot, step[1])
-        store_float64_ptr_contiguous_simd[width](tan_t_ptr, slot, step[2])
-        store_float64_ptr_contiguous_simd[width](emin_t_ptr, slot, step[3])
-        store_float64_ptr_contiguous_simd[width](emax_t_ptr, slot, step[4])
-        store_float64_ptr_contiguous_simd[width](epl_t_ptr, slot, step[5])
-        store_float64_ptr_contiguous_simd[width](es0_t_ptr, slot, step[6])
-        store_float64_ptr_contiguous_simd[width](ss0_t_ptr, slot, step[7])
-        store_float64_ptr_contiguous_simd[width](er_t_ptr, slot, step[8])
-        store_float64_ptr_contiguous_simd[width](sr_t_ptr, slot, step[9])
+        eps_t_ptr.store[width=width, alignment=1](slot, step[0])
+        sig_t_ptr.store[width=width, alignment=1](slot, step[1])
+        tan_t_ptr.store[width=width, alignment=1](slot, step[2])
+        emin_t_ptr.store[width=width, alignment=1](slot, step[3])
+        emax_t_ptr.store[width=width, alignment=1](slot, step[4])
+        epl_t_ptr.store[width=width, alignment=1](slot, step[5])
+        es0_t_ptr.store[width=width, alignment=1](slot, step[6])
+        ss0_t_ptr.store[width=width, alignment=1](slot, step[7])
+        er_t_ptr.store[width=width, alignment=1](slot, step[8])
+        sr_t_ptr.store[width=width, alignment=1](slot, step[9])
         store_int32_ptr_contiguous_simd[width](kon_t_ptr, slot, step[10])
 
         var fs = step[1] * area_vec
@@ -1302,6 +1317,7 @@ fn _fiber_section3d_runtime_apply_concrete02_group_simd[
     slot_start: Int,
     count: Int,
     mat_def: UniMaterialParams,
+    committed_in_trial_bank: Bool,
     eps0: Float64,
     kappa_y: Float64,
     kappa_z: Float64,
@@ -1341,17 +1357,23 @@ fn _fiber_section3d_runtime_apply_concrete02_group_simd[
     var y_ptr = sec_def.concrete02_y_rel.unsafe_ptr()
     var z_ptr = sec_def.concrete02_z_rel.unsafe_ptr()
     var area_ptr = sec_def.concrete02_area.unsafe_ptr()
-    var eps_c_ptr = sec_def.runtime_c2_eps_c.unsafe_ptr()
-    var sig_c_ptr = sec_def.runtime_c2_sig_c.unsafe_ptr()
-    var tan_c_ptr = sec_def.runtime_c2_tangent_c.unsafe_ptr()
-    var ecmin_c_ptr = sec_def.runtime_c2_ecmin_c.unsafe_ptr()
-    var dept_c_ptr = sec_def.runtime_c2_dept_c.unsafe_ptr()
+    var eps_c_ptr: UnsafePointer[Float64] = sec_def.runtime_c2_eps_c.unsafe_ptr()
+    var sig_c_ptr: UnsafePointer[Float64] = sec_def.runtime_c2_sig_c.unsafe_ptr()
+    var tan_c_ptr: UnsafePointer[Float64] = sec_def.runtime_c2_tangent_c.unsafe_ptr()
+    var ecmin_c_ptr: UnsafePointer[Float64] = sec_def.runtime_c2_ecmin_c.unsafe_ptr()
+    var dept_c_ptr: UnsafePointer[Float64] = sec_def.runtime_c2_dept_c.unsafe_ptr()
 
-    var eps_t_ptr = sec_def.runtime_c2_eps_t.unsafe_ptr()
-    var sig_t_ptr = sec_def.runtime_c2_sig_t.unsafe_ptr()
-    var tan_t_ptr = sec_def.runtime_c2_tangent_t.unsafe_ptr()
-    var ecmin_t_ptr = sec_def.runtime_c2_ecmin_t.unsafe_ptr()
-    var dept_t_ptr = sec_def.runtime_c2_dept_t.unsafe_ptr()
+    var eps_t_ptr: UnsafePointer[Float64] = sec_def.runtime_c2_eps_t.unsafe_ptr()
+    var sig_t_ptr: UnsafePointer[Float64] = sec_def.runtime_c2_sig_t.unsafe_ptr()
+    var tan_t_ptr: UnsafePointer[Float64] = sec_def.runtime_c2_tangent_t.unsafe_ptr()
+    var ecmin_t_ptr: UnsafePointer[Float64] = sec_def.runtime_c2_ecmin_t.unsafe_ptr()
+    var dept_t_ptr: UnsafePointer[Float64] = sec_def.runtime_c2_dept_t.unsafe_ptr()
+    if committed_in_trial_bank:
+        swap(eps_c_ptr, eps_t_ptr)
+        swap(sig_c_ptr, sig_t_ptr)
+        swap(tan_c_ptr, tan_t_ptr)
+        swap(ecmin_c_ptr, ecmin_t_ptr)
+        swap(dept_c_ptr, dept_t_ptr)
 
     var acc_n = SIMD[DType.float64, width](0.0)
     var acc_my = SIMD[DType.float64, width](0.0)
@@ -1367,18 +1389,18 @@ fn _fiber_section3d_runtime_apply_concrete02_group_simd[
     while i < count:
         var fi = family_offset + i
         var slot = slot_start + i
-        var y_vec = load_float64_ptr_contiguous_simd[width](y_ptr, fi)
-        var z_vec = load_float64_ptr_contiguous_simd[width](z_ptr, fi)
-        var area_vec = load_float64_ptr_contiguous_simd[width](area_ptr, fi)
+        var y_vec = y_ptr.load[width=width, alignment=1](fi)
+        var z_vec = z_ptr.load[width=width, alignment=1](fi)
+        var area_vec = area_ptr.load[width=width, alignment=1](fi)
         var strain = eps0_vec + z_vec * ky_vec - y_vec * kz_vec
 
         var step = _concrete02_eval_simd_step[width](
             strain,
-            load_float64_ptr_contiguous_simd[width](eps_c_ptr, slot),
-            load_float64_ptr_contiguous_simd[width](sig_c_ptr, slot),
-            load_float64_ptr_contiguous_simd[width](tan_c_ptr, slot),
-            load_float64_ptr_contiguous_simd[width](ecmin_c_ptr, slot),
-            load_float64_ptr_contiguous_simd[width](dept_c_ptr, slot),
+            eps_c_ptr.load[width=width, alignment=1](slot),
+            sig_c_ptr.load[width=width, alignment=1](slot),
+            tan_c_ptr.load[width=width, alignment=1](slot),
+            ecmin_c_ptr.load[width=width, alignment=1](slot),
+            dept_c_ptr.load[width=width, alignment=1](slot),
             fc,
             epsc0,
             fcu,
@@ -1391,11 +1413,11 @@ fn _fiber_section3d_runtime_apply_concrete02_group_simd[
             epsr,
             sigmr,
         )
-        store_float64_ptr_contiguous_simd[width](eps_t_ptr, slot, strain)
-        store_float64_ptr_contiguous_simd[width](sig_t_ptr, slot, step[0])
-        store_float64_ptr_contiguous_simd[width](tan_t_ptr, slot, step[1])
-        store_float64_ptr_contiguous_simd[width](ecmin_t_ptr, slot, step[2])
-        store_float64_ptr_contiguous_simd[width](dept_t_ptr, slot, step[3])
+        eps_t_ptr.store[width=width, alignment=1](slot, strain)
+        sig_t_ptr.store[width=width, alignment=1](slot, step[0])
+        tan_t_ptr.store[width=width, alignment=1](slot, step[1])
+        ecmin_t_ptr.store[width=width, alignment=1](slot, step[2])
+        dept_t_ptr.store[width=width, alignment=1](slot, step[3])
 
         var fs = step[0] * area_vec
         var ks = step[1] * area_vec
@@ -1497,19 +1519,19 @@ fn _fiber_section3d_runtime_apply_concrete01_group_simd[
     while i < count:
         var fi = family_offset + i
         var slot = slot_start + i
-        var y_vec = load_float64_ptr_contiguous_simd[width](y_ptr, fi)
-        var z_vec = load_float64_ptr_contiguous_simd[width](z_ptr, fi)
-        var area_vec = load_float64_ptr_contiguous_simd[width](area_ptr, fi)
+        var y_vec = y_ptr.load[width=width, alignment=1](fi)
+        var z_vec = z_ptr.load[width=width, alignment=1](fi)
+        var area_vec = area_ptr.load[width=width, alignment=1](fi)
         var strain = eps0_vec + z_vec * ky_vec - y_vec * kz_vec
 
         var step = _concrete01_eval_simd_step[width](
             strain,
-            load_float64_ptr_contiguous_simd[width](eps_c_ptr, slot),
-            load_float64_ptr_contiguous_simd[width](sig_c_ptr, slot),
-            load_float64_ptr_contiguous_simd[width](tan_c_ptr, slot),
-            load_float64_ptr_contiguous_simd[width](min_c_ptr, slot),
-            load_float64_ptr_contiguous_simd[width](end_c_ptr, slot),
-            load_float64_ptr_contiguous_simd[width](us_c_ptr, slot),
+            eps_c_ptr.load[width=width, alignment=1](slot),
+            sig_c_ptr.load[width=width, alignment=1](slot),
+            tan_c_ptr.load[width=width, alignment=1](slot),
+            min_c_ptr.load[width=width, alignment=1](slot),
+            end_c_ptr.load[width=width, alignment=1](slot),
+            us_c_ptr.load[width=width, alignment=1](slot),
             fpc,
             epsc0,
             fpcu,
@@ -1517,12 +1539,12 @@ fn _fiber_section3d_runtime_apply_concrete01_group_simd[
             ec0,
             softening_tangent,
         )
-        store_float64_ptr_contiguous_simd[width](eps_t_ptr, slot, strain)
-        store_float64_ptr_contiguous_simd[width](sig_t_ptr, slot, step[0])
-        store_float64_ptr_contiguous_simd[width](tan_t_ptr, slot, step[1])
-        store_float64_ptr_contiguous_simd[width](min_t_ptr, slot, step[2])
-        store_float64_ptr_contiguous_simd[width](end_t_ptr, slot, step[3])
-        store_float64_ptr_contiguous_simd[width](us_t_ptr, slot, step[4])
+        eps_t_ptr.store[width=width, alignment=1](slot, strain)
+        sig_t_ptr.store[width=width, alignment=1](slot, step[0])
+        tan_t_ptr.store[width=width, alignment=1](slot, step[1])
+        min_t_ptr.store[width=width, alignment=1](slot, step[2])
+        end_t_ptr.store[width=width, alignment=1](slot, step[3])
+        us_t_ptr.store[width=width, alignment=1](slot, step[4])
 
         var fs = step[0] * area_vec
         var ks = step[1] * area_vec
@@ -1620,26 +1642,26 @@ fn _fiber_section3d_runtime_apply_steel01_group_simd[
     while i < count:
         var fi = family_offset + i
         var slot = slot_start + i
-        var y_vec = load_float64_ptr_contiguous_simd[width](y_ptr, fi)
-        var z_vec = load_float64_ptr_contiguous_simd[width](z_ptr, fi)
-        var area_vec = load_float64_ptr_contiguous_simd[width](area_ptr, fi)
+        var y_vec = y_ptr.load[width=width, alignment=1](fi)
+        var z_vec = z_ptr.load[width=width, alignment=1](fi)
+        var area_vec = area_ptr.load[width=width, alignment=1](fi)
         var strain = eps0_vec + z_vec * ky_vec - y_vec * kz_vec
 
         var step = _steel01_eval_simd_step[width](
             strain,
-            load_float64_ptr_contiguous_simd[width](eps_p_c_ptr, slot),
-            load_float64_ptr_contiguous_simd[width](alpha_c_ptr, slot),
+            eps_p_c_ptr.load[width=width, alignment=1](slot),
+            alpha_c_ptr.load[width=width, alignment=1](slot),
             fy,
             e0,
             h,
             inv_e0_plus_h,
             e_ep,
         )
-        store_float64_ptr_contiguous_simd[width](eps_t_ptr, slot, strain)
-        store_float64_ptr_contiguous_simd[width](sig_t_ptr, slot, step[0])
-        store_float64_ptr_contiguous_simd[width](tan_t_ptr, slot, step[1])
-        store_float64_ptr_contiguous_simd[width](eps_p_t_ptr, slot, step[2])
-        store_float64_ptr_contiguous_simd[width](alpha_t_ptr, slot, step[3])
+        eps_t_ptr.store[width=width, alignment=1](slot, strain)
+        sig_t_ptr.store[width=width, alignment=1](slot, step[0])
+        tan_t_ptr.store[width=width, alignment=1](slot, step[1])
+        eps_p_t_ptr.store[width=width, alignment=1](slot, step[2])
+        alpha_t_ptr.store[width=width, alignment=1](slot, step[3])
 
         var fs = step[0] * area_vec
         var ks = step[1] * area_vec
@@ -1798,65 +1820,18 @@ fn _fiber_section3d_revert_steel02_range_simd[
 
 
 @always_inline
-fn _fiber_section3d_commit_concrete02_range_simd[
-    width: Int
-](mut sec_def: FiberSection3dDef, slot_start: Int, count: Int):
-    if count <= 0:
-        return
-    _fiber_copy_float64_range_simd[width](
-        sec_def.runtime_c2_eps_c, slot_start, sec_def.runtime_c2_eps_t, slot_start, count
-    )
-    _fiber_copy_float64_range_simd[width](
-        sec_def.runtime_c2_sig_c, slot_start, sec_def.runtime_c2_sig_t, slot_start, count
-    )
-    _fiber_copy_float64_range_simd[width](
-        sec_def.runtime_c2_tangent_c,
-        slot_start,
-        sec_def.runtime_c2_tangent_t,
-        slot_start,
-        count,
-    )
-    _fiber_copy_float64_range_simd[width](
-        sec_def.runtime_c2_ecmin_c,
-        slot_start,
-        sec_def.runtime_c2_ecmin_t,
-        slot_start,
-        count,
-    )
-    _fiber_copy_float64_range_simd[width](
-        sec_def.runtime_c2_dept_c, slot_start, sec_def.runtime_c2_dept_t, slot_start, count
-    )
+fn _fiber_section3d_finish_concrete02_trial[
+    commit: Bool
+](mut sec_def: FiberSection3dDef, first: Int, end: Int):
+    var committed = sec_def.runtime_c2_committed_in_trial_bank.unsafe_ptr()
+    var has_trial = sec_def.runtime_c2_has_trial.unsafe_ptr()
+    for inst in range(first, end):
 
-
-@always_inline
-fn _fiber_section3d_revert_concrete02_range_simd[
-    width: Int
-](mut sec_def: FiberSection3dDef, slot_start: Int, count: Int):
-    if count <= 0:
-        return
-    _fiber_copy_float64_range_simd[width](
-        sec_def.runtime_c2_eps_t, slot_start, sec_def.runtime_c2_eps_c, slot_start, count
-    )
-    _fiber_copy_float64_range_simd[width](
-        sec_def.runtime_c2_sig_t, slot_start, sec_def.runtime_c2_sig_c, slot_start, count
-    )
-    _fiber_copy_float64_range_simd[width](
-        sec_def.runtime_c2_tangent_t,
-        slot_start,
-        sec_def.runtime_c2_tangent_c,
-        slot_start,
-        count,
-    )
-    _fiber_copy_float64_range_simd[width](
-        sec_def.runtime_c2_ecmin_t,
-        slot_start,
-        sec_def.runtime_c2_ecmin_c,
-        slot_start,
-        count,
-    )
-    _fiber_copy_float64_range_simd[width](
-        sec_def.runtime_c2_dept_t, slot_start, sec_def.runtime_c2_dept_c, slot_start, count
-    )
+        @parameter
+        if commit:
+            if has_trial[inst]:
+                committed[inst] = not committed[inst]
+        has_trial[inst] = False
 
 
 @always_inline
@@ -2889,6 +2864,9 @@ fn fiber_section3d_set_trial_instance(
                 )
 
     if sec_def.concrete02_padded_count > 0:
+        var committed_in_trial_bank = sec_def.runtime_c2_committed_in_trial_bank[inst]
+        # Every group overwrites its full trial range from the committed bank.
+        sec_def.runtime_c2_has_trial[inst] = True
         var slot_start = inst * sec_def.concrete02_instance_stride
         if sec_def.concrete02_single_definition:
             var mat_def = sec_def.concrete02_single_mat_def.params()
@@ -2898,6 +2876,7 @@ fn fiber_section3d_set_trial_instance(
                 slot_start,
                 sec_def.concrete02_padded_count,
                 mat_def,
+                committed_in_trial_bank,
                 eps0,
                 kappa_y,
                 kappa_z,
@@ -2921,6 +2900,7 @@ fn fiber_section3d_set_trial_instance(
                     slot_start + g_off,
                     sec_def.concrete02_group_padded_counts[g],
                     mat_def,
+                    committed_in_trial_bank,
                     eps0,
                     kappa_y,
                     kappa_z,
@@ -3113,11 +3093,7 @@ fn fiber_section3d_commit_from_offset(
             sec_def.steel02_padded_count,
         )
     if sec_def.concrete02_padded_count > 0:
-        _fiber_section3d_commit_concrete02_range_simd[FLOAT64_SIMD_WIDTH](
-            sec_def,
-            inst * sec_def.concrete02_instance_stride,
-            sec_def.concrete02_padded_count,
-        )
+        _fiber_section3d_finish_concrete02_trial[True](sec_def, inst, inst + 1)
     if sec_def.concrete01_padded_count > 0:
         _fiber_section3d_commit_concrete01_range_simd[FLOAT64_SIMD_WIDTH](
             sec_def,
@@ -3152,11 +3128,7 @@ fn fiber_section3d_revert_trial_from_offset(
             sec_def.steel02_padded_count,
         )
     if sec_def.concrete02_padded_count > 0:
-        _fiber_section3d_revert_concrete02_range_simd[FLOAT64_SIMD_WIDTH](
-            sec_def,
-            inst * sec_def.concrete02_instance_stride,
-            sec_def.concrete02_padded_count,
-        )
+        _fiber_section3d_finish_concrete02_trial[False](sec_def, inst, inst + 1)
     if sec_def.concrete01_padded_count > 0:
         _fiber_section3d_revert_concrete01_range_simd[FLOAT64_SIMD_WIDTH](
             sec_def,
@@ -3235,51 +3207,82 @@ fn fiber_section3d_revert_trial_all(
         )
 
 
-fn fiber_section3d_commit_runtime_all(mut defs: List[FiberSection3dDef]):
+fn _fiber_section3d_store_runtime[commit: Bool](mut defs: List[FiberSection3dDef]):
+    var threads = 0
     for s in range(len(defs)):
         ref sec_def = defs[s]
-        if sec_def.runtime_instance_count <= 0:
+        var instances = sec_def.runtime_instance_count
+        if instances <= 0:
             continue
-        if sec_def.runtime_s2_state_count > 0:
-            _fiber_section3d_commit_steel02_range_simd[FLOAT64_SIMD_WIDTH](
-                sec_def, 0, sec_def.runtime_s2_state_count
-            )
-        if sec_def.runtime_c2_state_count > 0:
-            _fiber_section3d_commit_concrete02_range_simd[FLOAT64_SIMD_WIDTH](
-                sec_def, 0, sec_def.runtime_c2_state_count
-            )
-        if sec_def.runtime_c1_state_count > 0:
-            _fiber_section3d_commit_concrete01_range_simd[FLOAT64_SIMD_WIDTH](
-                sec_def, 0, sec_def.runtime_c1_state_count
-            )
-        if sec_def.runtime_s1_state_count > 0:
-            _fiber_section3d_commit_steel01_range_simd[FLOAT64_SIMD_WIDTH](
-                sec_def, 0, sec_def.runtime_s1_state_count
-            )
-        for i in range(len(sec_def.runtime_other_states)):
-            uniaxial_commit(sec_def.runtime_other_states[i])
+        var work = (
+            sec_def.runtime_s2_state_count
+            + sec_def.runtime_c1_state_count
+            + sec_def.runtime_s1_state_count
+            + len(sec_def.runtime_other_states)
+        )
+        if sec_def.concrete02_padded_count > 0:
+            _fiber_section3d_finish_concrete02_trial[commit](sec_def, 0, instances)
+        if work == 0:
+            continue
+        var workers = element_worker_count(instances, work, 8192, threads)
+        var section = UnsafePointer(to=sec_def)
+
+        @parameter
+        fn run(worker: Int):
+            # Start and end at instance boundaries to keep SIMD padding private.
+            var start = worker * instances // workers
+            var count = (worker + 1) * instances // workers - start
+            ref data = section[]
+            var s2_stride = data.steel02_instance_stride
+
+            @parameter
+            if commit:
+                _fiber_section3d_commit_steel02_range_simd[FLOAT64_SIMD_WIDTH](
+                    data, start * s2_stride, count * s2_stride
+                )
+            else:
+                _fiber_section3d_revert_steel02_range_simd[FLOAT64_SIMD_WIDTH](
+                    data, start * s2_stride, count * s2_stride
+                )
+            var c1_stride = data.concrete01_instance_stride
+
+            @parameter
+            if commit:
+                _fiber_section3d_commit_concrete01_range_simd[FLOAT64_SIMD_WIDTH](
+                    data, start * c1_stride, count * c1_stride
+                )
+            else:
+                _fiber_section3d_revert_concrete01_range_simd[FLOAT64_SIMD_WIDTH](
+                    data, start * c1_stride, count * c1_stride
+                )
+            var s1_stride = data.steel01_instance_stride
+
+            @parameter
+            if commit:
+                _fiber_section3d_commit_steel01_range_simd[FLOAT64_SIMD_WIDTH](
+                    data, start * s1_stride, count * s1_stride
+                )
+            else:
+                _fiber_section3d_revert_steel01_range_simd[FLOAT64_SIMD_WIDTH](
+                    data, start * s1_stride, count * s1_stride
+                )
+            for i in range(start * data.other_count, (start + count) * data.other_count):
+
+                @parameter
+                if commit:
+                    uniaxial_commit(data.runtime_other_states[i])
+                else:
+                    uniaxial_revert_trial(data.runtime_other_states[i])
+
+        if workers == 1:
+            run(0)
+        else:
+            parallelize[run](workers, workers)
+
+
+fn fiber_section3d_commit_runtime_all(mut defs: List[FiberSection3dDef]):
+    _fiber_section3d_store_runtime[True](defs)
 
 
 fn fiber_section3d_revert_trial_runtime_all(mut defs: List[FiberSection3dDef]):
-    for s in range(len(defs)):
-        ref sec_def = defs[s]
-        if sec_def.runtime_instance_count <= 0:
-            continue
-        if sec_def.runtime_s2_state_count > 0:
-            _fiber_section3d_revert_steel02_range_simd[FLOAT64_SIMD_WIDTH](
-                sec_def, 0, sec_def.runtime_s2_state_count
-            )
-        if sec_def.runtime_c2_state_count > 0:
-            _fiber_section3d_revert_concrete02_range_simd[FLOAT64_SIMD_WIDTH](
-                sec_def, 0, sec_def.runtime_c2_state_count
-            )
-        if sec_def.runtime_c1_state_count > 0:
-            _fiber_section3d_revert_concrete01_range_simd[FLOAT64_SIMD_WIDTH](
-                sec_def, 0, sec_def.runtime_c1_state_count
-            )
-        if sec_def.runtime_s1_state_count > 0:
-            _fiber_section3d_revert_steel01_range_simd[FLOAT64_SIMD_WIDTH](
-                sec_def, 0, sec_def.runtime_s1_state_count
-            )
-        for i in range(len(sec_def.runtime_other_states)):
-            uniaxial_revert_trial(sec_def.runtime_other_states[i])
+    _fiber_section3d_store_runtime[False](defs)

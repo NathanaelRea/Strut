@@ -1,17 +1,22 @@
+from solver.run_case.analysis.transient_state import TransientState
+from solver.run_case.session import SessionProgress
+from solver.run_case.nonlinear_convergence import RelativeNormDispIncrOptions
 from collections import List
 from solver.run_case.analysis.penalty import PenaltyConstraints, append_penalty_pairs
 from elements import (
     ForceBeamColumn2dScratch,
     reset_force_beam_column2d_scratch,
+    invalidate_force_beam_column2d_load_cache,
 )
 from math import sqrt
 from materials import UniMaterialDef, UniMaterialState, uniaxial_commit, uniaxial_revert_trial
 from os import abort, getenv
-from python import Python
+from time import perf_counter_ns
 
 from solver.assembly.frame3d_scratch import (
     Frame3dAssemblyScratch,
     reset_frame3d_assembly_scratch,
+    invalidate_frame3d_assembly_load_cache,
 )
 from solver.assembly.surface_cache import SurfaceAssemblyCache
 from solver.run_case.linear_solver_backend import (
@@ -78,8 +83,13 @@ from tag_types import (
 )
 
 from solver.run_case.helpers import (
+    _update_active_nodal_load,
+    _copy_uniaxial_states,
+    _copy_nonlinear_vector,
+    _KrylovHistory,
     _append_output,
     _collapse_vector_by_mpc,
+    _collapse_vector_by_mpc_reusing,
     _drift_value,
     _element_basic_force_for_recorder,
     _element_deformation_for_recorder,
@@ -98,13 +108,10 @@ from solver.run_case.helpers import (
 )
 from solver.run_case.load_state import (
     build_active_element_load_state,
-    build_active_nodal_load,
 )
 from solver.run_case.nonlinear_krylov import (
-    copy_krylov_vector,
     default_krylov_max_dim,
     krylov_apply_acceleration,
-    krylov_push_iteration_state,
 )
 
 
@@ -136,6 +143,8 @@ fn _static_nonlinear_test_mode(test_type_tag: Int, test_type: String, label: Str
         return 2
     if test_type_tag == NonlinearTestTypeTag.EnergyIncr:
         return 3
+    if test_type_tag == NonlinearTestTypeTag.RelativeNormDispIncr:
+        return NonlinearTestTypeTag.RelativeNormDispIncr
     abort("unsupported " + label + " test_type: " + test_type)
     return -1
 
@@ -529,12 +538,14 @@ fn _append_static_retry_attempt(
     krylov_max_dim: Int,
     test_type: String,
     test_type_tag: Int,
+    relative_disp_test: RelativeNormDispIncrOptions,
     max_iters: Int,
     tol: Float64,
     label: String,
     mut retry_algorithm_tags: List[Int],
     mut retry_algorithm_modes: List[Int],
     mut retry_test_modes: List[Int],
+    mut retry_relative_disp_tests: List[RelativeNormDispIncrOptions],
     mut retry_max_iters: List[Int],
     mut retry_tols: List[Float64],
     mut retry_broyden_counts: List[Int],
@@ -546,6 +557,7 @@ fn _append_static_retry_attempt(
     retry_algorithm_tags.append(algorithm_tag)
     retry_algorithm_modes.append(_static_nonlinear_algorithm_mode(algorithm_tag, algorithm, label))
     retry_test_modes.append(_static_nonlinear_test_mode(test_type_tag, test_type, label))
+    retry_relative_disp_tests.append(relative_disp_test)
     if max_iters < 1:
         abort(label + "_max_iters must be >= 1")
     retry_max_iters.append(max_iters)
@@ -561,6 +573,7 @@ fn _append_static_retry_attempt_from_input(
     mut retry_algorithm_tags: List[Int],
     mut retry_algorithm_modes: List[Int],
     mut retry_test_modes: List[Int],
+    mut retry_relative_disp_tests: List[RelativeNormDispIncrOptions],
     mut retry_max_iters: List[Int],
     mut retry_tols: List[Float64],
     mut retry_broyden_counts: List[Int],
@@ -575,12 +588,14 @@ fn _append_static_retry_attempt_from_input(
         attempt.krylov_max_dim,
         attempt.test_type,
         attempt.test_type_tag,
+        attempt.relative_disp_test,
         attempt.max_iters,
         attempt.tol,
         label,
         retry_algorithm_tags,
         retry_algorithm_modes,
         retry_test_modes,
+        retry_relative_disp_tests,
         retry_max_iters,
         retry_tols,
         retry_broyden_counts,
@@ -597,6 +612,7 @@ fn _collect_static_solver_chain(
     mut retry_algorithm_tags: List[Int],
     mut retry_algorithm_modes: List[Int],
     mut retry_test_modes: List[Int],
+    mut retry_relative_disp_tests: List[RelativeNormDispIncrOptions],
     mut retry_max_iters: List[Int],
     mut retry_tols: List[Float64],
     mut retry_broyden_counts: List[Int],
@@ -610,6 +626,7 @@ fn _collect_static_solver_chain(
             retry_algorithm_tags,
             retry_algorithm_modes,
             retry_test_modes,
+            retry_relative_disp_tests,
             retry_max_iters,
             retry_tols,
             retry_broyden_counts,
@@ -625,12 +642,14 @@ fn _collect_static_solver_chain(
             0,
             analysis.test_type,
             analysis.test_type_tag,
+            analysis.relative_disp_test,
             analysis.max_iters,
             analysis.tol,
             "static_nonlinear primary",
             retry_algorithm_tags,
             retry_algorithm_modes,
             retry_test_modes,
+            retry_relative_disp_tests,
             retry_max_iters,
             retry_tols,
             retry_broyden_counts,
@@ -683,12 +702,14 @@ fn _collect_static_solver_chain(
         0,
         auto_test_type,
         auto_test_type_tag,
+        analysis.relative_disp_test,
         auto_max_iters,
         auto_tol,
         "static_nonlinear auto_fallback",
         retry_algorithm_tags,
         retry_algorithm_modes,
         retry_test_modes,
+        retry_relative_disp_tests,
         retry_max_iters,
         retry_tols,
         retry_broyden_counts,
@@ -825,10 +846,11 @@ fn run_static_nonlinear_load_control(
     constrained: List[Bool],
     mut force_beam_column3d_scratch: Frame3dAssemblyScratch,
     mut runtime_metrics: RuntimeProfileMetrics,
+    mut session: SessionProgress,
+    committed_motion: TransientState,
     previous_step_size: Float64 = 0.0,
     previous_iterations: Int = 0,
 ) raises -> Tuple[Float64, Float64, Int]:
-    var time = Python.import_module("time")
     _write_run_progress_throttled(
         progress_path,
         "running_stage",
@@ -851,6 +873,7 @@ fn run_static_nonlinear_load_control(
     var retry_algorithm_tags: List[Int] = []
     var retry_algorithm_modes: List[Int] = []
     var retry_test_modes: List[Int] = []
+    var retry_relative_disp_tests: List[RelativeNormDispIncrOptions] = []
     var retry_max_iters: List[Int] = []
     var retry_tols: List[Float64] = []
     var retry_broyden_counts: List[Int] = []
@@ -864,6 +887,7 @@ fn run_static_nonlinear_load_control(
         retry_algorithm_tags,
         retry_algorithm_modes,
         retry_test_modes,
+        retry_relative_disp_tests,
         retry_max_iters,
         retry_tols,
         retry_broyden_counts,
@@ -1011,7 +1035,7 @@ fn run_static_nonlinear_load_control(
     if native_direct_backend_available:
         elem_free_pool_native = build_elem_free_pool(elem_dof_pool, free_index)
     var lu_rhs: List[Float64] = []
-    var u_f_work: List[Float64] = []
+    var u_f: List[Float64] = []
     if not use_banded_loadcontrol:
         initialize_structure(backend, analysis, free_count)
         if needs_sparse_global_matrix:
@@ -1021,7 +1045,7 @@ fn run_static_nonlinear_load_control(
                 backend, elem_dof_offsets, elem_dof_pool, free_index
             )
         lu_rhs.resize(free_count, 0.0)
-        u_f_work.resize(free_count, 0.0)
+        u_f.resize(free_count, 0.0)
     var K_ff_banded: List[List[Float64]] = []
     var K_ff_banded_step: List[List[Float64]] = []
     var banded_rhs: List[Float64] = []
@@ -1040,7 +1064,7 @@ fn run_static_nonlinear_load_control(
             ndf,
         )
         if do_profile:
-            var t_reset_start = Int(time.perf_counter_ns())
+            var t_reset_start = Int(perf_counter_ns())
             _append_event(
                 events,
                 events_need_comma,
@@ -1051,7 +1075,7 @@ fn run_static_nonlinear_load_control(
         reset_force_beam_column2d_scratch(force_beam_column2d_scratch)
         reset_frame3d_assembly_scratch(force_beam_column3d_scratch)
         if do_profile:
-            var t_reset_end = Int(time.perf_counter_ns())
+            var t_reset_end = Int(perf_counter_ns())
             _append_event(
                 events,
                 events_need_comma,
@@ -1137,7 +1161,7 @@ fn run_static_nonlinear_load_control(
             for slot in range(len(penalty.stiffness)):
                 K_init_values[slot] += penalty.stiffness[slot]
         if do_profile:
-            var t_revert_start = Int(time.perf_counter_ns())
+            var t_revert_start = Int(perf_counter_ns())
             var revert_start_us = (t_revert_start - t0) // 1000
             _append_event(
                 events,
@@ -1152,7 +1176,7 @@ fn run_static_nonlinear_load_control(
         fiber_section2d_revert_trial_runtime_all(fiber_section_defs)
         fiber_section3d_revert_trial_runtime_all(fiber_section3d_defs)
         if do_profile:
-            var t_revert_end = Int(time.perf_counter_ns())
+            var t_revert_end = Int(perf_counter_ns())
             var revert_end_us = (t_revert_end - t0) // 1000
             _append_event(
                 events,
@@ -1163,7 +1187,6 @@ fn run_static_nonlinear_load_control(
             )
     var F_f: List[Float64] = []
     F_f.resize(free_count, 0.0)
-    var has_reaction_recorder = _has_recorder_type(recorders, RecorderTypeTag.NodeReaction)
     var envelope_files: List[String] = []
     var envelope_min: List[List[Float64]] = []
     var envelope_max: List[List[Float64]] = []
@@ -1191,7 +1214,27 @@ fn run_static_nonlinear_load_control(
     var load_control_time = analysis.start_time
     var next_recorder_time: List[Float64] = []
     next_recorder_time.resize(len(recorders), 0.0)
-    for step in range(steps):
+    var active_element_load_state = build_active_element_load_state(
+        const_element_loads, pattern_element_loads, 0.0, typed_elements, elem_id_to_index, ndm, ndf
+    )
+    reset_force_beam_column2d_scratch(force_beam_column2d_scratch)
+    reset_frame3d_assembly_scratch(force_beam_column3d_scratch)
+    var has_pattern_element_loads = len(pattern_element_loads) > 0
+    var F_step = List[Float64]()
+    var mpc_force_work = List[Float64]()
+    var u_base = List[Float64]()
+    var force_basic_q_base = List[Float64]()
+    var uniaxial_states_base = List[UniMaterialState]()
+    var krylov_history = _KrylovHistory()
+    var krylov_normal_matrix_flat: List[Float64] = []
+    var krylov_normal_rhs: List[Float64] = []
+    var krylov_coeffs: List[Float64] = []
+    var krylov_factor_work: List[Float64] = []
+    var krylov_rhs_work: List[Float64] = []
+    var krylov_base_direction: List[Float64] = []
+    var step_limit = steps
+    var step = 0
+    while step < step_limit:
         _write_run_progress_throttled(
             progress_path,
             "running_step",
@@ -1203,7 +1246,7 @@ fn run_static_nonlinear_load_control(
             progress_last_ns,
         )
         if do_profile:
-            var t_step_start = Int(time.perf_counter_ns())
+            var t_step_start = Int(perf_counter_ns())
             var step_start_us = (t_step_start - t0) // 1000
             _append_event(events, events_need_comma, "O", frame_nonlinear_step, step_start_us)
         var step_size = current_step_size
@@ -1226,6 +1269,7 @@ fn run_static_nonlinear_load_control(
                 step_mag = max_mag
             step_size = step_sign * step_mag
         current_step_size = step_size
+        var committed_time = load_control_time
         load_control_time += step_size
         var scale = load_control_time
         if ts_index >= 0:
@@ -1249,18 +1293,19 @@ fn run_static_nonlinear_load_control(
                 mpc_coeff_pool,
                 len(prescribed_dofs) > 0,
             )
-        var F_step = build_active_nodal_load(F_const, F_pattern, scale)
-        var active_element_load_state = build_active_element_load_state(
-            const_element_loads,
-            pattern_element_loads,
-            scale,
-            typed_elements,
-            elem_id_to_index,
-            ndm,
-            ndf,
-        )
+        _update_active_nodal_load(F_const, F_pattern, scale, F_step)
+        if has_pattern_element_loads:
+            active_element_load_state = build_active_element_load_state(
+                const_element_loads,
+                pattern_element_loads,
+                scale,
+                typed_elements,
+                elem_id_to_index,
+                ndm,
+                ndf,
+            )
         if do_profile:
-            var t_reset_start = Int(time.perf_counter_ns())
+            var t_reset_start = Int(perf_counter_ns())
             _append_event(
                 events,
                 events_need_comma,
@@ -1268,10 +1313,11 @@ fn run_static_nonlinear_load_control(
                 PROFILE_FRAME_UNIAXIAL_COPY_RESET,
                 (t_reset_start - t0) // 1000,
             )
-        reset_force_beam_column2d_scratch(force_beam_column2d_scratch)
-        reset_frame3d_assembly_scratch(force_beam_column3d_scratch)
+        if has_pattern_element_loads:
+            invalidate_force_beam_column2d_load_cache(force_beam_column2d_scratch)
+            invalidate_frame3d_assembly_load_cache(force_beam_column3d_scratch)
         if do_profile:
-            var t_reset_end = Int(time.perf_counter_ns())
+            var t_reset_end = Int(perf_counter_ns())
             _append_event(
                 events,
                 events_need_comma,
@@ -1279,9 +1325,10 @@ fn run_static_nonlinear_load_control(
                 PROFILE_FRAME_UNIAXIAL_COPY_RESET,
                 (t_reset_end - t0) // 1000,
             )
-        var u_base = u.copy()
-        var force_basic_q_base = force_basic_q.copy()
-        var uniaxial_states_base = uniaxial_states.copy()
+        if retry_attempt_count > 1 or session.enabled:
+            _copy_nonlinear_vector(u_base, u)
+            _copy_nonlinear_vector(force_basic_q_base, force_basic_q)
+            _copy_uniaxial_states(uniaxial_states_base, uniaxial_states)
         var converged = False
         var attempt_algorithm_tag = primary_algorithm_tag
         var attempt_algorithm_mode = primary_algorithm_mode
@@ -1297,8 +1344,8 @@ fn run_static_nonlinear_load_control(
             if attempt > 0:
                 for i in range(total_dofs):
                     u[i] = u_base[i]
-                force_basic_q = force_basic_q_base.copy()
-                uniaxial_states = uniaxial_states_base.copy()
+                _copy_nonlinear_vector(force_basic_q, force_basic_q_base)
+                _copy_uniaxial_states(uniaxial_states, uniaxial_states_base)
                 shell_cache.shell.revert_trial()
                 force_beam_column3d_scratch.revert_corotational()
                 fiber_section2d_revert_trial_runtime_all(fiber_section_defs)
@@ -1312,26 +1359,22 @@ fn run_static_nonlinear_load_control(
                 attempt_broyden_count = retry_broyden_counts[attempt]
                 attempt_krylov_max_dim = default_krylov_max_dim(retry_krylov_max_dims[attempt])
 
+            var relative_disp_test = retry_relative_disp_tests[attempt]
+            var first_disp_norm = 0.0
             var tangent_initialized = False
             var tangent_factored = False
             var broyden_history_s: List[List[Float64]] = []
             var broyden_history_z: List[List[Float64]] = []
             var broyden_prev_residual: List[Float64] = []
             var has_broyden_prev_residual = False
-            var krylov_history_v: List[List[Float64]] = []
-            var krylov_history_av: List[List[Float64]] = []
-            var krylov_normal_matrix_flat: List[Float64] = []
-            var krylov_normal_rhs: List[Float64] = []
-            var krylov_coeffs: List[Float64] = []
-            var krylov_factor_work: List[Float64] = []
-            var krylov_rhs_work: List[Float64] = []
+            krylov_history.reset()
             var checks_residual = attempt_test_mode == 2
             completed_updates = 0
             for iter_idx in range(attempt_max_iters + Int(checks_residual)):
                 if runtime_metrics.enabled:
                     runtime_metrics.global_nonlinear_iterations += 1
                 if do_profile:
-                    var t_iter_start = Int(time.perf_counter_ns())
+                    var t_iter_start = Int(perf_counter_ns())
                     var iter_start_us = (t_iter_start - t0) // 1000
                     _append_event(
                         events,
@@ -1354,7 +1397,7 @@ fn run_static_nonlinear_load_control(
                         )
                     elif attempt_algorithm_tag == AnalysisAlgorithmTag.KrylovNewton:
                         refresh_tangent = (
-                            not tangent_initialized or len(krylov_history_v) > krylov_max_dim
+                            not tangent_initialized or len(krylov_history.updates) > krylov_max_dim
                         )
                     else:
                         refresh_tangent = True
@@ -1363,8 +1406,7 @@ fn run_static_nonlinear_load_control(
                 else:
                     refresh_tangent = not tangent_initialized
                 if refresh_tangent and attempt_algorithm_tag == AnalysisAlgorithmTag.KrylovNewton:
-                    krylov_history_v = []
-                    krylov_history_av = []
+                    krylov_history.reset()
                 var use_native_direct_solve = (
                     native_direct_backend_available
                     and attempt_algorithm_mode != NonlinearAlgorithmMode.ModifiedNewtonInitial
@@ -1374,7 +1416,7 @@ fn run_static_nonlinear_load_control(
                     use_native_direct_solve and not use_native_tangent_assembly
                 )
                 if do_profile:
-                    var t_asm_start = Int(time.perf_counter_ns())
+                    var t_asm_start = Int(perf_counter_ns())
                     var asm_start_us = (t_asm_start - t0) // 1000
                     _append_event(
                         events,
@@ -1586,14 +1628,18 @@ fn run_static_nonlinear_load_control(
                         runtime_metrics,
                     )
                     if has_transformation_mpc:
-                        F_int = _collapse_vector_by_mpc(
-                            F_int, mpc_row_offsets, mpc_dof_pool, mpc_coeff_pool
+                        _collapse_vector_by_mpc_reusing(
+                            F_int,
+                            mpc_row_offsets,
+                            mpc_dof_pool,
+                            mpc_coeff_pool,
+                            mpc_force_work,
                         )
                 if use_penalty and refresh_tangent:
                     for slot in range(len(penalty.stiffness)):
                         sparse_assembler.values[slot] += penalty.stiffness[slot]
                 if do_profile:
-                    var t_asm_end = Int(time.perf_counter_ns())
+                    var t_asm_end = Int(perf_counter_ns())
                     var asm_end_us = (t_asm_end - t0) // 1000
                     _append_event(
                         events,
@@ -1603,7 +1649,7 @@ fn run_static_nonlinear_load_control(
                         asm_end_us,
                     )
                 if do_profile:
-                    var t_kff_start = Int(time.perf_counter_ns())
+                    var t_kff_start = Int(perf_counter_ns())
                     var kff_start_us = (t_kff_start - t0) // 1000
                     _append_event(events, events_need_comma, "O", frame_kff_extract, kff_start_us)
                 if use_banded_loadcontrol:
@@ -1663,7 +1709,7 @@ fn run_static_nonlinear_load_control(
                 if use_penalty:
                     penalty.subtract_force(u, F_f, free)
                 if do_profile:
-                    var t_kff_end = Int(time.perf_counter_ns())
+                    var t_kff_end = Int(perf_counter_ns())
                     var kff_end_us = (t_kff_end - t0) // 1000
                     _append_event(events, events_need_comma, "C", frame_kff_extract, kff_end_us)
 
@@ -1672,7 +1718,7 @@ fn run_static_nonlinear_load_control(
                     converged = residual_norm <= attempt_tol
                     if converged or iter_idx == attempt_max_iters:
                         if do_profile:
-                            var t_iter_end = Int(time.perf_counter_ns())
+                            var t_iter_end = Int(perf_counter_ns())
                             var iter_end_us = (t_iter_end - t0) // 1000
                             _append_event(
                                 events,
@@ -1685,7 +1731,7 @@ fn run_static_nonlinear_load_control(
                         break
 
                 if do_profile:
-                    var t_solve_nl_start = Int(time.perf_counter_ns())
+                    var t_solve_nl_start = Int(perf_counter_ns())
                     var solve_nl_start_us = (t_solve_nl_start - t0) // 1000
                     _append_event(
                         events,
@@ -1694,7 +1740,6 @@ fn run_static_nonlinear_load_control(
                         frame_solve_nonlinear,
                         solve_nl_start_us,
                     )
-                var u_f: List[Float64]
                 if use_banded_loadcontrol:
                     var width = bw_nl * 2 + 1
                     for i in range(free_count):
@@ -1727,15 +1772,13 @@ fn run_static_nonlinear_load_control(
                     tangent_factored = True
                     for i in range(free_count):
                         lu_rhs[i] = F_f[i]
-                    solve(backend, lu_rhs, u_f_work)
-                    u_f = u_f_work.copy()
-                var krylov_base_direction: List[Float64] = []
+                    solve(backend, lu_rhs, u_f)
                 if attempt_algorithm_tag == AnalysisAlgorithmTag.KrylovNewton:
-                    krylov_base_direction = copy_krylov_vector(u_f, free_count)
+                    _copy_nonlinear_vector(krylov_base_direction, u_f, free_count)
                     _ = krylov_apply_acceleration(
                         u_f,
-                        krylov_history_v,
-                        krylov_history_av,
+                        krylov_history.updates,
+                        krylov_history.directions,
                         free_count,
                         krylov_normal_matrix_flat,
                         krylov_normal_rhs,
@@ -1771,8 +1814,8 @@ fn run_static_nonlinear_load_control(
                         else:
                             for i in range(free_count):
                                 lu_rhs[i] = delta_residual[i]
-                            solve(backend, lu_rhs, u_f_work)
-                            current_z = u_f_work.copy()
+                            current_z = List[Float64](capacity=free_count)
+                            solve(backend, lu_rhs, current_z)
                         _broyden_update_direction(
                             u_f,
                             broyden_history_s,
@@ -1782,7 +1825,7 @@ fn run_static_nonlinear_load_control(
                         )
                         broyden_history_z.append(current_z^)
                 if do_profile:
-                    var t_solve_nl_end = Int(time.perf_counter_ns())
+                    var t_solve_nl_end = Int(perf_counter_ns())
                     var solve_nl_end_us = (t_solve_nl_end - t0) // 1000
                     _append_event(
                         events,
@@ -1816,8 +1859,14 @@ fn run_static_nonlinear_load_control(
                     )
                 if attempt_algorithm_tag == AnalysisAlgorithmTag.NewtonLineSearch:
                     var line_search_tol = _default_line_search_tol(attempt_line_search_eta)
+                    var probe_norm = 0.0
                     var s0 = -dot_float64_contiguous(u_f, F_f, free_count)
-                    if abs(s0) > 0.0:
+                    if abs(s0) > 0.0 and (
+                        attempt_test_mode != NonlinearTestTypeTag.RelativeNormDispIncr
+                        or not relative_disp_test.accepts(
+                            relative_disp_test.norm(u_f, free_count), probe_norm, 1, 10, attempt_tol
+                        )
+                    ):
                         _static_load_control_residual(
                             typed_nodes,
                             typed_elements,
@@ -1983,23 +2032,29 @@ fn run_static_nonlinear_load_control(
                     broyden_prev_residual = _copy_vector(F_f, free_count)
                     has_broyden_prev_residual = True
                 elif attempt_algorithm_tag == AnalysisAlgorithmTag.KrylovNewton:
-                    krylov_push_iteration_state(
-                        krylov_base_direction,
-                        u_f,
-                        free_count,
-                        krylov_history_v,
-                        krylov_history_av,
-                    )
+                    krylov_history.push(krylov_base_direction, u_f, free_count)
                 completed_updates += 1
                 var disp_incr_norm = sqrt(sum_sq_float64_contiguous(u_f, free_count))
                 var energy_incr = abs(dot_float64_contiguous(u_f, F_f, free_count))
                 var converged_iter = not checks_residual and max_diff <= attempt_tol
                 if attempt_test_mode == 1:
                     converged_iter = disp_incr_norm <= attempt_tol
+                elif attempt_test_mode == NonlinearTestTypeTag.RelativeNormDispIncr:
+                    ref correction = (
+                        krylov_base_direction if attempt_algorithm_tag
+                        == AnalysisAlgorithmTag.KrylovNewton else u_f
+                    )
+                    converged_iter = relative_disp_test.accepts(
+                        relative_disp_test.norm(correction, free_count),
+                        first_disp_norm,
+                        iter_idx + 1,
+                        attempt_max_iters,
+                        attempt_tol,
+                    )
                 elif attempt_test_mode == 3:
                     converged_iter = energy_incr <= attempt_tol
                 if do_profile:
-                    var t_iter_end = Int(time.perf_counter_ns())
+                    var t_iter_end = Int(perf_counter_ns())
                     var iter_end_us = (t_iter_end - t0) // 1000
                     _append_event(
                         events,
@@ -2015,13 +2070,29 @@ fn run_static_nonlinear_load_control(
             if converged:
                 break
         if do_profile:
-            var t_step_end = Int(time.perf_counter_ns())
+            var t_step_end = Int(perf_counter_ns())
             var step_end_us = (t_step_end - t0) // 1000
             _append_event(events, events_need_comma, "C", frame_nonlinear_step, step_end_us)
         if not converged:
+            if session.enabled:
+                _copy_nonlinear_vector(u, u_base)
+                _copy_nonlinear_vector(force_basic_q, force_basic_q_base)
+                _copy_uniaxial_states(uniaxial_states, uniaxial_states_base)
+                shell_cache.shell.revert_trial()
+                force_beam_column3d_scratch.revert_corotational()
+                fiber_section2d_revert_trial_runtime_all(fiber_section_defs)
+                fiber_section3d_revert_trial_runtime_all(fiber_section3d_defs)
+                load_control_time = committed_time
+                session.fail(
+                    step,
+                    committed_time,
+                    current_step_size if adaptive_step else 0.0,
+                    completed_updates,
+                )
+                break
             if adaptive_step and replay_failure_path != "":
-                var failure = Python.import_module("pathlib").Path(replay_failure_path)
-                failure.write_text(String(current_step_size) + " " + String(completed_updates))
+                with open(replay_failure_path, "w") as failure:
+                    failure.write(String(current_step_size) + " " + String(completed_updates))
             abort("static_nonlinear did not converge")
         if adaptive_step:
             if step_converged_iters < 1:
@@ -2085,7 +2156,7 @@ fn run_static_nonlinear_load_control(
             force_beam_column3d_scratch,
         )
         if do_profile:
-            var t_commit_start = Int(time.perf_counter_ns())
+            var t_commit_start = Int(perf_counter_ns())
             var commit_start_us = (t_commit_start - t0) // 1000
             _append_event(
                 events,
@@ -2100,7 +2171,7 @@ fn run_static_nonlinear_load_control(
         fiber_section2d_commit_runtime_all(fiber_section_defs)
         fiber_section3d_commit_runtime_all(fiber_section3d_defs)
         if do_profile:
-            var t_commit_end = Int(time.perf_counter_ns())
+            var t_commit_end = Int(perf_counter_ns())
             var commit_end_us = (t_commit_end - t0) // 1000
             _append_event(
                 events,
@@ -2117,10 +2188,8 @@ fn run_static_nonlinear_load_control(
             force_basic_offsets,
             force_basic_counts,
             force_basic_q,
+            force_beam_column2d_scratch.u_local,
         )
-        var F_ext_reaction: List[Float64] = []
-        if has_reaction_recorder:
-            F_ext_reaction = F_step.copy()
         for r in range(len(recorders)):
             var rec = recorders[r]
             if rec.delta_t > 0.0:
@@ -2426,7 +2495,7 @@ fn run_static_nonlinear_load_control(
                         var dof = recorder_dofs_pool[rec.dof_offset + j]
                         require_dof_in_range(dof, ndf, "recorder")
                         var idx = node_dof_index(i, dof, ndf)
-                        values[j] = F_int_reaction[idx] - F_ext_reaction[idx]
+                        values[j] = F_int_reaction[idx] - F_step[idx]
                     var filename = rec.output + "_node" + String(node_id) + ".out"
                     _append_output(
                         static_output_files,
@@ -2582,6 +2651,22 @@ fn run_static_nonlinear_load_control(
                         )
             elif rec.type_tag != RecorderTypeTag.ModalEigen:
                 abort("unsupported recorder type")
+        step += 1
+        if session.enabled and step == step_limit:
+            var more_steps = session.continue_steps(
+                step,
+                load_control_time,
+                scale,
+                u,
+                committed_motion.velocity,
+                committed_motion.acceleration,
+                uniaxial_states,
+                force_basic_q,
+                fiber_section_defs,
+                fiber_section3d_defs,
+                shell_cache,
+            )
+            step_limit += more_steps
     clear(backend)
     _flush_envelope_outputs(
         envelope_files,
@@ -2699,8 +2784,9 @@ fn run_static_nonlinear_displacement_control(
     mpc_coeff_pool: List[Float64],
     mut force_beam_column3d_scratch: Frame3dAssemblyScratch,
     mut runtime_metrics: RuntimeProfileMetrics,
+    mut session: SessionProgress,
+    committed_motion: TransientState,
 ) raises -> Float64:
-    var time = Python.import_module("time")
     _write_run_progress_throttled(
         progress_path,
         "running_stage",
@@ -2738,6 +2824,7 @@ fn run_static_nonlinear_displacement_control(
     var retry_algorithm_tags: List[Int] = []
     var retry_algorithm_modes: List[Int] = []
     var retry_test_modes: List[Int] = []
+    var retry_relative_disp_tests: List[RelativeNormDispIncrOptions] = []
     var retry_max_iters: List[Int] = []
     var retry_tols: List[Float64] = []
     var retry_broyden_counts: List[Int] = []
@@ -2751,6 +2838,7 @@ fn run_static_nonlinear_displacement_control(
         retry_algorithm_tags,
         retry_algorithm_modes,
         retry_test_modes,
+        retry_relative_disp_tests,
         retry_max_iters,
         retry_tols,
         retry_broyden_counts,
@@ -2949,9 +3037,12 @@ fn run_static_nonlinear_displacement_control(
             du_max_mag = abs(analysis.integrator_max_du)
         if du_max_mag < du_min_mag:
             du_max_mag = du_min_mag
+        if session.enabled and adaptive_du and session.displacement_increment != 0.0:
+            current_du_step = session.displacement_increment
+            du_last_iters = session.displacement_iterations
 
     var load_factor = analysis.start_time
-    var hs_previous_increment = 0.0
+    var hs_previous_increment = session.hs_increment
     var has_pattern_reference_load = False
     for i in range(free_count):
         if abs(F_pattern_free[i]) > 0.0:
@@ -2980,8 +3071,12 @@ fn run_static_nonlinear_displacement_control(
         aug_load_column_free[i] = -load_scale_derivative * F_pattern_free[i]
     var hs_reference: List[Float64] = []
     var hs_prior: List[Float64] = []
+    var has_session_hs_reference = len(session.hs_reference) == free_count
     if hs_active:
-        hs_reference.resize(free_count, 0.0)
+        if session.enabled and has_session_hs_reference:
+            hs_reference = session.hs_reference.copy()
+        else:
+            hs_reference.resize(free_count, 0.0)
         hs_prior.resize(free_count, 0.0)
     var aug_rhs_solve: List[Float64] = []
     aug_rhs_solve.resize(free_count, 0.0)
@@ -3003,7 +3098,7 @@ fn run_static_nonlinear_displacement_control(
             ndf,
         )
         if do_profile:
-            var t_reset_start = Int(time.perf_counter_ns())
+            var t_reset_start = Int(perf_counter_ns())
             _append_event(
                 events,
                 events_need_comma,
@@ -3014,7 +3109,7 @@ fn run_static_nonlinear_displacement_control(
         reset_force_beam_column2d_scratch(force_beam_column2d_scratch)
         reset_frame3d_assembly_scratch(force_beam_column3d_scratch)
         if do_profile:
-            var t_reset_end = Int(time.perf_counter_ns())
+            var t_reset_end = Int(perf_counter_ns())
             _append_event(
                 events,
                 events_need_comma,
@@ -3097,7 +3192,7 @@ fn run_static_nonlinear_displacement_control(
         )
         copy_values(K_init_values, sparse_assembler.values)
         if do_profile:
-            var t_revert_start = Int(time.perf_counter_ns())
+            var t_revert_start = Int(perf_counter_ns())
             var revert_start_us = (t_revert_start - t0) // 1000
             _append_event(
                 events,
@@ -3111,7 +3206,7 @@ fn run_static_nonlinear_displacement_control(
         force_beam_column3d_scratch.revert_corotational()
         fiber_section3d_revert_trial_runtime_all(fiber_section3d_defs)
         if do_profile:
-            var t_revert_end = Int(time.perf_counter_ns())
+            var t_revert_end = Int(perf_counter_ns())
             var revert_end_us = (t_revert_end - t0) // 1000
             _append_event(
                 events,
@@ -3125,7 +3220,27 @@ fn run_static_nonlinear_displacement_control(
     var continuation_steps = steps
     if analysis.step_retry_continue_after_failure and not has_explicit_targets:
         continuation_steps = max(steps, analysis.step_retry_continue_max_steps)
-    for step in range(continuation_steps):
+    var active_element_load_state = build_active_element_load_state(
+        const_element_loads, pattern_element_loads, 0.0, typed_elements, elem_id_to_index, ndm, ndf
+    )
+    reset_force_beam_column2d_scratch(force_beam_column2d_scratch)
+    reset_frame3d_assembly_scratch(force_beam_column3d_scratch)
+    var has_pattern_element_loads = len(pattern_element_loads) > 0
+    var F_step = List[Float64]()
+    var mpc_force_work = List[Float64]()
+    var u_base = List[Float64]()
+    var force_basic_q_base = List[Float64]()
+    var uniaxial_states_base = List[UniMaterialState]()
+    var krylov_history = _KrylovHistory()
+    var krylov_normal_matrix_flat: List[Float64] = []
+    var krylov_normal_rhs: List[Float64] = []
+    var krylov_coeffs: List[Float64] = []
+    var krylov_factor_work: List[Float64] = []
+    var krylov_rhs_work: List[Float64] = []
+    var krylov_base_sol_aug: List[Float64] = []
+    var step_limit = continuation_steps
+    var step = 0
+    while step < step_limit:
         if step >= bulk_steps and not continuation_active:
             break
         if continuation_active and analysis.step_retry_continue_target_disp > 0.0:
@@ -3148,7 +3263,7 @@ fn run_static_nonlinear_displacement_control(
             progress_last_ns,
         )
         if do_profile:
-            var t_step_start = Int(time.perf_counter_ns())
+            var t_step_start = Int(perf_counter_ns())
             var step_start_us = (t_step_start - t0) // 1000
             _append_event(events, events_need_comma, "O", frame_nonlinear_step, step_start_us)
         if has_transformation_mpc:
@@ -3184,6 +3299,7 @@ fn run_static_nonlinear_displacement_control(
         var committed_F_int: List[Float64] = []
         var step_converged_iters = 0
         var step_accepted_attempt = 0
+        var displacement_updates = 0
         while True:
             var remaining = hs.length if hs_active else target - u[control_idx]
             # `min_du` is the cutback floor, not the target-reached tolerance.
@@ -3192,9 +3308,10 @@ fn run_static_nonlinear_displacement_control(
             if abs(remaining) <= target_tol:
                 break
 
-            var u_base = u.copy()
-            var force_basic_q_base = force_basic_q.copy()
-            var uniaxial_states_base = uniaxial_states.copy()
+            _copy_nonlinear_vector(u_base, u)
+            if retry_attempt_count > 1 or max_cutbacks > 0 or session.enabled:
+                _copy_nonlinear_vector(force_basic_q_base, force_basic_q)
+                _copy_uniaxial_states(uniaxial_states_base, uniaxial_states)
             var lambda_base = load_factor
             var attempt_du = remaining
             var attempt_ok = False
@@ -3217,10 +3334,10 @@ fn run_static_nonlinear_displacement_control(
                 if not continuation_active:
                     current_retry_attempt_count = bulk_retry_attempt_count
                 for attempt in range(current_retry_attempt_count):
-                    for i in range(total_dofs):
-                        u[i] = u_base[i]
-                    force_basic_q = force_basic_q_base.copy()
-                    uniaxial_states = uniaxial_states_base.copy()
+                    if attempt > 0 or cutback_idx > 0:
+                        _copy_nonlinear_vector(u, u_base)
+                        _copy_nonlinear_vector(force_basic_q, force_basic_q_base)
+                        _copy_uniaxial_states(uniaxial_states, uniaxial_states_base)
                     shell_cache.shell.revert_trial()
                     force_beam_column3d_scratch.revert_corotational()
                     fiber_section2d_revert_trial_runtime_all(fiber_section_defs)
@@ -3238,19 +3355,15 @@ fn run_static_nonlinear_displacement_control(
                             retry_krylov_max_dims[attempt]
                         )
 
+                    var relative_disp_test = retry_relative_disp_tests[attempt]
+                    var first_disp_norm = 0.0
                     var tangent_initialized = False
                     var tangent_factored = False
                     var broyden_history_s: List[List[Float64]] = []
                     var broyden_history_z: List[List[Float64]] = []
                     var broyden_prev_residual: List[Float64] = []
                     var has_broyden_prev_residual = False
-                    var krylov_history_v: List[List[Float64]] = []
-                    var krylov_history_av: List[List[Float64]] = []
-                    var krylov_normal_matrix_flat: List[Float64] = []
-                    var krylov_normal_rhs: List[Float64] = []
-                    var krylov_coeffs: List[Float64] = []
-                    var krylov_factor_work: List[Float64] = []
-                    var krylov_rhs_work: List[Float64] = []
+                    krylov_history.reset()
                     # OpenSees DisplacementControl takes a predictor with the
                     # current tangent in newStep(), before the solution algorithm
                     # applies its own tangent policy and convergence test.
@@ -3265,7 +3378,7 @@ fn run_static_nonlinear_displacement_control(
                         if runtime_metrics.enabled:
                             runtime_metrics.global_nonlinear_iterations += 1
                         if do_profile:
-                            var t_iter_start = Int(time.perf_counter_ns())
+                            var t_iter_start = Int(perf_counter_ns())
                             var iter_start_us = (t_iter_start - t0) // 1000
                             _append_event(
                                 events,
@@ -3289,7 +3402,7 @@ fn run_static_nonlinear_displacement_control(
                             elif iteration_algorithm_tag == AnalysisAlgorithmTag.KrylovNewton:
                                 refresh_tangent = (
                                     not tangent_initialized
-                                    or len(krylov_history_v) > krylov_max_dim
+                                    or len(krylov_history.updates) > krylov_max_dim
                                 )
                             else:
                                 refresh_tangent = True
@@ -3301,8 +3414,7 @@ fn run_static_nonlinear_displacement_control(
                             refresh_tangent
                             and iteration_algorithm_tag == AnalysisAlgorithmTag.KrylovNewton
                         ):
-                            krylov_history_v = []
-                            krylov_history_av = []
+                            krylov_history.reset()
                         var use_native_direct_solve = native_direct_backend_available
                         var use_native_tangent_assembly = (
                             use_native_direct_solve
@@ -3314,7 +3426,7 @@ fn run_static_nonlinear_displacement_control(
                             use_native_direct_solve and not use_native_tangent_assembly
                         )
                         if do_profile:
-                            var t_asm_start = Int(time.perf_counter_ns())
+                            var t_asm_start = Int(perf_counter_ns())
                             var asm_start_us = (t_asm_start - t0) // 1000
                             _append_event(
                                 events,
@@ -3324,17 +3436,18 @@ fn run_static_nonlinear_displacement_control(
                                 asm_start_us,
                             )
                         var load_scale = load_scale_derivative * load_factor
-                        var active_element_load_state = build_active_element_load_state(
-                            const_element_loads,
-                            pattern_element_loads,
-                            load_scale,
-                            typed_elements,
-                            elem_id_to_index,
-                            ndm,
-                            ndf,
-                        )
+                        if has_pattern_element_loads:
+                            active_element_load_state = build_active_element_load_state(
+                                const_element_loads,
+                                pattern_element_loads,
+                                load_scale,
+                                typed_elements,
+                                elem_id_to_index,
+                                ndm,
+                                ndf,
+                            )
                         if do_profile:
-                            var t_reset_start = Int(time.perf_counter_ns())
+                            var t_reset_start = Int(perf_counter_ns())
                             _append_event(
                                 events,
                                 events_need_comma,
@@ -3342,10 +3455,11 @@ fn run_static_nonlinear_displacement_control(
                                 PROFILE_FRAME_UNIAXIAL_COPY_RESET,
                                 (t_reset_start - t0) // 1000,
                             )
-                        reset_force_beam_column2d_scratch(force_beam_column2d_scratch)
-                        reset_frame3d_assembly_scratch(force_beam_column3d_scratch)
+                        if has_pattern_element_loads:
+                            invalidate_force_beam_column2d_load_cache(force_beam_column2d_scratch)
+                            invalidate_frame3d_assembly_load_cache(force_beam_column3d_scratch)
                         if do_profile:
-                            var t_reset_end = Int(time.perf_counter_ns())
+                            var t_reset_end = Int(perf_counter_ns())
                             _append_event(
                                 events,
                                 events_need_comma,
@@ -3556,14 +3670,15 @@ fn run_static_nonlinear_displacement_control(
                                 runtime_metrics,
                             )
                             if has_transformation_mpc:
-                                F_int = _collapse_vector_by_mpc(
+                                _collapse_vector_by_mpc_reusing(
                                     F_int,
                                     mpc_row_offsets,
                                     mpc_dof_pool,
                                     mpc_coeff_pool,
+                                    mpc_force_work,
                                 )
                         if do_profile:
-                            var t_asm_end = Int(time.perf_counter_ns())
+                            var t_asm_end = Int(perf_counter_ns())
                             var asm_end_us = (t_asm_end - t0) // 1000
                             _append_event(
                                 events,
@@ -3574,7 +3689,7 @@ fn run_static_nonlinear_displacement_control(
                             )
 
                         if do_profile:
-                            var t_kff_start = Int(time.perf_counter_ns())
+                            var t_kff_start = Int(perf_counter_ns())
                             var kff_start_us = (t_kff_start - t0) // 1000
                             _append_event(
                                 events,
@@ -3637,7 +3752,7 @@ fn run_static_nonlinear_displacement_control(
                                     - F_int[free[i]]
                                 )
                         if do_profile:
-                            var t_kff_end = Int(time.perf_counter_ns())
+                            var t_kff_end = Int(perf_counter_ns())
                             var kff_end_us = (t_kff_end - t0) // 1000
                             _append_event(
                                 events,
@@ -3653,7 +3768,7 @@ fn run_static_nonlinear_displacement_control(
                             var residual_norm = sqrt(sum_sq_float64_contiguous(R_f, free_count))
                             if residual_norm <= attempt_tol or iter_idx > attempt_max_iters:
                                 if do_profile:
-                                    var t_iter_end = Int(time.perf_counter_ns())
+                                    var t_iter_end = Int(perf_counter_ns())
                                     _append_event(
                                         events,
                                         events_need_comma,
@@ -3670,7 +3785,7 @@ fn run_static_nonlinear_displacement_control(
                         rhs_aug[free_count] = 0.0 if hs_active else attempt_target - u[control_idx]
 
                         if do_profile:
-                            var t_solve_nl_start = Int(time.perf_counter_ns())
+                            var t_solve_nl_start = Int(perf_counter_ns())
                             var solve_nl_start_us = (t_solve_nl_start - t0) // 1000
                             _append_event(
                                 events,
@@ -3722,7 +3837,12 @@ fn run_static_nonlinear_displacement_control(
                                 or iteration_algorithm_tag == AnalysisAlgorithmTag.NewtonLineSearch
                             ):
                                 abort("HSConstraint supports Newton and ModifiedNewton algorithms")
-                            if step == 0 and attempt == 0 and is_predictor:
+                            if (
+                                step == 0
+                                and attempt == 0
+                                and is_predictor
+                                and not (session.enabled and has_session_hs_reference)
+                            ):
                                 for i in range(free_count):
                                     hs_reference[i] = R_f[i] - aug_load_column_free[i]
                             solve(backend, hs_reference, aug_load_solve)
@@ -3771,7 +3891,7 @@ fn run_static_nonlinear_displacement_control(
                                 aug_load_solve,
                             )
                         if do_profile:
-                            var t_solve_nl_end = Int(time.perf_counter_ns())
+                            var t_solve_nl_end = Int(perf_counter_ns())
                             var solve_nl_end_us = (t_solve_nl_end - t0) // 1000
                             _append_event(
                                 events,
@@ -3782,13 +3902,12 @@ fn run_static_nonlinear_displacement_control(
                             )
                         if not solved:
                             break
-                        var krylov_base_sol_aug: List[Float64] = []
                         if iteration_algorithm_tag == AnalysisAlgorithmTag.KrylovNewton:
-                            krylov_base_sol_aug = copy_krylov_vector(sol_aug, free_count + 1)
+                            _copy_nonlinear_vector(krylov_base_sol_aug, sol_aug, free_count + 1)
                             _ = krylov_apply_acceleration(
                                 sol_aug,
-                                krylov_history_v,
-                                krylov_history_av,
+                                krylov_history.updates,
+                                krylov_history.directions,
                                 free_count + 1,
                                 krylov_normal_matrix_flat,
                                 krylov_normal_rhs,
@@ -3855,6 +3974,8 @@ fn run_static_nonlinear_displacement_control(
                         if not hs_active:
                             u[control_idx] = attempt_target
                         load_factor += sol_aug[free_count] * update_eta
+                        if session.enabled and adaptive_du and not is_predictor:
+                            displacement_updates += 1
                         if has_transformation_mpc:
                             _enforce_mpc_values(
                                 u,
@@ -3940,7 +4061,17 @@ fn run_static_nonlinear_displacement_control(
                         if line_search:
                             var line_search_tol = _default_line_search_tol(attempt_line_search_eta)
                             var s0 = -dot_float64_contiguous(sol_aug, rhs_aug, free_count + 1)
-                            if abs(s0) > 0.0:
+                            var probe_norm = 0.0
+                            if abs(s0) > 0.0 and (
+                                attempt_test_mode != NonlinearTestTypeTag.RelativeNormDispIncr
+                                or not relative_disp_test.accepts(
+                                    relative_disp_test.norm(sol_aug, free_count),
+                                    probe_norm,
+                                    1,
+                                    10,
+                                    attempt_tol,
+                                )
+                            ):
                                 var s = -dot_float64_contiguous(
                                     sol_aug, updated_rhs_aug, free_count + 1
                                 )
@@ -4048,17 +4179,22 @@ fn run_static_nonlinear_displacement_control(
                             broyden_prev_residual = _copy_vector(rhs_aug, free_count + 1)
                             has_broyden_prev_residual = True
                         elif iteration_algorithm_tag == AnalysisAlgorithmTag.KrylovNewton:
-                            krylov_push_iteration_state(
-                                krylov_base_sol_aug,
-                                sol_aug,
-                                free_count + 1,
-                                krylov_history_v,
-                                krylov_history_av,
-                            )
+                            krylov_history.push(krylov_base_sol_aug, sol_aug, free_count + 1)
                         var disp_incr_norm = sqrt(sum_sq_float64_contiguous(sol_aug, free_count))
                         var converged_iter = attempt_test_mode == 0 and max_diff <= attempt_tol
                         if attempt_test_mode == 1:
                             converged_iter = disp_incr_norm <= attempt_tol
+                        elif (
+                            attempt_test_mode == NonlinearTestTypeTag.RelativeNormDispIncr
+                            and not is_predictor
+                        ):
+                            converged_iter = relative_disp_test.accepts(
+                                relative_disp_test.norm(sol_aug, free_count),
+                                first_disp_norm,
+                                iter_idx,
+                                attempt_max_iters,
+                                attempt_tol,
+                            )
                         elif attempt_test_mode == 3:
                             # Adaptive DisplacementControl uses the iteration count
                             # from OpenSees' energy test on the updated unbalance.
@@ -4068,7 +4204,7 @@ fn run_static_nonlinear_displacement_control(
                                 <= attempt_tol
                             )
                         if do_profile:
-                            var t_iter_end = Int(time.perf_counter_ns())
+                            var t_iter_end = Int(perf_counter_ns())
                             var iter_end_us = (t_iter_end - t0) // 1000
                             _append_event(
                                 events,
@@ -4105,28 +4241,44 @@ fn run_static_nonlinear_displacement_control(
                     continuation_active = True
                     for i in range(total_dofs):
                         u[i] = u_base[i]
-                    force_basic_q = force_basic_q_base.copy()
-                    uniaxial_states = uniaxial_states_base.copy()
+                    _copy_nonlinear_vector(force_basic_q, force_basic_q_base)
+                    _copy_uniaxial_states(uniaxial_states, uniaxial_states_base)
                     shell_cache.shell.revert_trial()
                     force_beam_column3d_scratch.revert_corotational()
                     fiber_section2d_revert_trial_runtime_all(fiber_section_defs)
                     fiber_section3d_revert_trial_runtime_all(fiber_section3d_defs)
                     load_factor = lambda_base
                     continue
+                if session.enabled:
+                    _copy_nonlinear_vector(u, u_base)
+                    _copy_nonlinear_vector(force_basic_q, force_basic_q_base)
+                    _copy_uniaxial_states(uniaxial_states, uniaxial_states_base)
+                    shell_cache.shell.revert_trial()
+                    force_beam_column3d_scratch.revert_corotational()
+                    fiber_section2d_revert_trial_runtime_all(fiber_section_defs)
+                    fiber_section3d_revert_trial_runtime_all(fiber_section3d_defs)
+                    if hs_active:
+                        hs_previous_increment = load_factor - lambda_base
+                    elif adaptive_du:
+                        du_last_iters = displacement_updates
+                    load_factor = lambda_base
+                    session.fail(step, lambda_base)
+                    break
                 if hs_active:
                     abort("static_nonlinear did not converge (HSConstraint)")
                 abort("static_nonlinear did not converge (DisplacementControl)")
 
             var committed_load_scale = load_scale_derivative * load_factor
-            var committed_element_load_state = build_active_element_load_state(
-                const_element_loads,
-                pattern_element_loads,
-                committed_load_scale,
-                typed_elements,
-                elem_id_to_index,
-                ndm,
-                ndf,
-            )
+            if has_pattern_element_loads:
+                active_element_load_state = build_active_element_load_state(
+                    const_element_loads,
+                    pattern_element_loads,
+                    committed_load_scale,
+                    typed_elements,
+                    elem_id_to_index,
+                    ndm,
+                    ndf,
+                )
             committed_F_int = assemble_internal_forces_typed_soa(
                 typed_nodes,
                 typed_elements,
@@ -4153,9 +4305,9 @@ fn run_static_nonlinear_displacement_control(
                 zero_length_section_elem_indices,
                 quad_elem_indices,
                 shell_elem_indices,
-                committed_element_load_state.element_loads,
-                committed_element_load_state.elem_load_offsets,
-                committed_element_load_state.elem_load_pool,
+                active_element_load_state.element_loads,
+                active_element_load_state.elem_load_offsets,
+                active_element_load_state.elem_load_pool,
                 1.0,
                 typed_sections_by_id,
                 typed_materials_by_id,
@@ -4185,7 +4337,7 @@ fn run_static_nonlinear_displacement_control(
                 force_beam_column3d_scratch,
             )
             if do_profile:
-                var t_commit_start = Int(time.perf_counter_ns())
+                var t_commit_start = Int(perf_counter_ns())
                 var commit_start_us = (t_commit_start - t0) // 1000
                 _append_event(
                     events,
@@ -4200,7 +4352,7 @@ fn run_static_nonlinear_displacement_control(
             fiber_section2d_commit_runtime_all(fiber_section_defs)
             fiber_section3d_commit_runtime_all(fiber_section3d_defs)
             if do_profile:
-                var t_commit_end = Int(time.perf_counter_ns())
+                var t_commit_end = Int(perf_counter_ns())
                 var commit_end_us = (t_commit_end - t0) // 1000
                 _append_event(
                     events,
@@ -4217,19 +4369,22 @@ fn run_static_nonlinear_displacement_control(
                 force_basic_offsets,
                 force_basic_counts,
                 force_basic_q,
+                force_beam_column2d_scratch.u_local,
             )
 
             if hs_active:
                 hs_previous_increment = load_factor - lambda_base
                 break
 
+        if session.failed:
+            break
         if not has_explicit_targets and adaptive_du:
             if step_converged_iters < 1:
                 step_converged_iters = du_target_iters
             du_last_iters = step_converged_iters
 
         if do_profile:
-            var t_step_end = Int(time.perf_counter_ns())
+            var t_step_end = Int(perf_counter_ns())
             var step_end_us = (t_step_end - t0) // 1000
             _append_event(events, events_need_comma, "C", frame_nonlinear_step, step_end_us)
 
@@ -4242,18 +4397,20 @@ fn run_static_nonlinear_displacement_control(
             )
 
         var final_load_scale = load_scale_derivative * load_factor
-        var F_step = build_active_nodal_load(F_const, F_pattern, final_load_scale)
-        var active_element_load_state = build_active_element_load_state(
-            const_element_loads,
-            pattern_element_loads,
-            final_load_scale,
-            typed_elements,
-            elem_id_to_index,
-            ndm,
-            ndf,
-        )
+        if has_reaction_recorder:
+            _update_active_nodal_load(F_const, F_pattern, final_load_scale, F_step)
+        if has_pattern_element_loads:
+            active_element_load_state = build_active_element_load_state(
+                const_element_loads,
+                pattern_element_loads,
+                final_load_scale,
+                typed_elements,
+                elem_id_to_index,
+                ndm,
+                ndf,
+            )
         if do_profile:
-            var t_reset_start = Int(time.perf_counter_ns())
+            var t_reset_start = Int(perf_counter_ns())
             _append_event(
                 events,
                 events_need_comma,
@@ -4261,10 +4418,11 @@ fn run_static_nonlinear_displacement_control(
                 PROFILE_FRAME_UNIAXIAL_COPY_RESET,
                 (t_reset_start - t0) // 1000,
             )
-        reset_force_beam_column2d_scratch(force_beam_column2d_scratch)
-        reset_frame3d_assembly_scratch(force_beam_column3d_scratch)
+        if has_pattern_element_loads:
+            invalidate_force_beam_column2d_load_cache(force_beam_column2d_scratch)
+            invalidate_frame3d_assembly_load_cache(force_beam_column3d_scratch)
         if do_profile:
-            var t_reset_end = Int(time.perf_counter_ns())
+            var t_reset_end = Int(perf_counter_ns())
             _append_event(
                 events,
                 events_need_comma,
@@ -4273,7 +4431,6 @@ fn run_static_nonlinear_displacement_control(
                 (t_reset_end - t0) // 1000,
             )
         var F_int_reaction: List[Float64] = []
-        var F_ext_reaction: List[Float64] = []
         if has_reaction_recorder:
             if len(committed_F_int) == total_dofs:
                 F_int_reaction = committed_F_int^
@@ -4335,7 +4492,6 @@ fn run_static_nonlinear_displacement_control(
                     force_beam_column2d_scratch,
                     force_beam_column3d_scratch,
                 )
-            F_ext_reaction = F_step.copy()
 
         for r in range(len(recorders)):
             var rec = recorders[r]
@@ -4590,7 +4746,7 @@ fn run_static_nonlinear_displacement_control(
                         var dof = recorder_dofs_pool[rec.dof_offset + j]
                         require_dof_in_range(dof, ndf, "recorder")
                         var idx = node_dof_index(i, dof, ndf)
-                        values[j] = F_int_reaction[idx] - F_ext_reaction[idx]
+                        values[j] = F_int_reaction[idx] - F_step[idx]
                     var filename = rec.output + "_node" + String(node_id) + ".out"
                     _append_output(
                         static_output_files,
@@ -4746,6 +4902,24 @@ fn run_static_nonlinear_displacement_control(
                         )
             elif rec.type_tag != RecorderTypeTag.ModalEigen:
                 abort("unsupported recorder type")
+        step += 1
+        if session.enabled and step == step_limit:
+            var more_steps = session.continue_steps(
+                step,
+                load_factor,
+                final_load_scale,
+                u,
+                committed_motion.velocity,
+                committed_motion.acceleration,
+                uniaxial_states,
+                force_basic_q,
+                fiber_section_defs,
+                fiber_section3d_defs,
+                shell_cache,
+                not has_explicit_targets and not analysis.step_retry_continue_after_failure,
+            )
+            step_limit += more_steps
+            bulk_steps += more_steps
     _flush_envelope_outputs(
         envelope_files,
         envelope_min,
@@ -4764,4 +4938,12 @@ fn run_static_nonlinear_displacement_control(
         steps,
         progress_last_ns,
     )
+    if session.enabled:
+        if hs_active:
+            session.hs_increment = hs_previous_increment
+            session.hs_reference = hs_reference^
+        elif adaptive_du:
+            session.displacement_increment = current_du_step
+            session.displacement_iterations = du_last_iters
+        clear(backend)
     return load_scale_derivative * load_factor

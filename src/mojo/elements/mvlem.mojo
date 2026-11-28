@@ -62,29 +62,28 @@ struct MVLEMGeometry(ImplicitlyCopyable, Movable):
         return wall_area
 
 
+alias _WallDofs = InlineArray[Float64, 6]
+
+
 struct MVLEMResponse(Movable):
-    var force: List[Float64]
-    var tangent: List[List[Float64]]
+    var force: _WallDofs
+    var tangent: InlineArray[_WallDofs, 6]
 
     fn __init__(out self):
-        self.force = []
-        self.force.resize(6, 0.0)
-        self.tangent = []
-        for _ in range(6):
-            var row: List[Float64] = []
-            row.resize(6, 0.0)
-            self.tangent.append(row^)
+        self.force = _WallDofs(fill=0.0)
+        self.tangent = InlineArray[_WallDofs, 6](fill=_WallDofs(fill=0.0))
 
 
 fn mvlem_response(
     geometry: MVLEMGeometry,
-    u: List[Float64],
+    u: Span[Float64],
     offset: Int,
     state_ids: List[Int],
     state_defs: List[Int],
     defs: List[UniMaterialDef],
     mut states: List[UniMaterialState],
     initial_tangent: Bool = False,
+    form_tangent: Bool = True,
 ) -> MVLEMResponse:
     var result = MVLEMResponse()
     var height = geometry.height
@@ -107,6 +106,8 @@ fn mvlem_response(
         var force_steel = states[steel].sig_t * fiber.steel_area
         axial += force_concrete + force_steel
         moment += force_concrete * x + force_steel * x
+        if not form_tangent:
+            continue
         var concrete_tangent = states[concrete].tangent_t
         var steel_tangent = states[steel].tangent_t
         if initial_tangent:
@@ -125,21 +126,23 @@ fn mvlem_response(
     var shear_state = state_ids[offset + 2 * count]
     uniaxial_set_trial_strain(defs[state_defs[shear_state]], states[shear_state], shear_deformation)
     var shear_force = states[shear_state].sig_t
-    var kh = states[shear_state].tangent_t
-    if initial_tangent:
-        kh = uni_mat_initial_tangent(defs[state_defs[shear_state]])
-    result.force = [
+    result.force = _WallDofs(
         shear_force,
         -axial,
         -moment - shear_force * shear_i,
         -shear_force,
         axial,
         moment - shear_force * shear_j,
-    ]
+    )
+    if not form_tangent:
+        return result^
+    var kh = states[shear_state].tangent_t
+    if initial_tangent:
+        kh = uni_mat_initial_tangent(defs[state_defs[shear_state]])
 
     # The translational and rotational rows come from the axial fiber
     # compatibility and the shear spring at height c*h.
-    var shear_row = [1.0, 0.0, -shear_i, -1.0, 0.0, -shear_j]
+    var shear_row = _WallDofs(1.0, 0.0, -shear_i, -1.0, 0.0, -shear_j)
     for i in range(6):
         for j in range(6):
             result.tangent[i][j] = shear_row[i] * kh * shear_row[j]

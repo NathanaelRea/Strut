@@ -1,4 +1,3 @@
-from collections import List
 from python import Python, PythonObject
 from sys import is_defined
 from tag_types import ElementTypeTag
@@ -51,8 +50,8 @@ struct RuntimeProfileMetrics(Movable):
     var local_commit_revert_ns: Int
     var shell_compute_ns: Int
     var shell_scatter_ns: Int
-    var element_type_call_counts: List[Int]
-    var element_type_total_ns: List[Int]
+    var element_type_call_counts: InlineArray[Int, PROFILE_ELEMENT_TYPE_CAPACITY]
+    var element_type_total_ns: InlineArray[Int, PROFILE_ELEMENT_TYPE_CAPACITY]
 
     fn __init__(out self):
         self.enabled = False
@@ -71,10 +70,8 @@ struct RuntimeProfileMetrics(Movable):
         self.local_commit_revert_ns = 0
         self.shell_compute_ns = 0
         self.shell_scatter_ns = 0
-        self.element_type_call_counts = []
-        self.element_type_total_ns = []
-        self.element_type_call_counts.resize(PROFILE_ELEMENT_TYPE_CAPACITY, 0)
-        self.element_type_total_ns.resize(PROFILE_ELEMENT_TYPE_CAPACITY, 0)
+        self.element_type_call_counts = InlineArray[Int, PROFILE_ELEMENT_TYPE_CAPACITY](fill=0)
+        self.element_type_total_ns = InlineArray[Int, PROFILE_ELEMENT_TYPE_CAPACITY](fill=0)
 
 
 @always_inline

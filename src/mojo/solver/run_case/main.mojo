@@ -2,7 +2,7 @@ from solver.assembly.frame3d_scratch import Frame3dAssemblyScratch
 from solver.run_case.analysis.transient_state import TransientState
 from collections import List
 from os import abort, getenv
-from python import Python, PythonObject
+from pathlib import Path
 from time import perf_counter_ns
 
 from solver.assembly import assemble_internal_forces_typed_soa
@@ -60,6 +60,11 @@ from solver.run_case.input_types import (
     NodeInput,
     RecorderInput,
     StageInput,
+    _json_get_bool,
+    _json_get_float,
+    _json_get_int,
+    _json_get_string,
+    parse_stage_input_from_native,
     parse_case_input_native_from_source,
 )
 from solver.run_case.helpers import (
@@ -78,10 +83,11 @@ from solver.run_case.helpers import (
     _write_run_progress_throttled,
     _update_envelope,
 )
-from strut_io import CaseSourceInfo
+from strut_io import CaseSourceInfo, make_output_dir, output_file_path
 from json_native import JsonDocument
 from solver.run_case.load_state import (
     ActiveElementLoadState,
+    add_uniform_excitation_load,
     append_scaled_element_loads,
     build_active_element_load_state,
     build_active_nodal_load,
@@ -89,6 +95,10 @@ from solver.run_case.load_state import (
 from solver.run_case.loader import load_case_state_from_input, resolve_uniform_excitations
 from solver.run_case.precheck import precheck_case_input_native
 from solver.run_case.quad_stage_domain import QuadStageDomain
+from solver.run_case.session import (
+    SessionProtocol,
+    SessionProgress,
+)
 from solver.time_series import TimeSeriesInput, eval_time_series_input, find_time_series_input
 from tag_types import (
     ConstraintHandlerTag,
@@ -101,15 +111,9 @@ from tag_types import (
 )
 
 
-fn _write_output_chunk_files(
-    out_dir: PythonObject, filenames: List[String], buffers: List[String]
-) raises:
-    var builtins = Python.import_module("builtins")
+fn _write_output_chunk_files(out_dir: Path, filenames: List[String], buffers: List[String]) raises:
     for i in range(len(filenames)):
-        var file_path = out_dir.joinpath(filenames[i])
-        var file_obj = builtins.open(file_path, "w")
-        file_obj.write(PythonObject(buffers[i]))
-        file_obj.close()
+        output_file_path(out_dir, filenames[i]).write_text(buffers[i])
 
 
 fn _build_penalty_sp(
@@ -186,18 +190,23 @@ fn _append_stage_time_series(
 
 
 def run_case_input(
-    var input: CaseInput, output_path: String, profile_path: String, case_load_us: Int
+    var input: CaseInput,
+    output_path: String,
+    profile_path: String,
+    case_load_us: Int,
+    mut step_result: SessionProgress,
+    source_info: CaseSourceInfo,
 ):
-    var time = Python.import_module("time")
-    var pathlib = Python.import_module("pathlib")
-    var out_dir = pathlib.Path(output_path)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    var session = step_result.enabled
+    var out_dir = Path(output_path)
+    if not session:
+        make_output_dir(output_path)
     var progress_path = output_path + "/run_progress.json"
     var replay = getenv("STRUT_TCL_REPLAY")
-    if replay == "1":
+    if replay == "1" or session:
         progress_path = ""
     var replay_time = 0.0
-    var t_start = Int(time.perf_counter_ns())
+    var t_start = Int(perf_counter_ns())
     var safe_case_load_us = case_load_us
     if safe_case_load_us < 0:
         safe_case_load_us = 0
@@ -387,7 +396,7 @@ def run_case_input(
     var static_output_files: List[String] = []
     var static_output_buffers: List[String] = []
 
-    var t_solve_start = Int(time.perf_counter_ns())
+    var t_solve_start = Int(perf_counter_ns())
     var model_build_dof_map_us = (t_solve_start - t_start) // 1000
     if do_profile:
         var assemble_end = (t_solve_start - t0) // 1000
@@ -401,6 +410,8 @@ def run_case_input(
         _append_event(events, events_need_comma, "C", frame_assemble, assemble_end)
         _append_event(events, events_need_comma, "O", frame_solve, assemble_end)
 
+    if session and analysis_type_tag != AnalysisTypeTag.Staged:
+        abort("--session requires staged analysis input")
     if analysis_type_tag == AnalysisTypeTag.StaticLinear:
         run_static_linear(
             typed_nodes,
@@ -596,6 +607,8 @@ def run_case_input(
                 constrained,
                 frame3d_scratch,
                 runtime_metrics,
+                step_result,
+                transient_state,
             )
         elif (
             integrator_tag == IntegratorTypeTag.DisplacementControl
@@ -696,6 +709,8 @@ def run_case_input(
                 mpc_coeff_pool,
                 frame3d_scratch,
                 runtime_metrics,
+                step_result,
+                transient_state,
             )
         else:
             abort("unsupported static_nonlinear integrator: " + integrator_type)
@@ -809,6 +824,7 @@ def run_case_input(
             frame_transient_step,
             frame_uniaxial_commit_all,
             runtime_metrics,
+            step_result,
         )
     elif analysis_type_tag == AnalysisTypeTag.TransientNonlinear or (
         analysis_type_tag == AnalysisTypeTag.TransientLinear and rayleigh.has_regional_damping()
@@ -933,6 +949,7 @@ def run_case_input(
             frame_uniaxial_commit_all,
             frame3d_scratch,
             runtime_metrics,
+            step_result,
         )
     elif analysis_type_tag == AnalysisTypeTag.Staged:
         var stage_sp_constraints = root_sp_constraints.copy()
@@ -948,6 +965,8 @@ def run_case_input(
         var stage_F = F_pattern.copy()
         var stage_element_loads = pattern_element_loads.copy()
         var committed_pattern_scale = 0.0
+        var committed_const_F = F_const.copy()
+        var committed_const_element_loads = const_element_loads.copy()
         var reduced_quad_domain = QuadStageDomain(
             quad_elem_indices, frame2d_elem_indices, free, free_index, constrained
         )
@@ -959,8 +978,110 @@ def run_case_input(
         var last_load_control_stage = -2
         var last_load_control_series = -1
 
-        for stage_idx in range(len(stages)):
-            var stage = stages[stage_idx]
+        if session:
+            step_result.model = UnsafePointer(to=state)
+            step_result.protocol.reply('{"status":0,"compact_repeat":true}')
+        var stage_idx = -1
+        var session_stage = StageInput()
+        while session or stage_idx + 1 < len(stages):
+            var stage: StageInput
+            if session:
+                var command = step_result.read()
+                var root = command.root_index
+                var op = _json_get_string(command, root, "op", "")
+                if op == "discard":
+                    return
+                if op == "close":
+                    make_output_dir(output_path)
+                    _write_output_chunk_files(
+                        out_dir, transient_output_files, transient_output_buffers
+                    )
+                    return
+                step_result.bind_loads(
+                    committed_const_F,
+                    stage_F,
+                    committed_const_element_loads,
+                    stage_element_loads,
+                    stage_uniform_excitations,
+                    stage_pattern_type_tag,
+                )
+                if step_result.answer_query(
+                    command,
+                    op,
+                    replay_time,
+                    committed_pattern_scale,
+                    u,
+                    transient_state.velocity,
+                    transient_state.acceleration,
+                    uniaxial_states,
+                    force_basic_q,
+                    fiber_section_defs,
+                    fiber_section3d_defs,
+                    shell_cache,
+                ):
+                    continue
+                if op == "loadConst":
+                    step_result.hs_reference.clear()
+                    F_const = committed_const_F.copy()
+                    const_element_loads = committed_const_element_loads.copy()
+                    if stage_pattern_type_tag == PatternTypeTag.Plain:
+                        F_const = build_active_nodal_load(F_const, stage_F, committed_pattern_scale)
+                        append_scaled_element_loads(
+                            const_element_loads, stage_element_loads, committed_pattern_scale
+                        )
+                    stage_F = _zero_nodal_force_vector(total_dofs)
+                    stage_element_loads = []
+                    committed_pattern_scale = 0.0
+                    stage_pattern_type = "Plain"
+                    stage_pattern_type_tag = PatternTypeTag.Plain
+                    stage_ts_index = -1
+                    stage_uniform_excitations = []
+                    committed_const_F = F_const.copy()
+                    committed_const_element_loads = const_element_loads.copy()
+                    replay_time = _json_get_float(command, root, "time", replay_time)
+                    step_result.protocol.reply('{"status":0}')
+                    continue
+                if op == "repeat":
+                    stage = session_stage
+                    stage.analysis.steps = _json_get_int(command, root, "steps", 1)
+                    stage.analysis.start_time = _json_get_float(command, root, "time", replay_time)
+                    stage.resume_load_control = _json_get_bool(command, root, "resume", True)
+                elif op != "analyze" and op != "eigen":
+                    step_result.protocol.reply('{"error":"unknown session command"}')
+                    continue
+                else:
+                    var stage_index = command.object_find(root, "stage")
+                    if stage_index < 0:
+                        step_result.protocol.reply('{"error":"missing stage"}')
+                        continue
+                    if command.object_find(root, "recorders") >= 0:
+                        var recorder_input = parse_case_input_native_from_source(
+                            command, source_info
+                        )
+                        swap(recorders, recorder_input.recorders)
+                        swap(recorder_nodes_pool, recorder_input.recorder_nodes_pool)
+                        swap(recorder_elements_pool, recorder_input.recorder_elements_pool)
+                        swap(recorder_dofs_pool, recorder_input.recorder_dofs_pool)
+                        swap(recorder_modes_pool, recorder_input.recorder_modes_pool)
+                        swap(recorder_sections_pool, recorder_input.recorder_sections_pool)
+                        transient_state.next_sample_times = []
+                        transient_state.next_sample_times.resize(len(recorders), 0.0)
+                    stage = parse_stage_input_from_native(command, stage_index, source_info)
+                    if op == "analyze":
+                        if not _json_get_bool(command, root, "resume_integrator", False):
+                            step_result.reset_static_integrator()
+                        elif _json_get_bool(command, root, "refresh_hs_reference", False):
+                            step_result.hs_reference.clear()
+                        session_stage = stage
+                        session_stage.pattern.has_pattern = False
+                        session_stage.loads = []
+                        session_stage.element_loads = []
+                        session_stage.time_series = []
+                        session_stage.rayleigh.has_rayleigh = False
+                step_result.begin(command, stage.analysis.steps)
+            else:
+                stage = stages[stage_idx + 1]
+            stage_idx += 1
             if len(stage.removed_nodes) != 0 or len(stage.removed_elements) != 0:
                 if (
                     len(shell_cache.quads) + len(shell_cache.contacts) + len(frame2d_elem_indices)
@@ -1216,6 +1337,15 @@ def run_case_input(
                         filename,
                         _format_values_line(values),
                     )
+            if session:
+                step_result.bind_loads(
+                    stage_const_F,
+                    stage_F,
+                    stage_const_element_loads,
+                    stage_element_loads,
+                    stage_uniform_excitations,
+                    stage_pattern_type_tag,
+                )
             var stage_final_pattern_scale = 0.0
             if stage_type_tag == AnalysisTypeTag.StaticLinear:
                 if stage_pattern_type_tag != PatternTypeTag.Plain:
@@ -1317,13 +1447,17 @@ def run_case_input(
                     stage_integrator_type = "LoadControl"
                     stage_integrator_tag = IntegratorTypeTag.LoadControl
                 if stage_integrator_tag == IntegratorTypeTag.LoadControl:
-                    if not stage_analysis.has_start_time and (
-                        stage.resume_load_control
-                        or (
-                            stage_idx > 0
-                            and last_load_control_stage == stage_idx - 1
-                            and last_load_control_series == stage_ts_index
-                            and not stages[stage_idx - 1].has_load_const
+                    if (
+                        not session
+                        and not stage_analysis.has_start_time
+                        and (
+                            stage.resume_load_control
+                            or (
+                                stage_idx > 0
+                                and last_load_control_stage == stage_idx - 1
+                                and last_load_control_series == stage_ts_index
+                                and not stages[stage_idx - 1].has_load_const
+                            )
                         )
                     ):
                         stage_analysis.start_time = load_control_time
@@ -1434,6 +1568,8 @@ def run_case_input(
                         reduced_quad_domain.constrained,
                         frame3d_scratch,
                         runtime_metrics,
+                        step_result,
+                        transient_state,
                         load_control_step,
                         load_control_iterations,
                     )
@@ -1456,6 +1592,8 @@ def run_case_input(
                     or stage_integrator_tag == IntegratorTypeTag.HSConstraint
                 ):
                     var stage_disp_steps = stage_analysis.steps
+                    if session:
+                        stage_analysis.integrator_max_cutbacks = 0
                     stage_final_pattern_scale = run_static_nonlinear_displacement_control(
                         stage_analysis,
                         stage_disp_steps,
@@ -1551,9 +1689,11 @@ def run_case_input(
                         mpc_coeff_pool,
                         frame3d_scratch,
                         runtime_metrics,
+                        step_result,
+                        transient_state,
                     )
                     replay_time = stage_final_pattern_scale
-                    if replay != "" and stage_ts_index >= 0:
+                    if (replay != "" or session) and stage_ts_index >= 0:
                         var factor = time_series[stage_ts_index].factor
                         if factor != 0.0:
                             replay_time /= factor
@@ -1669,14 +1809,17 @@ def run_case_input(
                     frame_transient_step,
                     frame_uniaxial_commit_all,
                     runtime_metrics,
+                    step_result,
                 )
                 if stage_pattern_type_tag == PatternTypeTag.Plain:
                     stage_final_pattern_scale = 1.0
                     if stage_ts_index >= 0:
                         stage_final_pattern_scale = eval_time_series_input(
                             time_series[stage_ts_index],
-                            stage_analysis.start_time
-                            + Float64(stage_analysis.steps) * stage_analysis.dt,
+                            step_result.time if step_result.has_driver_time else (
+                                stage_analysis.start_time
+                                + Float64(stage_analysis.steps) * stage_analysis.dt
+                            ),
                             time_series_values,
                             time_series_times,
                         )
@@ -1804,14 +1947,17 @@ def run_case_input(
                     frame_uniaxial_commit_all,
                     frame3d_scratch,
                     runtime_metrics,
+                    step_result,
                 )
                 if stage_pattern_type_tag == PatternTypeTag.Plain:
                     stage_final_pattern_scale = 1.0
                     if stage_ts_index >= 0:
                         stage_final_pattern_scale = eval_time_series_input(
                             time_series[stage_ts_index],
-                            stage_analysis.start_time
-                            + Float64(stage_analysis.steps) * stage_analysis.dt,
+                            step_result.time if step_result.has_driver_time else (
+                                stage_analysis.start_time
+                                + Float64(stage_analysis.steps) * stage_analysis.dt
+                            ),
                             time_series_values,
                             time_series_times,
                         )
@@ -1827,6 +1973,9 @@ def run_case_input(
                     ndm,
                     ndf,
                 )
+                if session:
+                    swap(transient_output_files, static_output_files)
+                    swap(transient_output_buffers, static_output_buffers)
                 run_modal_eigen(
                     stage_analysis.num_modes,
                     typed_nodes,
@@ -1871,9 +2020,27 @@ def run_case_input(
                     recorder_modes_pool,
                     transient_output_files,
                     transient_output_buffers,
-                    finite_modes=replay != "",
+                    finite_modes=replay != "" or session,
                     standard=stage_analysis.standard_eigen,
                 )
+                if session:
+                    var reply = '{"values":['
+                    for i in range(len(transient_output_files)):
+                        if transient_output_files[i] == "__strut_session_eigen_eigenvalues.out":
+                            var lines = transient_output_buffers[i].split("\n")
+                            for j in range(len(lines)):
+                                if lines[j] == "":
+                                    continue
+                                if j > 0:
+                                    reply += ","
+                                reply += lines[j]
+                            break
+                    transient_output_files.clear()
+                    transient_output_buffers.clear()
+                    swap(transient_output_files, static_output_files)
+                    swap(transient_output_buffers, static_output_buffers)
+                    step_result.protocol.reply(reply + "]}")
+                    continue
             else:
                 abort("unsupported staged analysis type: " + stage_type)
 
@@ -1881,11 +2048,19 @@ def run_case_input(
                 stage_type_tag == AnalysisTypeTag.TransientLinear
                 or stage_type_tag == AnalysisTypeTag.TransientNonlinear
             ):
-                replay_time = (
+                replay_time = step_result.time if step_result.has_driver_time else (
                     stage_analysis.start_time + Float64(stage_analysis.steps) * stage_analysis.dt
                 )
             if stage_type_tag != AnalysisTypeTag.ModalEigen:
                 committed_pattern_scale = stage_final_pattern_scale
+            if session:
+                committed_const_F = stage_const_F^
+                committed_const_element_loads = stage_const_element_loads^
+                if not step_result.replied:
+                    step_result.reply_result(
+                        replay_time, u, transient_state.velocity, transient_state.acceleration
+                    )
+                continue
             if stage.has_load_const:
                 F_const = stage_const_F^
                 const_element_loads = stage_const_element_loads^
@@ -1952,7 +2127,7 @@ def run_case_input(
         )
     else:
         abort("unsupported analysis type: " + analysis_type)
-    var t_solve_end = Int(time.perf_counter_ns())
+    var t_solve_end = Int(perf_counter_ns())
     if do_profile:
         var solve_end_us = (t_solve_end - t0) // 1000
         _append_event(events, events_need_comma, "C", frame_solve, solve_end_us)
@@ -1962,10 +2137,10 @@ def run_case_input(
 
     _write_run_progress(progress_path, "writing_output", analysis_type, 0, 0, 0, 0)
     if replay != "":
-        var replay_time_path = out_dir.joinpath("__strut_domain_time")
-        replay_time_path.write_text(PythonObject(String(replay_time) + "\n"))
-    var analysis_path = out_dir.joinpath("analysis_time_us.txt")
-    analysis_path.write_text(PythonObject(String(analysis_us) + "\n"))
+        var replay_time_path = output_file_path(out_dir, "__strut_domain_time")
+        replay_time_path.write_text(String(replay_time) + "\n")
+    var analysis_path = output_file_path(out_dir, "analysis_time_us.txt")
+    analysis_path.write_text(String(analysis_us) + "\n")
     if (
         analysis_type_tag == AnalysisTypeTag.TransientLinear
         or analysis_type_tag == AnalysisTypeTag.TransientNonlinear
@@ -2098,8 +2273,8 @@ def run_case_input(
                         values[j] = value
                     var filename = rec.output + "_node" + String(node_id) + ".out"
                     if rec.type_tag == RecorderTypeTag.NodeDisplacement:
-                        var file_path = out_dir.joinpath(filename)
-                        file_path.write_text(PythonObject(_format_values_line(values)))
+                        var file_path = output_file_path(out_dir, filename)
+                        file_path.write_text(_format_values_line(values))
                     else:
                         _update_envelope(
                             filename,
@@ -2129,8 +2304,10 @@ def run_case_input(
                         u,
                         rec.type_tag == RecorderTypeTag.QuadState,
                     )
-                    var file_path = out_dir.joinpath(rec.output + "_ele" + String(elem_id) + ".out")
-                    file_path.write_text(PythonObject(_format_values_line(values)))
+                    var file_path = output_file_path(
+                        out_dir, rec.output + "_ele" + String(elem_id) + ".out"
+                    )
+                    file_path.write_text(_format_values_line(values))
             elif rec.type_tag == RecorderTypeTag.ElementForce:
                 for eidx in range(rec.element_count):
                     var elem_id = recorder_elements_pool[rec.element_offset + eidx]
@@ -2168,8 +2345,8 @@ def run_case_input(
                     )
                     var line = _format_values_line(f_elem)
                     var filename = rec.output + "_ele" + String(elem_id) + ".out"
-                    var file_path = out_dir.joinpath(filename)
-                    file_path.write_text(PythonObject(line))
+                    var file_path = output_file_path(out_dir, filename)
+                    file_path.write_text(line)
             elif rec.type_tag == RecorderTypeTag.ElementLocalForce:
                 for eidx in range(rec.element_count):
                     var elem_id = recorder_elements_pool[rec.element_offset + eidx]
@@ -2204,8 +2381,8 @@ def run_case_input(
                         force_basic_q,
                     )
                     var filename = rec.output + "_ele" + String(elem_id) + ".out"
-                    var file_path = out_dir.joinpath(filename)
-                    file_path.write_text(PythonObject(_format_values_line(values)))
+                    var file_path = output_file_path(out_dir, filename)
+                    file_path.write_text(_format_values_line(values))
             elif rec.type_tag == RecorderTypeTag.ElementBasicForce:
                 for eidx in range(rec.element_count):
                     var elem_id = recorder_elements_pool[rec.element_offset + eidx]
@@ -2228,8 +2405,8 @@ def run_case_input(
                         rec.material_stress,
                     )
                     var filename = rec.output + "_ele" + String(elem_id) + ".out"
-                    var file_path = out_dir.joinpath(filename)
-                    file_path.write_text(PythonObject(_format_values_line(values)))
+                    var file_path = output_file_path(out_dir, filename)
+                    file_path.write_text(_format_values_line(values))
             elif rec.type_tag == RecorderTypeTag.ElementDeformation:
                 for eidx in range(rec.element_count):
                     var elem_id = recorder_elements_pool[rec.element_offset + eidx]
@@ -2245,8 +2422,8 @@ def run_case_input(
                         typed_nodes,
                     )
                     var filename = rec.output + "_ele" + String(elem_id) + ".out"
-                    var file_path = out_dir.joinpath(filename)
-                    file_path.write_text(PythonObject(_format_values_line(values)))
+                    var file_path = output_file_path(out_dir, filename)
+                    file_path.write_text(_format_values_line(values))
             elif rec.type_tag == RecorderTypeTag.NodeReaction:
                 for nidx in range(rec.node_count):
                     var node_id = recorder_nodes_pool[rec.node_offset + nidx]
@@ -2259,15 +2436,15 @@ def run_case_input(
                         var idx = node_dof_index(i, dof, ndf)
                         values[j] = F_int_reaction[idx] - F_ext_reaction[idx]
                     var filename = rec.output + "_node" + String(node_id) + ".out"
-                    var file_path = out_dir.joinpath(filename)
-                    file_path.write_text(PythonObject(_format_values_line(values)))
+                    var file_path = output_file_path(out_dir, filename)
+                    file_path.write_text(_format_values_line(values))
             elif rec.type_tag == RecorderTypeTag.Drift:
                 var i_node = rec.i_node
                 var j_node = rec.j_node
                 var value = _drift_value(rec, typed_nodes, id_to_index, ndf, u)
                 var filename = rec.output + "_i" + String(i_node) + "_j" + String(j_node) + ".out"
-                var file_path = out_dir.joinpath(filename)
-                file_path.write_text(PythonObject(_format_values_line([value])))
+                var file_path = output_file_path(out_dir, filename)
+                file_path.write_text(_format_values_line([value]))
             elif rec.type_tag == RecorderTypeTag.EnvelopeElementForce:
                 for eidx in range(rec.element_count):
                     var elem_id = recorder_elements_pool[rec.element_offset + eidx]
@@ -2398,8 +2575,8 @@ def run_case_input(
                         var filename = (
                             rec.output + "_ele" + String(elem_id) + "_sec" + String(sec_no) + ".out"
                         )
-                        var file_path = out_dir.joinpath(filename)
-                        file_path.write_text(PythonObject(_format_values_line(values)))
+                        var file_path = output_file_path(out_dir, filename)
+                        file_path.write_text(_format_values_line(values))
             elif rec.type_tag != RecorderTypeTag.ModalEigen:
                 abort("unsupported recorder type")
         for i in range(len(envelope_files)):
@@ -2407,10 +2584,10 @@ def run_case_input(
             line += _format_values_line(envelope_min[i])
             line += _format_values_line(envelope_max[i])
             line += _format_values_line(envelope_abs[i])
-            var file_path = out_dir.joinpath(envelope_files[i])
-            file_path.write_text(PythonObject(line))
+            var file_path = output_file_path(out_dir, envelope_files[i])
+            file_path.write_text(line)
 
-    var t2 = Int(time.perf_counter_ns())
+    var t2 = Int(perf_counter_ns())
     var total_us = (t2 - t0) // 1000
     var output_write_us = (t2 - t_solve_end) // 1000
     var predictor_section_eval_us = runtime_metrics.predictor_section_eval_ns // 1000
@@ -2500,8 +2677,8 @@ def run_case_input(
         need_elem_comma = True
     phase_json += "\n  }\n"
     phase_json += "}\n"
-    var phase_path = out_dir.joinpath("phase_times_us.json")
-    phase_path.write_text(PythonObject(phase_json))
+    var phase_path = output_file_path(out_dir, "phase_times_us.json")
+    phase_path.write_text(phase_json)
     _write_run_progress(progress_path, "completed", analysis_type, 0, 0, 0, 0)
 
     if do_profile:
@@ -2517,6 +2694,24 @@ def run_case_from_native_source(
     profile_path: String,
     case_load_us: Int,
     include_recorders: Bool,
+    session: Bool = False,
+):
+    var step_result = SessionProgress(session)
+    run_case_document(
+        doc, source_info, output_path, profile_path, case_load_us, include_recorders, step_result
+    )
+    if session:
+        step_result.protocol.reply('{"status":0}')
+
+
+def run_case_document(
+    doc: JsonDocument,
+    source_info: CaseSourceInfo,
+    output_path: String,
+    profile_path: String,
+    case_load_us: Int,
+    include_recorders: Bool,
+    mut step_result: SessionProgress,
 ):
     precheck_case_input_native(doc, include_recorders)
     run_case_input(
@@ -2524,4 +2719,36 @@ def run_case_from_native_source(
         output_path,
         profile_path,
         case_load_us,
+        step_result,
+        source_info,
     )
+
+
+def run_case_session():
+    var protocol = SessionProtocol(True)
+    while True:
+        var line = protocol.read_line()
+        if line == "":
+            return
+        var doc = protocol.decode(line)
+        var root = doc.root_index
+        var op = _json_get_string(doc, root, "op", "")
+        if op != "open" and op != "solve":
+            protocol.reply('{"error":"expected a session open or solve command"}')
+            continue
+        var output_path = _json_get_string(doc, root, "output_path", "")
+        if output_path == "":
+            protocol.reply('{"error":"missing session output path"}')
+            continue
+        var source_info = CaseSourceInfo(
+            _json_get_string(doc, root, "source_path", ""),
+            _json_get_string(doc, root, "source_dir", ""),
+        )
+        var step_result = SessionProgress(False)
+        if op == "open":
+            swap(step_result.protocol, protocol)
+            step_result.enabled = True
+        run_case_document(doc, source_info, output_path, "", 0, True, step_result)
+        if step_result.enabled:
+            swap(step_result.protocol, protocol)
+        protocol.reply('{"status":0}')

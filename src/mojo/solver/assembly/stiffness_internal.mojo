@@ -2278,6 +2278,7 @@ fn assemble_global_stiffness_and_internal_native_soa[
         fiber_section_cells,
         fiber_section_index_by_id,
         force_beam_column2d_scratch,
+        force_beam_column3d_scratch.frame2d,
         dof_map6,
         u_elem6,
         k_flat,

@@ -29,14 +29,14 @@ from os import abort
 from sections import LayeredShellSectionDef
 from solver.assembly.parallel_elements import ParallelElementWork
 from solver.run_case.input_types import ElementInput, NodeInput, SectionInput
-from solver.threads import solver_thread_count
 from tag_types import GeomTransfTag
 
 
 # Bound result storage to about 2.5 MB, even for very large models.
 alias _BATCH_SIZE = 512
-# At 64 layered shells, two 32-element ranges nearly halve compute time.
-alias _MIN_PER_WORKER = 32
+# The estimate charges for each Gauss point and its nonlinear layers, plus
+# the force and tangent work. Cached elastic shells only apply a matrix.
+alias _MINIMUM_WORK = 1024
 
 
 @fieldwise_init
@@ -123,9 +123,17 @@ struct ShellAssemblyCache(Movable):
         self.entry_by_element.resize(len(elements), -1)
         var layered_count = 0
         var elastic_count = 0
+        var concrete_state_count = 0
         for e in shell_indices:
             if elements[e].type != "shell":
                 self.has_alternative_shells = True
+            if (
+                elements[e].type != "ASDShellQ4"
+                and sections[elements[e].section].type == "LayeredShellSection"
+            ):
+                concrete_state_count += 4 * len(
+                    layered_sections[section_index[elements[e].section]].concretes
+                )
             if elements[e].type != "ShellNLDKGQ":
                 if (
                     elements[e].type != "ASDShellQ4"
@@ -134,6 +142,8 @@ struct ShellAssemblyCache(Movable):
                     layered_count += 1
                 else:
                     elastic_count += 1
+        # One allocation: growing per element reallocates and copies every state each time.
+        self.concrete_states.reserve(len(self.concrete_states) + concrete_state_count)
         self.layered_geometry.resize(layered_count * SHELL4_GEOMETRY_SIZE, 0.0)
         self.elastic_matrices.resize(elastic_count * SHELL4_MATRIX_SIZE, 0.0)
         self.work = ParallelElementWork(
@@ -141,8 +151,7 @@ struct ShellAssemblyCache(Movable):
             SHELL4_MATRIX_SIZE,
             SHELL4_DOFS,
             SHELL4_DOFS + SHELL4_SCRATCH_SIZE,
-            solver_thread_count(),
-            _MIN_PER_WORKER,
+            _MINIMUM_WORK,
         )
 
         var layer_offset = 0
@@ -151,6 +160,13 @@ struct ShellAssemblyCache(Movable):
         for e in shell_indices:
             ref elem = elements[e]
             ref sec = sections[elem.section]
+            if elem.type != "ASDShellQ4" and sec.type == "LayeredShellSection":
+                ref definition = layered_sections[section_index[elem.section]]
+                self.work.plan.append(32 + 8 * (len(definition.concretes) + len(definition.rebars)))
+            elif elem.type == "ShellNLDKGQ" or elem.type == "ASDShellQ4":
+                self.work.plan.append(128)
+            else:
+                self.work.plan.append(8)
             ref n1 = nodes[elem.node_index_1]
             ref n2 = nodes[elem.node_index_2]
             ref n3 = nodes[elem.node_index_3]
@@ -288,3 +304,4 @@ struct ShellAssemblyCache(Movable):
                 if elem.dof_count != SHELL4_DOFS:
                     compact_shell_matrix(matrix, elem.dof_count)
                 elastic_offset += SHELL4_MATRIX_SIZE
+        self.work.prepare_scratch()

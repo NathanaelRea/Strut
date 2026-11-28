@@ -39,7 +39,7 @@ from sections import (
 )
 
 
-struct ForceBeamColumn2dScratch(Movable):
+struct ForceBeamColumn2dScratch(Copyable, Movable):
     var integration_cache: BeamIntegrationCache
     var section_load_axial: List[Float64]
     var section_load_moment: List[Float64]

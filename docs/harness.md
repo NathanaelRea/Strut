@@ -128,6 +128,7 @@ Minimum required fields (v1.0):
   - `step`: compare each transient step and the final static step. Set `parity_history` to `true` to compare each static step.
   - `max_abs`: compare component-wise peak absolute response across the full history.
 - `benchmark_size`: `"small" | "medium" | "large"` (optional; top-level benchmark/plot override)
+- `benchmark_skip`: reason string (optional; direct Tcl manifests). The benchmark runner leaves the case out and logs the reason. The parity suite still runs it.
 
 Current limitation: `forceBeamColumn2d`/`dispBeamColumn2d` support is currently limited to:
 - `geomTransf: Linear | PDelta`
@@ -265,21 +266,39 @@ successive domains that write the same filename. As with ordinary direct Tcl
 recorders, parity compares response columns after dropping the optional time
 column. Explicit `getTime` queries are compared separately.
 
-In live mode, Strut replays the accepted analysis stages through each
-`analyze` call using the Mojo solver. Tcl sees the resulting displacement,
-velocity, acceleration, element response or eigenvalues, and can branch on
-the analysis status. An unsuccessful equilibrium iteration returns `-3`
-and only the successful prefix enters subsequent replay. Fixed-step
-Newmark stages run ahead in bounded batches. Later calls reuse a successful
-prefix only while extending the same stage with the same model. A failed
-lookahead triggers an exact replay to the requested step. Every replay starts
-with the committed history, including material updates and load application.
-The harness compares the Tcl query results in command order within each
-response type. Scripts on the ordinary direct-Tcl path run one solver input
-without query tracing or replay.
+In live mode, Strut starts a Mojo solver process when an analysis or eigenvalue
+query first needs it.
+Each `analyze` advances the committed domain.
+Tcl can inspect nodal displacement, velocity, acceleration and reactions,
+element responses, time, and eigenvalues between calls. An unsuccessful
+equilibrium iteration returns `-3`. Node and material state and the domain clock
+return to the last committed step. Any successful steps in the same call remain
+committed. `wipe` closes the domain and flushes its recorders. The next analysis
+sends the new model over the existing process's input pipe.
+
+Consecutive `analyze` calls with the same settings keep the static nonlinear
+or Newmark driver active. The driver serves committed-state queries between
+calls and retains its workspaces, matrix structure, and factors for reuse as
+the analysis algorithm allows. A changed step size, algorithm, test, load, or
+recorder set starts a new driver on the committed domain. Tcl controls
+convergence fallbacks one call at a time, including when it switches back to
+the starting algorithm and test.
+
+HSConstraint retains its reference load and last load increment when Tcl changes
+the solution algorithm. Adaptive DisplacementControl retains its step size
+and iteration count until Tcl replaces the integrator.
+
+Unsupported operations, including prescribed support motions, switch the
+current domain to history replay.
+Set `STRUT_TCL_SESSION=0` to force live replay, or
+`STRUT_TCL_SESSION=required` to surface an unsupported session operation as an
+error. The harness compares Tcl query results in command order within each
+response type. The ordinary direct-Tcl path records the script into one staged
+input and sends it to the batch solver over stdin.
+
 Build another domain with `wipe` before changing nodes, elements or material
-definitions after an analysis. Stage commands can still change loads,
-time series and analysis controls in the current domain.
+definitions after an analysis. Stage commands can change loads, time series and
+analysis controls in the current domain.
 
 One-dimensional Tcl models support `truss`, `corotTruss` and `zeroLength`.
 The Python solver entry point uses the planar assembly with a fixed

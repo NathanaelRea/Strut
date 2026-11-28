@@ -76,6 +76,18 @@ trait ElementMatrixSink:
         """`k_flat[k_offset + a * dof_count + b]` is local entry (a, b)."""
         ...
 
+    fn add_element_matrix_borrowed(
+        mut self,
+        elem_index: Int,
+        elem_free_pool: List[Int],
+        free_offset: Int,
+        dof_count: Int,
+        matrix: UnsafePointer[Float64],
+        matrix_size: Int,
+    ):
+        """Scatter a row-major tangent synchronously, without retaining its storage."""
+        ...
+
 
 struct SparsePattern(Copyable, Movable):
     var n: Int
@@ -236,6 +248,17 @@ struct NullMatrixSink(ElementMatrixSink, Movable):
     ):
         pass
 
+    fn add_element_matrix_borrowed(
+        mut self,
+        elem_index: Int,
+        elem_free_pool: List[Int],
+        free_offset: Int,
+        dof_count: Int,
+        matrix: UnsafePointer[Float64],
+        matrix_size: Int,
+    ):
+        pass
+
 
 struct SparseAssembler(ElementMatrixSink, Movable):
     """Scatters element matrices into `values` (one value array over the pattern).
@@ -355,13 +378,32 @@ struct SparseAssembler(ElementMatrixSink, Movable):
         k_flat: List[Float64],
         k_offset: Int = 0,
     ):
+        if k_offset < 0 or k_offset > len(k_flat):
+            abort("sparse assembler flat element matrix offset out of bounds")
+        self.add_element_matrix_borrowed(
+            elem_index,
+            elem_free_pool,
+            free_offset,
+            dof_count,
+            k_flat.unsafe_ptr() + k_offset,
+            len(k_flat) - k_offset,
+        )
+
+    fn add_element_matrix_borrowed(
+        mut self,
+        elem_index: Int,
+        elem_free_pool: List[Int],
+        free_offset: Int,
+        dof_count: Int,
+        matrix: UnsafePointer[Float64],
+        matrix_size: Int,
+    ):
         self._check(elem_index, dof_count)
-        if k_offset < 0 or len(k_flat) - k_offset < dof_count * dof_count:
+        if matrix_size < dof_count * dof_count:
             abort("sparse assembler flat element matrix size mismatch")
         var dof0 = self.scatter.elem_dof_start[elem_index]
         var t_base = self.scatter.dof_term_start[dof0]
         var t_count = self.scatter.dof_term_start[dof0 + dof_count] - t_base
-        var matrix = k_flat.unsafe_ptr() + k_offset
         if self.support_count > 0:
             for b in range(dof_count):
                 var col = self.support_columns[dof0 + b]

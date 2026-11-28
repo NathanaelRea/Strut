@@ -245,20 +245,6 @@ def test_resolve_engine_mode_prefers_explicit_engine_over_mp_and_env():
     )
 
 
-def test_engines_require_direct_tcl_parser_check_for_reference_engines():
-    assert (
-        run_benchmarks._engines_require_direct_tcl_parser_check(("opensees",)) is True
-    )
-    assert (
-        run_benchmarks._engines_require_direct_tcl_parser_check(("openseesmp",)) is True
-    )
-    assert run_benchmarks._engines_require_direct_tcl_parser_check(("strut",)) is False
-    assert (
-        run_benchmarks._engines_require_direct_tcl_parser_check(("opensees", "strut"))
-        is True
-    )
-
-
 def test_build_argument_parser_treats_bare_cases_as_interactive():
     parser = run_benchmarks.build_argument_parser()
 
@@ -355,6 +341,28 @@ def test_resolve_case_from_name_supports_direct_tcl_manifest(tmp_path: Path):
     assert case.name == "direct_case"
     assert case.tcl_path == entry_tcl.resolve()
     assert case.benchmark_size == "medium"
+
+
+def test_direct_tcl_case_spec_reads_benchmark_skip_reason(tmp_path: Path):
+    entry_tcl = tmp_path / "case.tcl"
+    entry_tcl.write_text("puts ok\n", encoding="utf-8")
+    manifest = tmp_path / "direct_case" / "direct_tcl_case.json"
+    _write_direct_tcl_case(manifest, entry_tcl=entry_tcl)
+    assert run_benchmarks._direct_tcl_case_spec(manifest).benchmark_skip is None
+
+    data = json.loads(manifest.read_text(encoding="utf-8"))
+    data["benchmark_skip"] = "OpenSees stops early"
+    manifest.write_text(json.dumps(data) + "\n", encoding="utf-8")
+
+    case = run_benchmarks._direct_tcl_case_spec(manifest)
+    assert case.benchmark_skip == "OpenSees stops early"
+
+
+def test_tcl_uses_eigen_reads_latin1_scripts(tmp_path: Path):
+    script = tmp_path / "model.tcl"
+    script.write_bytes(b"# \x93quoted\x94 comment\nset lambda [eigen 2]\n")
+
+    assert run_benchmarks._tcl_uses_eigen(script)
 
 
 def test_opt_full_suite_includes_new_ex9_direct_tcl_benchmarks():
@@ -517,9 +525,9 @@ def test_write_direct_tcl_wrapper_compute_only_noops_display_commands(tmp_path: 
     assert 'if {$tail == "DisplayPlane.tcl"} {' in wrapper
     assert "proc DisplayPlane args { return {} }" in wrapper
     assert "rename exit __strut_orig_exit" in wrapper
-    assert "proc exit args { return {} }" in wrapper
+    assert "proc exit args { tailcall __strut_benchmark_exit {*}$args }" in wrapper
     assert "rename quit __strut_orig_quit" in wrapper
-    assert "proc quit args { return {} }" in wrapper
+    assert "proc quit args { tailcall __strut_benchmark_exit {*}$args }" in wrapper
     assert "foreach __strut_display_cmd {prp vup vpn viewWindow display} {" in wrapper
     assert "proc $__strut_display_cmd args { return {} }" in wrapper
 
@@ -590,46 +598,23 @@ def test_prepare_direct_tcl_wrappers_use_manifest_source_files_order(
     )
 
     mirrored_script_dir = timed_wrapper.parent
-    entry_wrapper = next(mirrored_script_dir.glob("__strut_*_entry.tcl"))
+    entry_wrapper = mirrored_script_dir / f"__strut_{analyze.stem}_entry.tcl"
     assert entry_wrapper.read_text(encoding="utf-8").splitlines() == [
         "source {Ex3.Canti2D.build.InelasticFiberSection.tcl}",
         "source {Ex3.Canti2D.analyze.Dynamic.EQ.Uniform.tcl}",
     ]
     timed_text = timed_wrapper.read_text(encoding="utf-8")
     compute_text = compute_wrapper.read_text(encoding="utf-8")
-    compat_wrapper = entry_wrapper.with_name(
-        entry_wrapper.stem + "__opensees_compat.tcl"
+    compat_wrapper = (
+        mirrored_script_dir / f"__strut_opensees_{entry_wrapper.stem}_entry.tcl"
     )
-    compute_entry = entry_wrapper.with_name(entry_wrapper.stem + "__compute.tcl")
-    compute_compat = compute_entry.with_name(
-        compute_entry.stem + "__opensees_compat.tcl"
-    )
-    instrumented_fiber = (
-        mirrored_script_dir
-        / "Ex3.Canti2D.build.InelasticFiberSection__strut_compute.tcl"
-    )
-    assert compat_wrapper.exists()
-    assert compute_entry.exists()
-    assert compute_compat.exists()
-    assert instrumented_fiber.exists()
     compat_text = compat_wrapper.read_text(encoding="utf-8")
-    compute_entry_text = compute_entry.read_text(encoding="utf-8")
-    instrumented_text = instrumented_fiber.read_text(encoding="utf-8")
-    assert "rename section __strut_builtin_section" in compat_text
-    assert "set args [linsert $args 2 -GJ 1.0e-12]" in compat_text
-    assert "rename nDMaterial" not in compat_text
-    assert "rename mass __strut_builtin_mass" in compat_text
-    assert (
-        f"source [file join [file dirname [info script]] {{{entry_wrapper.name}}}]"
-        in compat_text
-    )
+    assert "in {Fiber fiberSec}" in compat_text
+    assert "-torsion" in compat_text
+    assert f"source {{{entry_wrapper.name}}}" in compat_text
     assert f"source {{{compat_wrapper.name}}}" in timed_text
-    assert f"source {{{compute_compat.name}}}" in compute_text
-    assert (
-        "source {Ex3.Canti2D.build.InelasticFiberSection__strut_compute.tcl}"
-        in compute_entry_text
-    )
-    assert "puts fiber" in instrumented_text
+    assert f"source {{{compat_wrapper.name}}}" in compute_text
+    assert not list(mirrored_script_dir.glob("*__strut_compute.tcl"))
 
 
 def test_prepare_direct_tcl_entry_uses_explicit_source_files_order(
@@ -1759,6 +1744,11 @@ def test_collect_run_metadata_tracks_batch_mode_per_engine(
     )
 
     runner = metadata["runner"]
+    assert runner["opensees_thread_env"] == (
+        {"OPENBLAS_NUM_THREADS": "1", "OMP_NUM_THREADS": "1"}
+        if engine != "strut"
+        else {}
+    )
     assert runner["batch_mode"] is expected_batch
     assert runner["opensees_batch_mode"] is expected_opensees_batch
     assert runner["openseesmp_batch_mode"] is expected_openseesmp_batch
@@ -1940,3 +1930,191 @@ def test_build_phase_row_prefers_phase_json_splits_and_keeps_extra_metrics():
     assert row["global_nonlinear_iterations"] == 16
     assert row["tangent_factorizations"] == 17
     assert row["element_type_timing_us"] == {"forceBeamColumn2d": 123}
+
+
+@pytest.mark.parametrize("value", [None, "", "zero", "0", "-1", "nan", "inf"])
+def test_no_positive_analysis_time(tmp_path, value):
+    metric = tmp_path / "analysis_time_us.txt"
+    if value is not None:
+        metric.write_text(value)
+    assert run_benchmarks._read_analysis_us(metric) is None
+
+
+@pytest.mark.parametrize(
+    ("ending", "error"),
+    [
+        ("", None),
+        ("exit 0\nerror unreachable\n", None),
+        ("exit 2\n", "script exited with status 2"),
+        ("error broken\n", "broken"),
+    ],
+)
+def test_direct_timing_handles_nested_analysis_and_tcl_errors(tmp_path, ending, error):
+    import shutil
+    import subprocess
+
+    tclsh = shutil.which("tclsh")
+    if not tclsh:
+        pytest.skip("requires Tcl")
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    output = tmp_path / "output"
+    output.mkdir()
+    (scripts / "nested.tcl").write_text(
+        "proc solve {} {if {[analyze 1] != 0} {error failed}}\n"
+    )
+    (scripts / "entry.tcl").write_text("source nested.tcl\nsolve\n" + ending)
+    wrapper = run_benchmarks._write_direct_tcl_wrapper(
+        original_script_name="entry.tcl",
+        wrapper_path=scripts / "wrapper.tcl",
+        compute_only=True,
+        raw_output_paths=[],
+    )
+    subprocess.run(
+        [tclsh],
+        input=f"proc analyze {{args}} {{after 2; return 0}}\nsource {{{wrapper}}}\n",
+        text=True,
+        cwd=output,
+        check=True,
+        capture_output=True,
+    )
+    if error:
+        assert error in (output / "case_error.txt").read_text()
+        assert not (output / "analysis_time_us.txt").exists()
+    else:
+        assert run_benchmarks._read_analysis_us(output / "analysis_time_us.txt") > 0
+
+
+def test_compute_only_drops_explicit_samples_without_changing_stages(tmp_path):
+    data = {
+        "analysis": {"stages": [{"sample_before": [0], "analysis": {"steps": 3}}]},
+        "recorders": [{"type": "node_displacement"}],
+    }
+    source = tmp_path / "case.json"
+    output = tmp_path / "compute.json"
+    assert run_benchmarks._compute_only_solver_input(data, source, output) == output
+    assert json.loads(output.read_text())["analysis"]["stages"] == [
+        {"analysis": {"steps": 3}}
+    ]
+    assert data["analysis"]["stages"][0]["sample_before"] == [0]
+
+
+def test_preparation_failure_names_case_and_continues(capsys, tmp_path):
+    broken = run_benchmarks.CaseSpec("broken", json_path=tmp_path / "broken.json")
+    healthy = run_benchmarks.CaseSpec("healthy", json_path=tmp_path / "healthy.json")
+
+    def prepare(case):
+        if case == broken:
+            raise RuntimeError("unexpected problem")
+        return {"name": case.name}
+
+    entries, failures = run_benchmarks._prepare_benchmark_cases(
+        [broken, healthy], prepare
+    )
+    assert entries == [{"name": "healthy"}]
+    assert [failure.case_name for failure in failures] == ["broken"]
+    captured = capsys.readouterr()
+    assert "[broken] Preparation failed" in captured.out
+    assert "Traceback" in captured.err
+
+
+@pytest.mark.parametrize(
+    ("entry", "args"),
+    [
+        ({"json": "case.json"}, ["--input", "case.json"]),
+        ({"input_tcl": "case.tcl"}, ["--input-tcl", "case.tcl"]),
+        (
+            {"interactive_tcl": "case.tcl", "replay_tcl": "live"},
+            ["--interactive-tcl", "case.tcl", "--replay-mode", "live"],
+        ),
+    ],
+)
+def test_strut_e2e_command(entry, args, tmp_path):
+    cmd = run_benchmarks._strut_e2e_command(tmp_path, entry, tmp_path / "out")
+    assert cmd[1] == str(tmp_path / "scripts" / "run_strut_case.py")
+    assert cmd[4:] == args
+    assert "--compute-only" not in cmd
+
+
+def test_e2e_times_results_without_requiring_a_strut_solve_metric(
+    monkeypatch, tmp_path
+):
+    target = tmp_path / "out"
+    solver = tmp_path / "solver"
+
+    def run(cmd, *, env, **kwargs):
+        assert env["STRUT_MOJO_BIN"] == str(solver)
+        assert cmd[-2:] == ["--replay-mode", "live"]
+        (target / "result.out").write_text("42\n")
+        (target / ".direct_tcl_recorders.json").write_text('{"result.out": {}}')
+
+    monkeypatch.setattr(run_benchmarks, "run", run)
+    result = run_benchmarks._run_e2e_pass(
+        repo_root=tmp_path,
+        entry={"interactive_tcl": "script.tcl", "replay_tcl": "live"},
+        engine="strut",
+        target=target,
+        binary=solver,
+        env={},
+        verbose=False,
+        repeat=2,
+        warmup=1,
+    )
+    assert len(result["times_s"]) == 2
+    assert result["e2e_median_s"] > 0
+    assert result["analysis_us"] is None
+    assert (target / "result.out").exists()
+
+
+def test_e2e_strut_rejects_replay_without_recorders(monkeypatch, tmp_path):
+    target = tmp_path / "out"
+
+    def run(*args, **kwargs):
+        (target / ".direct_tcl_recorders.json").write_text('{"missing.out": {}}')
+
+    monkeypatch.setattr(run_benchmarks, "run", run)
+    with pytest.raises(ValueError, match="replay recorder output is missing"):
+        run_benchmarks._run_e2e_pass(
+            repo_root=tmp_path,
+            entry={"interactive_tcl": "script.tcl", "replay_tcl": "live"},
+            engine="strut",
+            target=target,
+            binary=tmp_path / "strut",
+            env={},
+            verbose=False,
+            repeat=1,
+            warmup=0,
+        )
+
+
+def test_e2e_opensees_requires_completion_marker(monkeypatch, tmp_path):
+    target = tmp_path / "out"
+
+    def run(cmd, *, cwd, **kwargs):
+        assert cwd == target
+        assert cmd[-1] == "script.tcl"
+
+    monkeypatch.setattr(run_benchmarks, "run", run)
+    with pytest.raises(ValueError, match="completion marker"):
+        run_benchmarks._run_e2e_pass(
+            repo_root=tmp_path,
+            entry={"tcl": "script.tcl"},
+            engine="opensees",
+            target=target,
+            binary=tmp_path / "OpenSees",
+            env={},
+            verbose=False,
+            repeat=1,
+            warmup=0,
+        )
+
+
+def test_reference_trials_report_median_analysis_time(tmp_path):
+    samples = iter([777, 25, 30, 31])
+    stats = run_benchmarks._run_reference_trials(
+        lambda: next(samples), tmp_path / "case", repeat=3, warmup=1
+    )
+
+    assert stats["analysis_us"] == 30
+    assert stats["analysis_min_us"] == 25
+    assert stats["repeats"] == 3

@@ -1,3 +1,5 @@
+from solver.run_case.session import SessionProgress, transient_pattern_scale
+from solver.run_case.nonlinear_convergence import RelativeNormDispIncrOptions
 from solver.assembly.shell_mass import add_shell_mass_sparse, shell_excitation_mass
 from solver.run_case.analysis.transient_state import TransientState
 from algorithm import vectorize
@@ -15,7 +17,7 @@ from materials import (
     uniaxial_revert_trial,
 )
 from os import abort
-from python import Python
+from time import perf_counter_ns
 from sections import (
     FiberCell,
     FiberSection2dDef,
@@ -102,22 +104,25 @@ from solver.run_case.load_state import (
     add_uniform_excitation_load,
     set_uniform_excitation_initial_velocity,
     build_active_element_load_state,
-    build_active_nodal_load,
 )
 from solver.run_case.nonlinear_krylov_qr import krylov_apply_qr_acceleration
 from solver.run_case.nonlinear_krylov import (
-    copy_krylov_vector,
     default_krylov_max_dim,
     krylov_apply_acceleration,
-    krylov_push_iteration_state,
 )
 from solver.time_series import TimeSeriesInput, eval_time_series_input, find_time_series_input
 
 from solver.run_case.helpers import (
+    _update_active_nodal_load,
+    _copy_uniaxial_states,
+    _copy_nonlinear_vector,
+    _KrylovHistory,
     _append_output_at_index,
     _element_basic_force_for_recorder,
     _element_deformation_for_recorder,
     _collapse_vector_by_mpc,
+    _collapse_vector_by_mpc_reusing,
+    _collapse_vector_by_mpc_into,
     _element_force_global_for_recorder,
     _force_beam_column2d_end_forces_from_basic_state,
     _force_beam_column2d_section_response_from_basic_state,
@@ -339,6 +344,8 @@ fn _transient_residual(
     mut asm_dof_map12: List[Int],
     mut asm_u_elem6: List[Float64],
     mut F_int_full: List[Float64],
+    mut F_zero_length_damp: List[Float64],
+    mut mpc_force_work: List[Float64],
     mut runtime_metrics: RuntimeProfileMetrics,
 ) raises:
     """R_f at the current trial state.
@@ -361,7 +368,7 @@ fn _transient_residual(
             mpc_coeff_pool,
             len(mats.supports.dofs) > 0,
         )
-    var F_int: List[Float64]
+    var F_int = List[Float64]()
     if assemble_tangent:
         var no_events = String()
         var no_comma = False
@@ -438,7 +445,6 @@ fn _transient_residual(
             v_full,
             dt,
         )
-        F_int = F_int_full.copy()
     else:
         F_int = assemble_internal_forces_typed_soa(
             typed_nodes,
@@ -499,10 +505,7 @@ fn _transient_residual(
             v_full,
             dt,
         )
-    if has_transformation_mpc:
-        F_int = _collapse_vector_by_mpc(F_int, mpc_row_offsets, mpc_dof_pool, mpc_coeff_pool)
     if has_zero_length_dampers:
-        var F_zero_length_damp: List[Float64] = []
         F_zero_length_damp.resize(node_count * ndf, 0.0)
         # Only the force is needed here; the tangent is not assembled.
         assemble_zero_length_damping_secstif_sparse(
@@ -529,16 +532,30 @@ fn _transient_residual(
             F_zero_length_damp,
         )
         if has_transformation_mpc:
-            F_zero_length_damp = _collapse_vector_by_mpc(
-                F_zero_length_damp, mpc_row_offsets, mpc_dof_pool, mpc_coeff_pool
+            _collapse_vector_by_mpc_reusing(
+                F_zero_length_damp,
+                mpc_row_offsets,
+                mpc_dof_pool,
+                mpc_coeff_pool,
+                mpc_force_work,
             )
         for i in range(free_count):
             F_zero_length_damp_f[i] = F_zero_length_damp[free[i]]
     else:
         for i in range(free_count):
             F_zero_length_damp_f[i] = 0.0
+    ref raw_force = (
+        UnsafePointer(to=F_int_full) if assemble_tangent else UnsafePointer(to=F_int)
+    )[]
+    if has_transformation_mpc:
+        _collapse_vector_by_mpc_into(
+            raw_force, mpc_row_offsets, mpc_dof_pool, mpc_coeff_pool, mpc_force_work
+        )
+    ref force = (
+        UnsafePointer(to=mpc_force_work) if has_transformation_mpc else UnsafePointer(to=raw_force)
+    )[]
     _assemble_transient_residual(
-        mats, P_ext_f, F_int, free, F_zero_length_damp_f, v_trial, a_trial, u_f, R_f
+        mats, P_ext_f, force, free, F_zero_length_damp_f, v_trial, a_trial, u_f, R_f
     )
 
 
@@ -791,6 +808,8 @@ fn _transient_nonlinear_test_mode(test_type_tag: Int, test_type: String, label: 
         return 2
     if test_type_tag == NonlinearTestTypeTag.EnergyIncr:
         return 3
+    if test_type_tag == NonlinearTestTypeTag.RelativeNormDispIncr:
+        return NonlinearTestTypeTag.RelativeNormDispIncr
     abort("unsupported " + label + " test_type: " + test_type)
     return -1
 
@@ -803,12 +822,14 @@ fn _append_transient_solver_attempt(
     krylov_max_dim: Int,
     test_type: String,
     test_type_tag: Int,
+    relative_disp_test: RelativeNormDispIncrOptions,
     max_iters: Int,
     tol: Float64,
     label: String,
     mut retry_algorithm_tags: List[Int],
     mut retry_algorithm_modes: List[Int],
     mut retry_test_modes: List[Int],
+    mut retry_relative_disp_tests: List[RelativeNormDispIncrOptions],
     mut retry_max_iters: List[Int],
     mut retry_tols: List[Float64],
     mut retry_broyden_counts: List[Int],
@@ -822,6 +843,7 @@ fn _append_transient_solver_attempt(
         _transient_nonlinear_algorithm_mode(algorithm_tag, algorithm, label)
     )
     retry_test_modes.append(_transient_nonlinear_test_mode(test_type_tag, test_type, label))
+    retry_relative_disp_tests.append(relative_disp_test)
     if max_iters < 1:
         abort(label + "_max_iters must be >= 1")
     retry_max_iters.append(max_iters)
@@ -837,6 +859,7 @@ fn _append_transient_solver_attempt_from_input(
     mut retry_algorithm_tags: List[Int],
     mut retry_algorithm_modes: List[Int],
     mut retry_test_modes: List[Int],
+    mut retry_relative_disp_tests: List[RelativeNormDispIncrOptions],
     mut retry_max_iters: List[Int],
     mut retry_tols: List[Float64],
     mut retry_broyden_counts: List[Int],
@@ -851,12 +874,14 @@ fn _append_transient_solver_attempt_from_input(
         attempt.krylov_max_dim,
         attempt.test_type,
         attempt.test_type_tag,
+        attempt.relative_disp_test,
         attempt.max_iters,
         attempt.tol,
         label,
         retry_algorithm_tags,
         retry_algorithm_modes,
         retry_test_modes,
+        retry_relative_disp_tests,
         retry_max_iters,
         retry_tols,
         retry_broyden_counts,
@@ -871,6 +896,7 @@ fn _collect_transient_solver_chain(
     mut retry_algorithm_tags: List[Int],
     mut retry_algorithm_modes: List[Int],
     mut retry_test_modes: List[Int],
+    mut retry_relative_disp_tests: List[RelativeNormDispIncrOptions],
     mut retry_max_iters: List[Int],
     mut retry_tols: List[Float64],
     mut retry_broyden_counts: List[Int],
@@ -884,6 +910,7 @@ fn _collect_transient_solver_chain(
             retry_algorithm_tags,
             retry_algorithm_modes,
             retry_test_modes,
+            retry_relative_disp_tests,
             retry_max_iters,
             retry_tols,
             retry_broyden_counts,
@@ -899,12 +926,14 @@ fn _collect_transient_solver_chain(
             0,
             analysis.test_type,
             analysis.test_type_tag,
+            analysis.relative_disp_test,
             analysis.max_iters,
             analysis.tol,
             "transient_nonlinear primary",
             retry_algorithm_tags,
             retry_algorithm_modes,
             retry_test_modes,
+            retry_relative_disp_tests,
             retry_max_iters,
             retry_tols,
             retry_broyden_counts,
@@ -923,12 +952,14 @@ fn _collect_transient_solver_chain(
         0,
         analysis.test_type,
         analysis.test_type_tag,
+        analysis.relative_disp_test,
         retry_max_iters[0],
         retry_tols[0],
         "transient_nonlinear auto_fallback",
         retry_algorithm_tags,
         retry_algorithm_modes,
         retry_test_modes,
+        retry_relative_disp_tests,
         retry_max_iters,
         retry_tols,
         retry_broyden_counts,
@@ -1126,8 +1157,8 @@ fn run_transient_nonlinear(
     frame_uniaxial_commit_all: Int,
     mut force_beam_column3d_scratch: Frame3dAssemblyScratch,
     mut runtime_metrics: RuntimeProfileMetrics,
+    mut session: SessionProgress,
 ) raises:
-    var time = Python.import_module("time")
     _write_run_progress_throttled(
         progress_path,
         "running_stage",
@@ -1155,6 +1186,7 @@ fn run_transient_nonlinear(
     var retry_algorithm_tags: List[Int] = []
     var retry_algorithm_modes: List[Int] = []
     var retry_test_modes: List[Int] = []
+    var retry_relative_disp_tests: List[RelativeNormDispIncrOptions] = []
     var retry_max_iters: List[Int] = []
     var retry_tols: List[Float64] = []
     var retry_broyden_counts: List[Int] = []
@@ -1166,6 +1198,7 @@ fn run_transient_nonlinear(
         retry_algorithm_tags,
         retry_algorithm_modes,
         retry_test_modes,
+        retry_relative_disp_tests,
         retry_max_iters,
         retry_tols,
         retry_broyden_counts,
@@ -1507,7 +1540,7 @@ fn run_transient_nonlinear(
     F_zero_length_damp_f.resize(free_count, 0.0)
 
     if do_profile:
-        var t_asm_start = Int(time.perf_counter_ns())
+        var t_asm_start = Int(perf_counter_ns())
         var asm_start_us = (t_asm_start - t0) // 1000
         _append_event(events, events_need_comma, "O", frame_assemble_stiffness, asm_start_us)
     var initial_pattern_scale = 0.0
@@ -1533,7 +1566,7 @@ fn run_transient_nonlinear(
         and len(pattern_element_loads) > 0
     )
     if do_profile:
-        var t_reset_start = Int(time.perf_counter_ns())
+        var t_reset_start = Int(perf_counter_ns())
         _append_event(
             events,
             events_need_comma,
@@ -1544,7 +1577,7 @@ fn run_transient_nonlinear(
     reset_force_beam_column2d_scratch(force_beam_column2d_scratch)
     reset_frame3d_assembly_scratch(force_beam_column3d_scratch)
     if do_profile:
-        var t_reset_end = Int(time.perf_counter_ns())
+        var t_reset_end = Int(perf_counter_ns())
         _append_event(
             events,
             events_need_comma,
@@ -1624,7 +1657,7 @@ fn run_transient_nonlinear(
         runtime_metrics,
     )
     if do_profile:
-        var t_asm_end = Int(time.perf_counter_ns())
+        var t_asm_end = Int(perf_counter_ns())
         var asm_end_us = (t_asm_end - t0) // 1000
         _append_event(events, events_need_comma, "C", frame_assemble_stiffness, asm_end_us)
     if has_modal_damping:
@@ -1702,7 +1735,7 @@ fn run_transient_nonlinear(
     if rayleigh_beta_k_init != 0.0:
         mats.support_k_init = mats.assembler.support_values.copy()
     if do_profile:
-        var t_revert_start = Int(time.perf_counter_ns())
+        var t_revert_start = Int(perf_counter_ns())
         var revert_start_us = (t_revert_start - t0) // 1000
         _append_event(
             events,
@@ -1715,7 +1748,7 @@ fn run_transient_nonlinear(
     fiber_section2d_revert_trial_runtime_all(fiber_section_defs)
     fiber_section3d_revert_trial_runtime_all(fiber_section3d_defs)
     if do_profile:
-        var t_revert_end = Int(time.perf_counter_ns())
+        var t_revert_end = Int(perf_counter_ns())
         var revert_end_us = (t_revert_end - t0) // 1000
         _append_event(
             events,
@@ -1957,8 +1990,25 @@ fn run_transient_nonlinear(
                 filename,
             )
 
+    var force_basic_q_base = List[Float64]()
+    var uniaxial_states_base = List[UniMaterialState]()
+    var F_zero_length_damp = List[Float64]()
+    var mpc_force_work = List[Float64]()
+    var predictor_v = List[Float64]()
+    var predictor_a = List[Float64]()
     var t = analysis.start_time
-    for step in range(steps):
+    var krylov_history = _KrylovHistory()
+    var krylov_normal_matrix_flat: List[Float64] = []
+    var krylov_normal_rhs: List[Float64] = []
+    var krylov_coeffs: List[Float64] = []
+    var krylov_factor_work: List[Float64] = []
+    var krylov_rhs_work: List[Float64] = []
+    var krylov_qr_columns: List[List[Float64]] = []
+    var krylov_qr_rhs: List[Float64] = []
+    var krylov_base_direction: List[Float64] = []
+    var step_limit = steps
+    var step = 0
+    while step < step_limit:
         _write_run_progress_throttled(
             progress_path,
             "running_step",
@@ -1970,13 +2020,13 @@ fn run_transient_nonlinear(
             progress_last_ns,
         )
         if do_profile:
-            var t_step_start = Int(time.perf_counter_ns())
+            var t_step_start = Int(perf_counter_ns())
             var step_start_us = (t_step_start - t0) // 1000
             _append_event(events, events_need_comma, "O", frame_transient_step, step_start_us)
             _append_event(events, events_need_comma, "O", frame_nonlinear_step, step_start_us)
         if has_transformation_mpc:
             if do_profile:
-                var t_constraints_start = Int(time.perf_counter_ns())
+                var t_constraints_start = Int(perf_counter_ns())
                 var constraints_start_us = (t_constraints_start - t0) // 1000
                 _append_event(
                     events,
@@ -2012,7 +2062,7 @@ fn run_transient_nonlinear(
                 len(mats.supports.dofs) > 0,
             )
             if do_profile:
-                var t_constraints_end = Int(time.perf_counter_ns())
+                var t_constraints_end = Int(perf_counter_ns())
                 var constraints_end_us = (t_constraints_end - t0) // 1000
                 _append_event(
                     events,
@@ -2031,7 +2081,7 @@ fn run_transient_nonlinear(
         _scatter_free_vector_to_full(free, u_f, u)
         if has_transformation_mpc:
             if do_profile:
-                var t_constraints_start = Int(time.perf_counter_ns())
+                var t_constraints_start = Int(perf_counter_ns())
                 var constraints_start_us = (t_constraints_start - t0) // 1000
                 _append_event(
                     events,
@@ -2049,7 +2099,7 @@ fn run_transient_nonlinear(
                 mpc_coeff_pool,
             )
             if do_profile:
-                var t_constraints_end = Int(time.perf_counter_ns())
+                var t_constraints_end = Int(perf_counter_ns())
                 var constraints_end_us = (t_constraints_end - t0) // 1000
                 _append_event(
                     events,
@@ -2059,9 +2109,11 @@ fn run_transient_nonlinear(
                     constraints_end_us,
                 )
         copy_float64_contiguous(u_step_base_f, u_f, free_count)
-        var force_basic_q_base = force_basic_q.copy()
-        var uniaxial_states_base = uniaxial_states.copy()
+        if retry_attempt_count > 1 or session.enabled:
+            _copy_nonlinear_vector(force_basic_q_base, force_basic_q)
+            _copy_uniaxial_states(uniaxial_states_base, uniaxial_states)
 
+        var committed_time = t
         if incremental_newmark:
             t += dt
         else:
@@ -2081,22 +2133,11 @@ fn run_transient_nonlinear(
             )
         if pattern_type_tag == PatternTypeTag.UniformExcitation:
             if has_coupled_elements:
-                copy_float64_contiguous(
-                    F_ext_step, build_active_nodal_load(F_const, F_pattern, 1.0), len(F_ext_step)
-                )
+                _update_active_nodal_load[True](F_const, F_pattern, 1.0, F_ext_step)
             else:
                 copy_float64_contiguous(F_ext_step, F_const, len(F_ext_step))
-            active_element_load_state = build_active_element_load_state(
-                const_element_loads,
-                pattern_element_loads,
-                0.0,
-                typed_elements,
-                elem_id_to_index,
-                ndm,
-                ndf,
-            )
             if do_profile:
-                var t_ts_start = Int(time.perf_counter_ns())
+                var t_ts_start = Int(perf_counter_ns())
                 var ts_start_us = (t_ts_start - t0) // 1000
                 _append_event(
                     events,
@@ -2120,7 +2161,7 @@ fn run_transient_nonlinear(
                 F_ext_step,
             )
             if do_profile:
-                var t_ts_end = Int(time.perf_counter_ns())
+                var t_ts_end = Int(perf_counter_ns())
                 var ts_end_us = (t_ts_end - t0) // 1000
                 _append_event(
                     events,
@@ -2132,7 +2173,7 @@ fn run_transient_nonlinear(
         else:
             if ts_index >= 0:
                 if do_profile:
-                    var t_ts_start = Int(time.perf_counter_ns())
+                    var t_ts_start = Int(perf_counter_ns())
                     var ts_start_us = (t_ts_start - t0) // 1000
                     _append_event(
                         events,
@@ -2148,7 +2189,7 @@ fn run_transient_nonlinear(
                     time_series_times,
                 )
                 if do_profile:
-                    var t_ts_end = Int(time.perf_counter_ns())
+                    var t_ts_end = Int(perf_counter_ns())
                     var ts_end_us = (t_ts_end - t0) // 1000
                     _append_event(
                         events,
@@ -2157,35 +2198,19 @@ fn run_transient_nonlinear(
                         frame_time_series_eval,
                         ts_end_us,
                     )
-                copy_float64_contiguous(
-                    F_ext_step,
-                    build_active_nodal_load(F_const, F_pattern, factor),
-                    len(F_ext_step),
-                )
-                active_element_load_state = build_active_element_load_state(
-                    const_element_loads,
-                    pattern_element_loads,
-                    factor,
-                    typed_elements,
-                    elem_id_to_index,
-                    ndm,
-                    ndf,
-                )
+                _update_active_nodal_load[True](F_const, F_pattern, factor, F_ext_step)
+                if len(pattern_element_loads) > 0:
+                    active_element_load_state = build_active_element_load_state(
+                        const_element_loads,
+                        pattern_element_loads,
+                        factor,
+                        typed_elements,
+                        elem_id_to_index,
+                        ndm,
+                        ndf,
+                    )
             else:
-                copy_float64_contiguous(
-                    F_ext_step,
-                    build_active_nodal_load(F_const, F_pattern, 1.0),
-                    len(F_ext_step),
-                )
-                active_element_load_state = build_active_element_load_state(
-                    const_element_loads,
-                    pattern_element_loads,
-                    1.0,
-                    typed_elements,
-                    elem_id_to_index,
-                    ndm,
-                    ndf,
-                )
+                _update_active_nodal_load[True](F_const, F_pattern, 1.0, F_ext_step)
         if refresh_step_element_load_cache:
             invalidate_force_beam_column2d_load_cache(force_beam_column2d_scratch)
             invalidate_frame3d_assembly_load_cache(force_beam_column3d_scratch)
@@ -2219,8 +2244,8 @@ fn run_transient_nonlinear(
                         mpc_dof_pool,
                         mpc_coeff_pool,
                     )
-                force_basic_q = force_basic_q_base.copy()
-                uniaxial_states = uniaxial_states_base.copy()
+                _copy_nonlinear_vector(force_basic_q, force_basic_q_base)
+                _copy_uniaxial_states(uniaxial_states, uniaxial_states_base)
                 fiber_section2d_revert_trial_runtime_all(fiber_section_defs)
                 fiber_section3d_revert_trial_runtime_all(fiber_section3d_defs)
                 attempt_algorithm_tag = retry_algorithm_tags[attempt]
@@ -2233,6 +2258,8 @@ fn run_transient_nonlinear(
                 attempt_krylov_max_dim = default_krylov_max_dim(retry_krylov_max_dims[attempt])
                 reaction_internal_current = False
 
+            var relative_disp_test = retry_relative_disp_tests[attempt]
+            var first_disp_norm = 0.0
             var tangent_initialized = False
             # Set when the previous iteration's updated residual already assembled
             # the tangent and internal force at the current trial state.
@@ -2243,15 +2270,7 @@ fn run_transient_nonlinear(
             var broyden_history_z: List[List[Float64]] = []
             var broyden_prev_residual: List[Float64] = []
             var has_broyden_prev_residual = False
-            var krylov_history_v: List[List[Float64]] = []
-            var krylov_history_av: List[List[Float64]] = []
-            var krylov_normal_matrix_flat: List[Float64] = []
-            var krylov_normal_rhs: List[Float64] = []
-            var krylov_coeffs: List[Float64] = []
-            var krylov_factor_work: List[Float64] = []
-            var krylov_rhs_work: List[Float64] = []
-            var krylov_qr_columns: List[List[Float64]] = []
-            var krylov_qr_rhs: List[Float64] = []
+            krylov_history.reset()
             if incremental_newmark:
                 for i in range(free_count):
                     a_trial[i] = -a3 * a_n[i] - a2 * v_n[i]
@@ -2263,12 +2282,10 @@ fn run_transient_nonlinear(
                 var use_imposed_predictor = (
                     iteration == 0 and use_penalty and len(mats.supports.dofs) > 0
                 )
-                var predictor_v: List[Float64] = []
-                var predictor_a: List[Float64] = []
                 if runtime_metrics.enabled:
                     runtime_metrics.global_nonlinear_iterations += 1
                 if do_profile:
-                    var t_iter_start = Int(time.perf_counter_ns())
+                    var t_iter_start = Int(perf_counter_ns())
                     var iter_start_us = (t_iter_start - t0) // 1000
                     _append_event(
                         events,
@@ -2284,8 +2301,8 @@ fn run_transient_nonlinear(
                 if use_imposed_predictor:
                     # Newmark applies the domain load after setting its predictor.
                     # The first correction restores Newmark kinematics at penalty DOFs.
-                    predictor_v = v_trial.copy()
-                    predictor_a = a_trial.copy()
+                    _copy_nonlinear_vector(predictor_v, v_trial)
+                    _copy_nonlinear_vector(predictor_a, a_trial)
                     for i in range(len(mats.supports.dofs)):
                         var eq = free_index[mats.supports.dofs[i]]
                         if mats.supports.velocities[i] >= 0:
@@ -2305,7 +2322,7 @@ fn run_transient_nonlinear(
                             len(mats.supports.dofs) > 0,
                         )
                 if do_profile:
-                    var t_asm_iter_start = Int(time.perf_counter_ns())
+                    var t_asm_iter_start = Int(perf_counter_ns())
                     var asm_start_us = (t_asm_iter_start - t0) // 1000
                     _append_event(
                         events,
@@ -2391,7 +2408,7 @@ fn run_transient_nonlinear(
                         dt,
                     )
                 if do_profile:
-                    var t_asm_iter_end = Int(time.perf_counter_ns())
+                    var t_asm_iter_end = Int(perf_counter_ns())
                     var asm_end_us = (t_asm_iter_end - t0) // 1000
                     _append_event(
                         events,
@@ -2414,7 +2431,7 @@ fn run_transient_nonlinear(
                         )
                     elif attempt_algorithm_tag == AnalysisAlgorithmTag.KrylovNewton:
                         need_tangent_matrix = (
-                            not tangent_initialized or len(krylov_history_v) > krylov_max_dim
+                            not tangent_initialized or len(krylov_history.updates) > krylov_max_dim
                         )
                     else:
                         need_tangent_matrix = True
@@ -2426,11 +2443,10 @@ fn run_transient_nonlinear(
                     need_tangent_matrix
                     and attempt_algorithm_tag == AnalysisAlgorithmTag.KrylovNewton
                 ):
-                    krylov_history_v = []
-                    krylov_history_av = []
+                    krylov_history.reset()
                 if has_transformation_mpc:
                     if do_profile:
-                        var t_constraints_start = Int(time.perf_counter_ns())
+                        var t_constraints_start = Int(perf_counter_ns())
                         var constraints_start_us = (t_constraints_start - t0) // 1000
                         _append_event(
                             events,
@@ -2439,11 +2455,15 @@ fn run_transient_nonlinear(
                             frame_constraints,
                             constraints_start_us,
                         )
-                    F_int = _collapse_vector_by_mpc(
-                        F_int, mpc_row_offsets, mpc_dof_pool, mpc_coeff_pool
+                    _collapse_vector_by_mpc_reusing(
+                        F_int,
+                        mpc_row_offsets,
+                        mpc_dof_pool,
+                        mpc_coeff_pool,
+                        mpc_force_work,
                     )
                     if do_profile:
-                        var t_constraints_end = Int(time.perf_counter_ns())
+                        var t_constraints_end = Int(perf_counter_ns())
                         var constraints_end_us = (t_constraints_end - t0) // 1000
                         _append_event(
                             events,
@@ -2509,7 +2529,6 @@ fn run_transient_nonlinear(
                         k_eff_factored = False
 
                 if has_zero_length_dampers:
-                    var F_zero_length_damp: List[Float64] = []
                     F_zero_length_damp.resize(total_dofs, 0.0)
                     swap(mats.assembler.values, mats.k_zero_length_damp)
                     assemble_zero_length_damping_secstif_sparse(
@@ -2537,11 +2556,12 @@ fn run_transient_nonlinear(
                     )
                     swap(mats.assembler.values, mats.k_zero_length_damp)
                     if has_transformation_mpc:
-                        F_zero_length_damp = _collapse_vector_by_mpc(
+                        _collapse_vector_by_mpc_reusing(
                             F_zero_length_damp,
                             mpc_row_offsets,
                             mpc_dof_pool,
                             mpc_coeff_pool,
+                            mpc_force_work,
                         )
                     for i in range(free_count):
                         F_zero_length_damp_f[i] = F_zero_length_damp[free[i]]
@@ -2561,13 +2581,13 @@ fn run_transient_nonlinear(
                     R_f,
                 )
                 if use_imposed_predictor:
-                    v_trial = predictor_v^
-                    a_trial = predictor_a^
+                    swap(v_trial, predictor_v)
+                    swap(a_trial, predictor_a)
                 if attempt_test_mode == 2:
                     var residual_norm = sqrt(sum_sq_float64_contiguous(R_f, free_count))
                     if residual_norm <= attempt_tol:
                         if do_profile and not iter_closed:
-                            var t_iter_end = Int(time.perf_counter_ns())
+                            var t_iter_end = Int(perf_counter_ns())
                             var iter_end_us = (t_iter_end - t0) // 1000
                             _append_event(
                                 events,
@@ -2590,7 +2610,7 @@ fn run_transient_nonlinear(
                 )
                 if direct_newton_solve:
                     if do_profile:
-                        var t_solve_start = Int(time.perf_counter_ns())
+                        var t_solve_start = Int(perf_counter_ns())
                         var solve_start_us = (t_solve_start - t0) // 1000
                         _append_event(
                             events,
@@ -2614,7 +2634,7 @@ fn run_transient_nonlinear(
                         R_step[i] = R_f[i]
                     solve(backend, R_step, du_f)
                     if do_profile:
-                        var t_solve_end = Int(time.perf_counter_ns())
+                        var t_solve_end = Int(perf_counter_ns())
                         var solve_end_us = (t_solve_end - t0) // 1000
                         _append_event(
                             events,
@@ -2633,7 +2653,7 @@ fn run_transient_nonlinear(
                 else:
                     var fac_start_us = 0
                     if do_profile:
-                        var t_fac_start = Int(time.perf_counter_ns())
+                        var t_fac_start = Int(perf_counter_ns())
                         fac_start_us = (t_fac_start - t0) // 1000
                     var did_factor = effective_matrix_changed or not k_eff_factored
                     if did_factor:
@@ -2642,7 +2662,7 @@ fn run_transient_nonlinear(
                         k_eff_initialized = True
                     if did_factor:
                         if do_profile:
-                            var t_fac_end = Int(time.perf_counter_ns())
+                            var t_fac_end = Int(perf_counter_ns())
                             var fac_end_us = (t_fac_end - t0) // 1000
                             _append_event(
                                 events,
@@ -2662,7 +2682,7 @@ fn run_transient_nonlinear(
                     for i in range(free_count):
                         lu_rhs[i] = R_f[i]
                     if do_profile:
-                        var t_solve_start = Int(time.perf_counter_ns())
+                        var t_solve_start = Int(perf_counter_ns())
                         var solve_start_us = (t_solve_start - t0) // 1000
                         _append_event(
                             events,
@@ -2673,7 +2693,7 @@ fn run_transient_nonlinear(
                         )
                     solve(backend, lu_rhs, du_f)
                     if do_profile:
-                        var t_solve_end = Int(time.perf_counter_ns())
+                        var t_solve_end = Int(perf_counter_ns())
                         var solve_end_us = (t_solve_end - t0) // 1000
                         _append_event(
                             events,
@@ -2685,22 +2705,21 @@ fn run_transient_nonlinear(
 
                 var max_diff = 0.0
                 var max_u = 0.0
-                var krylov_base_direction: List[Float64] = []
                 if attempt_algorithm_tag == AnalysisAlgorithmTag.KrylovNewton:
-                    krylov_base_direction = copy_krylov_vector(du_f, free_count)
+                    _copy_nonlinear_vector(krylov_base_direction, du_f, free_count)
                     if has_coupled_elements:
                         krylov_apply_qr_acceleration(
                             du_f,
-                            krylov_history_v,
-                            krylov_history_av,
+                            krylov_history.updates,
+                            krylov_history.directions,
                             krylov_qr_columns,
                             krylov_qr_rhs,
                         )
                     else:
                         _ = krylov_apply_acceleration(
                             du_f,
-                            krylov_history_v,
-                            krylov_history_av,
+                            krylov_history.updates,
+                            krylov_history.directions,
                             free_count,
                             krylov_normal_matrix_flat,
                             krylov_normal_rhs,
@@ -2761,7 +2780,7 @@ fn run_transient_nonlinear(
                 _scatter_free_vector_to_full(free, u_f, u)
                 if has_transformation_mpc:
                     if do_profile:
-                        var t_constraints_start = Int(time.perf_counter_ns())
+                        var t_constraints_start = Int(perf_counter_ns())
                         var constraints_start_us = (t_constraints_start - t0) // 1000
                         _append_event(
                             events,
@@ -2779,7 +2798,7 @@ fn run_transient_nonlinear(
                         mpc_coeff_pool,
                     )
                     if do_profile:
-                        var t_constraints_end = Int(time.perf_counter_ns())
+                        var t_constraints_end = Int(perf_counter_ns())
                         var constraints_end_us = (t_constraints_end - t0) // 1000
                         _append_event(
                             events,
@@ -2806,8 +2825,21 @@ fn run_transient_nonlinear(
                 if attempt_algorithm_tag == AnalysisAlgorithmTag.Broyden:
                     broyden_prev_residual = _copy_vector(R_f, free_count)
                     has_broyden_prev_residual = True
+                var relative_disp_mode = (
+                    attempt_test_mode == NonlinearTestTypeTag.RelativeNormDispIncr
+                )
+                var probe_norm = 0.0
+                var relative_probe_passed = (
+                    line_search
+                    and relative_disp_mode
+                    and relative_disp_test.accepts(
+                        relative_disp_test.norm(du_f, free_count), probe_norm, 1, 10, attempt_tol
+                    )
+                )
                 if (
-                    line_search and (attempt_test_mode != 1 or disp_incr_norm > attempt_tol)
+                    line_search
+                    and not relative_probe_passed
+                    and (attempt_test_mode != 1 or disp_incr_norm > attempt_tol)
                 ) or use_updated_energy:
                     var line_search_tol = _default_line_search_tol(attempt_line_search_eta)
                     var s0 = -dot_float64_contiguous(du_f, R_f, free_count)
@@ -2905,6 +2937,8 @@ fn run_transient_nonlinear(
                             asm_dof_map12,
                             asm_u_elem6,
                             F_int,
+                            F_zero_length_damp,
+                            mpc_force_work,
                             runtime_metrics,
                         )
                         assembled_at_trial = reuse_updated_assembly
@@ -3028,6 +3062,8 @@ fn run_transient_nonlinear(
                                 asm_dof_map12,
                                 asm_u_elem6,
                                 F_int,
+                                F_zero_length_damp,
+                                mpc_force_work,
                                 runtime_metrics,
                             )
                             s = dot_float64_contiguous(du_f, R_f, free_count)
@@ -3043,19 +3079,26 @@ fn run_transient_nonlinear(
                 if attempt_algorithm_tag == AnalysisAlgorithmTag.Broyden:
                     broyden_history_s.append(_copy_vector(du_f, free_count))
                 elif attempt_algorithm_tag == AnalysisAlgorithmTag.KrylovNewton:
-                    krylov_push_iteration_state(
-                        krylov_base_direction,
-                        du_f,
-                        free_count,
-                        krylov_history_v,
-                        krylov_history_av,
-                    )
+                    krylov_history.push(krylov_base_direction, du_f, free_count)
                 reaction_internal_current = False
 
-                if attempt_test_mode == 1:
-                    if disp_incr_norm <= attempt_tol:
+                if attempt_test_mode == 1 or relative_disp_mode:
+                    var passes_disp_test = disp_incr_norm <= attempt_tol
+                    if relative_disp_mode:
+                        ref correction = (
+                            krylov_base_direction if attempt_algorithm_tag
+                            == AnalysisAlgorithmTag.KrylovNewton else du_f
+                        )
+                        passes_disp_test = relative_disp_test.accepts(
+                            relative_disp_test.norm(correction, free_count),
+                            first_disp_norm,
+                            iteration + 1,
+                            attempt_max_iters,
+                            attempt_tol,
+                        )
+                    if passes_disp_test:
                         if do_profile and not iter_closed:
-                            var t_iter_end = Int(time.perf_counter_ns())
+                            var t_iter_end = Int(perf_counter_ns())
                             var iter_end_us = (t_iter_end - t0) // 1000
                             _append_event(
                                 events,
@@ -3069,7 +3112,7 @@ fn run_transient_nonlinear(
                 elif attempt_test_mode == 3:
                     if energy_incr <= attempt_tol:
                         if do_profile and not iter_closed:
-                            var t_iter_end = Int(time.perf_counter_ns())
+                            var t_iter_end = Int(perf_counter_ns())
                             var iter_end_us = (t_iter_end - t0) // 1000
                             _append_event(
                                 events,
@@ -3083,7 +3126,7 @@ fn run_transient_nonlinear(
                 elif attempt_test_mode == 0:
                     if max_diff <= attempt_tol:
                         if do_profile and not iter_closed:
-                            var t_iter_end = Int(time.perf_counter_ns())
+                            var t_iter_end = Int(perf_counter_ns())
                             var iter_end_us = (t_iter_end - t0) // 1000
                             _append_event(
                                 events,
@@ -3095,13 +3138,27 @@ fn run_transient_nonlinear(
                         converged = True
                         break
                 if do_profile and not iter_closed:
-                    var t_iter_end = Int(time.perf_counter_ns())
+                    var t_iter_end = Int(perf_counter_ns())
                     var iter_end_us = (t_iter_end - t0) // 1000
                     _append_event(events, events_need_comma, "C", frame_nonlinear_iter, iter_end_us)
             if converged:
                 break
 
         if not converged:
+            if session.enabled:
+                _scatter_free_vector_to_full(free, u_step_base_f, u)
+                if has_transformation_mpc:
+                    _enforce_mpc_values(
+                        u, constrained, mpc_slave_dof, mpc_row_offsets, mpc_dof_pool, mpc_coeff_pool
+                    )
+                _copy_nonlinear_vector(force_basic_q, force_basic_q_base)
+                _copy_uniaxial_states(uniaxial_states, uniaxial_states_base)
+                shell_cache.shell.revert_trial()
+                force_beam_column3d_scratch.revert_corotational()
+                fiber_section2d_revert_trial_runtime_all(fiber_section_defs)
+                fiber_section3d_revert_trial_runtime_all(fiber_section3d_defs)
+                session.fail(step, committed_time)
+                break
             abort(
                 "transient_nonlinear did not converge at step "
                 + String(step + 1)
@@ -3120,7 +3177,7 @@ fn run_transient_nonlinear(
         _scatter_free_vector_to_full(free, a_f, a)
         if has_transformation_mpc:
             if do_profile:
-                var t_constraints_start = Int(time.perf_counter_ns())
+                var t_constraints_start = Int(perf_counter_ns())
                 var constraints_start_us = (t_constraints_start - t0) // 1000
                 _append_event(
                     events,
@@ -3156,7 +3213,7 @@ fn run_transient_nonlinear(
                 len(mats.supports.dofs) > 0,
             )
             if do_profile:
-                var t_constraints_end = Int(time.perf_counter_ns())
+                var t_constraints_end = Int(perf_counter_ns())
                 var constraints_end_us = (t_constraints_end - t0) // 1000
                 _append_event(
                     events,
@@ -3173,7 +3230,7 @@ fn run_transient_nonlinear(
             or len(shell_cache.continuum.nonlinear) > 0
         ):
             if do_profile:
-                var t_asm_post_start = Int(time.perf_counter_ns())
+                var t_asm_post_start = Int(perf_counter_ns())
                 var asm_start_us = (t_asm_post_start - t0) // 1000
                 _append_event(
                     events,
@@ -3256,7 +3313,7 @@ fn run_transient_nonlinear(
                 dt,
             )
             if do_profile:
-                var t_asm_post_end = Int(time.perf_counter_ns())
+                var t_asm_post_end = Int(perf_counter_ns())
                 var asm_end_us = (t_asm_post_end - t0) // 1000
                 _append_event(
                     events,
@@ -3300,7 +3357,7 @@ fn run_transient_nonlinear(
                         copy_values(mats.k_comm_damp, mats.k_comm)
                 mats.support_k_comm = mats.assembler.support_values.copy()
         if do_profile:
-            var t_commit_start = Int(time.perf_counter_ns())
+            var t_commit_start = Int(perf_counter_ns())
             var commit_start_us = (t_commit_start - t0) // 1000
             _append_event(
                 events,
@@ -3315,7 +3372,7 @@ fn run_transient_nonlinear(
         fiber_section2d_commit_runtime_all(fiber_section_defs)
         fiber_section3d_commit_runtime_all(fiber_section3d_defs)
         if do_profile:
-            var t_commit_end = Int(time.perf_counter_ns())
+            var t_commit_end = Int(perf_counter_ns())
             var commit_end_us = (t_commit_end - t0) // 1000
             _append_event(
                 events,
@@ -3332,10 +3389,11 @@ fn run_transient_nonlinear(
             force_basic_offsets,
             force_basic_counts,
             force_basic_q,
+            force_beam_column2d_scratch.u_local,
         )
 
         if do_profile:
-            var t_rec_start = Int(time.perf_counter_ns())
+            var t_rec_start = Int(perf_counter_ns())
             var rec_start_us = (t_rec_start - t0) // 1000
             _append_event(events, events_need_comma, "O", frame_recorders, rec_start_us)
         var F_int_reaction: List[Float64] = []
@@ -3839,11 +3897,34 @@ fn run_transient_nonlinear(
             elif rec.type_tag != RecorderTypeTag.ModalEigen:
                 abort("unsupported recorder type")
         if do_profile:
-            var t_rec_end = Int(time.perf_counter_ns())
+            var t_rec_end = Int(perf_counter_ns())
             var rec_end_us = (t_rec_end - t0) // 1000
             _append_event(events, events_need_comma, "C", frame_recorders, rec_end_us)
             _append_event(events, events_need_comma, "C", frame_nonlinear_step, rec_end_us)
             _append_event(events, events_need_comma, "C", frame_transient_step, rec_end_us)
+        step += 1
+        if session.enabled and step == step_limit:
+            var more_steps = session.continue_steps(
+                step,
+                t,
+                transient_pattern_scale(
+                    pattern_type_tag,
+                    ts_index,
+                    t,
+                    time_series,
+                    time_series_values,
+                    time_series_times,
+                ),
+                u,
+                v,
+                a,
+                uniaxial_states,
+                force_basic_q,
+                fiber_section_defs,
+                fiber_section3d_defs,
+                shell_cache,
+            )
+            step_limit += more_steps
     clear(backend)
     _flush_envelope_outputs(
         envelope_files,

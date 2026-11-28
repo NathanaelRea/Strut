@@ -1,6 +1,7 @@
 from elements.beam_contact2d import BeamContact2D, ContactDofs, ContactVector, Point2d
 from tag_types import ElementTypeTag
 from solver.assembly.continuum_cache import ContinuumAssemblyCache
+from solver.assembly.parallel_elements import ParallelElementWork
 from collections import List
 from os import abort
 from materials.initial_state_analysis import InitialStateAnalysisPoint
@@ -209,6 +210,7 @@ struct QuadAssemblyEntry(Copyable, Movable):
 struct SurfaceAssemblyCache(Movable):
     var shell: ShellAssemblyCache
     var continuum: ContinuumAssemblyCache
+    var quad_work: ParallelElementWork
     var quads: List[QuadAssemblyEntry]
     var contacts: List[BeamContact2D]
     var contact_index: List[Int]
@@ -224,6 +226,7 @@ struct SurfaceAssemblyCache(Movable):
     fn __init__(out self):
         self.shell = ShellAssemblyCache()
         self.continuum = ContinuumAssemblyCache()
+        self.quad_work = ParallelElementWork()
         self.quads = []
         self.contacts = []
         self.contact_index = []
@@ -321,6 +324,27 @@ struct SurfaceAssemblyCache(Movable):
                     self.pdmy_definitions,
                 )
             )
+
+        var max_dofs = 0
+        for e in indices:
+            max_dofs = max(max_dofs, elements[e].dof_count)
+        # Bound a batch of 32-DOF u-p matrices to about 2 MB.
+        self.quad_work = ParallelElementWork(
+            min(256, len(indices)), max_dofs * max_dofs, max_dofs, 0, 512
+        )
+        self.quad_work.plan.cumulative.reserve(len(indices) + 1)
+        for e in indices:
+            ref elem = elements[e]
+            var work = elem.dof_count * elem.dof_count // 4
+            if self.quad_index[e] >= 0:
+                ref quad = self.quads[self.quad_index[e]]
+                work += 256 * (len(quad.soil) + len(quad.pressure_dependent_soil))
+            elif self.up_quad_index[e] >= 0:
+                ref quad = self.up_quads[self.up_quad_index[e]]
+                work += 256 * (len(quad.pimy) + len(quad.pdmy))
+            elif self.up_brick_index[e] >= 0:
+                work += 256 * len(self.up_bricks[self.up_brick_index[e]].pdmy)
+            self.quad_work.plan.append(work)
 
     fn evaluate_contact(
         mut self, element: Int, u: List[Float64], form_tangent: Bool, mut tangent: List[Float64]
