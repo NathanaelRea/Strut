@@ -1,4 +1,5 @@
 from algorithm import parallelize
+from os.atomic import Atomic, Consistency
 from collections import List
 from os import abort
 from time import perf_counter_ns
@@ -15,9 +16,9 @@ from solver.assembly.frame3d_scratch import (
     FRAME3D_BATCH,
     FRAME3D_DOFS,
     FRAME3D_MATRIX_SIZE,
-    FRAME3D_MIN_PER_WORKER,
     Frame3dAssemblyScratch,
 )
+from solver.assembly.parallel_elements import element_work_boundary
 from solver.assembly.stiffness_internal_shared import (
     _beam_integration_name_from_tag,
     _geom_transf_name_from_tag,
@@ -328,9 +329,9 @@ fn _frame3d_compute_batch(
 ):
     """Evaluate elements [start, start + count) into scratch.matrices/forces.
 
-    Each worker takes one contiguous slice and uses only its own kernel scratch
-    and element buffers. Elements own disjoint fiber instances and basic-force
-    slots, so the shared state lists are written at disjoint positions.
+    Large batches use contiguous ranges. Small batches assign elements as
+    workers finish. Each worker uses its own scratch, and each element owns
+    its fiber instances, basic-force slots, and output buffers.
     """
     var worker_scratch = scratch.workers.unsafe_ptr()
     var worker_u = scratch.worker_u.unsafe_ptr()
@@ -338,60 +339,91 @@ fn _frame3d_compute_batch(
     var worker_f = scratch.worker_f.unsafe_ptr()
     var matrices = scratch.matrices.unsafe_ptr()
     var forces = scratch.forces.unsafe_ptr()
+    var cumulative = scratch.plan.cumulative.unsafe_ptr()
+
+    @parameter
+    fn evaluate(index: Int, worker: Int):
+        var local_idx = index - start
+        _frame3d_element_tangent_and_force(
+            ctx.indices[index],
+            ctx.elements[],
+            ctx.node_x[],
+            ctx.node_y[],
+            ctx.node_z[],
+            ctx.elem_dof_offsets[],
+            ctx.elem_dof_pool[],
+            ctx.elem_node_offsets[],
+            ctx.elem_node_pool[],
+            ctx.elem_type_tags[],
+            ctx.elem_geom_tags[],
+            ctx.elem_section_ids[],
+            ctx.elem_integration_tags[],
+            ctx.elem_num_int_pts[],
+            ctx.element_loads[],
+            ctx.elem_load_offsets[],
+            ctx.elem_load_pool[],
+            ctx.load_scale,
+            ctx.sections_by_id[],
+            ctx.u[],
+            ctx.uniaxial_defs[],
+            ctx.uniaxial_states[],
+            ctx.elem_uniaxial_offsets[],
+            ctx.elem_uniaxial_counts[],
+            ctx.elem_uniaxial_state_ids[],
+            ctx.force_basic_offsets[],
+            ctx.force_basic_counts[],
+            ctx.force_basic_q[],
+            ctx.fiber_section3d_defs[],
+            ctx.fiber_section3d_cells[],
+            ctx.fiber_section3d_index_by_id[],
+            worker_scratch[worker],
+            worker_u[worker],
+            worker_k[worker],
+            worker_f[worker],
+        )
+        var matrix = matrices + local_idx * FRAME3D_MATRIX_SIZE
+        for row in range(FRAME3D_DOFS):
+            var source = worker_k[worker][row].unsafe_ptr()
+            var destination = matrix + row * FRAME3D_DOFS
+            for col in range(FRAME3D_DOFS):
+                destination[col] = source[col]
+        var force = forces + local_idx * FRAME3D_DOFS
+        var force_source = worker_f[worker].unsafe_ptr()
+        for a in range(FRAME3D_DOFS):
+            force[a] = force_source[a]
 
     @parameter
     fn run(worker: Int):
-        var end = (worker + 1) * count // workers
-        for local_idx in range(worker * count // workers, end):
-            _frame3d_element_tangent_and_force(
-                ctx.indices[start + local_idx],
-                ctx.elements[],
-                ctx.node_x[],
-                ctx.node_y[],
-                ctx.node_z[],
-                ctx.elem_dof_offsets[],
-                ctx.elem_dof_pool[],
-                ctx.elem_node_offsets[],
-                ctx.elem_node_pool[],
-                ctx.elem_type_tags[],
-                ctx.elem_geom_tags[],
-                ctx.elem_section_ids[],
-                ctx.elem_integration_tags[],
-                ctx.elem_num_int_pts[],
-                ctx.element_loads[],
-                ctx.elem_load_offsets[],
-                ctx.elem_load_pool[],
-                ctx.load_scale,
-                ctx.sections_by_id[],
-                ctx.u[],
-                ctx.uniaxial_defs[],
-                ctx.uniaxial_states[],
-                ctx.elem_uniaxial_offsets[],
-                ctx.elem_uniaxial_counts[],
-                ctx.elem_uniaxial_state_ids[],
-                ctx.force_basic_offsets[],
-                ctx.force_basic_counts[],
-                ctx.force_basic_q[],
-                ctx.fiber_section3d_defs[],
-                ctx.fiber_section3d_cells[],
-                ctx.fiber_section3d_index_by_id[],
-                worker_scratch[worker],
-                worker_u[worker],
-                worker_k[worker],
-                worker_f[worker],
-            )
-            var matrix = matrices + local_idx * FRAME3D_MATRIX_SIZE
-            for row in range(FRAME3D_DOFS):
-                var source = worker_k[worker][row].unsafe_ptr()
-                var destination = matrix + row * FRAME3D_DOFS
-                for col in range(FRAME3D_DOFS):
-                    destination[col] = source[col]
-            var force = forces + local_idx * FRAME3D_DOFS
-            var force_source = worker_f[worker].unsafe_ptr()
-            for a in range(FRAME3D_DOFS):
-                force[a] = force_source[a]
+        var first = element_work_boundary(cumulative, start, count, worker, workers)
+        var end = element_work_boundary(cumulative, start, count, worker + 1, workers)
+        for index in range(first, end):
+            evaluate(index, worker)
 
-    parallelize[run](workers, workers)
+    if workers == 1:
+        run(0)
+    elif count <= 8 * workers:
+        # With only a few elements per worker, differences in local iteration
+        # counts can be larger than differences in the fiber-count estimates.
+        # Allow workers to take another element as soon as their current one
+        # finishes. The queue assigns indices; scatter still follows source order.
+        var next_index = Int64(start + workers)
+        var cursor = UnsafePointer(to=next_index)
+        var end = start + count
+
+        @parameter
+        fn run_small_batch(worker: Int):
+            var index = start + worker
+            while index < end:
+                evaluate(index, worker)
+                index = Int(
+                    Atomic[DType.int64].fetch_add[ordering = Consistency.MONOTONIC](
+                        cursor, Int64(1)
+                    )
+                )
+
+        parallelize[run_small_batch](workers, workers)
+    else:
+        parallelize[run](workers, workers)
 
 
 fn _assemble_frame3d_native_soa_indices[
@@ -445,17 +477,21 @@ fn _assemble_frame3d_native_soa_indices[
         return
     # Event profiling records one scope per element, which only the serial loop can do.
     var workers = 1
-    if not do_profile:
-        workers = force_beam_column3d_scratch.worker_count(element_count)
+    ref scratch = force_beam_column3d_scratch
+    if not do_profile and element_count > 1:
+        if len(scratch.plan.cumulative) != element_count + 1:
+            scratch.plan.cumulative.resize(1, 0)
+            scratch.plan.cumulative.reserve(element_count + 1)
+            scratch.has_corotational = False
+            for e in frame3d_elem_indices:
+                scratch.has_corotational |= elem_geom_tags[e] == GeomTransfTag.Corotational
+                # The material-state count includes all points of a fiber element.
+                scratch.plan.append(16 + elem_uniaxial_counts[e])
+        if not scratch.has_corotational:
+            workers = scratch.plan.worker_count(0, element_count)
 
     if workers > 1:
-        for e in frame3d_elem_indices:
-            if elem_geom_tags[e] == GeomTransfTag.Corotational:
-                workers = 1
-                break
-
-    if workers > 1:
-        force_beam_column3d_scratch.ensure_workers(workers)
+        scratch.ensure_workers(workers, min(FRAME3D_BATCH, element_count))
         var ctx = _Frame3dComputeContext(
             frame3d_elem_indices.unsafe_ptr(),
             UnsafePointer(to=elements),
@@ -491,7 +527,7 @@ fn _assemble_frame3d_native_soa_indices[
         )
         for start in range(0, element_count, FRAME3D_BATCH):
             var count = min(element_count - start, FRAME3D_BATCH)
-            var batch_workers = max(1, min(workers, count // FRAME3D_MIN_PER_WORKER))
+            var batch_workers = scratch.plan.worker_count(start, count)
             var t_batch_start = 0
             if runtime_metrics.enabled:
                 t_batch_start = Int(perf_counter_ns())

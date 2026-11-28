@@ -2,6 +2,7 @@ from algorithm import vectorize
 from collections import List
 from sys import align_of, size_of
 
+from memory import memcpy
 from materials import UniMaterialDef
 from materials.uniaxial.concrete01 import _concrete01_reload
 from materials.uniaxial.core import _abs, _sign
@@ -26,6 +27,11 @@ fn _fiber_copy_float64_range_simd[
     width: Int
 ](mut dst: List[Float64], dst_start: Int, src: List[Float64], src_start: Int, count: Int,):
     if count <= 0:
+        return
+    # Bulk committed/trial copies are disjoint. Keep the short section copies
+    # inlined and use the platform's copy loop for long ranges.
+    if count >= 1024:
+        memcpy(dst.unsafe_ptr() + dst_start, src.unsafe_ptr() + src_start, count)
         return
     if dst_start == 0 and src_start == 0:
         copy_float64_contiguous_simd[width](dst, src, count)

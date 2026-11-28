@@ -10,7 +10,7 @@ from solver.assembly.frame3d_scratch import (
 from solver.assembly.surface_cache import SurfaceAssemblyCache
 from solver.run_case.input_types import ElementLoadInput
 from materials import UniMaterialDef, UniMaterialState
-from python import Python
+from time import perf_counter_ns
 
 from solver.assembly import (
     assemble_global_stiffness_banded_frame2d_soa,
@@ -135,7 +135,6 @@ fn run_static_linear(
     constrained: List[Bool],
     mut runtime_metrics: RuntimeProfileMetrics,
 ) raises:
-    var time = Python.import_module("time")
     var free_count = len(free)
     var asm_dof_map6: List[Int] = []
     var asm_dof_map12: List[Int] = []
@@ -160,7 +159,7 @@ fn run_static_linear(
         ndf,
     )
     if do_profile:
-        var t_reset_start = Int(time.perf_counter_ns())
+        var t_reset_start = Int(perf_counter_ns())
         _append_event(
             events,
             events_need_comma,
@@ -171,7 +170,7 @@ fn run_static_linear(
     reset_force_beam_column2d_scratch(force_beam_column2d_scratch)
     reset_frame3d_assembly_scratch(force_beam_column3d_scratch)
     if do_profile:
-        var t_reset_end = Int(time.perf_counter_ns())
+        var t_reset_end = Int(perf_counter_ns())
         _append_event(
             events,
             events_need_comma,
@@ -180,7 +179,7 @@ fn run_static_linear(
             (t_reset_end - t0) // 1000,
         )
     if do_profile:
-        var t_asm_start = Int(time.perf_counter_ns())
+        var t_asm_start = Int(perf_counter_ns())
         var asm_start_us = (t_asm_start - t0) // 1000
         _append_event(events, events_need_comma, "O", frame_assemble_stiffness, asm_start_us)
     var bw = 0
@@ -418,13 +417,13 @@ fn run_static_linear(
                 F_int_dummy, mpc_row_offsets, mpc_dof_pool, mpc_coeff_pool
             )
     if do_profile:
-        var t_asm_end = Int(time.perf_counter_ns())
+        var t_asm_end = Int(perf_counter_ns())
         var asm_end_us = (t_asm_end - t0) // 1000
         _append_event(events, events_need_comma, "C", frame_assemble_stiffness, asm_end_us)
     var F_f: List[Float64] = []
     F_f.resize(free_count, 0.0)
     if do_profile:
-        var t_kff_start = Int(time.perf_counter_ns())
+        var t_kff_start = Int(perf_counter_ns())
         var kff_start_us = (t_kff_start - t0) // 1000
         _append_event(events, events_need_comma, "O", frame_kff_extract, kff_start_us)
     if use_native_backend_solver or not (use_bandgeneral_banded and use_typed_banded):
@@ -435,11 +434,11 @@ fn run_static_linear(
         for i in range(free_count):
             F_f[i] = F_active[free[i]]
     if do_profile:
-        var t_kff_end = Int(time.perf_counter_ns())
+        var t_kff_end = Int(perf_counter_ns())
         var kff_end_us = (t_kff_end - t0) // 1000
         _append_event(events, events_need_comma, "C", frame_kff_extract, kff_end_us)
     if do_profile:
-        var t_solve_lin_start = Int(time.perf_counter_ns())
+        var t_solve_lin_start = Int(perf_counter_ns())
         var solve_lin_start_us = (t_solve_lin_start - t0) // 1000
         _append_event(events, events_need_comma, "O", frame_solve_linear, solve_lin_start_us)
     var u_f: List[Float64] = []
@@ -458,7 +457,7 @@ fn run_static_linear(
         solve(backend, F_f, u_f)
         clear(backend)
     if do_profile:
-        var t_solve_lin_end = Int(time.perf_counter_ns())
+        var t_solve_lin_end = Int(perf_counter_ns())
         var solve_lin_end_us = (t_solve_lin_end - t0) // 1000
         _append_event(events, events_need_comma, "C", frame_solve_linear, solve_lin_end_us)
     for i in range(free_count):

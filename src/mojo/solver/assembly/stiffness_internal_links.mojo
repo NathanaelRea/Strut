@@ -4,6 +4,7 @@ from math import sqrt
 from os import abort
 
 from elements import link_orientation_matrix
+from elements.link import LinkOrientation
 from elements.catenary_cable import CableResponse, CableVector, catenary_cable_response
 from elements.sfi_mvlem import sfi_mvlem_response
 from elements.mvlem import mvlem_response
@@ -16,6 +17,7 @@ from materials import (
 )
 from solver.assembly.stiffness_internal_shared import (
     _elem_dir,
+    _elem_dof,
     _elem_dof_map,
     _gather_element_u,
 )
@@ -24,11 +26,17 @@ from solver.run_case.input_types import ElementInput, ElementLoadInput, NodeInpu
 from tag_types import UniMaterialTypeTag
 
 
-fn _zero_length_row(dir: Int, ndm: Int, ndf: Int, trans: List[List[Float64]]) -> List[Float64]:
-    var row: List[Float64] = []
-    row.resize(2 * ndf, 0.0)
+alias _LinkVector = InlineArray[Float64, 12]
+alias _LinkMatrix = InlineArray[_LinkVector, 12]
+alias _LinkFlatMatrix = InlineArray[Float64, 12 * 12]
+
+
+fn _zero_length_row(dir: Int, ndm: Int, ndf: Int, trans: LinkOrientation) -> _LinkVector:
+    var row = _LinkVector(fill=0.0)
     if ndm == 1 and ndf == 1:
-        return [-trans[0][0], trans[0][0]]
+        row[0] = -trans[0][0]
+        row[1] = trans[0][0]
+        return row^
     if ndm == 2 and ndf == 2:
         var axis = dir - 1
         row[0] = -trans[axis][0]
@@ -75,13 +83,8 @@ fn _zero_length_row(dir: Int, ndm: Int, ndf: Int, trans: List[List[Float64]]) ->
     return row^
 
 
-fn _two_node_link_tgl(ndm: Int, ndf: Int, trans: List[List[Float64]]) -> List[List[Float64]]:
-    var num_dof = 2 * ndf
-    var tgl: List[List[Float64]] = []
-    for _ in range(num_dof):
-        var row: List[Float64] = []
-        row.resize(num_dof, 0.0)
-        tgl.append(row^)
+fn _two_node_link_tgl(ndm: Int, ndf: Int, trans: LinkOrientation) -> _LinkMatrix:
+    var tgl = _LinkMatrix(fill=_LinkVector(fill=0.0))
     if ndm == 2 and ndf == 2:
         tgl[0][0] = trans[0][0]
         tgl[0][1] = trans[0][1]
@@ -122,14 +125,8 @@ fn _two_node_link_tgl(ndm: Int, ndf: Int, trans: List[List[Float64]]) -> List[Li
     return tgl^
 
 
-fn _two_node_link_tlb(
-    ndm: Int, ndf: Int, elem: ElementInput, length: Float64
-) -> List[List[Float64]]:
-    var tlb: List[List[Float64]] = []
-    for _ in range(elem.dir_count):
-        var row: List[Float64] = []
-        row.resize(elem.dof_count, 0.0)
-        tlb.append(row^)
+fn _two_node_link_tlb(ndm: Int, ndf: Int, elem: ElementInput, length: Float64) -> _LinkMatrix:
+    var tlb = _LinkMatrix(fill=_LinkVector(fill=0.0))
     var half = elem.dof_count // 2
     for i in range(elem.dir_count):
         var dir_id = _elem_dir(elem, i) - 1
@@ -152,9 +149,9 @@ fn _two_node_link_add_pdelta_forces(
     ndf: Int,
     elem: ElementInput,
     length: Float64,
-    ul: List[Float64],
-    q_basic: List[Float64],
-    mut p_local: List[Float64],
+    ul: _LinkVector,
+    q_basic: _LinkVector,
+    mut p_local: _LinkVector,
 ):
     if not elem.has_pdelta or length == 0.0:
         return
@@ -223,8 +220,8 @@ fn _two_node_link_add_pdelta_stiff(
     ndf: Int,
     elem: ElementInput,
     length: Float64,
-    q_basic: List[Float64],
-    mut k_local: List[List[Float64]],
+    q_basic: _LinkVector,
+    mut k_local: _LinkMatrix,
 ):
     if not elem.has_pdelta or length == 0.0:
         return
@@ -298,33 +295,28 @@ fn _two_node_link_add_pdelta_stiff(
 fn _coupled_zero_length_system(
     element: ElementInput,
     ndf: Int,
-    displacement: List[Float64],
+    u: List[Float64],
     material: UniMaterialDef,
     mut state: UniMaterialState,
-) -> Tuple[List[Float64], List[List[Float64]]]:
+) -> Tuple[_LinkVector, _LinkFlatMatrix]:
     var first = _elem_dir(element, 0) - 1
     var second = _elem_dir(element, 1) - 1
-    var dx = displacement[first + ndf] - displacement[first]
-    var dy = displacement[second + ndf] - displacement[second]
+    var dx = u[_elem_dof(element, first + ndf)] - u[_elem_dof(element, first)]
+    var dy = u[_elem_dof(element, second + ndf)] - u[_elem_dof(element, second)]
     var force = evaluate_coupled_zero_length(material, state, dx, dy)
-    var residual: List[Float64] = []
-    residual.resize(element.dof_count, 0.0)
-    var stiffness: List[List[Float64]] = []
-    for _ in range(element.dof_count):
-        var row: List[Float64] = []
-        row.resize(element.dof_count, 0.0)
-        stiffness.append(row^)
-    var directions = [first, second]
+    var residual = _LinkVector(fill=0.0)
+    var stiffness = _LinkFlatMatrix(fill=0.0)
+    var count = element.dof_count
     for axis in range(2):
-        var i = directions[axis]
+        var i = first if axis == 0 else second
         var j = i + ndf
         var component = force[0] if axis == 0 else force[1]
         residual[i] = -component
         residual[j] = component
-        stiffness[i][i] = state.tangent_t
-        stiffness[j][j] = state.tangent_t
-        stiffness[i][j] = -state.tangent_t
-        stiffness[j][i] = -state.tangent_t
+        stiffness[i * count + i] = state.tangent_t
+        stiffness[j * count + j] = state.tangent_t
+        stiffness[i * count + j] = -state.tangent_t
+        stiffness[j * count + i] = -state.tangent_t
     return (residual^, stiffness^)
 
 
@@ -345,24 +337,24 @@ fn _assemble_zero_length_element(
     mut F_int: List[Float64],
 ):
     if elem.type == "CoupledZeroLength":
-        var dof_map = _elem_dof_map(elem)
         var index = elem_uniaxial_state_ids[elem_uniaxial_offsets[e]]
         var system = _coupled_zero_length_system(
             elem,
             ndf,
-            _gather_element_u(dof_map, u),
+            u,
             uniaxial_defs[uniaxial_state_defs[index]],
             uniaxial_states[index],
         )
         ref residual = system[0]
         ref stiffness = system[1]
         for i in range(elem.dof_count):
-            F_int[dof_map[i]] += residual[i]
+            var dof = _elem_dof(elem, i)
+            F_int[dof] += residual[i]
             for j in range(elem.dof_count):
-                K[dof_map[i]][dof_map[j]] += stiffness[i][j]
+                K[dof][_elem_dof(elem, j)] += stiffness[i * elem.dof_count + j]
         return
-    var node1 = nodes[elem.node_index_1]
-    var node2 = nodes[elem.node_index_2]
+    ref node1 = nodes[elem.node_index_1]
+    ref node2 = nodes[elem.node_index_2]
     var trans = link_orientation_matrix(
         ndm,
         node1.x,
@@ -381,8 +373,11 @@ fn _assemble_zero_length_element(
         elem.orient_y_3,
         False,
     )
-    var dof_map = _elem_dof_map(elem)
-    var ug = _gather_element_u(dof_map, u)
+    var dof_map = InlineArray[Int, 12](fill=0)
+    var ug = _LinkVector(fill=0.0)
+    for i in range(elem.dof_count):
+        dof_map[i] = _elem_dof(elem, i)
+        ug[i] = u[dof_map[i]]
     var offset = elem_uniaxial_offsets[e]
     var count = elem_uniaxial_counts[e]
     for m in range(count):
@@ -392,7 +387,7 @@ fn _assemble_zero_length_element(
             strain += row[i] * ug[i]
         var state_index = elem_uniaxial_state_ids[offset + m]
         var def_index = uniaxial_state_defs[state_index]
-        var mat_def = uniaxial_defs[def_index]
+        ref mat_def = uniaxial_defs[def_index]
         ref state = uniaxial_states[state_index]
         uniaxial_set_trial_strain(mat_def, state, strain)
         var force = state.sig_t
@@ -429,24 +424,29 @@ fn _assemble_zero_length_element_native[
     mut F_int: List[Float64],
 ):
     if elem.type == "CoupledZeroLength":
-        var dof_map = _elem_dof_map(elem)
         var index = elem_uniaxial_state_ids[elem_uniaxial_offsets[e]]
         var system = _coupled_zero_length_system(
             elem,
             ndf,
-            _gather_element_u(dof_map, u),
+            u,
             uniaxial_defs[uniaxial_state_defs[index]],
             uniaxial_states[index],
         )
         ref residual = system[0]
+        ref tangent = system[1]
         for i in range(elem.dof_count):
-            F_int[dof_map[i]] += residual[i]
-        backend.add_element_matrix(
-            e, elem_free_pool, elem_free_offsets[e], elem.dof_count, system[1]
+            F_int[_elem_dof(elem, i)] += residual[i]
+        backend.add_element_matrix_borrowed(
+            e,
+            elem_free_pool,
+            elem_free_offsets[e],
+            elem.dof_count,
+            UnsafePointer(to=tangent[0]),
+            len(tangent),
         )
         return
-    var node1 = nodes[elem.node_index_1]
-    var node2 = nodes[elem.node_index_2]
+    ref node1 = nodes[elem.node_index_1]
+    ref node2 = nodes[elem.node_index_2]
     var trans = link_orientation_matrix(
         ndm,
         node1.x,
@@ -465,15 +465,15 @@ fn _assemble_zero_length_element_native[
         elem.orient_y_3,
         False,
     )
-    var dof_map = _elem_dof_map(elem)
-    var ug = _gather_element_u(dof_map, u)
+    var dof_map = InlineArray[Int, 12](fill=0)
+    var ug = _LinkVector(fill=0.0)
+    for i in range(elem.dof_count):
+        dof_map[i] = _elem_dof(elem, i)
+        ug[i] = u[dof_map[i]]
     var offset = elem_uniaxial_offsets[e]
     var count = elem_uniaxial_counts[e]
-    var k_global: List[List[Float64]] = []
-    for _ in range(elem.dof_count):
-        var row: List[Float64] = []
-        row.resize(elem.dof_count, 0.0)
-        k_global.append(row^)
+    var assemble_tangent = backend.accepts_element_matrices()
+    var k_global = _LinkFlatMatrix(fill=0.0)
     for m in range(count):
         var row = _zero_length_row(_elem_dir(elem, m), ndm, ndf, trans)
         var strain = 0.0
@@ -481,7 +481,7 @@ fn _assemble_zero_length_element_native[
             strain += row[i] * ug[i]
         var state_index = elem_uniaxial_state_ids[offset + m]
         var def_index = uniaxial_state_defs[state_index]
-        var mat_def = uniaxial_defs[def_index]
+        ref mat_def = uniaxial_defs[def_index]
         ref state = uniaxial_states[state_index]
         uniaxial_set_trial_strain(mat_def, state, strain)
         var force = state.sig_t
@@ -491,17 +491,21 @@ fn _assemble_zero_length_element_native[
             if ri == 0.0:
                 continue
             F_int[dof_map[i]] += ri * force
+            if not assemble_tangent:
+                continue
             for j in range(elem.dof_count):
                 var rj = row[j]
                 if rj != 0.0:
-                    k_global[i][j] += ri * tangent * rj
-    backend.add_element_matrix(
-        e,
-        elem_free_pool,
-        elem_free_offsets[e],
-        elem.dof_count,
-        k_global,
-    )
+                    k_global[i * elem.dof_count + j] += ri * tangent * rj
+    if assemble_tangent:
+        backend.add_element_matrix_borrowed(
+            e,
+            elem_free_pool,
+            elem_free_offsets[e],
+            elem.dof_count,
+            UnsafePointer(to=k_global[0]),
+            len(k_global),
+        )
 
 
 fn _catenary_response(
@@ -587,10 +591,14 @@ fn _assemble_two_node_link_element(
                 K[dof_map[i]][dof_map[j]] += response.tangent[i][j]
         return
     if elem.type_tag == ElementTypeTag.MVLEM:
-        var dof_map = _elem_dof_map(elem)
+        var dof_map = InlineArray[Int, 6](fill=0)
+        var elem_u = InlineArray[Float64, 6](fill=0.0)
+        for i in range(6):
+            dof_map[i] = _elem_dof(elem, i)
+            elem_u[i] = u[dof_map[i]]
         var response = mvlem_response(
             elem.wall,
-            _gather_element_u(dof_map, u),
+            Span(ptr=UnsafePointer(to=elem_u[0]), length=6),
             elem_uniaxial_offsets[e],
             elem_uniaxial_state_ids,
             uniaxial_state_defs,
@@ -602,8 +610,8 @@ fn _assemble_two_node_link_element(
             for j in range(6):
                 K[dof_map[i]][dof_map[j]] += response.tangent[i][j]
         return
-    var node1 = nodes[elem.node_index_1]
-    var node2 = nodes[elem.node_index_2]
+    ref node1 = nodes[elem.node_index_1]
+    ref node2 = nodes[elem.node_index_2]
     var dx = node2.x - node1.x
     var dy = node2.y - node1.y
     var dz = node2.z - node1.z
@@ -632,34 +640,35 @@ fn _assemble_two_node_link_element(
     )
     var tgl = _two_node_link_tgl(ndm, ndf, trans)
     var tlb = _two_node_link_tlb(ndm, ndf, elem, length)
-    var dof_map = _elem_dof_map(elem)
-    var ug = _gather_element_u(dof_map, u)
-    var ul: List[Float64] = []
-    ul.resize(elem.dof_count, 0.0)
+    var dof_map = InlineArray[Int, 12](fill=0)
+    var ug = _LinkVector(fill=0.0)
+    for i in range(elem.dof_count):
+        dof_map[i] = _elem_dof(elem, i)
+        ug[i] = u[dof_map[i]]
+    var ul = _LinkVector(fill=0.0)
     for i in range(elem.dof_count):
         for j in range(elem.dof_count):
             ul[i] += tgl[i][j] * ug[j]
     var has_vel = len(v) > 0 and dt > 0.0
-    var vl: List[Float64] = []
+    var vl = _LinkVector(fill=0.0)
     if has_vel:
-        var vg = _gather_element_u(dof_map, v)
-        vl.resize(elem.dof_count, 0.0)
+        var vg = _LinkVector(fill=0.0)
+        for i in range(elem.dof_count):
+            vg[i] = v[dof_map[i]]
         for i in range(elem.dof_count):
             for j in range(elem.dof_count):
                 vl[i] += tgl[i][j] * vg[j]
     var offset = elem_uniaxial_offsets[e]
     var count = elem_uniaxial_counts[e]
-    var q_basic: List[Float64] = []
-    var k_basic: List[Float64] = []
-    q_basic.resize(count, 0.0)
-    k_basic.resize(count, 0.0)
+    var q_basic = _LinkVector(fill=0.0)
+    var k_basic = _LinkVector(fill=0.0)
     for m in range(count):
         var ub = 0.0
         for j in range(elem.dof_count):
             ub += tlb[m][j] * ul[j]
         var state_index = elem_uniaxial_state_ids[offset + m]
         var def_index = uniaxial_state_defs[state_index]
-        var mat_def = uniaxial_defs[def_index]
+        ref mat_def = uniaxial_defs[def_index]
         ref state = uniaxial_states[state_index]
         if mat_def.mat_type == UniMaterialTypeTag.ViscousDamper:
             if has_vel:
@@ -676,11 +685,7 @@ fn _assemble_two_node_link_element(
             uniaxial_set_trial_strain(mat_def, state, ub)
             q_basic[m] = state.sig_t
             k_basic[m] = state.tangent_t
-    var k_local: List[List[Float64]] = []
-    for _ in range(elem.dof_count):
-        var row: List[Float64] = []
-        row.resize(elem.dof_count, 0.0)
-        k_local.append(row^)
+    var k_local = _LinkMatrix(fill=_LinkVector(fill=0.0))
     for m in range(count):
         for i in range(elem.dof_count):
             var ti = tlb[m][i]
@@ -690,15 +695,13 @@ fn _assemble_two_node_link_element(
                 var tj = tlb[m][j]
                 if tj != 0.0:
                     k_local[i][j] += ti * k_basic[m] * tj
-    var p_local: List[Float64] = []
-    p_local.resize(elem.dof_count, 0.0)
+    var p_local = _LinkVector(fill=0.0)
     for i in range(elem.dof_count):
         for m in range(count):
             p_local[i] += tlb[m][i] * q_basic[m]
     _two_node_link_add_pdelta_forces(ndm, ndf, elem, length, ul, q_basic, p_local)
     _two_node_link_add_pdelta_stiff(ndm, ndf, elem, length, q_basic, k_local)
-    var p_global: List[Float64] = []
-    p_global.resize(elem.dof_count, 0.0)
+    var p_global = _LinkVector(fill=0.0)
     for i in range(elem.dof_count):
         for j in range(elem.dof_count):
             p_global[i] += tgl[j][i] * p_local[j]
@@ -782,29 +785,41 @@ fn _assemble_two_node_link_element_native[
         )
         return
     if elem.type_tag == ElementTypeTag.MVLEM:
-        var dof_map = _elem_dof_map(elem)
+        var dof_map = InlineArray[Int, 6](fill=0)
+        var elem_u = InlineArray[Float64, 6](fill=0.0)
+        for i in range(6):
+            dof_map[i] = _elem_dof(elem, i)
+            elem_u[i] = u[dof_map[i]]
+        var form_tangent = backend.accepts_element_matrices()
         var response = mvlem_response(
             elem.wall,
-            _gather_element_u(dof_map, u),
+            Span(ptr=UnsafePointer(to=elem_u[0]), length=6),
             elem_uniaxial_offsets[e],
             elem_uniaxial_state_ids,
             uniaxial_state_defs,
             uniaxial_defs,
             uniaxial_states,
             initial_wall_tangent,
+            form_tangent,
         )
         for i in range(6):
             F_int[dof_map[i]] += response.force[i]
-        backend.add_element_matrix(
-            e,
-            elem_free_pool,
-            elem_free_offsets[e],
-            elem.dof_count,
-            response.tangent,
-        )
+        if form_tangent:
+            var tangent = InlineArray[Float64, 36](fill=0.0)
+            for i in range(6):
+                for j in range(6):
+                    tangent[i * 6 + j] = response.tangent[i][j]
+            backend.add_element_matrix_borrowed(
+                e,
+                elem_free_pool,
+                elem_free_offsets[e],
+                6,
+                UnsafePointer(to=tangent[0]),
+                len(tangent),
+            )
         return
-    var node1 = nodes[elem.node_index_1]
-    var node2 = nodes[elem.node_index_2]
+    ref node1 = nodes[elem.node_index_1]
+    ref node2 = nodes[elem.node_index_2]
     var dx = node2.x - node1.x
     var dy = node2.y - node1.y
     var dz = node2.z - node1.z
@@ -833,34 +848,35 @@ fn _assemble_two_node_link_element_native[
     )
     var tgl = _two_node_link_tgl(ndm, ndf, trans)
     var tlb = _two_node_link_tlb(ndm, ndf, elem, length)
-    var dof_map = _elem_dof_map(elem)
-    var ug = _gather_element_u(dof_map, u)
-    var ul: List[Float64] = []
-    ul.resize(elem.dof_count, 0.0)
+    var dof_map = InlineArray[Int, 12](fill=0)
+    var ug = _LinkVector(fill=0.0)
+    for i in range(elem.dof_count):
+        dof_map[i] = _elem_dof(elem, i)
+        ug[i] = u[dof_map[i]]
+    var ul = _LinkVector(fill=0.0)
     for i in range(elem.dof_count):
         for j in range(elem.dof_count):
             ul[i] += tgl[i][j] * ug[j]
     var has_vel = len(v) > 0 and dt > 0.0
-    var vl: List[Float64] = []
+    var vl = _LinkVector(fill=0.0)
     if has_vel:
-        var vg = _gather_element_u(dof_map, v)
-        vl.resize(elem.dof_count, 0.0)
+        var vg = _LinkVector(fill=0.0)
+        for i in range(elem.dof_count):
+            vg[i] = v[dof_map[i]]
         for i in range(elem.dof_count):
             for j in range(elem.dof_count):
                 vl[i] += tgl[i][j] * vg[j]
     var offset = elem_uniaxial_offsets[e]
     var count = elem_uniaxial_counts[e]
-    var q_basic: List[Float64] = []
-    var k_basic: List[Float64] = []
-    q_basic.resize(count, 0.0)
-    k_basic.resize(count, 0.0)
+    var q_basic = _LinkVector(fill=0.0)
+    var k_basic = _LinkVector(fill=0.0)
     for m in range(count):
         var ub = 0.0
         for j in range(elem.dof_count):
             ub += tlb[m][j] * ul[j]
         var state_index = elem_uniaxial_state_ids[offset + m]
         var def_index = uniaxial_state_defs[state_index]
-        var mat_def = uniaxial_defs[def_index]
+        ref mat_def = uniaxial_defs[def_index]
         ref state = uniaxial_states[state_index]
         if mat_def.mat_type == UniMaterialTypeTag.ViscousDamper:
             if has_vel:
@@ -877,11 +893,7 @@ fn _assemble_two_node_link_element_native[
             uniaxial_set_trial_strain(mat_def, state, ub)
             q_basic[m] = state.sig_t
             k_basic[m] = state.tangent_t
-    var k_local: List[List[Float64]] = []
-    for _ in range(elem.dof_count):
-        var row: List[Float64] = []
-        row.resize(elem.dof_count, 0.0)
-        k_local.append(row^)
+    var k_local = _LinkMatrix(fill=_LinkVector(fill=0.0))
     for m in range(count):
         for i in range(elem.dof_count):
             var ti = tlb[m][i]
@@ -891,23 +903,20 @@ fn _assemble_two_node_link_element_native[
                 var tj = tlb[m][j]
                 if tj != 0.0:
                     k_local[i][j] += ti * k_basic[m] * tj
-    var p_local: List[Float64] = []
-    p_local.resize(elem.dof_count, 0.0)
+    var p_local = _LinkVector(fill=0.0)
     for i in range(elem.dof_count):
         for m in range(count):
             p_local[i] += tlb[m][i] * q_basic[m]
     _two_node_link_add_pdelta_forces(ndm, ndf, elem, length, ul, q_basic, p_local)
     _two_node_link_add_pdelta_stiff(ndm, ndf, elem, length, q_basic, k_local)
-    var p_global: List[Float64] = []
-    p_global.resize(elem.dof_count, 0.0)
-    var k_global: List[List[Float64]] = []
-    for _ in range(elem.dof_count):
-        var row: List[Float64] = []
-        row.resize(elem.dof_count, 0.0)
-        k_global.append(row^)
+    var p_global = _LinkVector(fill=0.0)
+    var assemble_tangent = backend.accepts_element_matrices()
+    var k_global = _LinkFlatMatrix(fill=0.0)
     for i in range(elem.dof_count):
         for j in range(elem.dof_count):
             p_global[i] += tgl[j][i] * p_local[j]
+            if not assemble_tangent:
+                continue
             var kij = 0.0
             for p in range(elem.dof_count):
                 if tgl[p][i] == 0.0:
@@ -915,13 +924,15 @@ fn _assemble_two_node_link_element_native[
                 for q in range(elem.dof_count):
                     if tgl[q][j] != 0.0:
                         kij += tgl[p][i] * k_local[p][q] * tgl[q][j]
-            k_global[i][j] = kij
+            k_global[i * elem.dof_count + j] = kij
     for i in range(elem.dof_count):
         F_int[dof_map[i]] += p_global[i]
-    backend.add_element_matrix(
-        e,
-        elem_free_pool,
-        elem_free_offsets[e],
-        elem.dof_count,
-        k_global,
-    )
+    if assemble_tangent:
+        backend.add_element_matrix_borrowed(
+            e,
+            elem_free_pool,
+            elem_free_offsets[e],
+            elem.dof_count,
+            UnsafePointer(to=k_global[0]),
+            len(k_global),
+        )

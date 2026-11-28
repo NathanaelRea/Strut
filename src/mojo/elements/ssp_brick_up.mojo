@@ -382,20 +382,39 @@ struct SSPBrickUPGeometry(Copyable, Movable):
         mut force: BrickUPVector,
         mut matrix: List[Float64],
     ):
-        if form_tangent:
-            matrix = self.stabilization.copy()
         for row in range(32):
             for i in range(6):
                 force[row] += self.volume * self.strain_matrix[32 * i + row] * stress[i]
             for col in range(32):
                 force[row] += self.stabilization[row * 32 + col] * displacement[col]
-                if form_tangent:
-                    var value = 0.0
-                    for i in range(6):
-                        for j in range(6):
-                            value += (
-                                self.strain_matrix[32 * i + row]
-                                * tangent[6 * i + j]
-                                * self.strain_matrix[32 * j + col]
-                            )
-                    matrix[row * 32 + col] += self.volume * value
+        if not form_tangent:
+            return
+
+        # Vectorize across columns. Keep the 36 products in the original
+        # (i, j) order for each matrix entry.
+        alias width = 4
+        alias Columns = SIMD[DType.float64, width]
+        matrix.resize(32 * 32, 0.0)
+        var output = matrix.unsafe_ptr()
+        var stabilization = self.stabilization.unsafe_ptr()
+        var strain = self.strain_matrix.unsafe_ptr()
+        for row in range(32):
+            var left = InlineArray[Float64, 36](fill=0.0)
+
+            @parameter
+            for i in range(6):
+
+                @parameter
+                for j in range(6):
+                    left[6 * i + j] = strain[32 * i + row] * tangent[6 * i + j]
+            for col in range(0, 32, width):
+                var value = Columns(0.0)
+
+                @parameter
+                for i in range(6):
+
+                    @parameter
+                    for j in range(6):
+                        value += left[6 * i + j] * strain.load[width=width](32 * j + col)
+                var index = 32 * row + col
+                output.store(index, stabilization.load[width=width](index) + self.volume * value)

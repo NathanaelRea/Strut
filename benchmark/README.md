@@ -132,6 +132,23 @@ uv run scripts/compare_benchmarks.py benchmark/results-profile/summary.json /tmp
 `strut_single_thread` next to the default-threads `strut` result. Use it when the
 question is how much of a speedup is threading and how much is the code.
 
+Use `--e2e` to measure process startup, Tcl input processing, analysis and
+recorder output. Direct Tcl cases run the prepared Tcl bundle in OpenSees and
+run through `run_strut_case.py` with a prebuilt solver in Strut. Live and
+domain replay follow each case's manifest. JSON-authored cases run from emitted
+Tcl in OpenSees and JSON in Strut. For example:
+
+```bash
+uv run scripts/run_benchmarks.py --e2e --engine both --no-archive \
+    --cases opensees_example_basic_truss,opensees_source_example_4_1
+```
+
+The end-to-end summaries store `e2e_median_s` alongside `analysis_us` where
+the engine exposes it. OpenSees times `analyze` and `eigen`, which include any
+recorder work they perform. Strut live replay currently provides only
+end-to-end timings. Native Tcl output stays in its staged bundle under
+`benchmark/results-e2e/tcl/opensees/`.
+
 ### Large models
 
 The example suite tops out under 200 DOFs, so none of it reaches the threaded
@@ -252,18 +269,18 @@ uv run scripts/run_benchmarks.py \
 - `--profile` builds and reuses a dedicated `build/strut/strut_profile` binary, so switching between normal and profiled runs does not overwrite the default solver.
 - `--profile <DIR>` works in both per-case and batch runs and writes per-case files as `<case>.speedscope.json` into `DIR`.
 - Compute-only outputs are written to `benchmark/results/opensees/`, `benchmark/results/openseesmp/`, and `benchmark/results/strut/` (or the `results-profile` equivalents when profiling).
-- `metadata.json` records machine/build/run metadata for reproducible baseline/perf comparisons.
+- `metadata.json` records machine, build and run metadata, including the `OPENBLAS_NUM_THREADS=1` and `OMP_NUM_THREADS=1` settings applied to OpenSees and OpenSeesMP runs.
 - `uv run scripts/compare_benchmarks.py` compares two `summary.json` files and can fail on regressions or unmet improvement targets.
 - Use `--min-regression-us` to ignore tiny absolute timing swings on very small cases.
 - `phase_summary.csv` records per-case phase timing columns (parse/model-build/assembly/solve/output).
 - `phase_rollup.csv` records phase-level aggregates (mean/median/min/max).
 - `benchmark/archive/` contains timestamped summary snapshots.
-- The benchmark runner is compute-only and does not perform parity checks. Run `uv run run_tests.py` for parity validation before benchmarking.
-- OpenSees, OpenSeesMP, and Strut are timed from recorder-stripped inputs.
+- The benchmark runner defaults to compute-only. Run `uv run run_tests.py` for full parity validation.
+- With compute-only timing, OpenSees, OpenSeesMP and Strut run without recorders. A missing or nonpositive analysis time fails the case.
 - The runner prints progress per case and pass while running.
 - `analysis_time_us.txt` is solve-only for all engines (OpenSees/OpenSeesMP `analyze/eigen`, Strut solve phase).
-- Batch mode is enabled for OpenSees by default; use `--no-batch` for single-case process timings. OpenSeesMP and Strut run per case.
-- OpenSees batch mode prewarms `eigen` once outside case timers to remove first-call initialization skew.
+- Batch mode is enabled for compatible OpenSees inputs by default. Direct Tcl and modal cases run in their own processes. Use `--no-batch` to run every case independently. OpenSeesMP and Strut run per case.
+- Direct Tcl workloads use the original Tcl with parity’s compatibility setup for OpenSees and the parsed solver input for Strut.
 - `--engine both` runs the legacy OpenSees + Strut pair. `--engine all` runs OpenSees + OpenSeesMP + Strut.
 - `uv run scripts/run_benchmarks.py` now defaults to `--engine all`.
 - Default runs benchmark all enabled cases in `tests/validation/` on the selected engines.
@@ -286,7 +303,7 @@ uv run scripts/plot_markdown_benchmarks.py --large-results benchmark/results-meg
 ```
 
 Benchmark PDFs use a log-scale y-axis for both recent-case and archive charts.
-The Markdown mode writes a summary table, one Mermaid chart per large model, and the enabled `opensees_example_*` cases grouped by how long OpenSees takes (over one second, 10 ms to one second, under 10 ms), so each chart has one time scale. The smallest group gets a table only. By default it plots OpenSees and Strut; pass `--mp` to include OpenSeesMP as well.
+The Markdown mode groups the measured validation cases by source family and OpenSees run time (over one second, 10 ms to one second, under 10 ms). It lists every case where Strut takes longer, in descending order of extra time. Pass `--e2e-results benchmark/results-e2e/summary.json` to append a separate wall-clock table, and `--preserve-large-models` to retain the large-model measurements already in the output. Pass `--mp` to include OpenSeesMP.
 When the summary came from a `--strut-single-thread` run, the charts show `opensees`, `strut` (one thread) and `strut-<threads>`.
 `--large-results` takes the summary of a separate run and gives each of its cases its own chart under "Large models".
 `--note "..."` prints a sentence under the header; use it to say what else the machine was doing during the run.

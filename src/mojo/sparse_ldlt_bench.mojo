@@ -2,7 +2,7 @@
 
 Build with uv run mojo build src/mojo/sparse_ldlt_bench.mojo -o build/sparse_ldlt_bench.
 Use --case NAME, --ordering amd|rcm|geometric, or --threads 1|8 for synthetic cases.
-Use --pattern PATH for a lower CSC dump and --threads 1|2|4|8 for a single thread
+Use --pattern PATH for a lower CSC dump, --ordering auto|amd|rcm|nd, and --threads 1|2|4|8 for a single thread
 count. With a pattern, --analyze-only 1 skips factorization and --counts-only 1
 compares orderings without allocating a factor. --dense-multiplier N sets the
 AMD degree-relative cutoff multiplier (default 8).
@@ -414,6 +414,32 @@ fn _run_banded(
 
 
 @fieldwise_init
+struct _PanelTreeShape(ImplicitlyCopyable):
+    var height: Int
+    var leaves: Int
+    var roots: Int
+
+
+fn _panel_tree_shape(solver: SparseLDLT) -> _PanelTreeShape:
+    var count = solver.supernode_count()
+    var heights = List[Int](length=count, fill=1)
+    var leaves = count
+    var height = 0
+    var roots = 0
+    for panel in range(count):
+        var begin = solver._panel_row_ptr[panel]
+        var end = solver._panel_row_ptr[panel + 1]
+        height = max(height, heights[panel])
+        if begin == end:
+            roots += 1
+        else:
+            var parent = solver._panel_of[Int(solver._panel_rows[begin])]
+            leaves -= Int(heights[parent] == 1)
+            heights[parent] = max(heights[parent], heights[panel] + 1)
+    return _PanelTreeShape(height, leaves, roots)
+
+
+@fieldwise_init
 struct _SparseTiming(ImplicitlyCopyable):
     var nnz: Int
     var panels: Int
@@ -424,6 +450,7 @@ struct _SparseTiming(ImplicitlyCopyable):
     var factor_ms: Float64
     var solve_ms: Float64
     var residual: Float64
+    var tree: _PanelTreeShape
 
 
 fn _time_sparse(
@@ -475,6 +502,7 @@ fn _time_sparse(
         Float64(factor_ns) * 1.0e-6,
         Float64(solve_ns) * 1.0e-6,
         residual,
+        _panel_tree_shape(solver),
     )
 
 
@@ -570,6 +598,8 @@ fn _run_pattern(
         kind = SparseOrdering.AMD
     elif ordering == "rcm":
         kind = SparseOrdering.RCM
+    elif ordering == "nd":
+        kind = SparseOrdering.NestedDissection
     var method = "auto" if ordering == "" else ordering
     if counts_only:
         var start = Int(perf_counter_ns())
@@ -599,7 +629,10 @@ fn _run_pattern(
             dense_multiplier=dense_multiplier,
         )
         var elapsed = Int(perf_counter_ns()) - start
-        print("ordering,n,nnz(A),nnz(L),supernodes,max_panel,max_front,flops,analyze_ms")
+        var tree = _panel_tree_shape(solver)
+        print(
+            "ordering,n,nnz(A),nnz(L),supernodes,max_panel,max_front,flops,tree_height,tree_leaves,tree_roots,analyze_ms"
+        )
         print(
             method,
             matrix.n,
@@ -609,12 +642,15 @@ fn _run_pattern(
             solver.largest_supernode(),
             solver.largest_front(),
             solver.factor_flops(),
+            tree.height,
+            tree.leaves,
+            tree.roots,
             Float64(elapsed) * 1.0e-6,
             sep=",",
         )
         return
     print(
-        "case,ordering,threads,n,nnz(A),nnz(L),supernodes,max_panel,max_front,flops,analyze_ms,factor_ms,solve_ms,gflops,residual"
+        "case,ordering,threads,n,nnz(A),nnz(L),supernodes,max_panel,max_front,flops,tree_height,tree_leaves,tree_roots,analyze_ms,factor_ms,solve_ms,gflops,residual"
     )
     for scaled in [False, True]:
         if scaled:
@@ -635,6 +671,9 @@ fn _run_pattern(
                 timing.largest_panel,
                 timing.largest_front,
                 timing.flops,
+                timing.tree.height,
+                timing.tree.leaves,
+                timing.tree.roots,
                 timing.analyze_ms,
                 timing.factor_ms,
                 timing.solve_ms,
@@ -665,8 +704,9 @@ fn main() raises:
                 and ordering_filter != "rcm"
                 and ordering_filter != "geometric"
                 and ordering_filter != "auto"
+                and ordering_filter != "nd"
             ):
-                raise Error("--ordering expects auto, amd, rcm, or geometric")
+                raise Error("--ordering expects auto, amd, rcm, nd, or geometric")
         elif args[i] == "--threads":
             threads_filter = Int(args[i + 1])
             if (
@@ -695,7 +735,7 @@ fn main() raises:
         if analyze_only and counts_only:
             raise Error("choose either --analyze-only or --counts-only")
         if case_filter != "" or ordering_filter == "geometric":
-            raise Error("--pattern accepts auto, amd, or rcm and supplies the case")
+            raise Error("--pattern accepts auto, amd, rcm, or nd and supplies the case")
         _run_pattern(
             pattern_path,
             ordering_filter,
@@ -712,6 +752,7 @@ fn main() raises:
         or threads_filter == 2
         or threads_filter == 4
         or ordering_filter == "auto"
+        or ordering_filter == "nd"
     ):
         raise Error("this option requires --pattern")
 

@@ -190,19 +190,28 @@ fn _transform_tangent(
     right: UnsafePointer[Float64],
     matrix: UnsafePointer[Float64],
 ):
+    alias width = 4
+    alias Columns = SIMD[DType.float64, width]
     var product = _Matrix(fill=0.0)
+    var product_ptr = UnsafePointer(to=product[0])
+    # Work on adjacent columns and accumulate each entry in the same k order.
     for i in range(24):
+        var row = 24 * i
         for k in range(24):
-            var value = local[i * 24 + k]
+            var value = local[row + k]
             if value != 0.0:
-                for j in range(24):
-                    product[i * 24 + j] += value * right[k * 24 + j]
+                for j in range(0, 24, width):
+                    var index = row + j
+                    var accumulated = product_ptr.load[width=width](index)
+                    product_ptr.store(
+                        index, accumulated + value * right.load[width=width](24 * k + j)
+                    )
     for i in range(24):
-        for j in range(24):
-            var value = 0.0
+        for j in range(0, 24, width):
+            var value = Columns(0.0)
             for k in range(24):
-                value += left[k * 24 + i] * product[k * 24 + j]
-            matrix[i * 24 + j] = value
+                value += left[24 * k + i] * product_ptr.load[width=width](24 * k + j)
+            matrix.store(24 * i + j, value)
 
 
 fn asd_linear_stiffness(

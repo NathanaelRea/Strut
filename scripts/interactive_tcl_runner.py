@@ -7,12 +7,15 @@ import json
 import math
 import os
 import shutil
+import struct
 import subprocess
+import sys
 import tempfile
 import tkinter
+from contextlib import suppress
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, TextIO
+from typing import Any, Sequence, TextIO
 
 import run_strut_case
 import tcl_to_strut
@@ -28,6 +31,14 @@ QUERY_COMMANDS = (
     "getTime",
     "eigen",
 )
+
+# These callbacks already have the command result when they return to Tcl.
+# Capture it directly on the hot live path instead of adding a Tcl trace.
+_LIVE_QUERY_HANDLERS = {
+    "_cmd_analyze": "analyze",
+    "_cmd_get_time": "getTime",
+    "_cmd_node_disp": "nodeDisp",
+}
 
 
 def _load_last_row(path: Path) -> list[float]:
@@ -57,6 +68,145 @@ def _stage_step_count(stage: dict[str, Any]) -> int:
     return max(1, int(analysis.get("steps", 1)))
 
 
+class _SessionUnavailable(RuntimeError):
+    pass
+
+
+class _SolverSession:
+    def __init__(self, solver: Path, work_dir: Path) -> None:
+        self.directory = tempfile.TemporaryDirectory(prefix="strut_tcl_session_")
+        directory = Path(self.directory.name)
+        self.output = directory / "out"
+        self.diagnostics = (directory / "stderr").open("w+", encoding="utf-8")
+        self.process = None
+        self.active = False
+        try:
+            self.process = subprocess.Popen(
+                [str(solver), "--session"],
+                cwd=work_dir,
+                env=run_strut_case._solver_environment(),
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=self.diagnostics,
+            )
+        except BaseException:
+            self.close()
+            raise
+
+    def open_domain(self, case: dict[str, Any], entry: Path) -> None:
+        self.active = True
+        reply = self._submit_case("open", case, entry)
+        self.compact_repeat = reply.get("compact_repeat", False)
+        self._repeat_reply: struct.Struct | None = None
+        self._repeat_reply_dimensions = (0, 0)
+
+    def solve(self, case: dict[str, Any], entry: Path) -> Path:
+        self._submit_case("solve", case, entry)
+        return self.output
+
+    def _submit_case(
+        self, op: str, case: dict[str, Any], entry: Path
+    ) -> dict[str, Any]:
+        if self.output.exists():
+            shutil.rmtree(self.output)
+        return self.request(
+            {
+                **case,
+                "op": op,
+                "source_path": str(entry),
+                "source_dir": str(entry.parent),
+                "output_path": str(self.output),
+            }
+        )
+
+    def _receive(self) -> dict[str, Any]:
+        assert self.process is not None and self.process.stdout is not None
+        line = self.process.stdout.readline()
+        if not line:
+            self.process.wait()
+            self.diagnostics.seek(0)
+            raise _SessionUnavailable(
+                self.diagnostics.read().strip() or "solver session exited"
+            )
+        try:
+            reply = json.loads(line)
+        except ValueError as exc:
+            raise _SessionUnavailable(
+                f"invalid solver session response {line.rstrip()!r}"
+            ) from exc
+        if "error" in reply:
+            raise _SessionUnavailable(reply["error"])
+        return reply
+
+    def _send(self, request: bytes) -> None:
+        assert self.process is not None and self.process.stdin is not None
+        try:
+            if request == b"r\n":
+                os.write(self.process.stdin.fileno(), request)
+            else:
+                self.process.stdin.write(request)
+                self.process.stdin.flush()
+        except BrokenPipeError as exc:
+            self.diagnostics.seek(0)
+            raise _SessionUnavailable(
+                self.diagnostics.read().strip() or "solver session exited"
+            ) from exc
+
+    def request(self, payload: dict[str, Any]) -> dict[str, Any]:
+        self._send((json.dumps(payload, allow_nan=False) + "\n").encode())
+        return self._receive()
+
+    def repeat_one(self, node_count: int, ndf: int) -> dict[str, Any]:
+        assert self.process is not None and self.process.stdout is not None
+        layout = self._repeat_reply
+        if layout is None or self._repeat_reply_dimensions != (node_count, ndf):
+            layout = self._repeat_reply = struct.Struct(f"={2 + 3 * ndf * node_count}d")
+            self._repeat_reply_dimensions = (node_count, ndf)
+        self._send(b"r\n")
+        data = self.process.stdout.read(layout.size)
+        if len(data) != layout.size:
+            self.process.wait()
+            self.diagnostics.seek(0)
+            raise _SessionUnavailable(
+                self.diagnostics.read().strip() or "truncated solver session reply"
+            )
+        words = layout.unpack(data)
+        nodes = [
+            (
+                words[i : i + ndf],
+                words[i + ndf : i + 2 * ndf],
+                words[i + 2 * ndf : i + 3 * ndf],
+            )
+            for i in range(2, len(words), 3 * ndf)
+        ]
+        return {
+            "status": int(words[0]),
+            "time": words[1],
+            "steps": int(words[0] == 0),
+            "nodes": nodes,
+        }
+
+    def finish(self) -> Path:
+        self.request({"op": "close"})
+        self.active = False
+        return self.output
+
+    def discard(self) -> None:
+        self.request({"op": "discard"})
+        self.active = False
+
+    def close(self) -> None:
+        if self.process is not None:
+            if self.active and self.process.poll() is None:
+                self.process.kill()
+            with suppress(BrokenPipeError):
+                self.process.stdin.close()
+            self.process.wait()
+            self.process.stdout.close()
+        self.diagnostics.close()
+        self.directory.cleanup()
+
+
 class InteractiveTclRunner(tcl_to_strut.TclStrutBuilder):
     """Executes multi-run / interactive OpenSees Tcl scripts via Strut's Mojo solver."""
 
@@ -76,6 +226,22 @@ class InteractiveTclRunner(tcl_to_strut.TclStrutBuilder):
         self._solve_generation = 0
         self._temp_solve_dirs: list[Path] = []
         self._replay_mode = replay_mode
+        self._session_setting = os.getenv("STRUT_TCL_SESSION", "1")
+        self._solver_process: _SolverSession | None = None
+        self._session: _SolverSession | None = None
+        self._session_disabled = replay_mode != "live" or self._session_setting == "0"
+        self._session_constraints: str | None = None
+        self._session_recorders: list[dict[str, Any]] | None = []
+        self._session_series: dict[int, dict[str, Any]] = {}
+        self._session_series_source: list[dict[str, Any]] | None = None
+        self._session_static_integrator: dict[str, Any] | None = None
+        self._session_hs_load: tuple[Any, Any] | None = None
+        self._session_can_repeat = False
+        self._session_transient_dt: str | None = None
+        self._session_next_nodes: set[int] = set()
+        self._session_node_values: dict[int, Sequence[Sequence[float]]] = {}
+        self._session_observed_nodes: list[int] = []
+        self._session_ndf = 0
         self._domain_number = 0
         self.output_recorders: dict[str, dict[str, Any]] = {}
         self._step_dir: tempfile.TemporaryDirectory | None = None
@@ -92,6 +258,38 @@ class InteractiveTclRunner(tcl_to_strut.TclStrutBuilder):
         self._reaction_values: dict[int, list[float]] = {}
         super().__init__(entry_path, repo_root)
         self._setup_interactive_commands()
+
+    def _wrap_command(self, fn, *, read_only: bool = False):
+        wrapped = super()._wrap_command(fn)
+        if self._replay_mode == "live" and (
+            query := _LIVE_QUERY_HANDLERS.get(fn.__name__)
+        ):
+
+            def capture(*args: str):
+                result = wrapped(*args)
+                self._write_query_result(query, result)
+                return result
+
+            return capture
+        # By default, commands may change the analysis, domain or recorders.
+        # Read-only queries can run while a transient driver waits for more steps.
+        if read_only or fn.__name__ in {
+            "_cmd_analyze",
+            "_cmd_get_time",
+            "_cmd_node_disp",
+            "_cmd_node_reaction",
+            "_cmd_reactions",
+            "_cmd_ele_response",
+            "_cmd_ele_force",
+            "_cmd_clock",
+        }:
+            return wrapped
+
+        def invalidate(*args: str):
+            self._session_transient_dt = None
+            return wrapped(*args)
+
+        return invalidate
 
     def _restore_tcl_builtins(self, names: tuple[str, ...]) -> None:
         for name in names:
@@ -136,7 +334,9 @@ class InteractiveTclRunner(tcl_to_strut.TclStrutBuilder):
                 "reactions": self._cmd_reactions,
             }
             for name, command in commands.items():
-                self.interp.createcommand(name, self._wrap_command(command))
+                self.interp.createcommand(
+                    name, self._wrap_command(command, read_only=True)
+                )
             self.interp.createcommand("::strut::_record_query", self._record_query)
             self.interp.createcommand(
                 "::strut::_domain_changed", self._wrap_command(self._domain_changed)
@@ -171,7 +371,10 @@ class InteractiveTclRunner(tcl_to_strut.TclStrutBuilder):
                     "::strut::_domain_changed",
                 )
             for name in QUERY_COMMANDS:
-                if name == "analyze" and self._replay_mode != "live":
+                if (
+                    self._replay_mode == "live"
+                    and name in _LIVE_QUERY_HANDLERS.values()
+                ) or (name == "analyze" and self._replay_mode != "live"):
                     continue
                 self.interp.tk.call(
                     "::strut::_disabled_trace",
@@ -185,8 +388,10 @@ class InteractiveTclRunner(tcl_to_strut.TclStrutBuilder):
     def _record_query(
         self, name: str, command: str, code: str, result: str, op: str
     ) -> None:
-        if code != "0":
-            return
+        if code == "0":
+            self._write_query_result(name, result)
+
+    def _write_query_result(self, name: str, result: str) -> None:
         path = f"__strut_query_{name}.out"
         if path not in self._query_streams:
             self._query_streams[path] = (self._work_dir / path).open(
@@ -294,17 +499,32 @@ class InteractiveTclRunner(tcl_to_strut.TclStrutBuilder):
 
     def _cmd_analyze(self, *args: str) -> str:
         if self._replay_mode:
-            if args and int(args[0]) == 0:
+            steps = int(args[0]) if args else -1
+            if steps == 0:
                 return "0"
             if self._replay_mode == "live":
-                return self._run_live_analyze(args)
+                return self._run_live_analyze(args, steps)
             self._step_result = None
             return self._append_replay_steps(args)
         res = super()._cmd_analyze(*args)
         self._invalidate_solution()
         return res
 
-    def _run_live_analyze(self, args: tuple[str, ...]) -> str:
+    def _run_live_analyze(self, args: tuple[str, ...], steps: int) -> str:
+        if (
+            len(args) == 2
+            and args[1] == self._session_transient_dt
+            and self._session_can_repeat
+            and steps > 0
+        ):
+            response = self._session_analyze_request(
+                {"op": "repeat", "steps": steps}, compact=steps == 1
+            )
+            if response is not None:
+                self.last_stage["analysis"]["steps"] += response["steps"]
+                self._commit_session_time(args, response)
+                return str(response["status"])
+
         # An unsuccessful trial must not enter the replay history. Other solver
         # errors (e.g. an unsupported model) still surface as errors to Tcl.
         fields = (
@@ -323,10 +543,41 @@ class InteractiveTclRunner(tcl_to_strut.TclStrutBuilder):
         previous_last_steps = (
             self.last_stage["analysis"]["steps"] if self.last_stage else 0
         )
-        steps_before = sum(map(_stage_step_count, self.analysis_stages))
+        failed_retry = self._failed_load_control
         self._append_replay_steps(args)
-        if sum(map(_stage_step_count, self.analysis_stages)) == steps_before:
+        merged = len(self.analysis_stages) == previous_stages
+        if self.last_stage is None or (
+            merged and self.last_stage["analysis"]["steps"] == previous_last_steps
+        ):
             return "0"
+        session_result = self._analyze_in_session(
+            args, merged, previous["current_time"], previous["load_control_has_run"]
+        )
+        if session_result is not None:
+            status = session_result["status"]
+            committed_steps = session_result["steps"]
+            if status == -3:
+                self._restore_analysis(previous, previous_stages, previous_last_steps)
+                if committed_steps:
+                    self._failed_load_control = failed_retry
+                    self._append_replay_steps((str(committed_steps), *args[1:]))
+                if session_result["increment"]:
+                    self._failed_load_control = (
+                        self.integrator,
+                        session_result["increment"],
+                        session_result["iterations"],
+                    )
+            if (
+                status == 0
+                and len(args) == 2
+                and not self.last_stage.get("initialize")
+                and self.last_stage.get("pattern", {}).get("type") != "None"
+            ):
+                self._session_transient_dt = args[1]
+            else:
+                self._session_transient_dt = None
+            self._commit_session_time(args, session_result, previous["current_time"])
+            return str(status)
         if self._replay_transient_stage(args, previous["current_time"]):
             return "0"
         if self._accept_hs_retry(args, previous_stages):
@@ -345,12 +596,18 @@ class InteractiveTclRunner(tcl_to_strut.TclStrutBuilder):
             if "did not converge" not in result.stdout + result.stderr:
                 self._raise_solver_error(result)
         committed_steps = 0
-        if int(args[0]) > 1:
+        if steps > 1:
             out, failed = self._solve_replay([], progress=True)
             if "did not converge" not in failed.stdout + failed.stderr:
                 self._raise_solver_error(failed)
             progress = json.loads((out / "run_progress.json").read_text())
             failed_stage = progress["stage_number"] - 1
+            steps_before = (
+                sum(map(_stage_step_count, self.analysis_stages[: previous_stages - 1]))
+                + previous_last_steps
+                if previous_stages
+                else 0
+            )
             committed_steps = (
                 sum(map(_stage_step_count, self.analysis_stages[:failed_stage]))
                 + progress["step_number"]
@@ -365,12 +622,7 @@ class InteractiveTclRunner(tcl_to_strut.TclStrutBuilder):
             if failure_path.exists():
                 increment, iterations = _load_last_row(failure_path)
                 failed_load_control = (self.integrator, increment, int(iterations))
-        for name, value in previous.items():
-            setattr(self, name, value)
-        del self.analysis_stages[previous_stages:]
-        self.last_stage = self.analysis_stages[-1] if self.analysis_stages else None
-        if self.last_stage is not None:
-            self.last_stage["analysis"]["steps"] = previous_last_steps
+        self._restore_analysis(previous, previous_stages, previous_last_steps)
         if committed_steps:
             self._append_replay_steps((str(committed_steps), *args[1:]))
             out, committed = self._solve_replay(self._node_state_recorders())
@@ -383,6 +635,246 @@ class InteractiveTclRunner(tcl_to_strut.TclStrutBuilder):
             )
         self._failed_load_control = failed_load_control
         return "-3"
+
+    def _commit_session_time(
+        self,
+        args: tuple[str, ...],
+        response: dict[str, Any],
+        previous_time: float | None = None,
+    ) -> None:
+        if response["steps"]:
+            self._advance_reported_time(
+                (str(response["steps"]), *args[1:]),
+                self.current_time if previous_time is None else previous_time,
+            )
+        self.current_time = response["time"]
+
+    def _restore_analysis(
+        self, previous: dict[str, Any], stage_count: int, last_steps: int
+    ) -> None:
+        for name, value in previous.items():
+            setattr(self, name, value)
+        del self.analysis_stages[stage_count:]
+        self.last_stage = self.analysis_stages[-1] if self.analysis_stages else None
+        if self.last_stage is not None:
+            self.last_stage["analysis"]["steps"] = last_steps
+
+    def _close_session(self) -> None:
+        if self._solver_process is not None:
+            self._solver_process.close()
+            self._solver_process = None
+        self._session = None
+
+    def _session_worker(self) -> _SolverSession:
+        if self._solver_process is None:
+            self._solver_process = _SolverSession(self._solver_path, self._work_dir)
+        return self._solver_process
+
+    def _disable_session(self, reason: str, *, broken: bool = False) -> None:
+        if broken:
+            self._close_session()
+        elif self._session is not None:
+            try:
+                self._session.discard()
+            except _SessionUnavailable:
+                self._close_session()
+            self._session = None
+        self._session_disabled = True
+        self._session_can_repeat = False
+        self._session_transient_dt = None
+        self._session_node_values.clear()
+        if self._session_setting == "required":
+            raise _SessionUnavailable(reason)
+        if os.getenv("STRUT_VERBOSE") == "1":
+            print(f"Strut live Tcl replay fallback: {reason}", file=sys.stderr)
+
+    def _session_request(self, payload: dict[str, Any]) -> dict[str, Any] | None:
+        assert self._session is not None
+        try:
+            return self._session.request(payload)
+        except _SessionUnavailable as exc:
+            self._disable_session(str(exc), broken=True)
+            return None
+
+    def _session_recorder_payload(
+        self, recorders: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        assert self.model is not None
+        return {
+            "model": self.model,
+            "nodes": [],
+            "elements": [],
+            "recorders": recorders,
+        }
+
+    def _session_analyze_request(
+        self, payload: dict[str, Any], *, compact: bool = False
+    ) -> dict[str, Any] | None:
+        observed = sorted(self._session_next_nodes)
+        self._session_next_nodes.clear()
+        session = self._session
+        assert session is not None
+        if (
+            compact
+            and session.compact_repeat
+            and observed == self._session_observed_nodes
+        ):
+            try:
+                response = session.repeat_one(len(observed), self._session_ndf)
+            except (OSError, _SessionUnavailable) as exc:
+                self._disable_session(str(exc), broken=True)
+                response = None
+        else:
+            if observed:
+                payload["nodes_to_observe"] = observed
+            response = self._session_request(payload)
+        self._session_observed_nodes = observed
+        self._session_can_repeat = response is not None and response["status"] == 0
+        if response is not None:
+            self._session_node_values = dict(
+                zip(observed, response.get("nodes", []), strict=True)
+            )
+        return response
+
+    def _analyze_in_session(
+        self, args: tuple[str, ...], merged: bool, start_time: float, resume: bool
+    ) -> dict[str, Any] | None:
+        if self._session_disabled:
+            return None
+        integrator = self.integrator["type"]
+        static_control = integrator in {"DisplacementControl", "HSConstraint"}
+        resume_integrator = self.integrator is self._session_static_integrator
+        if (
+            merged
+            and self._session_can_repeat
+            and self.time_series is self._session_series_source
+            and (not static_control or resume_integrator)
+        ):
+            return self._session_analyze_request(
+                {
+                    "op": "repeat",
+                    "steps": int(args[0]),
+                    "time": start_time,
+                    "resume": resume or self.integrator["type"] != "LoadControl",
+                }
+            )
+        assert self.last_stage is not None
+        stage = dict(self.last_stage)
+        stage["analysis"] = analysis = {
+            **stage["analysis"],
+            "steps": int(args[0]),
+            "start_time": start_time,
+        }
+        stage_idx = len(self.analysis_stages) - 1
+        active_recorders = [
+            {k: v for k, v in recorder.items() if k not in {"start_stage", "end_stage"}}
+            for recorder in self.recorders
+            if recorder.get("start_stage", 0)
+            <= stage_idx
+            < recorder.get("end_stage", math.inf)
+        ]
+        constraints = self._analysis_constraints_name()
+        pattern = stage.get("pattern", {})
+        if (
+            integrator
+            not in {"LoadControl", "DisplacementControl", "HSConstraint", "Newmark"}
+            or constraints == "Penalty"
+            or (
+                self._session_constraints is not None
+                and self._session_constraints != constraints
+            )
+            or analysis.get("support_motions")
+            or analysis.get("modal_damping")
+            or analysis.get("solver_chain")
+            or pattern.get("sp_constraints")
+            or pattern.get("vel0")
+            or any(
+                excitation.get("vel0") for excitation in pattern.get("excitations", [])
+            )
+            or any(
+                stage.get(key)
+                for key in (
+                    "sample_before",
+                    "material_stages",
+                    "permeability_updates",
+                    "prescribed_pressures",
+                    "remove_nodes",
+                    "remove_elements",
+                )
+            )
+            or "initial_state_reset" in stage
+            or "contact_friction" in stage
+            or any(
+                rec.get("delta_t") and integrator != "Newmark"
+                for rec in active_recorders
+            )
+        ):
+            self._disable_session(f"unsupported stage settings for {integrator}")
+            return None
+
+        if (
+            self._session_recorders is not None
+            and active_recorders != self._session_recorders
+            and any(rec.get("delta_t") for rec in self._session_recorders)
+        ):
+            self._disable_session("changed sampled recorder set")
+            return None
+        if any(
+            self.time_series_by_tag.get(tag) is not original
+            for tag, original in self._session_series.items()
+        ):
+            self._disable_session("time-series tag reassigned")
+            return None
+
+        if self._session is None:
+            case = self._build_current_case_dict([])
+            run_strut_case._normalize_time_series_paths(
+                case, self.entry_path, self.repo_root
+            )
+            run_strut_case._lower_one_dimensional_case(case)
+            try:
+                worker = self._session_worker()
+                worker.open_domain(case, self.entry_path)
+                self._session = worker
+            except (OSError, _SessionUnavailable) as exc:
+                self._disable_session(str(exc), broken=True)
+                return None
+            self._session_constraints = constraints
+            self._session_series = dict(self.time_series_by_tag)
+            self._session_ndf = case["model"]["ndf"]
+
+        if merged and integrator == "LoadControl":
+            stage["resume_load_control"] = resume
+        new_series = [
+            deepcopy(series)
+            for series in self.time_series
+            if series["tag"] not in self._session_series
+        ]
+        if new_series:
+            stage["time_series"] = new_series
+            run_strut_case._normalize_time_series_paths(
+                {"time_series": new_series}, self.entry_path, self.repo_root
+            )
+        payload = {"op": "analyze", "stage": stage}
+        if static_control:
+            payload["resume_integrator"] = resume_integrator
+        hs_load = None
+        if integrator == "HSConstraint":
+            hs_load = (stage.get("pattern"), stage.get("loads"))
+            if resume_integrator and hs_load != self._session_hs_load:
+                payload["refresh_hs_reference"] = True
+        if active_recorders != self._session_recorders:
+            payload.update(self._session_recorder_payload(active_recorders))
+        response = self._session_analyze_request(payload)
+        if response is not None:
+            self._session_static_integrator = (
+                self.integrator if static_control else None
+            )
+            self._session_hs_load = hs_load
+            self._session_recorders = active_recorders
+            self._session_series = dict(self.time_series_by_tag)
+            self._session_series_source = self.time_series
+        return response
 
     def _replay_transient_stage(self, args: tuple[str, ...], start_time: float) -> bool:
         stage = self.analysis_stages[-1]
@@ -558,7 +1050,12 @@ class InteractiveTclRunner(tcl_to_strut.TclStrutBuilder):
             return str(self.interp.tk.call("format", args[0], value))
         return f"{value:f}"
 
+    def _cmd_wipe_analysis(self, *args: str) -> str:
+        self._session_can_repeat = False
+        return super()._cmd_wipe_analysis(*args)
+
     def _cmd_set_time(self, *args: str) -> str:
+        self._session_can_repeat = False
         self._reported_transient_time = None
         self._step_replay = None
         self._pending_hs_retry = None
@@ -567,7 +1064,13 @@ class InteractiveTclRunner(tcl_to_strut.TclStrutBuilder):
     def _cmd_load_const(self, *args: str) -> str:
         self._reported_transient_time = None
         self._step_replay = None
-        return super()._cmd_load_const(*args)
+        if self._replay_mode == "live" and not args:
+            args = ("-time", str(self.current_time))
+        result = super()._cmd_load_const(*args)
+        if self._session is not None and "load_const" in self.last_stage:
+            self._session_can_repeat = False
+            self._session_request({"op": "loadConst", "time": self.current_time})
+        return result
 
     def _can_merge_stage(self, stage: dict[str, Any]) -> bool:
         analysis = stage["analysis"]
@@ -672,7 +1175,7 @@ class InteractiveTclRunner(tcl_to_strut.TclStrutBuilder):
             [str(self._solver_path), "--input", str(input_path), "--output", str(out)],
             cwd=self._work_dir,
             env={
-                **os.environ,
+                **run_strut_case._solver_environment(),
                 "STRUT_TCL_REPLAY": mode,
                 "STRUT_TCL_LOAD_CONTROL_FAILURE": str(
                     out / "__strut_load_control_failure.out"
@@ -881,6 +1384,7 @@ class InteractiveTclRunner(tcl_to_strut.TclStrutBuilder):
                 str(out_dir),
             ],
             cwd=self._work_dir,
+            env=run_strut_case._solver_environment(),
             check=True,
         )
         self._cached_solve_dir = out_dir
@@ -966,13 +1470,29 @@ class InteractiveTclRunner(tcl_to_strut.TclStrutBuilder):
         return f"{disp[dof - 1]:.15g}"
 
     def _cmd_node_response(self, kind: str, args: tuple[str, ...]) -> str:
-        if not 1 <= len(args) <= 2 or int(args[0]) not in self.nodes:
+        if not 1 <= len(args) <= 2:
             raise ValueError("node query requires an existing node and optional DOF")
         node = int(args[0])
+        if node not in self.nodes:
+            raise ValueError("node query requires an existing node and optional DOF")
         dof = int(args[1]) if len(args) == 2 else 0
         ndf = self.node_ndfs[node]
         if dof > ndf:
             raise ValueError(f"node {node} has {ndf} DOFs")
+        if kind != "reaction" and self._session is not None:
+            self._capture_node_state = True
+            self._session_next_nodes.add(node)
+            node_values = self._session_node_values.get(node)
+            if node_values is None:
+                response = self._session_request({"op": "node", "node": node})
+                if response is not None:
+                    node_values = self._session_node_values[node] = response["values"]
+            if node_values is not None:
+                component = ("displacement", "velocity", "acceleration").index(kind)
+                values = node_values[component]
+                if dof > 0:
+                    return f"{values[dof - 1]:.17g}"
+                return " ".join(f"{value:.17g}" for value in values[:ndf])
         values = [0.0] * ndf
         if kind == "reaction":
             values = self._reaction_values.get(node, values)
@@ -1016,6 +1536,18 @@ class InteractiveTclRunner(tcl_to_strut.TclStrutBuilder):
                 "reactions with inertia or Rayleigh damping is unsupported"
             )
         self._reaction_values.clear()
+        if self._session is not None:
+            response = self._session_request({"op": "reactions"})
+            if response is not None:
+                forces = response["values"]
+                self._reaction_values = {
+                    node: forces[
+                        i * self._session_ndf : i * self._session_ndf
+                        + self.node_ndfs[node]
+                    ]
+                    for i, node in enumerate(sorted(self.nodes))
+                }
+                return ""
         if self.analysis_stages:
             recorder = {
                 "type": "node_reaction",
@@ -1092,6 +1624,21 @@ class InteractiveTclRunner(tcl_to_strut.TclStrutBuilder):
             raise ValueError(
                 f"unsupported initial {kind} response for {element['type']}"
             )
+        if self._session is not None:
+            result = self._session_request(
+                {
+                    "op": "element",
+                    "element": tag,
+                    "kind": recorder["type"],
+                    "section": recorder.get("section", 1),
+                    "material_stress": recorder.get("truss_response") == "material",
+                }
+            )
+            if result is not None:
+                values = result["values"]
+                if self.model["ndm"] == 1 and recorder["type"] == "element_force":
+                    values = values[::2]
+                return values
         recorder["start_stage"] = len(self.analysis_stages) - 1
         out, result = self._solve_replay([recorder])
         if result.returncode:
@@ -1153,16 +1700,40 @@ class InteractiveTclRunner(tcl_to_strut.TclStrutBuilder):
             "output": "__tcl_modal",
             "start_stage": len(self.analysis_stages),
         }
-        self.analysis_stages.append(
-            {
-                "analysis": {
-                    "type": "modal_eigen",
-                    "steps": 1,
-                    "num_modes": num_modes,
-                    "standard_eigen": standard,
-                }
+        stage = {
+            "analysis": {
+                "type": "modal_eigen",
+                "steps": 1,
+                "num_modes": num_modes,
+                "standard_eigen": standard,
+                "constraints": self._analysis_constraints_name(),
             }
-        )
+        }
+        if self._session is not None:
+            response = self._session_request(
+                {
+                    "op": "eigen",
+                    "stage": stage,
+                    **self._session_recorder_payload(
+                        [
+                            {
+                                **recorder,
+                                "output": "__strut_session_eigen",
+                                "start_stage": 0,
+                            }
+                        ]
+                    ),
+                }
+            )
+            if response is not None:
+                self._session_can_repeat = False
+                if self._session_recorders and any(
+                    rec.get("delta_t") for rec in self._session_recorders
+                ):
+                    self._disable_session("eigen with sampled recorders")
+                self._session_recorders = None
+                return response["values"]
+        self.analysis_stages.append(stage)
         try:
             out, result = self._solve_replay([recorder])
             if result.returncode:
@@ -1174,11 +1745,43 @@ class InteractiveTclRunner(tcl_to_strut.TclStrutBuilder):
         finally:
             self.analysis_stages.pop()
 
+    def _run_mojo_eigen_case(self, case: dict[str, Any]) -> list[float]:
+        if self._session_disabled:
+            return super()._run_mojo_eigen_case(case)
+        # Eigen before analyze uses its own setup because subsequent Tcl
+        # commands can still change the model before the first live step.
+        run_strut_case._normalize_time_series_paths(
+            case, self.entry_path, self.repo_root
+        )
+        run_strut_case._lower_one_dimensional_case(case)
+        try:
+            out = self._session_worker().solve(case, self.entry_path)
+        except (OSError, _SessionUnavailable) as exc:
+            self._disable_session(str(exc), broken=True)
+            return super()._run_mojo_eigen_case(case)
+        return [
+            float(value)
+            for value in (out / "modal_eigenvalues.out").read_text().split()
+        ]
+
     def _cmd_wipe(self, *args: str) -> str:
         if args and not (len(args) == 1 and args[0].lower() == "all"):
             raise self._error("wipe takes no arguments", "wipe", args)
         if self._replay_mode:
             self._finish_domain()
+            self._session_disabled = (
+                self._replay_mode != "live" or self._session_setting == "0"
+            )
+            self._session_constraints = None
+            self._session_recorders = []
+            self._session_series.clear()
+            self._session_series_source = None
+            self._session_static_integrator = None
+            self._session_hs_load = None
+            self._session_can_repeat = False
+            self._session_next_nodes.clear()
+            self._session_observed_nodes.clear()
+            self._session_node_values.clear()
             self._step_result = None
             self._step_replay = None
             self._capture_node_state = False
@@ -1200,14 +1803,22 @@ class InteractiveTclRunner(tcl_to_strut.TclStrutBuilder):
         return super()._cmd_wipe(*args)
 
     def _finish_domain(self) -> None:
-        from run_case import _normalized_recorder_outputs
-
         self._domain_number += 1
+        out = None
+        if self._session is not None:
+            try:
+                out = self._session.finish()
+                self._session = None
+            except _SessionUnavailable as exc:
+                self._disable_session(str(exc), broken=True)
         if not self.analysis_stages or not self.recorders:
             return
-        out, result = self._solve_replay(self.recorders)
-        if result.returncode:
-            self._raise_solver_error(result)
+        if out is None:
+            out, result = self._solve_replay(self.recorders)
+            if result.returncode:
+                self._raise_solver_error(result)
+        from run_case import _normalized_recorder_outputs
+
         grouped = {}
         for recorder in self.recorders:
             grouped.setdefault(recorder["raw_path"], []).append(recorder)
@@ -1254,6 +1865,7 @@ class InteractiveTclRunner(tcl_to_strut.TclStrutBuilder):
             else:
                 self._flush_envelope_recorders()
         finally:
+            self._close_session()
             for stream in self._query_streams.values():
                 stream.close()
             if self._step_dir is not None:

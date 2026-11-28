@@ -12,6 +12,7 @@ import time
 import math
 import sys
 import tempfile
+import traceback
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -195,6 +196,7 @@ PHASE_FRAME_MAP = {
 ENGINE_ORDER = ("opensees", "openseesmp", "strut")
 # Strut's worker-thread knob, and where the extra STRUT_THREADS=1 pass is stored.
 STRUT_THREADS_ENV = "STRUT_THREADS"
+OPENSEES_THREAD_ENV = {"OPENBLAS_NUM_THREADS": "1", "OMP_NUM_THREADS": "1"}
 STRUT_SINGLE_THREAD_KEY = "strut_single_thread"
 ENGINE_LABELS = {
     "opensees": "OpenSees",
@@ -261,10 +263,6 @@ def _selected_engines(engine_arg: str) -> Tuple[str, ...]:
     if engine_arg == "all":
         return ENGINE_ORDER
     return (engine_arg,)
-
-
-def _engines_require_direct_tcl_parser_check(engines: Iterable[str]) -> bool:
-    return any(engine in {"opensees", "openseesmp"} for engine in engines)
 
 
 def _resolve_engine_mode(
@@ -347,6 +345,11 @@ def build_argument_parser() -> argparse.ArgumentParser:
         help="Disable OpenSees batch mode and run OpenSees cases in separate processes. OpenSeesMP and Strut run per case.",
     )
     parser.add_argument(
+        "--e2e",
+        action="store_true",
+        help="Time each engine from its input script/model through recorder output, including live Tcl replay.",
+    )
+    parser.add_argument(
         "--strut-single-thread",
         action="store_true",
         help=(
@@ -390,19 +393,25 @@ def build_argument_parser() -> argparse.ArgumentParser:
 
 
 def run(
-    cmd: List[str], env=None, verbose=False, capture_on_error: bool = False
+    cmd: List[str],
+    env=None,
+    verbose=False,
+    capture_on_error: bool = False,
+    cwd: Path | None = None,
 ) -> None:
     if verbose:
         print("+", " ".join(cmd))
     if not capture_on_error:
-        subprocess.check_call(cmd, env=env)
+        subprocess.check_call(cmd, env=env, cwd=cwd)
         return
     proc = subprocess.run(
         cmd,
         env=env,
+        cwd=cwd,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        errors="replace",
     )
     if proc.returncode != 0:
         raise subprocess.CalledProcessError(
@@ -1007,13 +1016,16 @@ def _write_direct_tcl_wrapper(
         "set __strut_wrapper_dir [file dirname [info script]]",
         "set __strut_analysis_us 0",
         "cd $__strut_wrapper_dir",
+        "proc __strut_benchmark_exit {{status 0}} {",
+        '  return -code error -errorcode [list STRUT BENCHMARK_EXIT $status] "script exited with status $status"',
+        "}",
         "if {[llength [info commands exit]] > 0 && [llength [info commands __strut_orig_exit]] == 0} {",
         "  rename exit __strut_orig_exit",
-        "  proc exit args { return {} }",
+        "  proc exit args { tailcall __strut_benchmark_exit {*}$args }",
         "}",
         "if {[llength [info commands quit]] > 0 && [llength [info commands __strut_orig_quit]] == 0} {",
         "  rename quit __strut_orig_quit",
-        "  proc quit args { return {} }",
+        "  proc quit args { tailcall __strut_benchmark_exit {*}$args }",
         "}",
         "if {[llength [info commands analyze]] > 0 && [llength [info commands __strut_orig_analyze]] == 0} {",
         "  rename analyze __strut_orig_analyze",
@@ -1043,8 +1055,8 @@ def _write_direct_tcl_wrapper(
             [
                 "if {[llength [info commands source]] > 0 && [llength [info commands __strut_orig_source]] == 0} {",
                 "  rename source __strut_orig_source",
-                "  proc source {path} {",
-                "    set tail [file tail $path]",
+                "  proc source {args} {",
+                "    set tail [file tail [lindex $args end]]",
                 '    if {$tail == "DisplayModel2D.tcl"} {',
                 "      proc DisplayModel2D args { return {} }",
                 "      return {}",
@@ -1057,7 +1069,7 @@ def _write_direct_tcl_wrapper(
                 "      proc DisplayPlane args { return {} }",
                 "      return {}",
                 "    }",
-                "    return [uplevel 1 [list __strut_orig_source $path]]",
+                "    return [uplevel 1 [linsert $args 0 __strut_orig_source]]",
                 "  }",
                 "}",
                 "if {[llength [info commands recorder]] > 0 && [llength [info commands __strut_orig_recorder]] == 0} {",
@@ -1081,13 +1093,23 @@ def _write_direct_tcl_wrapper(
     lines.extend(
         [
             f"set __strut_case_rc [catch {{source {{{original_script_name}}}}} __strut_case_msg __strut_case_opts]",
-            'set __strut_fp [open "analysis_time_us.txt" w]',
+            "if {$__strut_case_rc == 1 && [dict get $__strut_case_opts -errorcode] eq {STRUT BENCHMARK_EXIT 0}} {",
+            "  set __strut_case_rc 0",
+            "}",
+            "if {$__strut_case_rc != 0} {",
+            "  set __strut_fp [open [file join $__strut_out_dir case_error.txt] w]",
+            "  puts $__strut_fp $__strut_case_msg",
+            "  if {[dict exists $__strut_case_opts -errorinfo]} {",
+            "    puts $__strut_fp [dict get $__strut_case_opts -errorinfo]",
+            "  }",
+            "  close $__strut_fp",
+            "  cd $__strut_out_dir",
+            "  return -options $__strut_case_opts $__strut_case_msg",
+            "}",
+            "set __strut_fp [open [file join $__strut_out_dir analysis_time_us.txt] w]",
             "puts $__strut_fp $__strut_analysis_us",
             "close $__strut_fp",
             "if {$__strut_out_dir ne $__strut_wrapper_dir} {",
-            '  if {[file exists "analysis_time_us.txt"]} {',
-            '    file copy -force "analysis_time_us.txt" $__strut_out_dir/',
-            "  }",
         ]
     )
     for raw_path in raw_output_paths:
@@ -1103,9 +1125,6 @@ def _write_direct_tcl_wrapper(
         [
             "}",
             "cd $__strut_out_dir",
-            "if {$__strut_case_rc != 0} {",
-            "  return -options $__strut_case_opts $__strut_case_msg",
-            "}",
         ]
     )
     wrapper_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -1200,6 +1219,13 @@ def _prepare_opensees_compat_entry(entry_tcl: Path) -> Path:
     return wrapper_path
 
 
+def _prepare_original_opensees_entry(entry_tcl: Path) -> Path:
+    # Share the headless setup and legacy Fiber/torsion translations with parity.
+    from run_case import _prepare_opensees_compat_entry as prepare_parity_entry
+
+    return prepare_parity_entry(entry_tcl)
+
+
 def _resolve_direct_tcl_source_files(case: CaseSpec) -> list[Path]:
     if case.tcl_path is None:
         raise SystemExit(f"direct Tcl case `{case.name}` is missing tcl_path")
@@ -1239,28 +1265,11 @@ def _prepare_direct_tcl_wrappers(
         source_files=source_files,
         manifest_path=case.metadata_path,
     )
-    opensees_entry = _prepare_opensees_compat_entry(entry_wrapper)
+    opensees_entry = _prepare_original_opensees_entry(entry_wrapper)
     mirrored_script_dir = entry_wrapper.parent
+    for name in ("Data", "data"):
+        (mirrored_script_dir / name).mkdir(exist_ok=True)
     raw_output_paths = _direct_tcl_raw_output_paths(case_data)
-
-    compute_source_lines = []
-    for source_path in source_files:
-        relative_path = source_path.relative_to(script_path.parent)
-        mirrored_source = mirrored_script_dir / relative_path
-        instrumented_source = mirrored_source.with_name(
-            mirrored_source.stem + "__strut_compute.tcl"
-        )
-        source_text = mirrored_source.read_text(encoding="utf-8")
-        if not case.opensees_only:
-            source_text = (
-                "\n".join(_inject_opensees_timing_into_source(source_text.splitlines()))
-                + "\n"
-            )
-        instrumented_source.write_text(source_text, encoding="utf-8")
-        compute_source_lines.append(f"source {{{instrumented_source.name}}}")
-    compute_entry = mirrored_script_dir / f"{entry_wrapper.stem}__compute.tcl"
-    compute_entry.write_text("\n".join(compute_source_lines) + "\n", encoding="utf-8")
-    compute_opensees_entry = _prepare_opensees_compat_entry(compute_entry)
 
     timed_wrapper = _write_direct_tcl_wrapper(
         original_script_name=opensees_entry.name,
@@ -1269,7 +1278,7 @@ def _prepare_direct_tcl_wrappers(
         raw_output_paths=raw_output_paths,
     )
     compute_wrapper = _write_direct_tcl_wrapper(
-        original_script_name=compute_opensees_entry.name,
+        original_script_name=opensees_entry.name,
         wrapper_path=mirrored_script_dir / f"__strut_{case.name}_compute.tcl",
         compute_only=True,
         raw_output_paths=raw_output_paths,
@@ -1301,6 +1310,20 @@ def _emit_case_tcl(
         capture_on_error=capture_on_error,
     )
     return tcl_out
+
+
+def _compute_only_solver_input(case_data: dict, source: Path, output: Path) -> Path:
+    analysis = case_data.get("analysis") or {}
+    stages = analysis.get("stages", [])
+    if not any("sample_before" in stage for stage in stages):
+        return source
+    # Mojo drops recorder definitions in compute-only mode but still processes
+    # explicit samples. Keep the stage boundaries and remove only those samples.
+    case_data = json.loads(json.dumps(case_data))
+    for stage in case_data["analysis"]["stages"]:
+        stage.pop("sample_before", None)
+    _absolutize_time_series_paths(case_data, source)
+    return _write_solver_input_json(case_data, output)
 
 
 def _prepare_case_json_for_solver(case_json: Path, output_path: Path) -> Path:
@@ -1342,7 +1365,7 @@ def _ensure_direct_tcl_case_artifacts(
             verbose,
             capture_on_error=True,
         )
-        original_reference_tcl = _prepare_opensees_compat_entry(validation_entry)
+        original_reference_tcl = _prepare_original_opensees_entry(validation_entry)
         _validate_generated_tcl_matches_original(
             repo_root=repo_root,
             case_root=case_root,
@@ -1744,19 +1767,24 @@ def _safe_check_output(cmd: List[str], cwd: Optional[Path] = None) -> Optional[s
     return text or None
 
 
+def _opensees_binary(repo_root: Path) -> Path:
+    binary = subprocess.check_output(
+        [
+            "bash",
+            "-c",
+            'source "$1" && strut_resolve_opensees_binary OpenSees "${OPENSEES_BIN:-}"',
+            "bash",
+            str(repo_root / "scripts" / "opensees_env.sh"),
+        ],
+        text=True,
+    ).strip()
+    return Path(binary).resolve()
+
+
 def _opensees_version(repo_root: Path) -> Optional[str]:
     """Version from the banner of the binary scripts/run_opensees.sh would use."""
     try:
-        binary = subprocess.check_output(
-            [
-                "bash",
-                "-c",
-                'source "$1" && strut_resolve_opensees_binary OpenSees "${OPENSEES_BIN:-}"',
-                "bash",
-                str(repo_root / "scripts" / "opensees_env.sh"),
-            ],
-            text=True,
-        ).strip()
+        binary = _opensees_binary(repo_root)
         result = subprocess.run(
             [binary],
             input='puts "ok"\n',
@@ -1798,6 +1826,10 @@ def collect_run_metadata(
         },
         "runner": {
             "benchmark_suite": args.benchmark_suite,
+            "e2e": getattr(args, "e2e", False),
+            "opensees_thread_env": OPENSEES_THREAD_ENV.copy()
+            if {"opensees", "openseesmp"}.intersection(selected_engines)
+            else {},
             "engine": args.engine,
             "engines": list(selected_engines),
             "batch_mode": opensees_batch_mode
@@ -2046,6 +2078,7 @@ def write_summary_csv(path: Path, rows: List[dict]) -> None:
         "median_s",
         "min_s",
         "analysis_us",
+        "e2e_median_s",
     ]
     with path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=headers)
@@ -2299,22 +2332,6 @@ def _inject_opensees_timing(tcl_lines: List[str], timing_file: str) -> List[str]
     return out
 
 
-def _inject_opensees_timing_into_source(tcl_lines: List[str]) -> List[str]:
-    out: List[str] = []
-    for line in tcl_lines:
-        stripped = line.lstrip()
-        has_analyze = stripped.startswith("analyze ") or "[analyze " in stripped
-        has_eigen = stripped.startswith("eigen ") or "[eigen " in stripped
-        if has_analyze or has_eigen:
-            out.append("set __strut_t0 [clock microseconds]")
-            out.append(line)
-            out.append("set __strut_t1 [clock microseconds]")
-            out.append("incr __strut_analysis_us [expr {$__strut_t1 - $__strut_t0}]")
-            continue
-        out.append(line)
-    return out
-
-
 def _tcl_uses_eigen(path: Path) -> bool:
     try:
         lines = path.read_text().splitlines()
@@ -2346,7 +2363,8 @@ def _read_analysis_us(path: Path) -> Optional[float]:
     if not path.exists():
         return None
     try:
-        return float(path.read_text().strip())
+        value = float(path.read_text().strip())
+        return value if math.isfinite(value) and value > 0 else None
     except ValueError:
         return None
 
@@ -2392,6 +2410,7 @@ def _read_runtime_failures(
     engines: Optional[Iterable[str]] = None,
     run_opensees: Optional[bool] = None,
     run_strut: Optional[bool] = None,
+    phase: str = "compute-only",
 ) -> List[RuntimeFailure]:
     failures: List[RuntimeFailure] = []
     seen = set()
@@ -2407,7 +2426,7 @@ def _read_runtime_failures(
             selected_engines.append("strut")
 
     for engine in selected_engines:
-        locations.append((engine, "compute-only", results_root / engine))
+        locations.append((engine, phase, results_root / engine))
 
     for case_entry in case_entries:
         case_name = case_entry["name"]
@@ -2604,6 +2623,190 @@ def _summarize_parity_failures(parity_failures: List[str]) -> List[str]:
     return out
 
 
+def _run_reference_trials(run_trial, target: Path, repeat: int, warmup: int) -> dict:
+    analysis = []
+
+    def sample(output_root: Path, last_run: bool) -> None:
+        analysis.append(run_trial())
+
+    times = run_engine(sample, target.parent, repeat, warmup)
+    timed = analysis[-repeat:]
+    return {
+        "times_s": times,
+        "mean_s": mean(times),
+        "median_s": median(times),
+        "min_s": min(times),
+        "analysis_us": median(timed),
+        "analysis_min_us": min(timed),
+        "repeats": len(timed),
+    }
+
+
+def _prepare_e2e_case(
+    case: CaseSpec,
+    repo_root: Path,
+    results_root: Path,
+    env: dict,
+    verbose: bool,
+    *,
+    reference: bool,
+    strut: bool,
+) -> dict:
+    source = _case_metadata_path(case)
+    data = _load_case_metadata(source)
+    entry = {"name": case.name, "case_file": str(source)}
+    if case.tcl_path is None:
+        entry.update(json=str(_case_json_path(case)), dofs=_case_free_dofs(data))
+        if not reference:
+            return entry
+        runtime = _emit_case_tcl(
+            _case_json_path(case),
+            results_root / "tcl" / case.name / "model.tcl",
+            repo_root,
+            env,
+            verbose,
+        )
+        compat = _prepare_opensees_compat_entry(runtime)
+    else:
+        source_files = _resolve_direct_tcl_source_files(case)
+
+        def stage(engine: str) -> Path:
+            return _prepare_direct_tcl_entry(
+                case.tcl_path,
+                results_root / "tcl" / engine / case.name,
+                source_files=source_files,
+                manifest_path=case.metadata_path,
+            )
+
+        if strut:
+            # Parity launches the staged entry, which includes the source
+            # order, manifest setup, and legacy recorder syntax upgrades.
+            strut_entry = str(stage("strut"))
+            replay_mode = data.get("replay_tcl")
+            if replay_mode or case.interactive_tcl:
+                entry.update(interactive_tcl=strut_entry, replay_tcl=replay_mode)
+            else:
+                entry["input_tcl"] = strut_entry
+        if not reference:
+            return entry
+        runtime = stage("opensees")
+        compat = _prepare_original_opensees_entry(runtime)
+    entry["tcl"] = str(
+        _write_direct_tcl_wrapper(
+            original_script_name=compat.name,
+            wrapper_path=runtime.with_name(f"__strut_{case.name}_e2e.tcl"),
+            compute_only=False,
+            raw_output_paths=[],
+        )
+    )
+    # Match the native parity runner's Linux handling of wiki output directories.
+    for name in ("Data", "data"):
+        (runtime.parent / name).mkdir(exist_ok=True)
+    return entry
+
+
+def _strut_e2e_command(repo_root: Path, entry: dict, target: Path) -> list[str]:
+    cmd = [
+        sys.executable,
+        str(repo_root / "scripts" / "run_strut_case.py"),
+        "--output",
+        str(target),
+    ]
+    if "interactive_tcl" in entry:
+        cmd += ["--interactive-tcl", entry["interactive_tcl"]]
+        if entry.get("replay_tcl"):
+            cmd += ["--replay-mode", entry["replay_tcl"]]
+    elif "input_tcl" in entry:
+        cmd += ["--input-tcl", entry["input_tcl"]]
+    else:
+        cmd += ["--input", entry["json"]]
+    return cmd
+
+
+def _run_e2e_pass(
+    *,
+    repo_root: Path,
+    entry: dict,
+    engine: str,
+    target: Path,
+    binary: Path,
+    env: dict,
+    verbose: bool,
+    repeat: int,
+    warmup: int,
+) -> dict:
+    times = []
+    analysis = []
+    for index in range(warmup + repeat):
+        ensure_clean_dir(target)
+        if engine == "opensees":
+            cmd = [str(binary), entry["tcl"]]
+            cwd = target
+        else:
+            cmd = _strut_e2e_command(repo_root, entry, target)
+            env = {**env, "STRUT_MOJO_BIN": str(binary)}
+            cwd = None
+        start = time.perf_counter()
+        run(cmd, env=env, verbose=verbose, capture_on_error=True, cwd=cwd)
+        wall_time = time.perf_counter() - start
+        error_file = target / "case_error.txt"
+        if error_file.exists():
+            raise ValueError(error_file.read_text())
+        timing_file = target / "analysis_time_us.txt"
+        if engine == "opensees" and not timing_file.is_file():
+            raise ValueError(
+                "OpenSees did not reach the Tcl wrapper's completion marker."
+            )
+        if engine != "opensees" and entry.get("replay_tcl"):
+            recorder_index = target / ".direct_tcl_recorders.json"
+            if not recorder_index.is_file():
+                raise ValueError("Strut did not write its replay recorder index.")
+            outputs = json.loads(recorder_index.read_text())
+            if not outputs or any(not (target / name).is_file() for name in outputs):
+                raise ValueError("Strut replay recorder output is missing.")
+        if index >= warmup:
+            times.append(wall_time)
+            analysis.append(_read_analysis_us(timing_file))
+    return {
+        "times_s": times,
+        "mean_s": mean(times),
+        "median_s": median(times),
+        "min_s": min(times),
+        "e2e_median_s": median(times),
+        "analysis_us": median(analysis)
+        if all(value is not None for value in analysis)
+        else None,
+        "repeats": repeat,
+    }
+
+
+def _prepare_benchmark_cases(cases, prepare) -> tuple[list[dict], list[RuntimeFailure]]:
+    setup_failures = []
+    case_entries = []
+    for case in cases:
+        try:
+            entry = prepare(case)
+            if case.tcl_path is not None:
+                entry["tcl_source"] = str(case.tcl_path)
+            case_entries.append(entry)
+        except (Exception, SystemExit) as exc:
+            log_err(f"[{case.name}] Preparation failed: {exc}")
+            if not isinstance(
+                exc, (OSError, ValueError, subprocess.CalledProcessError, SystemExit)
+            ):
+                traceback.print_exc()
+            setup_failures.append(
+                RuntimeFailure(
+                    case.name,
+                    str(_case_metadata_path(case)),
+                    "setup",
+                    "prepare",
+                    str(exc),
+                )
+            )
+    return case_entries, setup_failures
+
+
 def main() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     parser = build_argument_parser()
@@ -2639,11 +2842,14 @@ def main() -> None:
                 generate_suite_force_pair = True
 
     args.engine = _resolve_engine_mode(args.engine, args.mp)
+    if args.repeat < 1 or args.warmup < 0:
+        parser.error("--repeat must be positive and --warmup must be nonnegative")
+    if args.e2e:
+        if args.engine in {"all", "openseesmp"} or args.profile:
+            parser.error("--e2e supports OpenSees and Strut without --profile")
+        args.no_batch = True
     requested_batch_mode = not args.no_batch
     selected_engines = _selected_engines(args.engine)
-    require_direct_tcl_parser_check = _engines_require_direct_tcl_parser_check(
-        selected_engines
-    )
     run_opensees = "opensees" in selected_engines
     run_openseesmp = "openseesmp" in selected_engines
     run_strut = "strut" in selected_engines
@@ -2754,7 +2960,7 @@ def main() -> None:
         )
 
     interactive_cases = [case.name for case in case_specs if case.interactive_tcl]
-    if interactive_cases:
+    if interactive_cases and not args.e2e:
         log(
             "Skipping interactive Tcl parity cases in solver benchmarks: "
             + ", ".join(interactive_cases)
@@ -2786,6 +2992,8 @@ def main() -> None:
     if args.output_root:
         # Batch Tcl sources case scripts by path after changing directory.
         results_root = Path(args.output_root).resolve()
+    elif args.e2e:
+        results_root = repo_root / "benchmark" / "results-e2e"
     elif args.profile:
         results_root = repo_root / "benchmark" / "results-profile"
     else:
@@ -2811,6 +3019,7 @@ def main() -> None:
         ensure_clean_dir(results_root / sub)
 
     env = os.environ.copy()
+    opensees_env = {**env, **OPENSEES_THREAD_ENV}
     verbose = env.get("STRUT_VERBOSE") == "1"
 
     if run_openseesmp:
@@ -2824,7 +3033,7 @@ def main() -> None:
         openseesmp_ok, openseesmp_reason = _check_openseesmp_available(
             repo_root=repo_root,
             results_root=results_root,
-            env=env,
+            env=opensees_env,
             verbose=verbose,
         )
         if not openseesmp_ok:
@@ -2840,7 +3049,6 @@ def main() -> None:
 
     summary_cases = []
     csv_rows = []
-    setup_failures: List[RuntimeFailure] = []
 
     log(f"Running {len(case_specs)} benchmark case(s).")
     log(
@@ -2868,46 +3076,25 @@ def main() -> None:
             "No engines selected. Use --engine opensees|openseesmp|strut|both|all."
         )
 
-    prepared_case_data: Dict[str, dict] = {}
-    for case in case_specs:
-        try:
-            case_data = _ensure_direct_tcl_case_artifacts(
+    def prepare_case(case: CaseSpec) -> dict:
+        if args.e2e:
+            return _prepare_e2e_case(
                 case,
                 repo_root,
+                results_root,
                 env,
                 verbose,
-                require_parser_check=require_direct_tcl_parser_check,
+                reference=run_opensees,
+                strut=run_strut,
             )
-            if (
-                case.tcl_path is not None
-                and require_direct_tcl_parser_check
-                and not case.opensees_only
-                and not _has_direct_tcl_parser_check(case)
-            ):
-                log(
-                    f"{case.name}: OpenSees runs the original Tcl because the "
-                    "generated Tcl has no parser-check."
-                )
-            prepared_case_data[case.name] = case_data
-        except (OSError, ValueError, subprocess.CalledProcessError, SystemExit) as exc:
-            setup_failures.append(
-                RuntimeFailure(
-                    case_name=case.name,
-                    case_file=str(_case_metadata_path(case)),
-                    engine="setup",
-                    phase="prepare",
-                    detail=str(exc),
-                )
-            )
-
-    def build_case_tcl(case: CaseSpec) -> dict:
+        case_data = _ensure_direct_tcl_case_artifacts(
+            case,
+            repo_root,
+            env,
+            verbose,
+            require_parser_check=False,
+        )
         case_name = case.name
-        try:
-            case_data = prepared_case_data[case.name]
-        except KeyError as exc:
-            raise SystemExit(
-                f"case `{case.name}` was not prepared before benchmarking"
-            ) from exc
         case_entry = {
             "name": case_name,
             "case_data": case_data,
@@ -2929,6 +3116,7 @@ def main() -> None:
                 tcl=str(compute),
                 tcl_compute=str(compute),
                 uses_eigen=_tcl_uses_eigen(case.tcl_path),
+                opensees_input="original",
             )
             return case_entry
         if case.json_path is not None:
@@ -2945,44 +3133,29 @@ def main() -> None:
                 )
             )
 
+        if run_strut:
+            case_entry["json"] = str(
+                _compute_only_solver_input(
+                    case_data,
+                    Path(case_entry["json"]),
+                    results_root
+                    / ".tmp"
+                    / "strut_inputs"
+                    / f"{case_name}_compute.json",
+                )
+            )
+
         if case.tcl_path is not None:
-            if not require_direct_tcl_parser_check:
+            if not (run_opensees or run_openseesmp):
                 return case_entry
-            direct_case_root = _direct_case_root(case)
-            generated_tcl = direct_case_root / "generated" / "model.tcl"
-            # Time OpenSees on the round-tripped Tcl when it was checked against
-            # the original; otherwise on the original script, which the parity
-            # suite already checks against Strut.
-            if generated_tcl.exists() and _has_direct_tcl_parser_check(case):
-                generated_copy = results_root / "tcl" / f"{case_name}.tcl"
-                shutil.copy2(generated_tcl, generated_copy)
-                generated_compute = (
-                    generated_copy.parent / f"{generated_copy.stem}_compute.tcl"
-                )
-                tcl_lines = generated_copy.read_text().splitlines()
-                compute_lines = [
-                    line
-                    for line in tcl_lines
-                    if not line.lstrip().startswith("recorder ")
-                ]
-                generated_compute.write_text(
-                    "\n".join(
-                        _inject_opensees_timing(compute_lines, "analysis_time_us.txt")
-                    )
-                    + "\n",
-                    encoding="utf-8",
-                )
-                tcl_out = _prepare_opensees_compat_entry(generated_copy)
-                tcl_compute = _prepare_opensees_compat_entry(generated_compute)
-                case_entry["tcl"] = str(tcl_out)
-                case_entry["uses_eigen"] = _tcl_uses_eigen(tcl_compute)
-            else:
-                _, tcl_compute = _prepare_direct_tcl_wrappers(
-                    case, case_data, results_root / "tcl"
-                )
-                case_entry["tcl"] = str(tcl_compute)
-                case_entry["uses_eigen"] = _tcl_uses_eigen(tcl_compute)
-                case_entry["opensees_input"] = "original"
+            # Use the parity workload directly. Round-tripping through JSON
+            # can change the native analysis path even when recorder data match.
+            _, tcl_compute = _prepare_direct_tcl_wrappers(
+                case, case_data, results_root / "tcl"
+            )
+            case_entry["tcl"] = str(tcl_compute)
+            case_entry["uses_eigen"] = _tcl_uses_eigen(case.tcl_path)
+            case_entry["opensees_input"] = "original"
         else:
             case_json = _case_json_path(case)
             tcl_out = _emit_case_tcl(
@@ -3009,8 +3182,7 @@ def main() -> None:
         case_entry["tcl_compute"] = str(tcl_compute)
         return case_entry
 
-    runnable_cases = [case for case in case_specs if case.name in prepared_case_data]
-    case_entries = [build_case_tcl(case) for case in runnable_cases]
+    case_entries, setup_failures = _prepare_benchmark_cases(case_specs, prepare_case)
     if setup_failures:
         log_err(
             f"Setup failed for {len(setup_failures)} benchmark case(s); continuing with remaining cases."
@@ -3022,25 +3194,13 @@ def main() -> None:
                 log_err(failure)
             raise SystemExit(1)
         raise SystemExit("No runnable benchmark cases remain after preparation.")
-    batch_entries = case_entries
-    skipped_batch_cases: List[str] = []
-    if opensees_batch_mode or openseesmp_batch_mode:
-        batch_case_entries = []
-        for entry in batch_entries:
-            if entry.get("uses_eigen", False):
-                skipped_batch_cases.append(entry["name"])
-                continue
-            batch_case_entries.append(entry)
-        if skipped_batch_cases:
-            log(
-                "Batch mode: skipping eigen/modal cases: "
-                + ", ".join(sorted(skipped_batch_cases))
-            )
-        batch_entries = batch_case_entries
-        if not batch_entries and (run_opensees or run_openseesmp) and not run_strut:
-            raise SystemExit(
-                "No non-eigen OpenSees/OpenSeesMP cases remain for batch mode. Use --no-batch to run eigen/modal cases."
-            )
+    # Direct Tcl and modal cases need fresh process state.
+    batch_entries = [
+        entry
+        for entry in case_entries
+        if not entry.get("tcl_source") and not entry.get("uses_eigen")
+    ]
+    batch_names = {entry["name"] for entry in batch_entries}
     case_entries_by_name = {entry["name"]: entry for entry in case_entries}
 
     def _write_batch_tcl(entries: List[dict], output_root: Path) -> Path:
@@ -3107,7 +3267,7 @@ def main() -> None:
                     "--output",
                     str(output_root),
                 ],
-                env=env,
+                env=opensees_env,
                 verbose=verbose,
                 capture_on_error=True,
             )
@@ -3135,6 +3295,18 @@ def main() -> None:
         analysis_by_case = {name: [] for name in names}
         total_by_case = {name: [] for name in names}
         had_abort = False
+        case_errors = {}
+
+        def collect_errors():
+            for name in names:
+                error_file = output_root / name / "case_error.txt"
+                if error_file.exists():
+                    case_errors[name] = error_file.read_text()
+                elif (
+                    _read_analysis_us(output_root / name / "analysis_time_us.txt")
+                    is None
+                ):
+                    case_errors[name] = f"{label} wrote no positive analysis time."
 
         for i in range(warmup):
             log(f"{label} batch {pass_label} warmup {i + 1}/{warmup}...")
@@ -3143,6 +3315,7 @@ def main() -> None:
             ok = run_reference_batch(rotated, output_root, runner_path, label)
             if not ok:
                 had_abort = True
+            collect_errors()
 
         times = []
         for i in range(repeat):
@@ -3154,6 +3327,7 @@ def main() -> None:
             end = time.perf_counter()
             if not ok:
                 had_abort = True
+            collect_errors()
             times.append(end - start)
 
             analysis_map = _load_case_metric(
@@ -3168,7 +3342,11 @@ def main() -> None:
                 if total_us is not None:
                     total_by_case[name].append(total_us)
 
-        return times, analysis_by_case, total_by_case, had_abort
+        for name, error in case_errors.items():
+            _write_case_error(output_root / name, error)
+            analysis_by_case[name].clear()
+
+        return times, analysis_by_case, total_by_case, had_abort or bool(case_errors)
 
     run_opensees_per_case = run_opensees and not opensees_batch_mode
     run_openseesmp_per_case = run_openseesmp and not openseesmp_batch_mode
@@ -3351,32 +3529,145 @@ def main() -> None:
                 }
             )
 
-    for case_entry in case_entries:
+    opensees_binary = _opensees_binary(repo_root) if run_opensees else None
+    if args.e2e:
+        e2e_engines = []
+        if opensees_binary is not None:
+            e2e_engines.append(("opensees", opensees_binary, opensees_env))
+        if run_strut:
+            e2e_engines.append(("strut", strut_solver, env))
+            if args.strut_single_thread:
+                e2e_engines.append(
+                    (
+                        STRUT_SINGLE_THREAD_KEY,
+                        strut_solver,
+                        {**env, STRUT_THREADS_ENV: "1"},
+                    )
+                )
+        for entry in case_entries:
+            name = entry["name"]
+            for engine, binary, run_env in e2e_engines:
+                log(f"[{name}] {engine} end-to-end pass...")
+                target = results_root / engine / name
+                try:
+                    stats = _run_e2e_pass(
+                        repo_root=repo_root,
+                        entry=entry,
+                        engine=engine,
+                        target=target,
+                        binary=binary,
+                        env=run_env,
+                        verbose=verbose,
+                        repeat=args.repeat,
+                        warmup=args.warmup,
+                    )
+                except (OSError, ValueError, subprocess.CalledProcessError) as exc:
+                    message = (
+                        _format_subprocess_failure(
+                            f"{engine} end-to-end pass aborted", exc
+                        )
+                        if isinstance(exc, subprocess.CalledProcessError)
+                        else str(exc)
+                    )
+                    _write_case_error(target, message)
+                    log_err(
+                        f"[{name}] {engine} end-to-end pass failed: {_compact_error_text(message)}"
+                    )
+                    continue
+                entry[engine] = stats
+                csv_rows.append(
+                    {
+                        "case": name,
+                        "dofs": entry.get("dofs", ""),
+                        "engine": engine,
+                        "mode": "e2e",
+                        "repeat": args.repeat,
+                        "warmup": args.warmup,
+                        "mean_s": f"{stats['mean_s']:.6f}",
+                        "median_s": f"{stats['median_s']:.6f}",
+                        "min_s": f"{stats['min_s']:.6f}",
+                        "analysis_us": stats["analysis_us"],
+                        "e2e_median_s": f"{stats['e2e_median_s']:.6f}",
+                    }
+                )
+                log_ok(f"[{name}] {engine} end-to-end pass OK.")
+        summary_cases = case_entries
+
+    for case_entry in [] if args.e2e else case_entries:
         case_name = case_entry["name"]
 
-        def opensees_cmd(output_dir: Path, last_run: bool) -> None:
-            tcl_compute = Path(case_entry["tcl_compute"])
-            if last_run:
-                ensure_clean_dir(output_dir)
-                target_dir = output_dir
-            else:
-                tmp_dir = results_root / ".tmp" / "opensees" / case_name
-                ensure_clean_dir(tmp_dir)
-                target_dir = tmp_dir
-            run(
-                [
-                    str(repo_root / "scripts" / "run_opensees.sh"),
-                    "--script",
-                    str(tcl_compute),
-                    "--output",
-                    str(target_dir),
-                ],
-                env=env,
-                verbose=verbose,
-                capture_on_error=True,
+        def run_reference_pass(engine_key: str, label: str, runner: str) -> None:
+            log(f"[{case_name}] {label} compute-only pass...")
+            target = results_root / engine_key / case_name
+
+            def run_trial(script: str) -> float:
+                ensure_clean_dir(target)
+                if engine_key == "opensees":
+                    # The original Tcl wrapper switches to its staged assets.
+                    # Emitted JSON cases already embed time series values.
+                    run(
+                        [str(opensees_binary), script],
+                        env=opensees_env,
+                        verbose=verbose,
+                        capture_on_error=True,
+                        cwd=target,
+                    )
+                else:
+                    run(
+                        [
+                            str(repo_root / "scripts" / runner),
+                            "--script",
+                            script,
+                            "--output",
+                            str(target),
+                        ],
+                        env=opensees_env,
+                        verbose=verbose,
+                        capture_on_error=True,
+                    )
+                error_file = target / "case_error.txt"
+                if error_file.exists():
+                    raise ValueError(error_file.read_text())
+                analysis_us = _read_analysis_us(target / "analysis_time_us.txt")
+                if analysis_us is None:
+                    raise ValueError(f"{label} wrote no positive analysis time.")
+                return analysis_us
+
+            try:
+                stats = _run_reference_trials(
+                    lambda: run_trial(case_entry["tcl_compute"]),
+                    target,
+                    args.repeat,
+                    args.warmup,
+                )
+            except subprocess.CalledProcessError as exc:
+                _write_case_error(
+                    target, _format_subprocess_failure(f"{label} pass aborted", exc)
+                )
+                log_err(f"[{case_name}] {label} pass aborted (exit {exc.returncode}).")
+                return
+            except (OSError, ValueError, SystemExit) as exc:
+                _write_case_error(target, str(exc))
+                log_err(
+                    f"[{case_name}] {label} pass failed: {_compact_error_text(str(exc))}"
+                )
+                return
+            case_entry[engine_key] = stats
+            csv_rows.append(
+                {
+                    "case": case_name,
+                    "dofs": case_entry.get("dofs", ""),
+                    "engine": engine_key,
+                    "mode": "compute_only",
+                    "repeat": args.repeat,
+                    "warmup": args.warmup,
+                    "mean_s": f"{stats['mean_s']:.6f}",
+                    "median_s": f"{stats['median_s']:.6f}",
+                    "min_s": f"{stats['min_s']:.6f}",
+                    "analysis_us": stats["analysis_us"],
+                }
             )
-            if not last_run:
-                shutil.rmtree(target_dir, ignore_errors=True)
+            log_ok(f"[{case_name}] {label} compute-only pass OK.")
 
         def strut_cmd(
             output_dir: Path,
@@ -3406,8 +3697,9 @@ def main() -> None:
                 capture_on_error=True,
             )
             analysis_us = _read_analysis_us(target_dir / "analysis_time_us.txt")
-            if analysis_us is not None:
-                analysis_hist.append(analysis_us)
+            if analysis_us is None:
+                raise ValueError("Strut wrote no positive analysis time.")
+            analysis_hist.append(analysis_us)
             if not last_run:
                 shutil.rmtree(target_dir, ignore_errors=True)
 
@@ -3433,6 +3725,10 @@ def main() -> None:
                 log_err(
                     f"[{case_name}] {label} compute-only pass aborted (exit {exc.returncode})."
                 )
+                return
+            except ValueError as exc:
+                _write_case_error(results_root / engine_key / case_name, str(exc))
+                log_err(f"[{case_name}] {label} compute-only pass failed: {exc}")
                 return
             log_ok(f"[{case_name}] {label} compute-only pass OK.")
             # Warmup runs are timed by the solver too; keep only the repeats.
@@ -3462,94 +3758,8 @@ def main() -> None:
                 }
             )
 
-        def openseesmp_cmd(output_dir: Path, last_run: bool) -> None:
-            tcl_compute = Path(case_entry["tcl_compute"])
-            if last_run:
-                ensure_clean_dir(output_dir)
-                target_dir = output_dir
-            else:
-                tmp_dir = results_root / ".tmp" / "openseesmp" / case_name
-                ensure_clean_dir(tmp_dir)
-                target_dir = tmp_dir
-            run(
-                [
-                    str(repo_root / "scripts" / "run_openseesmp.sh"),
-                    "--script",
-                    str(tcl_compute),
-                    "--output",
-                    str(target_dir),
-                ],
-                env=env,
-                verbose=verbose,
-                capture_on_error=True,
-            )
-            if not last_run:
-                shutil.rmtree(target_dir, ignore_errors=True)
-
-        if run_opensees_per_case:
-            log(f"[{case_name}] OpenSees compute-only pass...")
-            try:
-                opensees_times = run_engine(
-                    lambda out, last_run: opensees_cmd(out / case_name, last_run),
-                    results_root / "opensees",
-                    args.repeat,
-                    args.warmup,
-                )
-            except subprocess.CalledProcessError as exc:
-                _write_case_error(
-                    results_root / "opensees" / case_name,
-                    _format_subprocess_failure(
-                        "opensees compute-only pass aborted", exc
-                    ),
-                )
-                log_err(
-                    f"[{case_name}] OpenSees compute-only pass aborted (exit {exc.returncode})."
-                )
-            else:
-                stats = {
-                    "times_s": opensees_times,
-                    "mean_s": mean(opensees_times),
-                    "median_s": median(opensees_times),
-                    "min_s": min(opensees_times),
-                }
-                case_entry["opensees"] = stats
-                analysis_file = (
-                    results_root / "opensees" / case_name / "analysis_time_us.txt"
-                )
-                if analysis_file.exists():
-                    try:
-                        case_entry["opensees"]["analysis_us"] = int(
-                            analysis_file.read_text().strip()
-                        )
-                    except ValueError:
-                        case_entry["opensees"]["analysis_us"] = None
-                else:
-                    case_entry["opensees"]["analysis_us"] = None
-                if case_entry["opensees"]["analysis_us"] is None:
-                    # run_opensees.sh hides the exit status; the timing file is
-                    # written last, so its absence means the script stopped early.
-                    _write_case_error(
-                        results_root / "opensees" / case_name,
-                        "OpenSees wrote no analysis time: the script stopped before "
-                        "finishing (for example an analysis that did not converge).",
-                    )
-                    log_err(f"[{case_name}] OpenSees compute-only pass did not finish.")
-                else:
-                    log_ok(f"[{case_name}] OpenSees compute-only pass OK.")
-                csv_rows.append(
-                    {
-                        "case": case_name,
-                        "dofs": case_entry.get("dofs", ""),
-                        "engine": "opensees",
-                        "mode": "compute_only",
-                        "repeat": args.repeat,
-                        "warmup": args.warmup,
-                        "mean_s": f"{stats['mean_s']:.6f}",
-                        "median_s": f"{stats['median_s']:.6f}",
-                        "min_s": f"{stats['min_s']:.6f}",
-                        "analysis_us": case_entry["opensees"]["analysis_us"],
-                    }
-                )
+        if run_opensees and (run_opensees_per_case or case_name not in batch_names):
+            run_reference_pass("opensees", "OpenSees", "run_opensees.sh")
 
         if run_strut_per_case:
             run_strut_pass("strut", "Strut", env)
@@ -3561,51 +3771,7 @@ def main() -> None:
                 )
 
         if run_openseesmp_per_case:
-            log(f"[{case_name}] OpenSeesMP compute-only pass...")
-            try:
-                openseesmp_times = run_engine(
-                    lambda out, last_run: openseesmp_cmd(out / case_name, last_run),
-                    results_root / "openseesmp",
-                    args.repeat,
-                    args.warmup,
-                )
-            except subprocess.CalledProcessError as exc:
-                _write_case_error(
-                    results_root / "openseesmp" / case_name,
-                    _format_subprocess_failure(
-                        "openseesmp compute-only pass aborted", exc
-                    ),
-                )
-                log_err(
-                    f"[{case_name}] OpenSeesMP compute-only pass aborted (exit {exc.returncode})."
-                )
-            else:
-                log_ok(f"[{case_name}] OpenSeesMP compute-only pass OK.")
-                stats = {
-                    "times_s": openseesmp_times,
-                    "mean_s": mean(openseesmp_times),
-                    "median_s": median(openseesmp_times),
-                    "min_s": min(openseesmp_times),
-                }
-                analysis_file = (
-                    results_root / "openseesmp" / case_name / "analysis_time_us.txt"
-                )
-                stats["analysis_us"] = _read_analysis_us(analysis_file)
-                case_entry["openseesmp"] = stats
-                csv_rows.append(
-                    {
-                        "case": case_name,
-                        "dofs": case_entry.get("dofs", ""),
-                        "engine": "openseesmp",
-                        "mode": "compute_only",
-                        "repeat": args.repeat,
-                        "warmup": args.warmup,
-                        "mean_s": f"{stats['mean_s']:.6f}",
-                        "median_s": f"{stats['median_s']:.6f}",
-                        "min_s": f"{stats['min_s']:.6f}",
-                        "analysis_us": stats["analysis_us"],
-                    }
-                )
+            run_reference_pass("openseesmp", "OpenSeesMP", "run_openseesmp.sh")
         summary_cases.append(case_entry)
 
     phase_rows: List[dict] = []
@@ -3629,9 +3795,22 @@ def main() -> None:
                 )
             )
 
+    failure_engines = list(selected_engines)
+    if run_strut and args.strut_single_thread:
+        failure_engines.append(STRUT_SINGLE_THREAD_KEY)
+    runtime_failures = setup_failures + _read_runtime_failures(
+        case_entries,
+        results_root,
+        engines=failure_engines,
+        phase="end-to-end" if args.e2e else "compute-only",
+    )
+    case_file_map = {
+        entry["name"]: str(entry.get("case_file", "")) for entry in case_entries
+    }
     generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     summary = {
         "generated_at": generated_at,
+        "mode": "e2e" if args.e2e else "compute_only",
         "git_rev": run_metadata.get("git", {}).get("rev"),
         "repeat": args.repeat,
         "warmup": args.warmup,
@@ -3640,6 +3819,7 @@ def main() -> None:
         "phase_extra_columns": PHASE_EXTRA_COLUMNS,
         "phase_summary": phase_rows,
         "cases": summary_cases,
+        "failures": [vars(failure) for failure in runtime_failures],
     }
 
     summary_json = results_root / "summary.json"
@@ -3675,17 +3855,6 @@ def main() -> None:
     print(f"Wrote {plots_pdf}")
     for line in _strut_slower_than_opensees_lines(case_entries):
         print(line)
-    failure_engines = list(selected_engines)
-    if run_strut and args.strut_single_thread:
-        failure_engines.append(STRUT_SINGLE_THREAD_KEY)
-    runtime_failures = setup_failures + _read_runtime_failures(
-        case_entries,
-        results_root,
-        engines=failure_engines,
-    )
-    case_file_map = {
-        entry["name"]: str(entry.get("case_file", "")) for entry in case_entries
-    }
     if runtime_failures:
         log_err("BENCHMARK FAILED")
         for failure in _summarize_benchmark_failures(
@@ -3701,6 +3870,6 @@ if __name__ == "__main__":
         main()
     except SystemExit:
         raise
-    except Exception as exc:
-        log_err(f"BENCHMARK ERROR: {exc}")
+    except Exception:
+        traceback.print_exc()
         raise SystemExit(1)

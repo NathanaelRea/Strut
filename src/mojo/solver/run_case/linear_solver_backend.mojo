@@ -1,6 +1,6 @@
 from algorithm import vectorize
 from collections import List
-from math import sqrt
+from math import isfinite, sqrt
 from sys import simd_width_of
 from os import abort, getenv
 
@@ -16,6 +16,213 @@ from solver.sparse_pattern import (
 from solver.run_case.input_types import AnalysisInput
 from solver.run_case.profile_ldlt import factor_profile_ldlt, solve_profile_ldlt
 from tag_types import AnalysisSystemTag
+
+
+struct _SparseLU(Copyable, Movable):
+    # L columns store original row numbers so a later pivot never moves
+    # previously computed multipliers. U rows keep increasing column order.
+    var lower_start: List[Int]
+    var lower_row: List[Int]
+    var lower_value: List[Float64]
+    var upper_head: List[Int]
+    var upper_tail: List[Int]
+    var upper_next: List[Int]
+    var upper_col: List[Int]
+    var upper_value: List[Float64]
+    var diagonal: List[Float64]
+    var position: List[Int]
+    var row_at: List[Int]
+    var acc: List[Float64]
+    var epoch: List[Int]
+    var first_elimination: List[Int]
+    var touched: List[Int]
+    var state: Int
+    var active: Bool
+
+    fn __init__(out self):
+        self.lower_start = []
+        self.lower_row = []
+        self.lower_value = []
+        self.upper_head = []
+        self.upper_tail = []
+        self.upper_next = []
+        self.upper_col = []
+        self.upper_value = []
+        self.diagonal = []
+        self.position = []
+        self.row_at = []
+        self.acc = []
+        self.epoch = []
+        self.first_elimination = []
+        self.touched = []
+        self.state = 0
+        self.active = False
+
+    fn analyze(mut self, n: Int, nnz: Int):
+        self.state = -1
+        # Leave very large patterns to the sparse fallback. Within this bound,
+        # reserve enough for the dense triangle on small systems, or a bounded
+        # fill allowance on large systems. Pivot-dependent fill can exceed the
+        # allowance. Factorization then rejects the layout without growing it.
+        if n > 16384:
+            return
+        var triangle = n * (n - 1) // 2
+        var capacity = min(triangle, min(1 << 20, max(65536, 8 * nnz)))
+        self.lower_start.resize(n + 1, 0)
+        self.lower_row.resize(capacity, 0)
+        self.lower_value.resize(capacity, 0.0)
+        self.upper_head.resize(n, -1)
+        self.upper_tail.resize(n, -1)
+        self.upper_next.resize(capacity, -1)
+        self.upper_col.resize(capacity, 0)
+        self.upper_value.resize(capacity, 0.0)
+        self.diagonal.resize(n, 0.0)
+        self.position.resize(n, 0)
+        self.row_at.resize(n, 0)
+        self.acc.resize(n, 0.0)
+        self.epoch.resize(n, -1)
+        self.first_elimination.resize(n, n)
+        self.touched.resize(n, 0)
+        self.state = 1
+
+    fn factorize(
+        mut self,
+        col_start: List[Int],
+        row_index: List[Int],
+        values: List[Float64],
+        order: List[Int],
+        pivot_rows: Bool,
+    ) -> Bool:
+        # Left-looking LU with an accumulator and bounded factor storage.
+        alias drop_tol = 1.0e-14
+        var n = len(order)
+        var capacity = len(self.lower_row)
+        var l_end = 0
+        var u_end = 0
+        self.lower_start[0] = 0
+        for row in range(n):
+            self.position[row] = row
+            self.row_at[row] = row
+            self.epoch[row] = -1
+            self.first_elimination[row] = n
+            self.upper_head[row] = -1
+            self.upper_tail[row] = -1
+
+        for k in range(n):
+            var source = order[k]
+            var touched_count = 0
+            var first = k
+            for p in range(col_start[source], col_start[source + 1]):
+                var value = values[p]
+                if value == 0.0:
+                    continue
+                var row = row_index[p]
+                self.acc[row] = value
+                self.epoch[row] = k
+                self.touched[touched_count] = row
+                touched_count += 1
+                first = min(first, self.position[row])
+
+            # Every L edge leads to a later pivot. Visit predecessors in their
+            # original elimination order, even when several update one row.
+            for col in range(first, k):
+                var pivot = self.row_at[col]
+                if self.epoch[pivot] != k:
+                    continue
+                var upper = self.acc[pivot]
+                if upper == 0.0 or (abs(upper) <= drop_tol and self.first_elimination[pivot] < col):
+                    continue
+                if u_end == capacity:
+                    return False
+                var tail = self.upper_tail[col]
+                if tail < 0:
+                    self.upper_head[col] = u_end
+                else:
+                    self.upper_next[tail] = u_end
+                self.upper_tail[col] = u_end
+                self.upper_next[u_end] = -1
+                self.upper_col[u_end] = k
+                self.upper_value[u_end] = upper
+                u_end += 1
+                for p in range(self.lower_start[col], self.lower_start[col + 1]):
+                    var row = self.lower_row[p]
+                    var update = self.lower_value[p] * upper
+                    var value = -update
+                    if self.epoch[row] != k:
+                        self.epoch[row] = k
+                        self.touched[touched_count] = row
+                        touched_count += 1
+                    else:
+                        var previous = self.acc[row]
+                        # The old row merge dropped tiny untouched entries
+                        # during the first elimination of each row.
+                        if abs(previous) > drop_tol or self.first_elimination[row] >= col:
+                            value = previous - update
+                    self.acc[row] = value if abs(value) > drop_tol else 0.0
+
+            var best_row = self.row_at[k]
+            var best_pos = k
+            var best_abs = 0.0
+            if self.epoch[best_row] == k:
+                best_abs = abs(self.acc[best_row])
+            if pivot_rows:
+                for t in range(touched_count):
+                    var row = self.touched[t]
+                    var pos = self.position[row]
+                    if pos < k:
+                        continue
+                    var magnitude = abs(self.acc[row])
+                    if magnitude > best_abs or (magnitude == best_abs and pos < best_pos):
+                        best_abs = magnitude
+                        best_row = row
+                        best_pos = pos
+            if not isfinite(best_abs) or best_abs <= drop_tol:
+                return False
+
+            var original = self.row_at[k]
+            self.row_at[k] = best_row
+            self.row_at[best_pos] = original
+            self.position[best_row] = k
+            self.position[original] = best_pos
+            var diagonal = self.acc[best_row]
+            self.diagonal[k] = diagonal
+            for t in range(touched_count):
+                var row = self.touched[t]
+                if self.position[row] <= k:
+                    continue
+                var value = self.acc[row]
+                if value == 0.0 or (abs(value) <= drop_tol and self.first_elimination[row] < k):
+                    continue
+                if l_end == capacity:
+                    return False
+                self.lower_row[l_end] = row
+                self.lower_value[l_end] = value / diagonal
+                self.first_elimination[row] = min(self.first_elimination[row], k)
+                l_end += 1
+            self.lower_start[k + 1] = l_end
+        return True
+
+    fn solve(
+        self,
+        order: List[Int],
+        rhs: List[Float64],
+        mut work: List[Float64],
+        mut result: List[Float64],
+    ):
+        var n = len(order)
+        for row in range(n):
+            work[row] = rhs[row]
+        for k in range(n):
+            var value = work[self.row_at[k]]
+            for p in range(self.lower_start[k], self.lower_start[k + 1]):
+                work[self.lower_row[p]] -= self.lower_value[p] * value
+        for k in range(n - 1, -1, -1):
+            var value = work[self.row_at[k]]
+            var p = self.upper_head[k]
+            while p >= 0:
+                value -= self.upper_value[p] * result[order[self.upper_col[p]]]
+                p = self.upper_next[p]
+            result[order[k]] = value / self.diagonal[k]
 
 
 struct LinearSolverBackend(ElementMatrixSink, Movable):
@@ -84,6 +291,7 @@ struct LinearSolverBackend(ElementMatrixSink, Movable):
     var pattern_nnz: Int
     var pattern_slot_map: List[Int]
     var pattern_transpose: List[Int]
+    var sparse_lu: List[_SparseLU]
 
     fn __init__(out self):
         self.system_tag = AnalysisSystemTag.Unknown
@@ -142,6 +350,7 @@ struct LinearSolverBackend(ElementMatrixSink, Movable):
         self.pattern_nnz = -1
         self.pattern_slot_map = []
         self.pattern_transpose = []
+        self.sparse_lu = []
 
     fn zero_matrix(mut self):
         zero_loaded_matrix(self)
@@ -169,6 +378,19 @@ struct LinearSolverBackend(ElementMatrixSink, Movable):
             self, elem_free_pool, free_offset, dof_count, k_flat, k_offset=k_offset
         )
 
+    fn add_element_matrix_borrowed(
+        mut self,
+        elem_index: Int,
+        elem_free_pool: List[Int],
+        free_offset: Int,
+        dof_count: Int,
+        matrix: UnsafePointer[Float64],
+        matrix_size: Int,
+    ):
+        _add_element_matrix_borrowed_from_pool(
+            self, elem_free_pool, free_offset, dof_count, matrix, matrix_size, 1.0
+        )
+
     fn accepts_element_matrices(self) -> Bool:
         return True
 
@@ -187,9 +409,10 @@ fn _entries_asymmetric(
     return abs(lower - upper) > 1.0e-10 + 1.0e-9 * scale
 
 
-fn _reset_sparse_ldlt(mut backend: LinearSolverBackend):
+fn _reset_sparse_factors(mut backend: LinearSolverBackend):
     backend.sparse_ldlt_state = 0
     backend.sparse_ldlt_active = False
+    backend.sparse_lu.clear()
 
 
 fn _ensure_square_storage(mut mat: List[List[Float64]], n: Int):
@@ -1295,7 +1518,7 @@ fn _build_sparse_symbolic(mut backend: LinearSolverBackend, A: List[List[Float64
     _ensure_vector_storage(backend.sparse_rhs_work, n)
     _ensure_vector_storage(backend.sparse_solution_work, n)
     backend.sparse_symbolic_ready = True
-    _reset_sparse_ldlt(backend)
+    _reset_sparse_factors(backend)
 
 
 fn _ensure_sparse_symbolic(mut backend: LinearSolverBackend, A: List[List[Float64]]):
@@ -1568,17 +1791,33 @@ fn _flatten_sparse_factor_rows(
 
 fn _factorize_sparse_unsymmetric_loaded(mut backend: LinearSolverBackend):
     _ensure_sparse_col_permutation(backend)
-    var row_cols_rows: List[List[Int]] = []
-    var row_vals_rows: List[List[Float64]] = []
-    _build_sparse_rows_from_csc(backend, row_cols_rows, row_vals_rows)
-    var n = backend.free_count
-    var row_permutation = _identity_permutation(n)
-    var pivot_tol = 1.0e-14
     # OpenSees configures UMFPACK with a pivot tolerance of 1.0. The
     # symmetric LDLᵀ path is tried before this unsymmetric factorization.
     var pivot_rows = backend.system_tag == AnalysisSystemTag.UmfPack or (
         backend.system_tag == AnalysisSystemTag.SuperLU and backend.superlu_enable_pivot
     )
+    var n = backend.free_count
+    if len(backend.sparse_lu) == 0:
+        var workspace = _SparseLU()
+        workspace.analyze(n, len(backend.sparse_row_indices))
+        backend.sparse_lu.append(workspace^)
+    ref workspace = backend.sparse_lu[0]
+    workspace.active = False
+    if workspace.state == 1:
+        workspace.active = workspace.factorize(
+            backend.sparse_col_start,
+            backend.sparse_row_indices,
+            backend.sparse_values,
+            backend.sparse_col_permutation,
+            pivot_rows,
+        )
+        if workspace.active:
+            return
+    var row_cols_rows: List[List[Int]] = []
+    var row_vals_rows: List[List[Float64]] = []
+    _build_sparse_rows_from_csc(backend, row_cols_rows, row_vals_rows)
+    var row_permutation = _identity_permutation(n)
+    var pivot_tol = 1.0e-14
 
     for k in range(n):
         var pivot_row = k
@@ -1661,6 +1900,11 @@ fn _solve_sparse_unsymmetric(
         solution_out.resize(n, 0.0)
     _ensure_vector_storage(backend.sparse_rhs_work, n)
     _ensure_vector_storage(backend.sparse_solution_work, n)
+    if len(backend.sparse_lu) > 0 and backend.sparse_lu[0].active:
+        backend.sparse_lu[0].solve(
+            backend.sparse_col_permutation, rhs, backend.sparse_rhs_work, solution_out
+        )
+        return
     if len(backend.sparse_row_permutation) != n:
         backend.sparse_row_permutation = _identity_permutation(n)
     if len(backend.sparse_col_permutation) != n:
@@ -1929,7 +2173,7 @@ fn initialize_symbolic_from_element_free_map(
         backend.sparse_col_permutation.clear()
         backend.sparse_values.resize(len(backend.sparse_row_indices), 0.0)
         backend.sparse_symbolic_ready = True
-        _reset_sparse_ldlt(backend)
+        _reset_sparse_factors(backend)
 
 
 fn initialize_symbolic_from_element_dof_map(
@@ -1978,7 +2222,7 @@ fn initialize_structure(mut backend: LinearSolverBackend, analysis: AnalysisInpu
     _ensure_vector_storage(backend.solve_work, free_count)
 
     backend.sparse_symbolic_ready = False
-    _reset_sparse_ldlt(backend)
+    _reset_sparse_factors(backend)
     backend.sparse_col_start.clear()
     backend.sparse_row_indices.clear()
     backend.sparse_values.clear()
@@ -2325,7 +2569,29 @@ fn add_element_matrix_flat_from_pool(
     scale: Float64 = 1.0,
     k_offset: Int = 0,
 ):
-    if k_offset < 0 or len(k_flat) - k_offset < dof_count * dof_count:
+    if k_offset < 0 or k_offset > len(k_flat):
+        abort("linear solver backend flat element matrix offset out of bounds")
+    _add_element_matrix_borrowed_from_pool(
+        backend,
+        elem_free_pool,
+        offset,
+        dof_count,
+        k_flat.unsafe_ptr() + k_offset,
+        len(k_flat) - k_offset,
+        scale,
+    )
+
+
+fn _add_element_matrix_borrowed_from_pool(
+    mut backend: LinearSolverBackend,
+    elem_free_pool: List[Int],
+    offset: Int,
+    dof_count: Int,
+    matrix: UnsafePointer[Float64],
+    matrix_size: Int,
+    scale: Float64,
+):
+    if matrix_size < dof_count * dof_count:
         abort("linear solver backend flat element matrix size mismatch")
     var empty_rows: List[List[Float64]] = []
     _add_element_matrix_impl[True](
@@ -2334,7 +2600,7 @@ fn add_element_matrix_flat_from_pool(
         offset,
         dof_count,
         empty_rows,
-        k_flat.unsafe_ptr() + k_offset,
+        matrix,
         scale,
     )
 
@@ -2916,7 +3182,7 @@ fn clear(mut backend: LinearSolverBackend):
     backend.lu_pivots.clear()
     backend.solve_work.clear()
     backend.sparse_symbolic_ready = False
-    _reset_sparse_ldlt(backend)
+    _reset_sparse_factors(backend)
     backend.sparse_col_start.clear()
     backend.sparse_row_indices.clear()
     backend.sparse_values.clear()
@@ -3069,7 +3335,7 @@ fn initialize_symbolic_from_pattern(mut backend: LinearSolverBackend, pattern: S
         _ensure_vector_storage(backend.sparse_rhs_work, n)
         _ensure_vector_storage(backend.sparse_solution_work, n)
         backend.sparse_symbolic_ready = True
-        _reset_sparse_ldlt(backend)
+        _reset_sparse_factors(backend)
         return
 
     if tag == AnalysisSystemTag.FullGeneral:

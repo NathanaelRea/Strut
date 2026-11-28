@@ -24,3 +24,13 @@ fn solver_thread_count() -> Int:
         pass
     abort(THREADS_ENVIRONMENT_KEY + " must be a positive integer")
     return 1
+
+
+fn element_worker_count(items: Int, work: Int, minimum_work: Int, mut threads: Int) -> Int:
+    """Resolve the runtime limit only for a sweep large enough to use it."""
+    var useful = min(items, work // minimum_work)
+    if useful < 2:
+        return 1
+    if threads == 0:
+        threads = solver_thread_count()
+    return min(threads, useful)

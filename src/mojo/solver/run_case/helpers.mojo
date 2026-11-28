@@ -9,10 +9,10 @@ from elements.coupled_zero_length import evaluate_coupled_zero_length
 from solver.assembly.stiffness_internal_links import _catenary_response
 from elements.sfi_mvlem import sfi_mvlem_response
 from elements.mvlem import mvlem_response
+from elements.link import LinkOrientation
 from collections import Dict, List
 from math import atan2, sqrt
 from os import abort
-from python import Python, PythonObject
 from time import perf_counter_ns
 
 from elements import (
@@ -145,8 +145,6 @@ fn _write_run_progress(
 ) raises:
     if len(progress_path) == 0:
         return
-    var builtins = Python.import_module("builtins")
-    var file_obj = builtins.open(PythonObject(progress_path), "w")
     var text = String()
     text += "{\n"
     text += '  "status": "' + status + '",\n'
@@ -156,8 +154,8 @@ fn _write_run_progress(
     text += '  "step_number": ' + String(step_number) + ",\n"
     text += '  "step_count": ' + String(step_count) + "\n"
     text += "}\n"
-    file_obj.write(PythonObject(text))
-    file_obj.close()
+    with open(progress_path, "w") as file_obj:
+        file_obj.write(text)
 
 
 # Step and stage progress is advisory, and one write costs more than a whole step of a
@@ -194,6 +192,71 @@ fn _write_run_progress_throttled(
         step_number,
         step_count,
     )
+
+
+fn _update_active_nodal_load[
+    normalize_zero: Bool = False
+](
+    const_load: List[Float64],
+    pattern_load: List[Float64],
+    pattern_scale: Float64,
+    mut active_load: List[Float64],
+):
+    if len(const_load) != len(pattern_load):
+        abort("nodal load vectors must have the same size")
+    active_load.resize(len(const_load), 0.0)
+    for i in range(len(const_load)):
+        var value = const_load[i] + pattern_scale * pattern_load[i]
+
+        @parameter
+        if normalize_zero:
+            value += 0.0
+        active_load[i] = value
+
+
+fn _copy_nonlinear_vector(mut destination: List[Float64], source: List[Float64], count: Int = -1):
+    var size = len(source) if count < 0 else count
+    destination.resize(size, 0.0)
+    for i in range(size):
+        destination[i] = source[i]
+
+
+struct _KrylovHistory(Movable):
+    var updates: List[List[Float64]]
+    var directions: List[List[Float64]]
+    var recycled: List[List[Float64]]
+
+    fn __init__(out self):
+        self.updates = []
+        self.directions = []
+        self.recycled = []
+
+    fn reset(mut self):
+        while len(self.updates) > 0:
+            self.recycled.append(self.updates.pop())
+        while len(self.directions) > 0:
+            self.recycled.append(self.directions.pop())
+
+    fn _save(mut self, source: List[Float64], count: Int) -> List[Float64]:
+        var row = List[Float64]()
+        if len(self.recycled) > 0:
+            row = self.recycled.pop()
+        _copy_nonlinear_vector(row, source, count)
+        return row^
+
+    fn push(mut self, direction: List[Float64], update: List[Float64], count: Int):
+        var saved_update = self._save(update, count)
+        var saved_direction = self._save(direction, count)
+        self.updates.append(saved_update^)
+        self.directions.append(saved_direction^)
+
+
+fn _copy_uniaxial_states(mut destination: List[UniMaterialState], source: List[UniMaterialState]):
+    if len(destination) != len(source):
+        destination = source.copy()
+    else:
+        for i in range(len(source)):
+            destination[i].copy_from(source[i])
 
 
 fn _elem_dof_map(elem: ElementInput) -> List[Int]:
@@ -447,7 +510,7 @@ fn _gather_element_u(dof_map: List[Int], u: List[Float64]) -> List[Float64]:
     return out^
 
 
-fn _zero_length_row(dir: Int, ndm: Int, ndf: Int, trans: List[List[Float64]]) -> List[Float64]:
+fn _zero_length_row(dir: Int, ndm: Int, ndf: Int, trans: LinkOrientation) -> List[Float64]:
     var row: List[Float64] = []
     row.resize(2 * ndf, 0.0)
     if ndm == 1 and ndf == 1:
@@ -498,7 +561,7 @@ fn _zero_length_row(dir: Int, ndm: Int, ndf: Int, trans: List[List[Float64]]) ->
     return row^
 
 
-fn _two_node_link_tgl(ndm: Int, ndf: Int, trans: List[List[Float64]]) -> List[List[Float64]]:
+fn _two_node_link_tgl(ndm: Int, ndf: Int, trans: LinkOrientation) -> List[List[Float64]]:
     var num_dof = 2 * ndf
     var tgl: List[List[Float64]] = []
     for _ in range(num_dof):
@@ -2185,11 +2248,12 @@ fn _sync_force_beam_column2d_committed_basic_states(
     force_basic_offsets: List[Int],
     force_basic_counts: List[Int],
     mut force_basic_q: List[Float64],
+    mut u_local: List[Float64],
 ):
     if ndf != 3:
         return
     for e in range(len(typed_elements)):
-        var elem = typed_elements[e]
+        ref elem = typed_elements[e]
         if elem.type_tag != ElementTypeTag.ForceBeamColumn2d:
             continue
         var num_int_pts = elem.num_int_pts
@@ -2207,15 +2271,14 @@ fn _sync_force_beam_column2d_committed_basic_states(
             abort("zero-length element")
         var c = dx / L
         var s = dy / L
-        var dof_map = [
+        var dof_map = InlineArray[Int, 6](
             node_dof_index(i1, 1, ndf),
             node_dof_index(i1, 2, ndf),
             node_dof_index(i1, 3, ndf),
             node_dof_index(i2, 1, ndf),
             node_dof_index(i2, 2, ndf),
             node_dof_index(i2, 3, ndf),
-        ]
-        var u_local: List[Float64] = []
+        )
         u_local.resize(6, 0.0)
         u_local[0] = c * u[dof_map[0]] + s * u[dof_map[1]]
         u_local[1] = -s * u[dof_map[0]] + c * u[dof_map[1]]
@@ -3369,8 +3432,12 @@ fn _element_force_global_for_recorder(
             uniaxial_state_defs,
             uniaxial_defs,
             uniaxial_states,
+            form_tangent=False,
         )
-        return response.force.copy()
+        var force = List[Float64](capacity=6)
+        for i in range(6):
+            force.append(response.force[i])
+        return force^
     var elem_ndm = 2
     if ndf >= 6 or nodes[elem.node_index_1].has_z or nodes[elem.node_index_2].has_z:
         elem_ndm = 3
@@ -3928,20 +3995,41 @@ fn _solve_linear_system(
     return True
 
 
+fn _collapse_vector_by_mpc_into(
+    values: List[Float64],
+    row_offsets: List[Int],
+    dof_pool: List[Int],
+    coeff_pool: List[Float64],
+    mut out: List[Float64],
+):
+    _ensure_zero_vector(out, len(values))
+    for i in range(len(values)):
+        var row_start = row_offsets[i]
+        var row_end = row_offsets[i + 1]
+        for row_term in range(row_start, row_end):
+            out[dof_pool[row_term]] += coeff_pool[row_term] * values[i]
+
+
 fn _collapse_vector_by_mpc(
     values: List[Float64],
     row_offsets: List[Int],
     dof_pool: List[Int],
     coeff_pool: List[Float64],
 ) -> List[Float64]:
-    var out: List[Float64] = []
-    out.resize(len(values), 0.0)
-    for i in range(len(values)):
-        var row_start = row_offsets[i]
-        var row_end = row_offsets[i + 1]
-        for row_term in range(row_start, row_end):
-            out[dof_pool[row_term]] += coeff_pool[row_term] * values[i]
+    var out = List[Float64]()
+    _collapse_vector_by_mpc_into(values, row_offsets, dof_pool, coeff_pool, out)
     return out^
+
+
+fn _collapse_vector_by_mpc_reusing(
+    mut values: List[Float64],
+    row_offsets: List[Int],
+    dof_pool: List[Int],
+    coeff_pool: List[Float64],
+    mut work: List[Float64],
+):
+    _collapse_vector_by_mpc_into(values, row_offsets, dof_pool, coeff_pool, work)
+    swap(values, work)
 
 
 fn _collapse_load_keeping_restrained(

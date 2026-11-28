@@ -1,3 +1,4 @@
+from solver.run_case.session import SessionProgress, transient_pattern_scale
 from solver.assembly.shell_mass import add_shell_mass_sparse, shell_excitation_mass
 from solver.run_case.analysis.transient_state import TransientState
 from algorithm import vectorize
@@ -6,10 +7,11 @@ from elements import (
     ForceBeamColumn2dScratch,
     beam2d_element_load_global,
     reset_force_beam_column2d_scratch,
+    invalidate_force_beam_column2d_load_cache,
 )
 from materials import UniMaterialDef, UniMaterialState, uniaxial_commit_all
 from os import abort
-from python import Python
+from time import perf_counter_ns
 from sections import (
     FiberCell,
     FiberSection2dDef,
@@ -23,6 +25,7 @@ from sys import simd_width_of
 from solver.assembly.frame3d_scratch import (
     Frame3dAssemblyScratch,
     reset_frame3d_assembly_scratch,
+    invalidate_frame3d_assembly_load_cache,
 )
 from solver.assembly.surface_cache import SurfaceAssemblyCache
 from solver.run_case.linear_solver_backend import (
@@ -79,13 +82,13 @@ from solver.run_case.load_state import (
     add_uniform_excitation_load,
     set_uniform_excitation_initial_velocity,
     build_active_element_load_state,
-    build_active_nodal_load,
 )
 from solver.time_series import TimeSeriesInput, eval_time_series_input, find_time_series_input
 
 from solver.run_case.helpers import (
+    _update_active_nodal_load,
     _append_output,
-    _collapse_vector_by_mpc,
+    _collapse_vector_by_mpc_reusing,
     _element_basic_force_for_recorder,
     _element_deformation_for_recorder,
     _element_force_global_for_recorder,
@@ -323,9 +326,8 @@ fn run_transient_linear(
     frame_transient_step: Int,
     frame_uniaxial_commit_all: Int,
     mut runtime_metrics: RuntimeProfileMetrics,
+    mut session: SessionProgress,
 ) raises:
-    var time = Python.import_module("time")
-
     var dt = analysis.dt
     if dt <= 0.0:
         abort("transient_linear requires dt > 0")
@@ -402,7 +404,7 @@ fn run_transient_linear(
     var force_beam_column3d_scratch = Frame3dAssemblyScratch()
 
     if do_profile:
-        var t_asm_start = Int(time.perf_counter_ns())
+        var t_asm_start = Int(perf_counter_ns())
         var asm_start_us = (t_asm_start - t0) // 1000
         _append_event(events, events_need_comma, "O", frame_assemble_stiffness, asm_start_us)
     var initial_pattern_scale = 0.0
@@ -423,7 +425,7 @@ fn run_transient_linear(
         ndf,
     )
     if do_profile:
-        var t_reset_start = Int(time.perf_counter_ns())
+        var t_reset_start = Int(perf_counter_ns())
         _append_event(
             events,
             events_need_comma,
@@ -434,7 +436,7 @@ fn run_transient_linear(
     reset_force_beam_column2d_scratch(force_beam_column2d_scratch)
     reset_frame3d_assembly_scratch(force_beam_column3d_scratch)
     if do_profile:
-        var t_reset_end = Int(time.perf_counter_ns())
+        var t_reset_end = Int(perf_counter_ns())
         _append_event(
             events,
             events_need_comma,
@@ -521,7 +523,7 @@ fn run_transient_linear(
         runtime_metrics,
     )
     if do_profile:
-        var t_asm_end = Int(time.perf_counter_ns())
+        var t_asm_end = Int(perf_counter_ns())
         var asm_end_us = (t_asm_end - t0) // 1000
         _append_event(events, events_need_comma, "C", frame_assemble_stiffness, asm_end_us)
     # The assembled (MPC-reduced) stiffness is the constant tangent.
@@ -618,13 +620,13 @@ fn run_transient_linear(
     F_zero_length_damp_committed_f.resize(free_count, 0.0)
     if not has_zero_length_dampers:
         if do_profile:
-            var t_fac_start = Int(time.perf_counter_ns())
+            var t_fac_start = Int(perf_counter_ns())
             var fac_start_us = (t_fac_start - t0) // 1000
             _append_event(events, events_need_comma, "O", frame_factorize, fac_start_us)
         mats.load_effective(backend, a0, a1, False)
         factorize_loaded(backend, runtime_metrics)
         if do_profile:
-            var t_fac_end = Int(time.perf_counter_ns())
+            var t_fac_end = Int(perf_counter_ns())
             var fac_end_us = (t_fac_end - t0) // 1000
             _append_event(events, events_need_comma, "C", frame_factorize, fac_end_us)
 
@@ -673,14 +675,18 @@ fn run_transient_linear(
 
     mats.freeze_damping()
     var t = analysis.start_time
-    for step in range(steps):
+    var F_zero_length_damp_committed = List[Float64]()
+    var mpc_force_work = List[Float64]()
+    var step_limit = steps
+    var step = 0
+    while step < step_limit:
         if do_profile:
-            var t_step_start = Int(time.perf_counter_ns())
+            var t_step_start = Int(perf_counter_ns())
             var step_start_us = (t_step_start - t0) // 1000
             _append_event(events, events_need_comma, "O", frame_transient_step, step_start_us)
         if has_transformation_mpc:
             if do_profile:
-                var t_constraints_start = Int(time.perf_counter_ns())
+                var t_constraints_start = Int(perf_counter_ns())
                 var constraints_start_us = (t_constraints_start - t0) // 1000
                 _append_event(
                     events,
@@ -714,7 +720,7 @@ fn run_transient_linear(
                 mpc_coeff_pool,
             )
             if do_profile:
-                var t_constraints_end = Int(time.perf_counter_ns())
+                var t_constraints_end = Int(perf_counter_ns())
                 var constraints_end_us = (t_constraints_end - t0) // 1000
                 _append_event(
                     events,
@@ -726,17 +732,8 @@ fn run_transient_linear(
         t += dt
         if pattern_type_tag == PatternTypeTag.UniformExcitation:
             copy_float64_contiguous(F_ext_step, F_const, len(F_ext_step))
-            active_element_load_state = build_active_element_load_state(
-                const_element_loads,
-                pattern_element_loads,
-                0.0,
-                typed_elements,
-                elem_id_to_index,
-                ndm,
-                ndf,
-            )
             if do_profile:
-                var t_reset_start = Int(time.perf_counter_ns())
+                var t_reset_start = Int(perf_counter_ns())
                 _append_event(
                     events,
                     events_need_comma,
@@ -744,10 +741,8 @@ fn run_transient_linear(
                     PROFILE_FRAME_UNIAXIAL_COPY_RESET,
                     (t_reset_start - t0) // 1000,
                 )
-            reset_force_beam_column2d_scratch(force_beam_column2d_scratch)
-            reset_frame3d_assembly_scratch(force_beam_column3d_scratch)
             if do_profile:
-                var t_reset_end = Int(time.perf_counter_ns())
+                var t_reset_end = Int(perf_counter_ns())
                 _append_event(
                     events,
                     events_need_comma,
@@ -756,7 +751,7 @@ fn run_transient_linear(
                     (t_reset_end - t0) // 1000,
                 )
             if do_profile:
-                var t_ts_start = Int(time.perf_counter_ns())
+                var t_ts_start = Int(perf_counter_ns())
                 var ts_start_us = (t_ts_start - t0) // 1000
                 _append_event(
                     events,
@@ -780,7 +775,7 @@ fn run_transient_linear(
                 F_ext_step,
             )
             if do_profile:
-                var t_ts_end = Int(time.perf_counter_ns())
+                var t_ts_end = Int(perf_counter_ns())
                 var ts_end_us = (t_ts_end - t0) // 1000
                 _append_event(
                     events,
@@ -792,7 +787,7 @@ fn run_transient_linear(
         else:
             if ts_index >= 0:
                 if do_profile:
-                    var t_ts_start = Int(time.perf_counter_ns())
+                    var t_ts_start = Int(perf_counter_ns())
                     var ts_start_us = (t_ts_start - t0) // 1000
                     _append_event(
                         events,
@@ -808,7 +803,7 @@ fn run_transient_linear(
                     time_series_times,
                 )
                 if do_profile:
-                    var t_ts_end = Int(time.perf_counter_ns())
+                    var t_ts_end = Int(perf_counter_ns())
                     var ts_end_us = (t_ts_end - t0) // 1000
                     _append_event(
                         events,
@@ -817,22 +812,19 @@ fn run_transient_linear(
                         frame_time_series_eval,
                         ts_end_us,
                     )
-                copy_float64_contiguous(
-                    F_ext_step,
-                    build_active_nodal_load(F_const, F_pattern, factor),
-                    len(F_ext_step),
-                )
-                active_element_load_state = build_active_element_load_state(
-                    const_element_loads,
-                    pattern_element_loads,
-                    factor,
-                    typed_elements,
-                    elem_id_to_index,
-                    ndm,
-                    ndf,
-                )
+                _update_active_nodal_load[True](F_const, F_pattern, factor, F_ext_step)
+                if len(pattern_element_loads) > 0:
+                    active_element_load_state = build_active_element_load_state(
+                        const_element_loads,
+                        pattern_element_loads,
+                        factor,
+                        typed_elements,
+                        elem_id_to_index,
+                        ndm,
+                        ndf,
+                    )
                 if do_profile:
-                    var t_reset_start = Int(time.perf_counter_ns())
+                    var t_reset_start = Int(perf_counter_ns())
                     _append_event(
                         events,
                         events_need_comma,
@@ -840,10 +832,11 @@ fn run_transient_linear(
                         PROFILE_FRAME_UNIAXIAL_COPY_RESET,
                         (t_reset_start - t0) // 1000,
                     )
-                reset_force_beam_column2d_scratch(force_beam_column2d_scratch)
-                reset_frame3d_assembly_scratch(force_beam_column3d_scratch)
+                if len(pattern_element_loads) > 0:
+                    invalidate_force_beam_column2d_load_cache(force_beam_column2d_scratch)
+                    invalidate_frame3d_assembly_load_cache(force_beam_column3d_scratch)
                 if do_profile:
-                    var t_reset_end = Int(time.perf_counter_ns())
+                    var t_reset_end = Int(perf_counter_ns())
                     _append_event(
                         events,
                         events_need_comma,
@@ -852,22 +845,9 @@ fn run_transient_linear(
                         (t_reset_end - t0) // 1000,
                     )
             else:
-                copy_float64_contiguous(
-                    F_ext_step,
-                    build_active_nodal_load(F_const, F_pattern, 1.0),
-                    len(F_ext_step),
-                )
-                active_element_load_state = build_active_element_load_state(
-                    const_element_loads,
-                    pattern_element_loads,
-                    1.0,
-                    typed_elements,
-                    elem_id_to_index,
-                    ndm,
-                    ndf,
-                )
+                _update_active_nodal_load[True](F_const, F_pattern, 1.0, F_ext_step)
                 if do_profile:
-                    var t_reset_start = Int(time.perf_counter_ns())
+                    var t_reset_start = Int(perf_counter_ns())
                     _append_event(
                         events,
                         events_need_comma,
@@ -875,10 +855,8 @@ fn run_transient_linear(
                         PROFILE_FRAME_UNIAXIAL_COPY_RESET,
                         (t_reset_start - t0) // 1000,
                     )
-                reset_force_beam_column2d_scratch(force_beam_column2d_scratch)
-                reset_frame3d_assembly_scratch(force_beam_column3d_scratch)
                 if do_profile:
-                    var t_reset_end = Int(time.perf_counter_ns())
+                    var t_reset_end = Int(perf_counter_ns())
                     _append_event(
                         events,
                         events_need_comma,
@@ -901,7 +879,6 @@ fn run_transient_linear(
             free, u_f, v_f, a_f, F_solve_step, mats, beta, gamma, dt, v_predict, a_predict, lu_rhs
         )
         if has_zero_length_dampers:
-            var F_zero_length_damp_committed: List[Float64] = []
             F_zero_length_damp_committed.resize(total_dofs, 0.0)
             swap(mats.assembler.values, mats.k_zero_length_damp)
             assemble_zero_length_damping_secstif_sparse(
@@ -929,22 +906,23 @@ fn run_transient_linear(
             )
             swap(mats.assembler.values, mats.k_zero_length_damp)
             if has_transformation_mpc:
-                F_zero_length_damp_committed = _collapse_vector_by_mpc(
+                _collapse_vector_by_mpc_reusing(
                     F_zero_length_damp_committed,
                     mpc_row_offsets,
                     mpc_dof_pool,
                     mpc_coeff_pool,
+                    mpc_force_work,
                 )
             for i in range(free_count):
                 F_zero_length_damp_committed_f[i] = F_zero_length_damp_committed[free[i]]
             if do_profile:
-                var t_fac_start = Int(time.perf_counter_ns())
+                var t_fac_start = Int(perf_counter_ns())
                 var fac_start_us = (t_fac_start - t0) // 1000
                 _append_event(events, events_need_comma, "O", frame_factorize, fac_start_us)
             mats.load_effective(backend, a0, a1, True)
             factorize_loaded(backend, runtime_metrics)
             if do_profile:
-                var t_fac_end = Int(time.perf_counter_ns())
+                var t_fac_end = Int(perf_counter_ns())
                 var fac_end_us = (t_fac_end - t0) // 1000
                 _append_event(events, events_need_comma, "C", frame_factorize, fac_end_us)
         if has_zero_length_dampers:
@@ -955,12 +933,12 @@ fn run_transient_linear(
                     damp_force += mats.k_zero_length_damp[slot] * u_f[mats.pattern.col_index[slot]]
                 lu_rhs[i] += F_zero_length_damp_committed_f[i] - damp_force
         if do_profile:
-            var t_solve_start = Int(time.perf_counter_ns())
+            var t_solve_start = Int(perf_counter_ns())
             var solve_start_us = (t_solve_start - t0) // 1000
             _append_event(events, events_need_comma, "O", frame_solve_linear, solve_start_us)
         solve(backend, lu_rhs, delta_u_f)
         if do_profile:
-            var t_solve_end = Int(time.perf_counter_ns())
+            var t_solve_end = Int(perf_counter_ns())
             var solve_end_us = (t_solve_end - t0) // 1000
             _append_event(events, events_need_comma, "C", frame_solve_linear, solve_end_us)
         for i in range(free_count):
@@ -968,7 +946,10 @@ fn run_transient_linear(
             v_f[i] = v_predict[i] + a1 * delta_u_f[i]
             a_f[i] = a_predict[i] + a0 * delta_u_f[i]
         var need_full_state = (
-            has_transformation_mpc or record_reactions or len(recorders) > 0 or step == steps - 1
+            has_transformation_mpc
+            or record_reactions
+            or len(recorders) > 0
+            or step == step_limit - 1
         )
         if need_full_state:
             _scatter_free_vector_to_full(free, u_f, u)
@@ -976,7 +957,7 @@ fn run_transient_linear(
             _scatter_free_vector_to_full(free, a_f, a)
         if has_transformation_mpc:
             if do_profile:
-                var t_constraints_start = Int(time.perf_counter_ns())
+                var t_constraints_start = Int(perf_counter_ns())
                 var constraints_start_us = (t_constraints_start - t0) // 1000
                 _append_event(
                     events,
@@ -1010,7 +991,7 @@ fn run_transient_linear(
                 mpc_coeff_pool,
             )
             if do_profile:
-                var t_constraints_end = Int(time.perf_counter_ns())
+                var t_constraints_end = Int(perf_counter_ns())
                 var constraints_end_us = (t_constraints_end - t0) // 1000
                 _append_event(
                     events,
@@ -1022,7 +1003,7 @@ fn run_transient_linear(
 
         var F_int_reaction: List[Float64] = []
         if do_profile:
-            var t_rec_start = Int(time.perf_counter_ns())
+            var t_rec_start = Int(perf_counter_ns())
             var rec_start_us = (t_rec_start - t0) // 1000
             _append_event(events, events_need_comma, "O", frame_recorders, rec_start_us)
         if record_reactions:
@@ -1525,13 +1506,13 @@ fn run_transient_linear(
             elif rec.type_tag != RecorderTypeTag.ModalEigen:
                 abort("unsupported recorder type")
         if do_profile:
-            var t_rec_end = Int(time.perf_counter_ns())
+            var t_rec_end = Int(perf_counter_ns())
             var rec_end_us = (t_rec_end - t0) // 1000
             _append_event(events, events_need_comma, "C", frame_recorders, rec_end_us)
             _append_event(events, events_need_comma, "C", frame_transient_step, rec_end_us)
         if has_zero_length_dampers:
             if do_profile:
-                var t_commit_start = Int(time.perf_counter_ns())
+                var t_commit_start = Int(perf_counter_ns())
                 var commit_start_us = (t_commit_start - t0) // 1000
                 _append_event(
                     events,
@@ -1545,7 +1526,7 @@ fn run_transient_linear(
             fiber_section2d_commit_runtime_all(fiber_section_defs)
             fiber_section3d_commit_runtime_all(fiber_section3d_defs)
             if do_profile:
-                var t_commit_end = Int(time.perf_counter_ns())
+                var t_commit_end = Int(perf_counter_ns())
                 var commit_end_us = (t_commit_end - t0) // 1000
                 _append_event(
                     events,
@@ -1554,6 +1535,29 @@ fn run_transient_linear(
                     frame_uniaxial_commit_all,
                     commit_end_us,
                 )
+        step += 1
+        if session.enabled and step == step_limit:
+            var more_steps = session.continue_steps(
+                step,
+                t,
+                transient_pattern_scale(
+                    pattern_type_tag,
+                    ts_index,
+                    t,
+                    time_series,
+                    time_series_values,
+                    time_series_times,
+                ),
+                u,
+                v,
+                a,
+                uniaxial_states,
+                force_basic_q,
+                fiber_section_defs,
+                fiber_section3d_defs,
+                shell_cache,
+            )
+            step_limit += more_steps
     clear(backend)
     _flush_envelope_outputs(
         envelope_files,

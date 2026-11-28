@@ -115,21 +115,25 @@ fn two_node_link_internal_dir(dir: Int, ndm: Int, ndf: Int) -> Int:
     return 0
 
 
-fn _normalize3(v0: Float64, v1: Float64, v2: Float64) -> List[Float64]:
+alias LinkAxis = InlineArray[Float64, 3]
+alias LinkOrientation = InlineArray[LinkAxis, 3]
+
+
+fn _normalize3(v0: Float64, v1: Float64, v2: Float64) -> LinkAxis:
     var norm = sqrt(v0 * v0 + v1 * v1 + v2 * v2)
     if norm == 0.0:
         abort("invalid zero-length orientation vector")
-    return [v0 / norm, v1 / norm, v2 / norm]
+    return LinkAxis(v0 / norm, v1 / norm, v2 / norm)
 
 
-fn _reference_y_for_x(x0: Float64, x1: Float64, x2: Float64) -> List[Float64]:
+fn _reference_y_for_x(x0: Float64, x1: Float64) -> LinkAxis:
     var dot_y = x1
     if dot_y > -0.9 and dot_y < 0.9:
-        return [0.0, 1.0, 0.0]
+        return LinkAxis(0.0, 1.0, 0.0)
     var dot_x = x0
     if dot_x > -0.9 and dot_x < 0.9:
-        return [1.0, 0.0, 0.0]
-    return [0.0, 0.0, 1.0]
+        return LinkAxis(1.0, 0.0, 0.0)
+    return LinkAxis(0.0, 0.0, 1.0)
 
 
 fn link_orientation_matrix(
@@ -149,30 +153,37 @@ fn link_orientation_matrix(
     orient_y_2: Float64,
     orient_y_3: Float64,
     use_nodes_as_default_x: Bool,
-) -> List[List[Float64]]:
+) -> LinkOrientation:
+    if not (use_nodes_as_default_x or has_orient_x or has_orient_y):
+        # Match the signs of the zeros in the default cross products.
+        var zx = 0.0
+        var zy = -0.0 if ndm == 2 else 0.0
+        return LinkOrientation(
+            LinkAxis(1.0, 0.0, 0.0), LinkAxis(zy, 1.0, 0.0), LinkAxis(zx, zy, 1.0)
+        )
     var dx = x2 - x1
     var dy = y2 - y1
     var dz = z2 - z1
-    var x_local = [1.0, 0.0, 0.0]
+    var x_local = LinkAxis(1.0, 0.0, 0.0)
     if use_nodes_as_default_x:
         if ndm == 2:
             var L2 = sqrt(dx * dx + dy * dy)
             if L2 > 0.0:
-                x_local = [dx / L2, dy / L2, 0.0]
+                x_local = LinkAxis(dx / L2, dy / L2, 0.0)
         else:
             var L3 = sqrt(dx * dx + dy * dy + dz * dz)
             if L3 > 0.0:
-                x_local = [dx / L3, dy / L3, dz / L3]
+                x_local = LinkAxis(dx / L3, dy / L3, dz / L3)
     if has_orient_x:
         x_local = _normalize3(orient_x_1, orient_x_2, orient_x_3)
 
-    var y_ref: List[Float64]
+    var y_ref: LinkAxis
     if ndm == 2:
-        y_ref = [-x_local[1], x_local[0], 0.0]
+        y_ref = LinkAxis(-x_local[1], x_local[0], 0.0)
     elif has_orient_y:
         y_ref = _normalize3(orient_y_1, orient_y_2, orient_y_3)
     else:
-        y_ref = _reference_y_for_x(x_local[0], x_local[1], x_local[2])
+        y_ref = _reference_y_for_x(x_local[0], x_local[1])
     if ndm == 2 and has_orient_y:
         y_ref = _normalize3(orient_y_1, orient_y_2, orient_y_3)
 
@@ -185,4 +196,4 @@ fn link_orientation_matrix(
     var y2v = z_local[0] * x_local[1] - z_local[1] * x_local[0]
     var y_local = _normalize3(y0, y1v, y2v)
 
-    return [x_local^, y_local^, z_local^]
+    return LinkOrientation(x_local^, y_local^, z_local^)

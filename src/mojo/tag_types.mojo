@@ -117,6 +117,7 @@ struct NonlinearTestTypeTag:
     alias NormDispIncr = 2
     alias NormUnbalance = 3
     alias EnergyIncr = 4
+    alias RelativeNormDispIncr = 5
 
 
 struct RecorderTypeTag:

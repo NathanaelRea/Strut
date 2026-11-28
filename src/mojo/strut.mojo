@@ -1,12 +1,17 @@
 from os import abort
-from python import Python, PythonObject
+from pathlib import Path
+from time import perf_counter_ns
 
+from json_native import JsonValueTag
 from solver.run_case import run_case_from_native_source
+from solver.run_case.main import run_case_session
+from solver.run_case.session import SessionProtocol
+from solver.run_case.input_types import _json_get_string
 from strut_io import (
     load_case_document,
-    load_json,
+    load_json_native,
+    NativeCaseDocument,
     parse_args,
-    py_len,
 )
 
 
@@ -19,25 +24,33 @@ def main():
         batch_path,
         profile_path,
         compute_only,
+        session,
     ) = parse_args()
+    if session and (batch_path != "" or compute_only or profile_path != ""):
+        abort("--session does not support batch, profiling or compute-only")
+    if session and input_path == "" and input_bin_path == "":
+        if output_path != "" or write_input_bin_path != "":
+            abort("session outputs are set by each open command")
+        run_case_session()
+        return
     if batch_path != "":
-        var batch = load_json(batch_path)
-        var cases = batch.get("cases", [])
-        var time = Python.import_module("time")
-        var pathlib = Python.import_module("pathlib")
-        for i in range(py_len(cases)):
-            var entry = cases[i]
-            var entry_input = String(entry.get("input", ""))
-            var entry_input_bin = String(entry.get("input_bin", ""))
-            var entry_output = String(entry.get("output", ""))
-            var entry_profile = String(entry.get("profile", ""))
+        var batch = load_json_native(batch_path)
+        var cases = batch.object_find(batch.root_index, "cases")
+        if cases < 0:
+            return
+        if batch.node_tag(cases) != JsonValueTag.Array:
+            abort("batch cases must be an array")
+        for i in range(batch.node_len(cases)):
+            var entry = batch.array_item(cases, i)
+            var entry_input = _json_get_string(batch, entry, "input", "")
+            var entry_input_bin = _json_get_string(batch, entry, "input_bin", "")
+            var entry_output = _json_get_string(batch, entry, "output", "")
+            var entry_profile = _json_get_string(batch, entry, "profile", "")
             if (entry_input == "" and entry_input_bin == "") or entry_output == "":
                 abort("batch entry missing input/output")
-            var t_case_start = Int(time.perf_counter_ns())
-            var t_load_start = Int(time.perf_counter_ns())
+            var t_case_start = Int(perf_counter_ns())
             var loaded = load_case_document(entry_input, entry_input_bin, "")
-            var t_load_end = Int(time.perf_counter_ns())
-            var case_load_us = (t_load_end - t_load_start) // 1000
+            var case_load_us = (Int(perf_counter_ns()) - t_case_start) // 1000
             run_case_from_native_source(
                 loaded.doc,
                 loaded.source_info,
@@ -46,13 +59,8 @@ def main():
                 case_load_us,
                 not compute_only,
             )
-            var t_case_end = Int(time.perf_counter_ns())
-            var elapsed_us = (t_case_end - t_case_start) // 1000
-            var out_dir = pathlib.Path(entry_output)
-            out_dir.mkdir(parents=True, exist_ok=True)
-            var file_path = out_dir.joinpath("case_time_us.txt")
-            var line = String(elapsed_us) + "\n"
-            file_path.write_text(PythonObject(line))
+            var elapsed_us = (Int(perf_counter_ns()) - t_case_start) // 1000
+            (Path(entry_output) / "case_time_us.txt").write_text(String(elapsed_us) + "\n")
         return
 
     if output_path == "":
@@ -62,13 +70,22 @@ def main():
         abort(
             "usage: strut.mojo -- (--input <case.json> | --input-bin <case.bin>) --output <dir>"
             " [--batch <manifest.json>] [--profile <speedscope.json>] [--compute-only]"
-            " [--write-input-bin <case.bin>]"
+            " [--write-input-bin <case.bin>] [--session]"
         )
-    var time = Python.import_module("time")
-    var t_load_start = Int(time.perf_counter_ns())
-    var loaded = load_case_document(input_path, input_bin_path, write_input_bin_path)
-    var t_load_end = Int(time.perf_counter_ns())
-    var case_load_us = (t_load_end - t_load_start) // 1000
+    var t_load_start = Int(perf_counter_ns())
+    var loaded: NativeCaseDocument
+    if input_path == "-":
+        if session or input_bin_path != "" or write_input_bin_path != "":
+            abort("stdin input does not support session or cache options")
+        var protocol = SessionProtocol(True)
+        var line = protocol.read_line()
+        if line == "":
+            abort("missing JSON input on stdin")
+        loaded = NativeCaseDocument()
+        loaded.doc = protocol.decode(line)
+    else:
+        loaded = load_case_document(input_path, input_bin_path, write_input_bin_path)
+    var case_load_us = (Int(perf_counter_ns()) - t_load_start) // 1000
     run_case_from_native_source(
         loaded.doc,
         loaded.source_info,
@@ -76,4 +93,5 @@ def main():
         profile_path,
         case_load_us,
         not compute_only,
+        session,
     )

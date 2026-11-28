@@ -6,6 +6,7 @@ from elements.continuum import (
     prepare_continuum,
 )
 from materials.elastic_cross_anisotropic import cross_anisotropic_tangent
+from solver.assembly.parallel_elements import ParallelElementWork
 from solver.run_case.input_types import ElementInput, MaterialInput, NodeInput
 from solver.sparse_pattern import ElementMatrixSink, SparseAssembler
 from os import abort
@@ -29,15 +30,39 @@ struct ContinuumAssemblyEntry(Copyable, Movable):
             force[self.dofs[a]] += local[a]
 
 
+@fieldwise_init
+struct _ContinuumComputeContext(ImplicitlyCopyable):
+    var entries: UnsafePointer[ContinuumAssemblyEntry]
+    var u: UnsafePointer[List[Float64]]
+    var tangent: Bool
+
+
+fn _compute_continuum(
+    ctx: _ContinuumComputeContext,
+    i: Int,
+    _worker: Int,
+    _matrix: UnsafePointer[Float64],
+    force: UnsafePointer[Float64],
+    _scratch: UnsafePointer[Float64],
+):
+    ref entry = ctx.entries[i]
+    var local = entry.element.evaluate(entry.gather(ctx.u[]), ctx.tangent)
+    var values = local.unsafe_ptr()
+    for a in range(entry.element.dofs):
+        force[a] = values[a]
+
+
 struct ContinuumAssemblyCache(Movable):
     var nonlinear: List[Int]
     var index_by_element: List[Int]
     var entries: List[ContinuumAssemblyEntry]
+    var work: ParallelElementWork
 
     fn __init__(out self):
         self.nonlinear = []
         self.index_by_element = []
         self.entries = []
+        self.work = ParallelElementWork()
 
     fn prepare(
         mut self,
@@ -53,6 +78,7 @@ struct ContinuumAssemblyCache(Movable):
         if len(indices) == 0:
             return
         self.index_by_element.resize(len(elements), -1)
+        var max_dofs = 0
         for i in indices:
             ref elem = elements[i]
             ref mat = materials[elem.material]
@@ -91,7 +117,18 @@ struct ContinuumAssemblyCache(Movable):
             if mat.drucker_prager:
                 solid.set_drucker_prager(mat.drucker_prager.value())
                 self.nonlinear.append(len(self.entries))
+            max_dofs = max(max_dofs, solid.dofs)
             self.entries.append(ContinuumAssemblyEntry(i, dofs^, solid^))
+
+        self.work = ParallelElementWork(min(512, len(indices)), 0, max_dofs, 0, 4096)
+        self.work.plan.cumulative.reserve(len(indices) + 1)
+        for i in range(len(self.entries)):
+            ref solid = self.entries[i].element
+            var matrix_entries = solid.dofs * solid.dofs
+            var work = matrix_entries
+            if solid.drucker_prager:
+                work += 6 * len(solid.strains) * matrix_entries
+            self.work.plan.append(work)
 
     fn commit(mut self):
         for i in self.nonlinear:
@@ -113,17 +150,37 @@ struct ContinuumAssemblyCache(Movable):
         mut force: List[Float64],
     ):
         var tangent = sink.accepts_element_matrices()
-        for i in range(len(self.entries)):
-            ref entry = self.entries[i]
-            entry.add_force(u, tangent, force)
-            if tangent:
-                sink.add_element_matrix_flat(
-                    entry.index,
-                    free_pool,
-                    free_offsets[entry.index],
-                    entry.element.dofs,
-                    entry.element.stiffness,
-                )
+        var length = len(self.entries)
+        if self.work.plan.worker_count(0, length) == 1:
+            for i in range(len(self.entries)):
+                ref entry = self.entries[i]
+                entry.add_force(u, tangent, force)
+                if tangent:
+                    sink.add_element_matrix_flat(
+                        entry.index,
+                        free_pool,
+                        free_offsets[entry.index],
+                        entry.element.dofs,
+                        entry.element.stiffness,
+                    )
+            return
+        var ctx = _ContinuumComputeContext(self.entries.unsafe_ptr(), UnsafePointer(to=u), tangent)
+        for start in range(0, length, self.work.capacity):
+            var count = min(length - start, self.work.capacity)
+            self.work.compute[_ContinuumComputeContext, _compute_continuum](ctx, start, count)
+            for i in range(count):
+                ref entry = self.entries[start + i]
+                var local_force = self.work.forces.unsafe_ptr() + i * self.work.force_size
+                for a in range(entry.element.dofs):
+                    force[entry.dofs[a]] += local_force[a]
+                if tangent:
+                    sink.add_element_matrix_flat(
+                        entry.index,
+                        free_pool,
+                        free_offsets[entry.index],
+                        entry.element.dofs,
+                        entry.element.stiffness,
+                    )
 
     fn assemble_dense_element(
         mut self,
@@ -142,8 +199,24 @@ struct ContinuumAssemblyCache(Movable):
     fn assemble_dense(
         mut self, u: List[Float64], mut K: List[List[Float64]], mut force: List[Float64]
     ):
-        for i in range(len(self.entries)):
-            self.assemble_dense_element(self.entries[i].index, u, K, force)
+        var length = len(self.entries)
+        if self.work.plan.worker_count(0, length) == 1:
+            for i in range(length):
+                self.assemble_dense_element(self.entries[i].index, u, K, force)
+            return
+        var ctx = _ContinuumComputeContext(self.entries.unsafe_ptr(), UnsafePointer(to=u), True)
+        for start in range(0, length, self.work.capacity):
+            var count = min(length - start, self.work.capacity)
+            self.work.compute[_ContinuumComputeContext, _compute_continuum](ctx, start, count)
+            for i in range(count):
+                ref entry = self.entries[start + i]
+                var dofs = entry.element.dofs
+                var local_force = self.work.forces.unsafe_ptr() + i * self.work.force_size
+                for a in range(dofs):
+                    force[entry.dofs[a]] += local_force[a]
+                for a in range(dofs):
+                    for b in range(dofs):
+                        K[entry.dofs[a]][entry.dofs[b]] += entry.element.stiffness[a * dofs + b]
 
     fn accumulate_lumped_mass(self, mut mass: List[Float64], mut rayleigh: List[Float64]):
         for i in range(len(self.entries)):
