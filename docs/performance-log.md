@@ -132,6 +132,8 @@ Open:
 
 Reference workload: the 40-step mega-tall (155,130 equations after constraints, 40 factorizations of about 100 GFlop each, largest front 3,252).
 
+The full record (10 gravity and 2,000 transient steps) completes in Strut: 2,202 s of analysis at 8t with recorders on, 4.0 GB peak resident, measured 2026-11-27. That is 1.1 s per step against 0.65 s per step over the 40-step input, so the short input understates the cost of the later steps. OpenSees has not been run on the full record; at its 40-step rate of 21 s per step it would need about 12 hours.
+
 | Date | Change | Result | Status |
 | --- | --- | --- | --- |
 | 2026-11-27 | AMD with the highest-degree hubs deferred (six vertices of degree 1,304 on the mega-tall), chosen only when predicted flops drop at least 15% and fill does not grow. | Predicted flops −18.7%, fill −7.3%. Mega-tall 64.8 s → 58.8 s (1t), 26.35 s → 26.27 s (8t), results equal to 4.5e-13. `gallery_hexaextrusion_hexa` looked 3 to 5% slower at 4 and 8 threads under load; on a quiet machine it is 509 ms against 512 ms at 8t. | kept |
