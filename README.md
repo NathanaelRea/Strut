@@ -1,8 +1,10 @@
 # 🔥 Strut 🔥
 
-**Runs models up to 30x faster than OpenSees**
+**Nonlinear structural analysis, 30x faster than OpenSees.**
 
-Strut is a finite element engine for buildings under earthquake loading, written in [Mojo](https://www.modular.com/mojo). It can read OpenSees Tcl scripts, and it's faster the larger the model is.
+A 160,000-DOF tall building under earthquake loading: 14 minutes in OpenSees, 27 seconds in Strut. Strut reads OpenSees Tcl scripts directly, so your existing models run unchanged.
+
+Strut is a finite element engine for static, transient, and modal analysis of frames, walls, shells, and soil, written in [Mojo](https://www.modular.com/mojo). It gets faster relative to OpenSees as models get larger.
 
 ```mermaid
 ---
@@ -31,9 +33,15 @@ xychart-beta
 
 Analysis time against OpenSees 3.7.1 on the same machine (Ryzen 7 9800X3D). Every case is in the [full benchmarks](./docs/benchmark-opensees-examples.md).
 
+## Why Strut
+
+- **Studies that run the model many times become practical.** When a run drops from minutes to seconds, incremental dynamic analysis, fragility curves, Monte Carlo sampling, design optimization, and ML training sets fit on a workstation instead of a cluster.
+- **Parallel without rewriting the model.** OpenSeesMP needs the script split up by hand and OpenSeesSP needs MPI. Strut runs the same script on every core: it threads the element loops and the sparse factorization.
 - **Same answers.** Solved to a tight tolerance, every model above matches OpenSees to within 10 parts per million. See [how that is checked](./benchmark/README.md#do-the-large-models-match-opensees).
-- **More accurate on the mega-tall's own settings.** With the solver settings the model ships with, OpenSees stops 2.5% to 4.5% from its own converged answer. Strut stops about 0.1% from it.
-- **Fast on one core, faster on eight.** Most of the gain is single-threaded. Threading the element loops and the sparse factorization adds the rest.
+- **Closer to the converged answer.** With the solver settings the mega-tall model ships with, OpenSees stops 2.5% to 4.5% from its own converged answer. Strut stops about 0.1% from it.
+- **Bring your OpenSees models.** The Tcl reader runs OpenSees scripts as written, including staged analyses and recorders. Strut also has its own JSON model format.
+- **Two commands from clone to running.** `uv sync` installs everything in seconds, including Python, Tcl, and the Mojo compiler, with no sudo and no system packages. `uv run python scripts/build_mojo_solver.py` builds the solver. There's no separate Tcl install, compiler toolchain, or library hunt.
+- **Compiled for your CPU.** Mojo builds the solver on your machine for your processor's instruction set, so a newer CPU gets wider SIMD (AVX2, AVX-512) automatically instead of a lowest-common-denominator binary.
 - **Tested against OpenSees on every run.** Over 90 comparisons, covering the OpenSees example suite through "Advanced Example 6" and slices cut from the mega-tall building.
 
 > [!NOTE]
@@ -59,16 +67,21 @@ The tests and benchmarks install a pinned OpenSees 3.8.0 and the test data on fi
 
 | | Supported |
 | --- | --- |
-| Elements | `elasticBeamColumn`, `forceBeamColumn`, `dispBeamColumn`, `truss`, `twoNodeLink`, `zeroLength` in 2D and 3D; `fourNodeQuad`; `ShellMITC4` |
-| Sections | elastic, fiber (2D and 3D), aggregator (2D), elastic membrane-plate, layered shell |
-| Uniaxial materials | `Elastic`, `Steel01`, `Steel02`, `Concrete01`, `Concrete02` |
-| nD materials | `ElasticIsotropic`, `ConcreteS`, `PlateFromPlaneStress`, `PlateRebar` |
+| Beam-columns | `elasticBeamColumn`, `forceBeamColumn`, `dispBeamColumn`, `beamWithHinges`, `forceBeamColumnCBDI`, `dispBeamColumnThermal` in 2D and 3D |
+| Trusses, links, and springs | `truss`, `corotTruss`, `twoNodeLink`, `zeroLength`, `zeroLengthSection`, `CoupledZeroLength`, `CatenaryCable`, `BeamContact2D` |
+| Walls | `MVLEM`, `SFI_MVLEM` |
+| Shells | `ShellMITC4`, `ShellDKGQ`, `ShellDKGT`, `ShellNLDKGQ`, `ASDShellQ4` |
+| Solids | `quad`, `tri31`, `SSPquad`, `bbarQuad`, `enhancedQuad`, `quad8n`, `quad9n`, `stdBrick`, `bbarBrick`, `SSPbrick`; `block2D`, `block3D` |
+| Soil (u-p coupled) | `quadUP`, `9_4_QuadUP`, `SSPbrickUP` |
+| Sections | elastic, fiber (2D and 3D, `rect`/`quad`/`circ` patches and layers), `FiberThermal`, aggregator, elastic membrane-plate, layered shell, plate fiber |
+| Uniaxial materials | `Elastic`, `ElasticPP`, `ElasticBilin`, `ENT`, `Steel01`, `Steel01Thermal`, `Steel02`, `SteelMPF`, `Concrete01`, `Concrete02`, `ConcreteCM`, `Hysteretic`, `Bilin`, `ModIMKPeakOriented`, `Ratchet`, `Hardening`, `Viscous`, `ViscousDamper`, `PySimple1`, `TzSimple1`, `QzSimple1`, `Parallel`, `MinMax`, `Fatigue` |
+| nD materials | `ElasticIsotropic`, `ElasticCrossAnisotropic`, `DruckerPrager`, `PressureIndependMultiYield`, `PressureDependMultiYield`, `PressureDependMultiYield02`, `InitialStateAnalysisWrapper`, `ConcreteS`, `FSAM`, `ContactMaterial2D`, `PlateFiber`, `PlateFromPlaneStress`, `PlateRebar` |
 | Geometric transformations | `Linear`, `PDelta`, `Corotational` |
-| Analyses | static and transient, linear and nonlinear; staged; modal eigen |
-| Integrators | `LoadControl`, `DisplacementControl`, `Newmark` |
-| Algorithms | `Newton`, `ModifiedNewton` (also `-initial`), `NewtonLineSearch`, `Broyden`, `KrylovNewton` (static) |
+| Analyses | static and transient, linear and nonlinear; staged; modal eigen; Rayleigh and modal damping; uniform and multiple-support excitation |
+| Integrators | `LoadControl`, `DisplacementControl`, `Newmark`, `HSConstraint` |
+| Algorithms | `Linear`, `Newton`, `ModifiedNewton` (also `-initial`), `NewtonLineSearch`, `Broyden`, `KrylovNewton` |
 | Linear systems | `BandGeneral`, `BandSPD`, `ProfileSPD`, `SuperLU`, `UmfPack`, `FullGeneral`, `SparseSYM` |
-| Constraints | `Plain`, `Transformation`, `Lagrange`; `equalDOF`, `rigidDiaphragm` |
+| Constraints | `Plain`, `Transformation`, `Lagrange`, `Penalty`; `equalDOF`, `rigidDiaphragm` |
 | Numberers | `RCM`, `Plain` |
 
-Not yet: `beamWithHinges`, bearing elements, damper materials, `Steel01Thermal`, `TensionOnly`.
+Not yet: bearing elements, `TensionOnly`, arc-length and explicit integrators, `HHT` and generalized-alpha. OpenSees has many more element and material types than this list. Strut reports an unsupported command with a clear error instead of skipping it.
