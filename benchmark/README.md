@@ -149,12 +149,20 @@ recorder work they perform. Strut live replay currently provides only
 end-to-end timings. Native Tcl output stays in its staged bundle under
 `benchmark/results-e2e/tcl/opensees/`.
 
+A direct Tcl manifest can set `benchmark_skip` to a reason string. The runner
+then leaves the case out and logs the reason. Use it when the two engines do
+different work on the same script, so a pair of times would not be a
+comparison. The two unconfined Ex9c sections are marked: OpenSees stops
+converging at step 24 of 100 and the script then fails on an undefined
+variable, while Strut completes the history.
+
 ### Large models
 
-The example suite tops out under 200 DOFs, so none of it reaches the threaded
-code. Two kinds of larger input fill that gap. Both are
-generated, so build them first; they are timed separately from the examples
-because OpenSees needs minutes on them.
+The example suite tops out at a few hundred DOFs. Its fiber frames and soil
+columns thread, but nothing in it exercises sparse factorization at scale. Two
+kinds of larger input fill that gap. Both are generated, so build them first;
+they are timed separately from the examples because OpenSees needs minutes on
+them.
 
 **Mega-tall building.** The full model runs 10 gravity and 2000 transient steps,
 which takes hours in OpenSees. `scripts/build_megatall_benchmark_case.py` writes the
@@ -319,7 +327,8 @@ uv run scripts/plot_benchmarks.py --group-by config --group-config benchmark/gro
 
 | Variable | Effect |
 | --- | --- |
-| `STRUT_THREADS=N` | Worker threads for element state determination (layered shells, 3D beam-columns) and sparse factorization. Default: performance cores. `1` runs the whole solve on one thread. |
+| `STRUT_THREADS=N` | Worker threads for element state determination (fiber beam-columns in 2D and 3D, layered shells, quads, u-p elements, bricks) and sparse factorization. A sweep threads when its estimated work (integration points times fibers or layers) is large enough, so a few expensive elements thread and many cheap ones do not. Default: performance cores. `1` runs the whole solve on one thread. |
+| `STRUT_TCL_SESSION=0` | Run interactive Tcl scripts by replaying history in a new solver process per `analyze`, instead of the persistent solver session. `required` turns an operation the session does not support into an error instead of a fallback to replay. |
 | `STRUT_VERBOSE=1` | Print sparse LDLT statistics (ordering, factor size, flops) or why the solver fell back. |
 | `STRUT_DUMP_SPARSE_PATTERN=path` | Write the lower-triangular CSC pattern of the first sparse system, for `build/strut/sparse_ldlt_bench --pattern path`. |
 
