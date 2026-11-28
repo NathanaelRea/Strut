@@ -5,23 +5,8 @@ from math import fma, inf, isfinite, sqrt
 from os import abort, getenv
 from sys import argv
 from solver.sparse_ldlt import SparseLDLT
-from sys.ffi import external_call
+from trace_io import TraceFile, read_ints, read_vector
 from time import perf_counter_ns
-
-
-fn read_exact(file: UnsafePointer[UInt8], output: UnsafePointer[UInt8], count: Int):
-    if external_call["fread", UInt](output, UInt(8), UInt(count), file) != UInt(count):
-        abort("truncated sparse linear trace")
-
-
-fn read_ints(file: UnsafePointer[UInt8], count: Int) -> List[Int]:
-    var data = List[Int](length=count, fill=0)
-    read_exact(file, data.unsafe_ptr().bitcast[UInt8](), count)
-    return data^
-
-
-fn read_vector(file: UnsafePointer[UInt8], mut data: List[Float64]):
-    read_exact(file, data.unsafe_ptr().bitcast[UInt8](), len(data))
 
 
 fn norm_inf(values: List[Float64]) -> Float64:
@@ -158,7 +143,7 @@ struct Replay(Movable):
         self.solver.analyze(n, self.columns, self.rows)
         self.symbolic_ns += perf_counter_ns() - start
 
-    fn factor(mut self, file: UnsafePointer[UInt8]):
+    fn factor(mut self, file: UnsafePointer[UInt8]) raises:
         if len(self.values) == 0:
             abort("missing sparse trace pattern before tangent")
         read_vector(file, self.values)
@@ -290,7 +275,7 @@ struct Replay(Movable):
         self.refinements += used
         return self.form_residual()
 
-    fn solve(mut self, file: UnsafePointer[UInt8]):
+    fn solve(mut self, file: UnsafePointer[UInt8]) raises:
         if self.factors == 0:
             abort("missing sparse trace tangent before solve")
         read_vector(file, self.rhs)
@@ -362,32 +347,19 @@ fn main() raises:
         raise Error(
             "expected a nonnegative refinement limit, then equilibrate and gmres as options"
         )
-    var path = List[UInt8]()
-    for byte in String(args[1]).as_bytes():
-        path.append(byte)
-    path.append(0)
-    var mode = InlineArray[UInt8, 3](114, 98, 0)
-    var file = external_call["fopen", UnsafePointer[UInt8]](
-        path.unsafe_ptr(), UnsafePointer(to=mode[0])
-    )
-    if not file:
-        raise Error("could not open sparse linear trace")
+    var trace = TraceFile(String(args[1]))
     var replay = Replay(len(args) >= 4, corrections, len(args) == 5)
     while True:
-        var kind = UInt64(0)
-        var count = external_call["fread", UInt](UnsafePointer(to=kind), UInt(1), UInt(8), file)
-        if count == 0 and external_call["feof", Int32](file) != 0:
+        var tag = trace.next_tag()
+        if not tag:
             break
-        if count != 8:
-            raise Error("incomplete sparse linear trace tag")
+        var kind = tag.value()
         if kind == 1:
-            replay.pattern(file)
+            replay.pattern(trace.handle)
         elif kind == 2:
-            replay.factor(file)
+            replay.factor(trace.handle)
         elif kind == 3:
-            replay.solve(file)
+            replay.solve(trace.handle)
         else:
             raise Error("unrecognized sparse linear trace tag")
-    if external_call["fclose", Int32](file) != 0:
-        raise Error("could not close sparse linear trace")
     replay.report()

@@ -28,13 +28,14 @@ from math import fma, isfinite, sqrt
 from memory import memset_zero
 from os import abort, getenv
 from os.atomic import Atomic, Consistency
+from solver.cholmod_order import nested_dissection_order
 from solver.gpu_backend import gpu_build_enabled, require_gpu_backend
 from solver.gpu_ldlt import GpuLdlt, PanelUpdate
 from gpu.host import DeviceContext
 from solver.linear_trace import LinearTrace
 from solver.simd_contiguous import FLOAT64_SIMD_WIDTH
 from sys import CompilationTarget, num_performance_cores
-from sys.ffi import DLHandle, external_call
+from sys.ffi import external_call
 from time import perf_counter_ns
 
 
@@ -61,22 +62,6 @@ fn _floats(n: Int) -> List[Float64]:
     var result: List[Float64] = []
     result.resize(n, 0.0)
     return result^
-
-
-fn _nested_dissection_order(
-    path: String, n: Int, col_ptr: List[Int], row_idx: List[Int]
-) raises -> List[Int]:
-    var library = DLHandle(path)
-    var reorder = library.get_function[
-        fn (Int, Int, UnsafePointer[Int], UnsafePointer[Int], UnsafePointer[Int]) -> Int32
-    ]("strut_nested_dissection")
-    var order = _ints(n)
-    if (
-        reorder(n, len(row_idx), col_ptr.unsafe_ptr(), row_idx.unsafe_ptr(), order.unsafe_ptr())
-        != 0
-    ):
-        abort("nested dissection failed")
-    return order^
 
 
 # Labels are 32-bit. Offsets use the compact representation when their
@@ -1852,7 +1837,7 @@ struct SparseLDLT(Movable):
         var requested_order = permutation.copy()
         var order_library = getenv("STRUT_LDLT_NESDIS")
         if order_library != "" and len(requested_order) == 0 and n >= 256:
-            requested_order = _nested_dissection_order(order_library, n, col_ptr, row_idx)
+            requested_order = nested_dissection_order(order_library, n, col_ptr, row_idx)
         var custom_order = len(requested_order) > 0
         if custom_order:
             if len(requested_order) != n:

@@ -26,20 +26,16 @@ headers. A minimal configuration for this experiment uses
 `STRUMPACK_USE_MPI=OFF`, `TPL_ENABLE_MAGMA=OFF`, and
 `STRUMPACK_USE_GPU_ARA=OFF`.
 
-The CSV replay executable was compiled against a static STRUMPACK build. These
-commands use the extracted packages and scratch installation from this
-experiment. Adjust the prefixes and BLAS library path for other installations.
+Build STRUMPACK with `BUILD_SHARED_LIBS=ON` and point the Mojo replay at
+the resulting shared library. For an NVIDIA build, enable STRUMPACK's CUDA
+backend in place of the HIP backend and set `CUDA_VISIBLE_DEVICES`. The Mojo
+replay calls the same STRUMPACK C API.
 
 ```bash
-spike="$PWD/benchmark/.tmp/multifrontal"
-sdk="$spike/sdk/usr"
-g++ -O3 -std=c++20 -fopenmp -Wall -Wextra -Werror \
-    -isystem "$spike/install/include" benchmark/gpu/multifrontal/replay.cpp \
-    "$spike/install/lib64/libstrumpack.a" -L"$sdk/lib64" "-Wl,-rpath-link,$sdk/lib64" \
-    -lmetis -lhipblas -lrocblas -lrocsolver -lhipsparse -lrocsparse -lamdhip64 \
-    /lib64/libopenblaso.so.0 -l:libgfortran.so.5 -o "$spike/replay"
-
-export LD_LIBRARY_PATH="$sdk/lib64"
+mkdir -p benchmark/.tmp/multifrontal
+uv run mojo build -I benchmark/gpu benchmark/gpu/multifrontal/replay.mojo \
+    -o benchmark/.tmp/multifrontal/replay_mojo
+export STRUT_STRUMPACK_LIBRARY=/path/to/libstrumpack.so
 export OMP_NUM_THREADS=8 OPENBLAS_NUM_THREADS=1 OMP_PROC_BIND=close OMP_PLACES=cores
 export HIP_VISIBLE_DEVICES=0
 ```
@@ -51,16 +47,19 @@ code objects. For this experiment, extracting the AMD package under
 to run DGEMM on the Radeon.
 
 ```bash
-export ROCBLAS_TENSILE_LIBPATH="$spike/amd/opt/rocm-7.1.1/lib/rocblas/library"
+export ROCBLAS_TENSILE_LIBPATH=/path/to/rocm/lib/rocblas/library
 ```
 
 ```bash
+spike=benchmark/.tmp/multifrontal
 trace=benchmark/.tmp/replay/megatall.bin
-"$spike/replay" cpu "$trace" > "$spike/cpu.csv"
-"$spike/replay" gpu "$trace" > "$spike/gpu.csv"
+"$spike/replay_mojo" cpu "$trace" > "$spike/cpu.csv"
+"$spike/replay_mojo" gpu "$trace" > "$spike/gpu.csv"
 ```
 
 ## Measured replay
+
+The following timings are from the original C++ replay.
 
 | Mode | Reordering (s) | Value updates (s) | Factorization (s) | Solves (s) |
 | --- | ---: | ---: | ---: | ---: |

@@ -1,7 +1,8 @@
 # Plane-strain GPU benchmarks
 
 These experiments use an AMD Radeon RX 9070 XT (`gfx1201`) and an
-eight-thread Ryzen 7 9800X3D CPU. They run standalone with HIP and OpenMP.
+eight-thread Ryzen 7 9800X3D CPU. The standalone programs use Mojo on CPU and GPU. On NVIDIA, use
+`CUDA_VISIBLE_DEVICES` in place of `HIP_VISIBLE_DEVICES`.
 
 ## Elastic plane-strain multigrid
 
@@ -12,12 +13,11 @@ the stiffness in FP64 without storing a global matrix. The CPU and GPU run
 PCG with the same geometric V-cycle, using weighted Jacobi smoothing,
 bilinear prolongation, its transpose for restriction, and a direct solve on
 the coarsest interior node. The GPU keeps the working vectors and multigrid
-hierarchy resident and captures a PCG iteration as a HIP graph.
+hierarchy resident and checks convergence on the host every four iterations.
 
 ```bash
 mkdir -p benchmark/.tmp/geotech
-hipcc --offload-arch=gfx1201 -O3 -Wall -Wextra -Werror -fopenmp \
-    benchmark/gpu/geotech/plane_strain.hip -lamdhip64 \
+HIP_VISIBLE_DEVICES=0 uv run mojo build benchmark/gpu/geotech/plane_strain.mojo \
     -o benchmark/.tmp/geotech/plane_strain
 for n in 64 256 512 1024 2048; do
     HIP_VISIBLE_DEVICES=0 benchmark/.tmp/geotech/plane_strain "$n" 8 8 0.30 both \
@@ -29,7 +29,7 @@ The sweep uses eight independent manufactured displacements with different
 spatial modes at each size. GPU solve time includes uploading the right-hand
 side, checking convergence, and reading back the displacements. The timings
 exclude process startup, load generation, and validation. Setup includes
-allocation and GPU graph creation. Warm times are medians of loads 2–8 from
+allocation. Warm times are medians of loads 2–8 from
 one sweep.
 
 | Cells | Free DOFs | Warm CPU / GPU per load (ms) | CPU / GPU setup and first load (ms) | CPU / GPU setup and eight loads (ms) |
@@ -65,8 +65,7 @@ It checks the correction against independent bisection, then compares all
 final CPU and GPU states.
 
 ```bash
-hipcc --offload-arch=gfx1201 -O3 -Wall -Wextra -Werror -fopenmp \
-    benchmark/gpu/geotech/drucker_prager.hip -lamdhip64 \
+HIP_VISIBLE_DEVICES=0 uv run mojo build benchmark/gpu/geotech/drucker_prager.mojo \
     -o benchmark/.tmp/geotech/drucker_prager
 HIP_VISIBLE_DEVICES=0 benchmark/.tmp/geotech/drucker_prager 1048576 40 8
 ```

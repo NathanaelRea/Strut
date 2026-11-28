@@ -208,15 +208,13 @@ upper bound that treats numeric LDLᵀ as free. It also estimates the analysis
 time if every LDLᵀ operation ran at the measured register-resident FP64
 throughput.
 
-To try nested dissection on both engines, build the optional ordering library
-using the SuiteSparse development package and pass it to the same runner:
+To use NESDIS on both engines, pass the shared library from a 64-bit
+CHOLMOD 5.3.4 installation with the Partition module enabled. The Mojo solver
+calls the library directly.
 
 ```bash
-mkdir -p benchmark/.tmp
-c++ -O3 -shared -fPIC benchmark/gpu/nested_dissection.cpp \
-    $(pkg-config --cflags --libs CHOLMOD) -o benchmark/.tmp/libstrut_nesdis.so
 uv run benchmark/gpu/run_megatall.py benchmark/.tmp/gpu-nesdis \
-    --ordering-library benchmark/.tmp/libstrut_nesdis.so
+    --ordering-library /path/to/libcholmod.so.5
 ```
 
 On the Ryzen 7 9800X3D and Radeon RX 9070 XT, one paired compute-only
@@ -276,7 +274,7 @@ Build the replay executable. To replay on GPU, pass `-D STRUT_GPU=1` to
 `mojo build` on the GPU host and set `STRUT_REPLAY_GPU=1` for the run.
 
 ```bash
-uv run mojo build -I src/mojo benchmark/gpu/replay_ldlt.mojo \
+uv run mojo build -I src/mojo -I benchmark/gpu benchmark/gpu/replay_ldlt.mojo \
     -o benchmark/.tmp/replay/replay_ldlt
 uv run benchmark/.tmp/replay/replay_ldlt benchmark/.tmp/replay/megatall.bin 8 equilibrate gmres
 ```
