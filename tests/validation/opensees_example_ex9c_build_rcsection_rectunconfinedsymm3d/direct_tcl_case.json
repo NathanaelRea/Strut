@@ -3,6 +3,7 @@
   "entry_tcl": "tests/fixtures/opensees/OpenSeesExamplesAdvanced/opensees_example_9_build_analyze_a_section_example/Ex9.analyze.MomentCurvature3D.tcl",
   "tcl_source_version": "3.7.1",
   "enabled": true,
+  "benchmark_skip": "the original script stops with a Tcl error once OpenSees fails to converge at step 24 of 100, so the engines do different work",
   "source_files": [
     "Ex9c.build.RCSection.RectUnconfinedSymm3D.tcl",
     "Ex9.analyze.MomentCurvature3D.tcl"

@@ -128,6 +128,7 @@ Minimum required fields (v1.0):
   - `step`: compare each transient step and the final static step. Set `parity_history` to `true` to compare each static step.
   - `max_abs`: compare component-wise peak absolute response across the full history.
 - `benchmark_size`: `"small" | "medium" | "large"` (optional; top-level benchmark/plot override)
+- `benchmark_skip`: reason string (optional; direct Tcl manifests). The benchmark runner leaves the case out and logs the reason. The parity suite still runs it.
 
 Current limitation: `forceBeamColumn2d`/`dispBeamColumn2d` support is currently limited to:
 - `geomTransf: Linear | PDelta`

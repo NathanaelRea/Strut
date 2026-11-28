@@ -76,6 +76,7 @@ class CaseSpec:
     benchmark_size: Optional[str] = None
     interactive_tcl: bool = False
     opensees_only: bool = False
+    benchmark_skip: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -611,6 +612,9 @@ def _direct_tcl_case_spec(manifest_path: Path) -> CaseSpec:
     benchmark_size = data.get("benchmark_size")
     if not isinstance(benchmark_size, str):
         benchmark_size = None
+    benchmark_skip = data.get("benchmark_skip")
+    if not isinstance(benchmark_skip, str) or not benchmark_skip.strip():
+        benchmark_skip = None
     return CaseSpec(
         name=name,
         tcl_path=_resolve_repo_relative_path(entry_tcl),
@@ -618,6 +622,7 @@ def _direct_tcl_case_spec(manifest_path: Path) -> CaseSpec:
         benchmark_size=benchmark_size,
         interactive_tcl=bool(data.get("interactive_tcl") or data.get("replay_tcl")),
         opensees_only=data.get("opensees_only") is True,
+        benchmark_skip=benchmark_skip,
     )
 
 
@@ -2334,7 +2339,7 @@ def _inject_opensees_timing(tcl_lines: List[str], timing_file: str) -> List[str]
 
 def _tcl_uses_eigen(path: Path) -> bool:
     try:
-        lines = path.read_text().splitlines()
+        lines = direct_tcl_support.read_tcl_text(path).splitlines()
     except OSError:
         return False
     for line in lines:
@@ -2970,6 +2975,14 @@ def main() -> None:
             raise SystemExit(
                 "No selected cases support single-model solver benchmarking."
             )
+
+    not_comparable = [case for case in case_specs if case.benchmark_skip]
+    if not_comparable:
+        for case in not_comparable:
+            log(f"Skipping {case.name}: {case.benchmark_skip}")
+        case_specs = [case for case in case_specs if not case.benchmark_skip]
+        if not case_specs:
+            raise SystemExit("Every selected case is marked benchmark_skip.")
 
     include_disabled_effective = args.include_disabled or (
         args.cases is None and os.getenv("STRUT_RUN_ALL_CASES") == "1"

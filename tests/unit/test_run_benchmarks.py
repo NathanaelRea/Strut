@@ -343,6 +343,28 @@ def test_resolve_case_from_name_supports_direct_tcl_manifest(tmp_path: Path):
     assert case.benchmark_size == "medium"
 
 
+def test_direct_tcl_case_spec_reads_benchmark_skip_reason(tmp_path: Path):
+    entry_tcl = tmp_path / "case.tcl"
+    entry_tcl.write_text("puts ok\n", encoding="utf-8")
+    manifest = tmp_path / "direct_case" / "direct_tcl_case.json"
+    _write_direct_tcl_case(manifest, entry_tcl=entry_tcl)
+    assert run_benchmarks._direct_tcl_case_spec(manifest).benchmark_skip is None
+
+    data = json.loads(manifest.read_text(encoding="utf-8"))
+    data["benchmark_skip"] = "OpenSees stops early"
+    manifest.write_text(json.dumps(data) + "\n", encoding="utf-8")
+
+    case = run_benchmarks._direct_tcl_case_spec(manifest)
+    assert case.benchmark_skip == "OpenSees stops early"
+
+
+def test_tcl_uses_eigen_reads_latin1_scripts(tmp_path: Path):
+    script = tmp_path / "model.tcl"
+    script.write_bytes(b"# \x93quoted\x94 comment\nset lambda [eigen 2]\n")
+
+    assert run_benchmarks._tcl_uses_eigen(script)
+
+
 def test_opt_full_suite_includes_new_ex9_direct_tcl_benchmarks():
     suite = run_benchmarks.BENCHMARK_SUITES["opt_full_v1"]
 
